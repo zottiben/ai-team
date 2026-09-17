@@ -409,21 +409,31 @@ mod tests {
             .trim()
             .parse()
             .unwrap();
-        assert!(process_alive(descendant));
+        assert!(process_running(descendant));
 
         drop(process);
         let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
-        while process_alive(descendant) && tokio::time::Instant::now() < deadline {
+        while process_running(descendant) && tokio::time::Instant::now() < deadline {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         assert!(
-            !process_alive(descendant),
+            !process_running(descendant),
             "descendant {descendant} outlived its eve handle"
         );
     }
 
     #[cfg(unix)]
-    fn process_alive(pid: u32) -> bool {
+    fn process_running(pid: u32) -> bool {
+        #[cfg(target_os = "linux")]
+        if let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+            // A CI container's PID 1 may leave the killed grandchild as a zombie for
+            // longer than this test. `kill -0` still sees a zombie, but it cannot serve
+            // requests and the group termination guarantee has succeeded.
+            return stat
+                .rsplit_once(") ")
+                .is_some_and(|(_, tail)| !tail.starts_with('Z'));
+        }
+
         std::process::Command::new("kill")
             .args(["-0", &pid.to_string()])
             .stdout(Stdio::null())
