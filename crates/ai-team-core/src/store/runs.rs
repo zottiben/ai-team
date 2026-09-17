@@ -379,9 +379,9 @@ fn run_from_row(r: &Row<'_>) -> rusqlite::Result<Run> {
 }
 
 const NODE_SELECT: &str = "SELECT id, run_id, agent_id, role, provider, model, status, attempt, \
-     slice_key, worktree_path, branch, lease_id, session_id, tokens_in, tokens_out, \
-     tokens_cache_read, tokens_cache_write, turns, blocked_reason, started_at, ended_at, rev, \
-     created_at, updated_at FROM node_run";
+     slice_key, worktree_path, branch, lease_id, session_id, eve_port, stream_cursor, \
+     tokens_in, tokens_out, tokens_cache_read, tokens_cache_write, turns, blocked_reason, \
+     started_at, ended_at, rev, created_at, updated_at FROM node_run";
 
 fn node_from_row(r: &Row<'_>) -> rusqlite::Result<NodeRun> {
     Ok(NodeRun {
@@ -398,19 +398,21 @@ fn node_from_row(r: &Row<'_>) -> rusqlite::Result<NodeRun> {
         branch: non_empty(r.get(10)?),
         lease_id: non_empty(r.get(11)?),
         session_id: non_empty(r.get(12)?),
+        eve_port: r.get(13)?,
+        stream_cursor: r.get(14)?,
         usage: Usage {
-            tokens_in: r.get(13)?,
-            tokens_out: r.get(14)?,
-            cache_read: r.get(15)?,
-            cache_write: r.get(16)?,
+            tokens_in: r.get(15)?,
+            tokens_out: r.get(16)?,
+            cache_read: r.get(17)?,
+            cache_write: r.get(18)?,
         },
-        turns: r.get(17)?,
-        blocked_reason: non_empty(r.get(18)?),
-        started_at: non_empty(r.get(19)?),
-        ended_at: non_empty(r.get(20)?),
-        rev: r.get(21)?,
-        created_at: r.get(22)?,
-        updated_at: r.get(23)?,
+        turns: r.get(19)?,
+        blocked_reason: non_empty(r.get(20)?),
+        started_at: non_empty(r.get(21)?),
+        ended_at: non_empty(r.get(22)?),
+        rev: r.get(23)?,
+        created_at: r.get(24)?,
+        updated_at: r.get(25)?,
     })
 }
 

@@ -29,6 +29,9 @@ pub(crate) enum Command {
     /// Inspect the database directly.
     #[command(subcommand)]
     Db(DbCommand),
+    /// Generate the eve project from the team rows.
+    #[command(subcommand)]
+    Agents(AgentsCommand),
     /// Check the install: paths, the machine profile, and the embedded bundle.
     Doctor,
 }
@@ -53,6 +56,24 @@ pub(crate) struct UiArgs {
     /// Print the URL instead of opening a browser.
     #[arg(long)]
     pub(crate) no_open: bool,
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum AgentsCommand {
+    /// Rewrite the generated eve project from the current team rows.
+    Generate {
+        /// Which project. Slug, id, or part of the name.
+        #[arg(long, short)]
+        project: String,
+        /// List what would be written without touching the filesystem.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Print where a project's generated eve project lives.
+    Path {
+        #[arg(long, short)]
+        project: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]

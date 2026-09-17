@@ -12,7 +12,10 @@ use rusqlite::{Connection, Transaction, TransactionBehavior};
 use crate::error::{Error, Result};
 use crate::util::now;
 
-const MIGRATIONS: &[(i64, &str, &str)] = &[(1, "core", include_str!("migrations/001_core.sql"))];
+const MIGRATIONS: &[(i64, &str, &str)] = &[
+    (1, "core", include_str!("migrations/001_core.sql")),
+    (2, "eve", include_str!("migrations/002_eve.sql")),
+];
 
 /// The number of `v_` views the schema ships. Asserted in tests, because a view silently
 /// dropped from a migration is a demo that quietly stops working.
@@ -164,13 +167,13 @@ mod tests {
         let path = tmp.path().join("team.db");
 
         let db = Db::open_or_create(&path).unwrap();
-        assert_eq!(db.schema_version().unwrap(), 1);
+        assert_eq!(db.schema_version().unwrap(), 2);
         assert_eq!(db.pending_migrations().unwrap(), 0);
         drop(db);
 
         // Re-opening must not re-apply anything.
         let db = Db::open(&path).unwrap();
-        assert_eq!(db.schema_version().unwrap(), 1);
+        assert_eq!(db.schema_version().unwrap(), 2);
 
         let views: i64 = db
             .conn()

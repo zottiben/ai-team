@@ -339,8 +339,8 @@ fn team_from_row(r: &Row<'_>) -> rusqlite::Result<Team> {
 }
 
 const AGENT_SELECT: &str = "SELECT id, team_id, ord, role, name, purpose, provider, model, \
-     reasoning, zone, prompt_preset, prompt_md, read_only, enabled, rev, created_at, updated_at \
-     FROM agent";
+     reasoning, zone, prompt_preset, prompt_md, context_window, read_only, enabled, rev, \
+     created_at, updated_at FROM agent";
 
 fn agent_from_row(r: &Row<'_>) -> rusqlite::Result<Agent> {
     Ok(Agent {
@@ -356,11 +356,12 @@ fn agent_from_row(r: &Row<'_>) -> rusqlite::Result<Agent> {
         zone: r.get(9)?,
         prompt_preset: non_empty(r.get(10)?),
         prompt_md: non_empty(r.get(11)?),
-        read_only: r.get::<_, i64>(12)? != 0,
-        enabled: r.get::<_, i64>(13)? != 0,
-        rev: r.get(14)?,
-        created_at: r.get(15)?,
-        updated_at: r.get(16)?,
+        context_window: r.get(12)?,
+        read_only: r.get::<_, i64>(13)? != 0,
+        enabled: r.get::<_, i64>(14)? != 0,
+        rev: r.get(15)?,
+        created_at: r.get(16)?,
+        updated_at: r.get(17)?,
     })
 }
 

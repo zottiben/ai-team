@@ -8,6 +8,14 @@ on their own machine.
 React 19 + Vite 8 + TypeScript, built to static assets and embedded in the binary.
 Agents run as Vercel **eve** nodes (Node 24+).
 
+**Platforms — macOS is the target, Linux is the dev machine (D12).** ai-team is used daily
+on macOS; it is built on Linux. Both must work, and where they disagree macOS wins. The
+author cannot hand-test the primary platform, so CI's `macos-latest` leg is the real
+verification — put platform-sensitive logic behind a test that runs on **both** legs
+rather than checking it by hand. Three macOS facts bite (see the gotcha in the plan):
+`/tmp` and `/var` are symlinks into `/private`, APFS is case-insensitive by default, and
+the login shell is zsh.
+
 **Layout**
 - `crates/ai-team-core` — the org graph, the store, run state. No deps on the surfaces.
 - `crates/ai-team-ui` — axum server on loopback + the embedded bundle. `build.rs` compiles
@@ -102,10 +110,42 @@ evidence is what analytics is made of. And `run.plan_slug` / `node_run.slice_key
 *references* into ai-planner — never copy a plan or slice into this database (D4).
 
 ### 4. Agents edit leased worktrees, not eve's sandbox (D3)
-Authored `bash`/`read`/`write`/`edit` tools act on a worktree leased with `awt get --lease`.
-eve's sandbox is for genuinely untrusted execution only.
+Authored `bash`/`read_file`/`write_file`/`edit_file` tools act on a worktree leased with
+`awt get --lease`. eve's sandbox is for genuinely untrusted execution only.
+
+**One eve process per leased worktree (D10).** eve has no way for a client to attach
+per-session metadata that reaches a tool, so the worktree is bound at the process level
+via `$AI_TEAM_WORKTREE`. Isolation is an OS fact, not a check.
+
+The guard lives in exactly one file, `generate/assets/lib/worktree.ts`, and it is
+`node --test`ed on **both** CI legs because its macOS behaviour is what the author cannot
+see (D12). `read_only` seats simply don't get the write tools generated — but they do get
+`bash`, so the guarantee is "cannot edit source through its tools", not "cannot write a
+byte".
+
+Four things about eve that cost a build each to learn:
+- `defaultTools: false` removes the whole optional default set. `disableTool()` at a slot
+  with no framework default **underneath** it is a build error — to withhold a tool, omit
+  the file.
+- `eve build` **evaluates** every authored module, so a module-scope `throw` for a missing
+  env var fails the build on any machine that isn't running an agent. Check at request time.
+- eve refuses to compile compaction for a model it cannot size, and it can only size AI
+  Gateway IDs — which D8 guarantees we never use. Every agent needs
+  `modelContextWindowTokens` (`agent.context_window`, falling back to 32k).
+- `eve build` succeeding does **not** mean it typechecks. Run `npx tsc --noEmit` too.
 
 ### 5. Never vendor the neighbours (D4)
 `ai-planner` (MCP + HTTP), `ai-worktree` (`awt` CLI), `file-sql` (MCP), ClickUp and Figma
 (MCP, **read-only**) are used over their own interfaces. A change that makes any of them
 impossible to run standalone is the wrong change.
+
+They are **not** reachable as eve connections: `defineMcpClientConnection` requires an
+HTTP url, and `aip serve` / file-sql speak MCP over stdio. Nothing generates
+`agent/connections/` — M2-S8 picks the route that actually works.
+
+### 6. Ingest eve's stream exactly once
+`event.eve_event_id` is eve's `meta.id` under a partial unique index, and ingest uses
+`INSERT OR IGNORE` — so a reconnect or a full rewind is free. Two traps that a real turn
+exposed and fixtures did not: token and turn **counters** must only accumulate for rows
+that were genuinely new, and `node_run.stream_cursor` is `from_index + batch.len()`, never
+`cursor + batch.len()` (that is right for a resume and silently wrong for a rewind).

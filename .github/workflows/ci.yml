@@ -55,6 +55,13 @@ jobs:
       - name: frontend - committed bundle is current
         run: git diff --exit-code -- ui/dist
 
+      # The worktree guard is the D3 boundary and it is TypeScript, so it is the one
+      # piece whose macOS behaviour the author cannot check by hand (D12). Node runs the
+      # .ts directly with native type stripping, so this needs no install and no
+      # dependencies - and it runs on both legs, which is the entire point.
+      - name: worktree guard (both platforms)
+        run: node --test crates/ai-team-core/src/generate/assets/lib/
+
       - name: format
         run: cargo fmt --all --check
       - name: clippy

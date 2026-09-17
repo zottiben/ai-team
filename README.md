@@ -11,11 +11,18 @@ per-machine profile so the work machine can deny a provider the personal machine
 > release skeleton. `ait ui` serves a page that reports its own version and nothing else
 > yet. The store lands in `M0-S2`; the agents in M1.
 
+Built for **macOS**, and developed on Linux — both are supported and both are gated in
+CI on every push.
+
 ## Install
 
 ```sh
 curl -fsSL https://zottiben.github.io/ai-team/install.sh | sh
 ```
+
+On macOS this installs the `ait` CLI and, when the release archive carries one,
+`ai-team.app` into `/Applications`. The `.tar.gz` route carries no quarantine attribute,
+so it launches without a Gatekeeper prompt; a `.dmg` downloaded in a browser does not.
 
 Until the first release is tagged there is nothing to download, so the script falls back
 to building from source and needs a Rust toolchain ([rustup.rs](https://rustup.rs)).

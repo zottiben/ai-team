@@ -323,7 +323,7 @@ fn the_database_survives_being_closed_and_reopened() {
     drop(store);
 
     let reopened = Store::open(&path).unwrap();
-    assert_eq!(reopened.schema_version().unwrap(), 1);
+    assert_eq!(reopened.schema_version().unwrap(), 2);
     assert_eq!(reopened.projects().unwrap().len(), 1);
     assert_eq!(reopened.run(run.id).unwrap().prompt, "ship it");
     assert_eq!(

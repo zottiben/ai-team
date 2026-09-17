@@ -360,6 +360,9 @@ pub struct Agent {
     pub zone: String,
     pub prompt_preset: Option<String>,
     pub prompt_md: Option<String>,
+    /// The model's context window in tokens. eve cannot infer it for a non-Gateway
+    /// model and refuses to compile compaction without it.
+    pub context_window: Option<i64>,
     pub read_only: bool,
     pub enabled: bool,
     pub rev: i64,
@@ -417,6 +420,11 @@ pub struct NodeRun {
     pub branch: Option<String>,
     pub lease_id: Option<String>,
     pub session_id: Option<String>,
+    /// The loopback port this node's supervised `eve start` was given (D10).
+    pub eve_port: Option<i64>,
+    /// How many of eve's stream events have been consumed. This is eve's own
+    /// `startIndex`, an absolute count - resuming asks for `?startIndex=<this>`.
+    pub stream_cursor: i64,
     pub usage: Usage,
     pub turns: i64,
     pub blocked_reason: Option<String>,
