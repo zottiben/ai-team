@@ -1,0 +1,62 @@
+# Supply-chain gate. Runs in CI on every PR; run it locally with
+#   cargo install cargo-deny --locked && cargo deny check
+#
+# The point is not purity, it is that a new transitive dependency with a bad licence, a
+# known advisory or an unvetted source has to be noticed and argued for in a diff rather
+# than arriving silently.
+
+[graph]
+# The targets ai-team is actually built for. Everything else - fuchsia, wasm, the BSDs -
+# is dead weight in the graph and only produces findings nobody will ever act on.
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+]
+all-features = true
+
+[advisories]
+# Unmaintained crates we pull in directly are our problem; deep in someone else's tree
+# they usually are not actionable, so only the workspace's own choices are flagged.
+unmaintained = "workspace"
+unsound = "all"
+ignore = []
+
+[licenses]
+confidence-threshold = 0.93
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "MPL-2.0",
+    "CC0-1.0",
+]
+exceptions = []
+
+[bans]
+# "warn", not "deny": Tauri and axum legitimately land on different minor versions of
+# shared crates, and a red gate we routinely override stops being a gate.
+multiple-versions = "warn"
+wildcards = "deny"
+deny = [
+    # D8: subscription-backed providers only. A metered HTTP client for a model API is
+    # exactly the dependency that would quietly reintroduce an API-key path, so the
+    # vendor SDKs are banned outright rather than merely discouraged.
+    { crate = "async-openai", reason = "D8 - models are reached through eve, never a metered SDK" },
+    { crate = "anthropic-sdk", reason = "D8 - the Claude subscription arrives via the bridged Claude Code CLI" },
+]
+skip = []
+skip-tree = [
+    { crate = "windows-sys", reason = "a foundational crate that bumps far too often to ever have one shared version" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

@@ -1,0 +1,6 @@
+[toolchain]
+# Pinned so every machine and CI build with the identical compiler. Bump deliberately,
+# via a commit; keep it in sync with the version in .github/workflows/ci.yml and
+# release.yml, which cannot read this file before the toolchain is installed.
+channel = "1.98.1"
+components = ["rustfmt", "clippy"]

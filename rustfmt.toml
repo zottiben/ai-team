@@ -1,0 +1,4 @@
+# Stable options only. Anything nightly-gated would format differently depending on who
+# ran it, which is the one thing a formatter must never do.
+edition = "2021"
+max_width = 100

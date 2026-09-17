@@ -1,0 +1,53 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/ai-team-core",
+    "crates/ai-team-ui",
+    "crates/ai-team",
+    "crates/ai-team-desktop",
+]
+
+# The desktop shell is out of the default set on purpose. It pulls in Tauri and a
+# platform webview, which is minutes of build time and a system dependency on Linux -
+# and nobody changing the store or the orchestrator should pay for either. `cargo
+# build`, `cargo test` and `cargo clippy` at the root skip it; build it by name with
+# `-p ai-team-desktop`. CI compiles it separately so it cannot rot.
+default-members = [
+    "crates/ai-team-core",
+    "crates/ai-team-ui",
+    "crates/ai-team",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/zottiben/ai-team"
+
+[workspace.dependencies]
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive", "env"] }
+axum = "0.8"
+getrandom = "0.3"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "signal"] }
+
+# Denied workspace-wide rather than per-crate, so a new crate inherits the gate instead
+# of being an exception nobody notices. `unwrap`/`expect` are warnings, not errors: they
+# are legitimate in tests and in `build.rs`, and a hard deny would only teach people to
+# write `#[allow]`.
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+# Noise from pedantic that is not worth acting on in this codebase.
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+must_use_candidate = "allow"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"

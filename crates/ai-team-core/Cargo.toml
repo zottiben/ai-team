@@ -1,0 +1,16 @@
+[package]
+name = "ai-team-core"
+description = "The org graph, the store and the run state behind ai-team"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

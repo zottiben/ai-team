@@ -1,0 +1,21 @@
+[package]
+name = "ai-team"
+description = "Run a team of AI agents against your projects, from the terminal"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "ait"
+path = "src/main.rs"
+
+[dependencies]
+ai-team-core = { path = "../ai-team-core" }
+ai-team-ui = { path = "../ai-team-ui" }
+anyhow.workspace = true
+clap.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true

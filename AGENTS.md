@@ -4,16 +4,35 @@ A local desktop platform where one prompt to an orchestrator is planned and buil
 configurable team of AI agents, working through the ai-planner board. For one engineer,
 on their own machine.
 
-**Stack (planned — nothing is built yet):** Rust workspace shaped like `ai-planner`
-(`ai-team-core` SQLite store, `ai-team-ui` axum + SSE, `ai-team` CLI `ait`,
-`ai-team-desktop` Tauri, kept out of `default-members`). React 19 + Vite frontend built to
-static assets and embedded in the binary. Agents run as Vercel **eve** nodes (Node 24+).
+**Stack:** Rust 1.98.1 (pinned), edition 2021, workspace shaped like `ai-planner`.
+React 19 + Vite 8 + TypeScript, built to static assets and embedded in the binary.
+Agents run as Vercel **eve** nodes (Node 24+).
 
-**Layout** — the workspace does not exist yet. `M0-S1` creates it.
+**Layout**
+- `crates/ai-team-core` — the org graph, the store, run state. No deps on the surfaces.
+- `crates/ai-team-ui` — axum server on loopback + the embedded bundle. `build.rs` compiles
+  `ui/dist` in.
+- `crates/ai-team` — the CLI. Binary is **`ait`**, not `ai-team`.
+- `crates/ai-team-desktop` — Tauri shell, binary `ai-team`. **Out of `default-members`.**
+- `ui/` — the frontend. `ui/dist` is **committed**; CI fails if it is stale.
 - `design/concept.md` — binding concept: pillars, anti-pillars, scope tiers
-- `AGENTS.md` — this file
+- `install/install.sh` — published to `zottiben.github.io/ai-team` by `pages.yml`
 
-**Commands** — none yet. Fill this section in `M0-S1`, from the real manifests.
+**Commands**
+
+| What | Command |
+| --- | --- |
+| Build / test / lint | `cargo build`, `cargo test`, `cargo clippy --all-targets -- -D warnings` |
+| Format | `cargo fmt --all` (`--check` in CI) |
+| Supply chain | `cargo deny check` (needs `cargo install cargo-deny --locked`) |
+| Desktop shell | `cargo clippy -p ai-team-desktop --all-targets -- -D warnings` |
+| Frontend | `cd ui && npm ci && npm run typecheck && npm test && npm run build` |
+| Run it | `./target/debug/ait ui --port 7788 --no-open`, `ait doctor` |
+| Icons | `cd crates/ai-team-desktop/icons && sh regenerate.sh` |
+
+The root `cargo` commands skip `ai-team-desktop` on purpose — it pulls in Tauri and a
+platform webview. CI compiles it separately so it cannot rot. On Linux it needs the
+webview headers listed in `.github/workflows/ci.yml`.
 
 ## Plan and design
 

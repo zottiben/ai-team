@@ -1,0 +1,25 @@
+/target
+node_modules/
+
+# ui/dist is deliberately NOT ignored. The bundle is compiled into the binary so that
+# `cargo install` works with a Rust toolchain and nothing else, which means the built
+# output has to be in the repo. CI asserts it is current.
+
+*.db
+*.db-wal
+*.db-shm
+*.bak
+.DS_Store
+
+# Generated eve projects. The database is the team (D2); this directory is output, and
+# a committed copy would invite someone to hand-edit it.
+.ai-team/
+
+# Harness scaffolding. `.claude/skills` is a symlink into `.agents/`, which is kept out
+# of repos, so committing it would give a fresh clone a dangling link.
+.claude/
+.agents/
+.pi/
+
+# Tauri's generated per-build files. The icon set and tauri.conf.json are committed.
+/crates/ai-team-desktop/gen/

@@ -1,0 +1,302 @@
+name: Release
+
+# Cut a release by pushing a version tag that matches the workspace version:
+#   git tag v0.1.0 && git push origin v0.1.0
+#
+# Builds the `ait` CLI (macOS universal, Linux x86_64/aarch64 and Windows x86_64) and
+# the desktop app (.app/.dmg, .AppImage/.deb and .msi/.exe), publishes a GitHub Release
+# and uploads checksums.txt. Asset names match what install/install.sh expects.
+#
+# macOS is ad-hoc signed by default, and that is enough for the curl install path: a
+# file downloaded by curl carries no com.apple.quarantine attribute, so the .tar.gz
+# route launches with no Gatekeeper prompt. Only the .dmg - a browser download - is
+# quarantined.
+#
+# To ship a Developer ID signed and notarised build instead, add these repo secrets and
+# the workflow upgrades itself with no edits:
+#   MACOS_CERT_P12_BASE64   base64 of your "Developer ID Application" .p12
+#   MACOS_CERT_PASSWORD     the .p12 export password
+#   MACOS_SIGN_IDENTITY     e.g. "Developer ID Application: NAME (TEAMID)"
+#   APPLE_API_KEY_BASE64    base64 of your App Store Connect API key (.p8)  [notarise]
+#   APPLE_API_KEY_ID        the API key's Key ID                            [notarise]
+#   APPLE_API_ISSUER        the API key's Issuer ID                         [notarise]
+#
+# Windows remains unsigned for personal use, so its installer may show SmartScreen.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  verify:
+    name: verify the tag matches every version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Four files carry the version and they drift silently, so the tag checks all of
+      # them. A .dmg that says 0.1.0 inside a 0.2.0 release is the kind of thing nobody
+      # notices until they are debugging the wrong build.
+      - name: Check versions
+        run: |
+          set -eu
+          VERSION="${GITHUB_REF_NAME#v}"
+          cargo_v="$(grep '^version' Cargo.toml | head -1 | sed -E 's/.*"([^"]+)".*/\1/')"
+          tauri_v="$(grep '"version"' crates/ai-team-desktop/tauri.conf.json | head -1 | sed -E 's/.*"version": "([^"]+)".*/\1/')"
+          ui_v="$(grep '"version"' ui/package.json | head -1 | sed -E 's/.*"version": "([^"]+)".*/\1/')"
+          lock_v="$(grep '"version"' ui/package-lock.json | head -1 | sed -E 's/.*"version": "([^"]+)".*/\1/')"
+          echo "tag=$VERSION cargo=$cargo_v tauri=$tauri_v ui=$ui_v lock=$lock_v"
+          for pair in "Cargo.toml:$cargo_v" "tauri.conf.json:$tauri_v" \
+            "ui/package.json:$ui_v" "ui/package-lock.json:$lock_v"; do
+            if [ "${pair#*:}" != "$VERSION" ]; then
+              echo "::error::${pair%%:*} says ${pair#*:}, tag says $VERSION" >&2
+              exit 1
+            fi
+          done
+
+  macos:
+    name: macOS universal
+    needs: verify
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.98.1
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      # Explicit, so a frontend failure stops the release instead of shipping a binary
+      # that serves the "no bundle" apology page.
+      - name: Build the frontend
+        run: npm ci && npm run build
+        working-directory: ui
+
+      - name: Build the CLI, universal
+        run: |
+          set -eux
+          cargo build --release -p ai-team --target aarch64-apple-darwin
+          cargo build --release -p ai-team --target x86_64-apple-darwin
+          mkdir -p dist
+          lipo -create -output dist/ait \
+            target/aarch64-apple-darwin/release/ait \
+            target/x86_64-apple-darwin/release/ait
+          lipo -info dist/ait
+
+      - name: Set up signing
+        id: signing
+        env:
+          MACOS_CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+        run: |
+          set -eu
+          # Ad-hoc unless a real certificate is configured. "-" is codesign's own
+          # spelling for ad-hoc, and Tauri passes it straight through.
+          identity="-"
+          if [ -n "${MACOS_CERT_P12_BASE64:-}" ] && [ -n "${MACOS_SIGN_IDENTITY:-}" ]; then
+            KEYCHAIN="$RUNNER_TEMP/ai-team.keychain-db"
+            KPASS="$(uuidgen)"
+            security create-keychain -p "$KPASS" "$KEYCHAIN"
+            security set-keychain-settings -lut 21600 "$KEYCHAIN"
+            security unlock-keychain -p "$KPASS" "$KEYCHAIN"
+            echo "$MACOS_CERT_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+            security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" \
+              -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
+            security set-key-partition-list -S apple-tool:,apple: -k "$KPASS" "$KEYCHAIN" >/dev/null
+            security list-keychains -d user -s "$KEYCHAIN" login.keychain-db
+            identity="$MACOS_SIGN_IDENTITY"
+          fi
+          echo "identity=$identity" >> "$GITHUB_OUTPUT"
+
+      - name: Bundle the desktop app
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ steps.signing.outputs.identity }}
+          APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          set -eu
+          # Notarisation only when there is a real identity and a key to do it with.
+          if [ "$APPLE_SIGNING_IDENTITY" != "-" ] && [ -n "${APPLE_API_KEY_BASE64:-}" ]; then
+            echo "$APPLE_API_KEY_BASE64" | base64 --decode > "$RUNNER_TEMP/AuthKey.p8"
+            export APPLE_API_KEY="$APPLE_API_KEY_ID"
+            export APPLE_API_KEY_PATH="$RUNNER_TEMP/AuthKey.p8"
+            export APPLE_API_ISSUER="$APPLE_API_ISSUER"
+          fi
+          cd crates/ai-team-desktop
+          npx @tauri-apps/cli@2 build --target universal-apple-darwin
+
+      - name: Package
+        run: |
+          set -eux
+          VERSION="${GITHUB_REF_NAME#v}"
+          B=target/universal-apple-darwin/release/bundle
+          cp -R "$B/macos/ai-team.app" dist/ai-team.app
+          cp "$B/dmg/"*.dmg "dist/ai-team-v${VERSION}-macos-universal.dmg"
+          # The CLI and the app travel together: `ait ui` and the window are the same
+          # program, and someone who installs one will want the other.
+          tar czf "dist/ai-team-v${VERSION}-macos-universal.tar.gz" \
+            -C dist ait ai-team.app
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          if-no-files-found: error
+          path: |
+            dist/ai-team-v*-macos-universal.tar.gz
+            dist/ai-team-v*-macos-universal.dmg
+
+  linux:
+    name: Linux ${{ matrix.arch }}
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-22.04, arch: x86_64, target: x86_64-unknown-linux-gnu }
+          # GitHub's public native arm64 runner starts at 24.04.
+          - { runner: ubuntu-24.04-arm, arch: aarch64, target: aarch64-unknown-linux-gnu }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.98.1
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      # Use the oldest public runner for each architecture: an AppImage runs on the
+      # glibc it was built against and newer, never older. GitHub has no 22.04 arm64.
+      - name: System dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
+            librsvg2-dev patchelf libxdo-dev libgtk-3-dev libssl-dev \
+            build-essential curl wget file
+
+      - name: Build the frontend
+        run: npm ci && npm run build
+        working-directory: ui
+
+      - name: Build and package the CLI
+        run: |
+          set -eux
+          VERSION="${GITHUB_REF_NAME#v}"
+          cargo build --release -p ai-team --target ${{ matrix.target }}
+          mkdir -p stage
+          cp "target/${{ matrix.target }}/release/ait" stage/ait
+          tar czf "ai-team-v${VERSION}-linux-${{ matrix.arch }}.tar.gz" -C stage ait
+
+      - name: Bundle the desktop app
+        run: |
+          set -eux
+          VERSION="${GITHUB_REF_NAME#v}"
+          cd crates/ai-team-desktop
+          npx @tauri-apps/cli@2 build --target ${{ matrix.target }}
+          cd ../..
+          B="target/${{ matrix.target }}/release/bundle"
+          for f in "$B"/appimage/*.AppImage; do
+            [ -e "$f" ] && cp "$f" "ai-team-v${VERSION}-linux-${{ matrix.arch }}.AppImage"
+          done
+          for f in "$B"/deb/*.deb; do
+            [ -e "$f" ] && cp "$f" "ai-team-v${VERSION}-linux-${{ matrix.arch }}.deb"
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-${{ matrix.arch }}
+          if-no-files-found: error
+          path: |
+            ai-team-v*-linux-*.tar.gz
+            ai-team-v*-linux-*.AppImage
+            ai-team-v*-linux-*.deb
+
+  windows:
+    name: Windows x86_64
+    needs: verify
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.98.1
+        with:
+          targets: x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Build the frontend
+        run: npm ci && npm run build
+        working-directory: ui
+
+      - name: Build the CLI
+        shell: pwsh
+        run: |
+          $Version = $env:GITHUB_REF_NAME.TrimStart('v')
+          cargo build --release -p ai-team --target x86_64-pc-windows-msvc
+          New-Item -ItemType Directory -Force stage | Out-Null
+          Copy-Item target/x86_64-pc-windows-msvc/release/ait.exe stage/ait.exe
+          Compress-Archive -Path stage/ait.exe -DestinationPath "ai-team-v$Version-windows-x86_64.zip"
+
+      # Personal-use build: deliberately unsigned, so SmartScreen can warn on first
+      # launch. Signing it without a certificate would only provide false assurance.
+      - name: Bundle the desktop app
+        run: npx @tauri-apps/cli@2 build --target x86_64-pc-windows-msvc
+        working-directory: crates/ai-team-desktop
+
+      - name: Normalise asset names
+        shell: pwsh
+        run: |
+          $Version = $env:GITHUB_REF_NAME.TrimStart('v')
+          $Bundle = "target/x86_64-pc-windows-msvc/release/bundle"
+          $Msi = Get-ChildItem "$Bundle/msi/*.msi" | Select-Object -First 1
+          $Exe = Get-ChildItem "$Bundle/nsis/*.exe" | Select-Object -First 1
+          Copy-Item $Msi.FullName "ai-team-v$Version-windows-x86_64.msi"
+          Copy-Item $Exe.FullName "ai-team-v$Version-windows-x86_64-setup.exe"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-x86_64
+          if-no-files-found: error
+          path: |
+            ai-team-v*-windows-x86_64.zip
+            ai-team-v*-windows-x86_64.msi
+            ai-team-v*-windows-x86_64-setup.exe
+
+  release:
+    name: publish
+    needs: [macos, linux, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+
+      - name: Generate checksums
+        run: sha256sum ai-team-v* > checksums.txt
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "${GITHUB_REF_NAME}" \
+            --generate-notes \
+            ai-team-v* checksums.txt

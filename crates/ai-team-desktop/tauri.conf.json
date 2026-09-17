@@ -1,0 +1,38 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "ai-team",
+  "version": "0.1.0",
+  "identifier": "dev.zottiben.ai-team",
+  "build": {
+    "frontendDist": "../../ui/dist"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "category": "DeveloperTool",
+    "shortDescription": "A team of AI agents for your projects",
+    "longDescription": "Give one prompt to an orchestrator and a configured team of AI agents plans it, builds it in parallel worktrees, verifies its own work, and brings you a diff to review - with the plan on your ai-planner board the whole time. Everything runs locally, on the subscriptions you already pay for.",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "macOS": {
+      "minimumSystemVersion": "10.15"
+    },
+    "linux": {
+      "deb": {
+        "depends": []
+      }
+    }
+  }
+}

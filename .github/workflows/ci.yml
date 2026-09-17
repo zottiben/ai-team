@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  gate:
+    name: gate (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Keep this version in sync with rust-toolchain.toml when it is bumped. It cannot
+      # be read from that file: the toolchain has to exist before cargo can parse it.
+      - uses: dtolnay/rust-toolchain@1.98.1
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      # Built before the Rust gates because the bundle is compiled into the binary, and
+      # a test asserts it is really there. Building it explicitly means a frontend break
+      # fails here with npm's own message rather than silently embedding the committed
+      # bundle and passing.
+      - name: frontend - install
+        run: npm ci
+        working-directory: ui
+      - name: frontend - typecheck
+        run: npm run typecheck
+        working-directory: ui
+      - name: frontend - test
+        run: npm test
+        working-directory: ui
+      - name: frontend - build
+        run: npm run build
+        working-directory: ui
+      - name: frontend - committed bundle is current
+        run: git diff --exit-code -- ui/dist
+
+      - name: format
+        run: cargo fmt --all --check
+      - name: clippy
+        run: cargo clippy --all-targets -- -D warnings
+      - name: test
+        run: cargo test
+
+      # The desktop shell is out of default-members, so the gates above skip it. It
+      # still has to compile, and on Linux that needs the webview headers.
+      - name: desktop dependencies (Linux)
+        if: startsWith(matrix.os, 'ubuntu')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
+            librsvg2-dev patchelf libxdo-dev libgtk-3-dev libssl-dev
+      - name: desktop clippy
+        run: cargo clippy -p ai-team-desktop --all-targets -- -D warnings
+
+  supply-chain:
+    name: licences and advisories
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # A new transitive dependency with a bad licence, a known advisory or an unvetted
+      # source has to be argued for in a diff rather than arriving silently.
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
