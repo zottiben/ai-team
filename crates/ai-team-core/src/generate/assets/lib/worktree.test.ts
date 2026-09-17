@@ -5,7 +5,7 @@
 // (D12), so it is a plain `node --test` file with no dependencies - CI runs it on both
 // legs, which is the only way the author sees macOS behaviour at all.
 //
-//   node --test crates/ai-team-core/src/generate/assets/lib/
+//   node --test crates/ai-team-core/src/generate/assets/lib/worktree.test.ts
 
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";

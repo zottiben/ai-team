@@ -60,7 +60,7 @@ jobs:
       # .ts directly with native type stripping, so this needs no install and no
       # dependencies - and it runs on both legs, which is the entire point.
       - name: worktree guard (both platforms)
-        run: node --test crates/ai-team-core/src/generate/assets/lib/
+        run: node --test crates/ai-team-core/src/generate/assets/lib/worktree.test.ts
 
       - name: format
         run: cargo fmt --all --check
