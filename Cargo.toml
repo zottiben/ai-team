@@ -37,6 +37,7 @@ toml = "0.9"
 clap = { version = "4", features = ["derive", "env"] }
 axum = "0.8"
 getrandom = "0.3"
+rustix = { version = "1", features = ["process"] }
 # `bundled` on purpose: the whole point of the install story is a Rust toolchain and
 # nothing else, and a system libsqlite3 of unknown vintage is exactly the kind of
 # per-machine difference that produces a bug report nobody can reproduce.

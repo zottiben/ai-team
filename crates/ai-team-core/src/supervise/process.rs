@@ -226,14 +226,16 @@ impl Drop for EveProcess {
 
 fn signal_process_tree(child: &mut Child, signal: &str) {
     #[cfg(unix)]
-    if let Some(pid) = child.id() {
-        // Negative PID means process group. stdout/stderr are null because this also
-        // runs from Drop, where emitting a secondary cleanup error would hide the first.
-        let _ = std::process::Command::new("kill")
-            .args([format!("-{signal}"), format!("-{pid}")])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
+    if let Some(pid) = child
+        .id()
+        .and_then(|pid| rustix::process::Pid::from_raw(pid.cast_signed()))
+    {
+        let signal = match signal {
+            "TERM" => rustix::process::Signal::TERM,
+            _ => rustix::process::Signal::KILL,
+        };
+        // The child was placed in a group whose ID is its PID at spawn time.
+        let _ = rustix::process::kill_process_group(pid, signal);
     }
     // Windows has no Unix process groups; this at least preserves the old direct-child
     // guarantee there. macOS and Linux take the group path above.

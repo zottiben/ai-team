@@ -33,6 +33,7 @@ name = "ai-team-core"
 version = "0.1.0"
 dependencies = [
  "rusqlite",
+ "rustix",
  "serde",
  "serde_json",
  "tempfile",
