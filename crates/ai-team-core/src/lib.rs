@@ -17,6 +17,7 @@ mod model;
 mod paths;
 mod roles;
 mod store;
+mod supervise;
 mod util;
 
 pub use db::Db;
@@ -33,6 +34,11 @@ pub use model::{
 pub use paths::{data_dir, default_db_path, ensure_data_dir, machine_profile_path, HOME_ENV};
 pub use roles::{preset, RolePreset, DEFAULT_LOCAL_MODEL, DEFAULT_ROSTER};
 pub use store::Store;
+pub use supervise::{
+    approvals_in, drive_turn, free_port, mint_token, reattach, record_build_progress, run_turn,
+    AgentInfo, Approval, ApprovalOption, BuildPhase, BuildProgress, EveClient, EveEnv, EveProcess,
+    Flow, ProgressLine, Supervisor, TurnOutcome,
+};
 pub use util::{normalise_remote, now, slugify, zone_matches};
 
 /// The workspace version, compiled in.

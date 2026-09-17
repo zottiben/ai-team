@@ -141,13 +141,10 @@ impl StreamEvent {
             "actions.requested" => Disposition::Record(EventKind::ToolCall, self.tool_summary()),
             "action.result" => Disposition::Record(
                 EventKind::ToolResult,
-                match self
-                    .data
-                    .get("isError")
-                    .and_then(serde_json::Value::as_bool)
-                {
-                    Some(true) => format!("{} failed", self.tool_name()),
-                    _ => format!("{} returned", self.tool_name()),
+                if self.tool_failed() {
+                    format!("{} failed", self.tool_name())
+                } else {
+                    format!("{} returned", self.tool_name())
                 },
             ),
 
@@ -191,13 +188,33 @@ impl StreamEvent {
         }
     }
 
+    /// eve nests the settled call under `data.result`, so a top-level lookup finds
+    /// nothing and every result reads as an anonymous "tool".
     fn tool_name(&self) -> String {
-        self.data
-            .get("toolName")
+        let direct = self.data.get("toolName");
+        let nested = self.data.get("result").and_then(|r| r.get("toolName"));
+        direct
+            .or(nested)
+            .or_else(|| self.data.get("name"))
             .and_then(serde_json::Value::as_str)
-            .or_else(|| self.data.get("name").and_then(serde_json::Value::as_str))
             .unwrap_or("tool")
             .to_string()
+    }
+
+    /// Did the call fail? eve reports it as `data.status`, not a boolean.
+    fn tool_failed(&self) -> bool {
+        if self
+            .data
+            .get("isError")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+        {
+            return true;
+        }
+        matches!(
+            self.data.get("status").and_then(serde_json::Value::as_str),
+            Some("failed" | "error")
+        )
     }
 
     /// `actions.requested` carries an array; one line naming them beats one row each.
@@ -366,15 +383,32 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_tool_result_says_so() {
-        let ok = event(r#"{"type":"action.result","data":{"toolName":"bash"}}"#);
+    fn a_tool_result_names_its_tool_from_where_eve_actually_puts_it() {
+        // The shape a real turn produced: the settled call is nested under `result`,
+        // and a top-level lookup silently yields "tool returned" for everything.
+        let ok = event(
+            r#"{"type":"action.result","status":"completed","data":{"status":"completed",
+                 "result":{"callId":"c1","kind":"tool-result","toolName":"bash",
+                           "output":{"exitCode":0}}}}"#,
+        );
         assert_eq!(
             ok.classify(),
             Disposition::Record(EventKind::ToolResult, "bash returned".into())
         );
-        let bad = event(r#"{"type":"action.result","data":{"toolName":"bash","isError":true}}"#);
+
+        let failed = event(
+            r#"{"type":"action.result","data":{"status":"failed",
+                 "result":{"toolName":"write_file"}}}"#,
+        );
         assert_eq!(
-            bad.classify(),
+            failed.classify(),
+            Disposition::Record(EventKind::ToolResult, "write_file failed".into())
+        );
+
+        // The older flat shape still works, so an upgrade does not lose names.
+        let flat = event(r#"{"type":"action.result","data":{"toolName":"bash","isError":true}}"#);
+        assert_eq!(
+            flat.classify(),
             Disposition::Record(EventKind::ToolResult, "bash failed".into())
         );
     }

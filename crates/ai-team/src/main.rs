@@ -30,6 +30,7 @@ fn run() -> Result<()> {
         Command::Init(args) => cmd::init::run(args),
         Command::Db(command) => cmd::db::run(command),
         Command::Agents(command) => cmd::agents::run(command),
+        Command::Run(args) => runtime()?.block_on(cmd::run::run(args)),
         Command::Doctor => {
             cmd::doctor::run();
             Ok(())

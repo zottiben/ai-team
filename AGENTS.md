@@ -36,6 +36,7 @@ the login shell is zsh.
 | Desktop shell | `cargo clippy -p ai-team-desktop --all-targets -- -D warnings` |
 | Frontend | `cd ui && npm ci && npm run typecheck && npm test && npm run build` |
 | Run it | `ait init`, `ait doctor`, `./target/debug/ait ui --port 7788 --no-open` |
+| Drive an agent | `ait agents set-model …`, then `ait run -p <project> --worktree <dir> "…"` |
 | The database | `ait db path`, `ait db open` (TablePlus), `ait db views` |
 | Icons | `cd crates/ai-team-desktop/icons && sh regenerate.sh` |
 
@@ -143,7 +144,17 @@ They are **not** reachable as eve connections: `defineMcpClientConnection` requi
 HTTP url, and `aip serve` / file-sql speak MCP over stdio. Nothing generates
 `agent/connections/` — M2-S8 picks the route that actually works.
 
-### 6. Ingest eve's stream exactly once
+### 6. Supervision talks HTTP by hand
+`supervise/http.rs` is a small HTTP/1.1 client, not a dependency. Everything it talks to
+is a process ai-team started on `127.0.0.1`, so a TLS stack and a connection pool would
+be cost with no benefit — but **chunked framing has to be right**: eve streams NDJSON and
+a chunk boundary lands mid-line constantly, so only whole lines are handed on.
+
+One eve process per leased worktree means one `EveProcess`, and it is `kill_on_drop` —
+leaking a Node server per crash is how a machine ends up full of them. Read both child
+pipes concurrently: draining stdout first deadlocks the moment npm fills stderr.
+
+### 7. Ingest eve's stream exactly once
 `event.eve_event_id` is eve's `meta.id` under a partial unique index, and ingest uses
 `INSERT OR IGNORE` — so a reconnect or a full rewind is free. Two traps that a real turn
 exposed and fixtures did not: token and turn **counters** must only accumulate for rows

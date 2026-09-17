@@ -199,6 +199,38 @@ impl Store {
         self.agent(agent_id)
     }
 
+    /// Record what context window this agent's model has.
+    ///
+    /// Not cosmetic: eve refuses to compile compaction for a model it cannot size, and
+    /// it can only size AI Gateway IDs - which D8 guarantees ai-team never uses.
+    pub fn set_agent_context_window(
+        &mut self,
+        agent_id: i64,
+        tokens: Option<i64>,
+    ) -> Result<Agent> {
+        if let Some(tokens) = tokens {
+            if tokens < 1024 {
+                return Err(Error::invalid(format!(
+                    "a {tokens}-token context window is not usable - did you mean {}?",
+                    tokens * 1024
+                )));
+            }
+        }
+        let at = now();
+        self.db_mut().write(|tx| {
+            let changed = tx.execute(
+                "UPDATE agent SET context_window = ?2, rev = rev + 1, updated_at = ?3
+                  WHERE id = ?1",
+                params![agent_id, tokens, at],
+            )?;
+            if changed == 0 {
+                return Err(Error::NoSuchAgent(agent_id.to_string()));
+            }
+            Ok(())
+        })?;
+        self.agent(agent_id)
+    }
+
     pub fn set_agent_enabled(&mut self, agent_id: i64, enabled: bool) -> Result<Agent> {
         let at = now();
         self.db_mut().write(|tx| {

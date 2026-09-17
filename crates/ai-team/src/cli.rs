@@ -5,7 +5,7 @@
 
 use clap::{Parser, Subcommand};
 
-use ai_team_core::ProjectKind;
+use ai_team_core::{ProjectKind, Provider};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -32,6 +32,8 @@ pub(crate) enum Command {
     /// Generate the eve project from the team rows.
     #[command(subcommand)]
     Agents(AgentsCommand),
+    /// Run one prompt through a supervised agent.
+    Run(RunArgs),
     /// Check the install: paths, the machine profile, and the embedded bundle.
     Doctor,
 }
@@ -58,6 +60,20 @@ pub(crate) struct UiArgs {
     pub(crate) no_open: bool,
 }
 
+#[derive(Debug, clap::Args)]
+pub(crate) struct RunArgs {
+    /// Which project. Slug, id, or part of the name.
+    #[arg(long, short)]
+    pub(crate) project: String,
+
+    /// The worktree the agent may act on. Defaults to the current directory.
+    #[arg(long)]
+    pub(crate) worktree: Option<String>,
+
+    /// What to ask it to do.
+    pub(crate) prompt: String,
+}
+
 #[derive(Debug, Subcommand)]
 pub(crate) enum AgentsCommand {
     /// Rewrite the generated eve project from the current team rows.
@@ -74,6 +90,23 @@ pub(crate) enum AgentsCommand {
         #[arg(long, short)]
         project: String,
     },
+    /// Point one seat at a different model. Full team editing is M2-S7.
+    SetModel {
+        #[arg(long, short)]
+        project: String,
+        /// Which seat, by role.
+        #[arg(long)]
+        role: String,
+        /// One of: claude, openai, zai, local.
+        #[arg(long, value_parser = parse_provider)]
+        provider: Provider,
+        /// The model name the provider knows it by.
+        #[arg(long)]
+        model: String,
+        /// Its context window in tokens. eve refuses to compile compaction without one.
+        #[arg(long)]
+        context_window: Option<i64>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -89,6 +122,12 @@ pub(crate) enum DbCommand {
 /// clap's `ValueEnum` would need a second spelling of every variant, and the column
 /// spelling in `ProjectKind` is already the canonical one.
 fn parse_kind(value: &str) -> Result<ProjectKind, String> {
+    value
+        .parse()
+        .map_err(|e: ai_team_core::Error| e.to_string())
+}
+
+fn parse_provider(value: &str) -> Result<Provider, String> {
     value
         .parse()
         .map_err(|e: ai_team_core::Error| e.to_string())

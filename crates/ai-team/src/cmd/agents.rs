@@ -12,7 +12,7 @@ use crate::cli::AgentsCommand;
 
 pub(crate) fn run(command: AgentsCommand) -> Result<()> {
     let path = ai_team_core::default_db_path()?;
-    let store = Store::open(&path).with_context(|| format!("opening {}", path.display()))?;
+    let mut store = Store::open(&path).with_context(|| format!("opening {}", path.display()))?;
 
     match command {
         AgentsCommand::Generate { project, dry_run } => {
@@ -60,6 +60,34 @@ pub(crate) fn run(command: AgentsCommand) -> Result<()> {
         AgentsCommand::Path { project } => {
             let project = store.find_project(&project)?;
             println!("{}", store.agents_dir(&project.slug)?.display());
+        }
+
+        AgentsCommand::SetModel {
+            project,
+            role,
+            provider,
+            model,
+            context_window,
+        } => {
+            let project = store.find_project(&project)?;
+            let team_id = project
+                .team_id
+                .with_context(|| format!("{} has no team", project.slug))?;
+            let agent = store
+                .agents(team_id)?
+                .into_iter()
+                .find(|a| a.role == role)
+                .with_context(|| format!("{} has no {role} seat", project.slug))?;
+
+            let before = format!("{}/{}", agent.provider, agent.model);
+            let updated = store.set_agent_model(agent.id, provider, &model)?;
+            if let Some(tokens) = context_window {
+                store.set_agent_context_window(updated.id, Some(tokens))?;
+            }
+            println!("{role}: {before} -> {provider}/{model}");
+            // The generated project is now stale, and the next run regenerates it - say
+            // so rather than leaving someone wondering why nothing changed yet.
+            println!("`ait run` will regenerate and rebuild before the next turn.");
         }
     }
     Ok(())

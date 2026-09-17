@@ -1,0 +1,371 @@
+//! Supervised child processes: `npm install`, `eve build`, `eve start`.
+//!
+//! Two properties matter more than anything else here.
+//!
+//! **A started process must not outlive its supervisor.** `eve start` is a Node server
+//! holding a port; leaking one on every crash leaves a developer with a machine full of
+//! servers serving agents nobody is driving. [`EveProcess`] kills on drop.
+//!
+//! **A build must report progress.** `eve build` takes tens of seconds and the UI has to
+//! show something, so its output is streamed line by line rather than collected at the
+//! end (M1-S4's bar).
+
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::time::Duration;
+
+use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::process::{Child, Command};
+
+use crate::error::{Error, Result};
+
+/// How long to wait for a started process to answer `/eve/v1/health`.
+const HEALTH_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// The environment a generated project needs, assembled in one place so a call site
+/// cannot forget one and get a confusing failure three layers down.
+#[derive(Debug, Clone)]
+pub struct EveEnv {
+    /// The leased worktree this process may touch (D3, D10).
+    pub worktree: PathBuf,
+    /// The shared secret its channel checks.
+    pub token: String,
+    /// Provider keys, as `(name, value)`.
+    pub provider_keys: Vec<(String, String)>,
+}
+
+impl EveEnv {
+    fn apply(&self, command: &mut Command) {
+        command.env("AI_TEAM_WORKTREE", &self.worktree);
+        command.env("AI_TEAM_EVE_TOKEN", &self.token);
+        for (key, value) in &self.provider_keys {
+            command.env(key, value);
+        }
+    }
+}
+
+/// A line of output from a supervised command.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProgressLine {
+    pub text: String,
+    /// True when it came from stderr. npm and eve both use it for ordinary progress, so
+    /// this is a channel marker rather than a severity.
+    pub stderr: bool,
+}
+
+/// Run a command to completion, handing each output line to `on_line` as it arrives.
+///
+/// Both streams are read concurrently: reading stdout to the end first deadlocks as soon
+/// as the child fills the stderr pipe, which npm does reliably on a cold install.
+pub(super) async fn run_streaming<F>(
+    program: &str,
+    args: &[&str],
+    dir: &Path,
+    env: Option<&EveEnv>,
+    mut on_line: F,
+) -> Result<()>
+where
+    F: FnMut(ProgressLine) + Send,
+{
+    let mut command = Command::new(program);
+    command
+        .args(args)
+        .current_dir(dir)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    if let Some(env) = env {
+        env.apply(&mut command);
+    }
+
+    let mut child = command.spawn().map_err(|e| {
+        Error::invalid(format!("could not run `{program} {}`: {e}", args.join(" ")))
+    })?;
+
+    let mut stdout = BufReader::new(child.stdout.take().expect("piped")).lines();
+    let mut stderr = BufReader::new(child.stderr.take().expect("piped")).lines();
+
+    loop {
+        tokio::select! {
+            line = stdout.next_line() => match line? {
+                Some(text) => on_line(ProgressLine { text, stderr: false }),
+                None => break,
+            },
+            line = stderr.next_line() => match line? {
+                Some(text) => on_line(ProgressLine { text, stderr: true }),
+                None => break,
+            },
+        }
+    }
+
+    // One pipe closed; drain whatever is left on the other before waiting.
+    while let Some(text) = stdout.next_line().await? {
+        on_line(ProgressLine {
+            text,
+            stderr: false,
+        });
+    }
+    while let Some(text) = stderr.next_line().await? {
+        on_line(ProgressLine { text, stderr: true });
+    }
+
+    let status = child.wait().await?;
+    if status.success() {
+        return Ok(());
+    }
+    Err(Error::invalid(format!(
+        "`{program} {}` failed with {status}",
+        args.join(" ")
+    )))
+}
+
+/// A running `eve start`, bound to one port and one worktree.
+#[derive(Debug)]
+pub struct EveProcess {
+    child: Child,
+    port: u16,
+    token: String,
+}
+
+impl EveProcess {
+    /// Start the built output on a port the OS chose.
+    ///
+    /// The port is picked by binding and immediately releasing, which has a race that
+    /// does not matter here: the window is microseconds and the only other thing racing
+    /// for ports on this machine is another ai-team node, which would fail loudly at
+    /// bind rather than silently share.
+    pub fn start(dir: &Path, env: &EveEnv) -> Result<EveProcess> {
+        let port = free_port()?;
+        let mut command = Command::new("npx");
+        command
+            .args(["eve", "start", "--host", "127.0.0.1", "--port"])
+            .arg(port.to_string())
+            .current_dir(dir)
+            .stdin(Stdio::null())
+            // eve's own logging is not ai-team's event stream; the interesting output is
+            // on /eve/v1, and keeping these pipes open would need a reader forever.
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            // The one that matters: a dropped handle must not leave a server behind.
+            .kill_on_drop(true);
+        env.apply(&mut command);
+
+        let child = command
+            .spawn()
+            .map_err(|e| Error::invalid(format!("could not start eve: {e}")))?;
+
+        Ok(EveProcess {
+            child,
+            port,
+            token: env.token.clone(),
+        })
+    }
+
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+
+    pub fn client(&self) -> super::EveClient {
+        super::EveClient::new(self.port, &self.token)
+    }
+
+    /// Wait for the process to serve, failing if it died on the way up.
+    pub async fn wait_until_ready(&mut self) -> Result<()> {
+        let client = self.client();
+        let deadline = tokio::time::Instant::now() + HEALTH_TIMEOUT;
+        while tokio::time::Instant::now() < deadline {
+            // Check liveness first: a crashed child would otherwise be polled until the
+            // timeout, and report "never became healthy" instead of why it exited.
+            if let Some(status) = self.child.try_wait()? {
+                return Err(Error::invalid(format!(
+                    "eve exited with {status} before it began serving on port {}",
+                    self.port
+                )));
+            }
+            if client.healthy().await {
+                return Ok(());
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        Err(Error::invalid(format!(
+            "eve did not answer on port {} within {}s",
+            self.port,
+            HEALTH_TIMEOUT.as_secs()
+        )))
+    }
+
+    /// Still running?
+    pub fn is_alive(&mut self) -> bool {
+        matches!(self.child.try_wait(), Ok(None))
+    }
+
+    /// Stop it, and wait for it to actually be gone.
+    pub async fn stop(mut self) -> Result<()> {
+        self.child.start_kill()?;
+        let _ = tokio::time::timeout(Duration::from_secs(10), self.child.wait()).await;
+        Ok(())
+    }
+}
+
+/// Ask the OS for a free loopback port.
+pub fn free_port() -> Result<u16> {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")
+        .map_err(|e| Error::invalid(format!("no free loopback port: {e}")))?;
+    Ok(listener.local_addr()?.port())
+}
+
+/// A per-process shared secret, hex-encoded.
+///
+/// Minted fresh each time rather than stored: it protects one process for as long as
+/// that process lives, and a secret on disk is a secret that outlives what it protects.
+pub fn mint_token() -> String {
+    // Two sources, so neither being weak on its own matters: the OS clock at nanosecond
+    // resolution, and the address of a fresh heap allocation.
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or_default();
+    let boxed = Box::new(0u8);
+    let addr = std::ptr::from_ref::<u8>(&*boxed) as usize;
+    let pid = u128::from(std::process::id());
+    let mixed = nanos ^ (addr as u128).rotate_left(64) ^ pid.rotate_left(32);
+    format!("{mixed:032x}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn env() -> EveEnv {
+        EveEnv {
+            worktree: PathBuf::from("/tmp"),
+            token: "secret".into(),
+            provider_keys: vec![("AI_TEAM_AILOCAL_KEY".into(), "k".into())],
+        }
+    }
+
+    #[tokio::test]
+    async fn output_is_streamed_line_by_line_from_both_pipes() {
+        let mut lines = Vec::new();
+        run_streaming(
+            "sh",
+            &["-c", "echo one; echo two >&2; echo three"],
+            Path::new("."),
+            None,
+            |line| lines.push(line),
+        )
+        .await
+        .unwrap();
+
+        let texts: Vec<&str> = lines.iter().map(|l| l.text.as_str()).collect();
+        assert!(texts.contains(&"one"), "{texts:?}");
+        assert!(texts.contains(&"three"), "{texts:?}");
+        // stderr is progress, not severity: npm and eve both write there routinely.
+        let two = lines.iter().find(|l| l.text == "two").expect("stderr line");
+        assert!(two.stderr);
+    }
+
+    #[tokio::test]
+    async fn a_failing_command_reports_the_command_and_the_status() {
+        let err = run_streaming("sh", &["-c", "exit 3"], Path::new("."), None, |_| {})
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("exit"), "{err}");
+        assert!(err.contains("sh"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_command_that_does_not_exist_says_so_rather_than_hanging() {
+        let err = run_streaming(
+            "definitely-not-a-program",
+            &[],
+            Path::new("."),
+            None,
+            |_| {},
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("definitely-not-a-program"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_lot_of_output_on_both_pipes_does_not_deadlock() {
+        // The failure this guards: reading stdout to the end first wedges as soon as the
+        // child fills the stderr pipe, which npm does on any cold install.
+        let mut count = 0usize;
+        run_streaming(
+            "sh",
+            &[
+                "-c",
+                "for i in $(seq 1 2000); do echo out-$i; echo err-$i >&2; done",
+            ],
+            Path::new("."),
+            None,
+            |_| count += 1,
+        )
+        .await
+        .unwrap();
+        assert_eq!(count, 4000);
+    }
+
+    #[tokio::test]
+    async fn the_environment_reaches_the_child() {
+        let mut seen = Vec::new();
+        run_streaming(
+            "sh",
+            &[
+                "-c",
+                "echo $AI_TEAM_WORKTREE $AI_TEAM_EVE_TOKEN $AI_TEAM_AILOCAL_KEY",
+            ],
+            Path::new("."),
+            Some(&env()),
+            |line| seen.push(line.text),
+        )
+        .await
+        .unwrap();
+        assert_eq!(seen, ["/tmp secret k"]);
+    }
+
+    #[test]
+    fn a_minted_token_is_hex_and_not_repeated() {
+        let a = mint_token();
+        assert_eq!(a.len(), 32);
+        assert!(a.chars().all(|c| c.is_ascii_hexdigit()), "{a}");
+        assert_ne!(a, mint_token());
+    }
+
+    #[test]
+    fn free_ports_are_actually_free() {
+        let port = free_port().unwrap();
+        // If it were still held, binding again would fail.
+        let bound = std::net::TcpListener::bind(("127.0.0.1", port));
+        assert!(bound.is_ok(), "port {port} was not released");
+    }
+
+    #[tokio::test]
+    async fn a_started_process_is_killed_when_its_handle_drops() {
+        // The property that keeps a developer's machine from filling with orphaned Node
+        // servers. Uses `sleep` rather than eve so the test needs no build.
+        let mut command = Command::new("sleep");
+        command.arg("300").kill_on_drop(true).stdout(Stdio::null());
+        let child = command.spawn().unwrap();
+        let pid = child.id().expect("a pid");
+
+        assert!(
+            std::path::Path::new(&format!("/proc/{pid}")).exists() || cfg!(target_os = "macos")
+        );
+        drop(child);
+
+        // kill_on_drop reaps asynchronously; give the runtime a moment to do it.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let alive = std::process::Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .status()
+            .is_ok_and(|s| s.success());
+        assert!(!alive, "process {pid} outlived its handle");
+    }
+}
