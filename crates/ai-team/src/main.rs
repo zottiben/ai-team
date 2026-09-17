@@ -27,6 +27,8 @@ fn run() -> Result<()> {
         // Only the commands that need one pay for an async runtime. Starting a
         // multi-thread reactor to print a few paths would be silly.
         Command::Ui(args) => runtime()?.block_on(cmd::ui::run(args)),
+        Command::Init(args) => cmd::init::run(args),
+        Command::Db(command) => cmd::db::run(command),
         Command::Doctor => {
             cmd::doctor::run();
             Ok(())

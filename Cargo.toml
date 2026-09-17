@@ -36,6 +36,11 @@ serde_json = "1"
 clap = { version = "4", features = ["derive", "env"] }
 axum = "0.8"
 getrandom = "0.3"
+# `bundled` on purpose: the whole point of the install story is a Rust toolchain and
+# nothing else, and a system libsqlite3 of unknown vintage is exactly the kind of
+# per-machine difference that produces a bug report nobody can reproduce.
+rusqlite = { version = "0.40", features = ["bundled"] }
+time = { version = "0.3", features = ["formatting", "parsing", "macros"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "signal"] }
 
 # Denied workspace-wide rather than per-crate, so a new crate inherits the gate instead
@@ -50,6 +55,14 @@ module_name_repetitions = "allow"
 missing_errors_doc = "allow"
 missing_panics_doc = "allow"
 must_use_candidate = "allow"
+# Comments here are prose, and the prose is full of product names - ClickUp, ChatGPT,
+# TablePlus. Backticking them reads worse than leaving them alone, and the lint cannot
+# tell a product from an identifier.
+doc_markdown = "allow"
+# The `New*` structs are one-shot specifications handed to the store and then dropped.
+# Taking them by value is the API saying so; `params!` merely happens to borrow rather
+# than move, which is an implementation detail of rusqlite, not a design signal.
+needless_pass_by_value = "allow"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

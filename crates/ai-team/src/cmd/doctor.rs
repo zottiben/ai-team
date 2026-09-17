@@ -19,14 +19,29 @@ pub(crate) fn run() {
         core::data_dir().as_deref().map(|p| (p, "")),
     );
 
-    // "not created yet" is the expected state until M0-S2 creates the schema, so it is
-    // reported as a fact rather than dressed up as a problem.
     line(
         "database",
         core::default_db_path()
             .as_deref()
-            .map(|p| (p, exists(p, "present", "not created yet"))),
+            .map(|p| (p, exists(p, "present", "not created yet - run `ait init`"))),
     );
+
+    // Reported separately from the file's existence: a database that is there but a
+    // migration behind is the case that produces a confusing error later.
+    if let Ok(path) = core::default_db_path() {
+        if path.exists() {
+            match core::Store::open(&path) {
+                Ok(store) => println!(
+                    "  {:<18} v{} · {} project(s) · {} view(s)",
+                    "schema",
+                    store.schema_version().unwrap_or(0),
+                    store.projects().map_or(0, |p| p.len()),
+                    store.views().map_or(0, |v| v.len()),
+                ),
+                Err(e) => println!("  {:<18} unreadable: {e}", "schema"),
+            }
+        }
+    }
 
     line(
         "machine profile",

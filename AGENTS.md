@@ -27,7 +27,8 @@ Agents run as Vercel **eve** nodes (Node 24+).
 | Supply chain | `cargo deny check` (needs `cargo install cargo-deny --locked`) |
 | Desktop shell | `cargo clippy -p ai-team-desktop --all-targets -- -D warnings` |
 | Frontend | `cd ui && npm ci && npm run typecheck && npm test && npm run build` |
-| Run it | `./target/debug/ait ui --port 7788 --no-open`, `ait doctor` |
+| Run it | `ait init`, `ait doctor`, `./target/debug/ait ui --port 7788 --no-open` |
+| The database | `ait db path`, `ait db open` (TablePlus), `ait db views` |
 | Icons | `cd crates/ai-team-desktop/icons && sh regenerate.sh` |
 
 The root `cargo` commands skip `ai-team-desktop` on purpose — it pulls in Tauri and a
@@ -85,6 +86,20 @@ cannot be bridged — disable them on these nodes.
 
 ### 3. The database is the team; the eve project is generated (D2)
 Never hand-edit anything under `.ai-team/agents/`. Change the team rows and regenerate.
+
+The store (`ai-team-core`) is the **only** place that writes SQL — the CLI, the server and
+the desktop shell all go through it. The schema is one file, `migrations/001_core.sql`,
+`include_str!`d so a `cargo install`ed binary carries it. Two properties it enforces that
+are easy to undo by accident:
+
+- **`event` is append-only**, by trigger. It is the only record of what happened inside a
+  turn, so there is no `update_event` and there must never be one.
+- **A run snapshots its team's guardrails** at dispatch. Never read a budget back through
+  `team` — what a run was allowed to spend is a fact about that run.
+
+Also: a retry is a **new `node_run` row** (attempt + 1), never an edit. The first attempt's
+evidence is what analytics is made of. And `run.plan_slug` / `node_run.slice_key` are
+*references* into ai-planner — never copy a plan or slice into this database (D4).
 
 ### 4. Agents edit leased worktrees, not eve's sandbox (D3)
 Authored `bash`/`read`/`write`/`edit` tools act on a worktree leased with `awt get --lease`.
