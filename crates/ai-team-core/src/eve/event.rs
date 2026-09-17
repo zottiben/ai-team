@@ -108,13 +108,31 @@ impl StreamEvent {
                 .find_map(|k| usage.get(*k).and_then(serde_json::Value::as_i64))
                 .unwrap_or(0)
         };
+        // AI SDK v7 reports inputTokens as a total and its cache details as subsets.
+        // eve's older spellings reported the three input categories separately. The key
+        // names tell us which contract this payload uses.
+        let input = read(&["inputTokens", "promptTokens"]);
+        let cache_read = read(&[
+            "cacheReadTokens",
+            "cachedInputTokens",
+            "cacheReadInputTokens",
+        ]);
+        let cache_write = read(&[
+            "cacheWriteTokens",
+            "cacheCreationInputTokens",
+            "cacheWriteInputTokens",
+        ]);
+        let total_contract =
+            usage.get("cacheReadTokens").is_some() || usage.get("cacheWriteTokens").is_some();
         Some(Usage {
-            // eve has spelled these both ways across versions; accept either rather
-            // than silently recording zeros.
-            tokens_in: read(&["inputTokens", "promptTokens"]),
+            tokens_in: if total_contract {
+                input.saturating_sub(cache_read).saturating_sub(cache_write)
+            } else {
+                input
+            },
             tokens_out: read(&["outputTokens", "completionTokens"]),
-            cache_read: read(&["cachedInputTokens", "cacheReadInputTokens"]),
-            cache_write: read(&["cacheCreationInputTokens", "cacheWriteInputTokens"]),
+            cache_read,
+            cache_write,
         })
     }
 
@@ -334,6 +352,23 @@ mod tests {
         assert_eq!(usage.cache_write, 2_686);
         // The measured warm Claude step: 61k of it is cached and not billable.
         assert_eq!(usage.billable(), 1_200 + 400 + 2_686);
+    }
+
+    #[test]
+    fn ai_sdk_v7_usage_splits_cache_subsets_out_of_the_input_total() {
+        // A real claude-code/sonnet step from eve 0.58.1. Counting inputTokens as
+        // uncached here would charge the same 33k-token prefix twice.
+        let e = event(
+            r#"{"type":"step.completed","data":{"usage":{
+                 "inputTokens":33770,"outputTokens":72,
+                 "cacheReadTokens":33766,"cacheWriteTokens":0}}}"#,
+        );
+        let usage = e.usage().unwrap();
+        assert_eq!(usage.tokens_in, 4);
+        assert_eq!(usage.tokens_out, 72);
+        assert_eq!(usage.cache_read, 33_766);
+        assert_eq!(usage.cache_write, 0);
+        assert_eq!(usage.billable(), 76);
     }
 
     #[test]

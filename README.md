@@ -57,10 +57,13 @@ change routing: a transient outage must not silently send work to another accoun
 
 The four allowed paths are deliberately specific:
 
-- `claude` — the OAuthed Claude Code CLI; its eve bridge lands in M1-S6.
+- `claude` — the OAuthed Claude Code CLI, bridged into eve with only the seat's authored tools.
 - `openai` — eve's `chatgpt()` subscription broker, never its metered `openai()` helper.
 - `zai` — a GLM Coding Plan token in `AI_TEAM_ZAI_KEY`, sent only to the coding-plan URL.
 - `local` — host, port, and gateway key read from ai-local's own config.
+
+The supervisor removes inherited metered model keys and Claude cloud-routing switches
+before npm/eve starts; an exported shell variable cannot silently change one of these paths.
 
 `ait doctor` reports each as `allowed`, `denied`, or `unreachable`. The profile is checked
 again when every node is dispatched, including scheduled runs; hiding a denied provider

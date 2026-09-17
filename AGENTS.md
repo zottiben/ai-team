@@ -59,8 +59,8 @@ isn't covered, ask and record it with `aip decision add`.
 
 ## Hard rules
 
-Nine decisions are recorded in the plan (`aip decision ls`). These five are the ones an
-agent will otherwise get wrong, so they are repeated here.
+Thirteen decisions are recorded in the plan (`aip decision ls`). These seven are the ones
+an agent will otherwise get wrong, so they are repeated here.
 
 ### 1. Subscription-backed models only (D8)
 The entire point is to stop managing balances across several accounts, and the work machine
@@ -78,7 +78,9 @@ enforced **at dispatch**, not only in the UI picker — a scheduled unattended r
 able to reach a denied provider. `ait init` creates the local-only default. Its `fallback`
 array is a total ranking; a denied preference uses the first allowed, implemented provider
 and records a Note event. Do not fall back on a transient health failure: that would silently
-send work to a different account.
+send work to a different account. Generated npm/eve processes must also remove inherited
+metered credentials and cloud-Claude routing flags; not emitting `ANTHROPIC_API_KEY` is
+insufficient if the operator's shell already exported it.
 
 ### 2. One runtime: eve (D7)
 Every agent is an eve node. There is no second executor and no Pi. A Claude-subscription
@@ -87,7 +89,8 @@ agent is an eve node whose model is bridged:
 ```ts
 model: claudeCode('sonnet', {
   mcpServers: { eve: createAiSdkMcpServer('eve', tools) },
-  allowedTools: ['mcp__eve__*'],
+  allowedTools: ['mcp__eve__bash', 'mcp__eve__read_file'],
+  tools: [],              // disable Claude Code's own host tools
   settingSources: [],     // NOT undefined — undefined inherits the human's Claude config
 })
 ```
@@ -160,7 +163,9 @@ draining stdout first deadlocks the moment npm fills stderr.
 
 ### 7. Ingest eve's stream exactly once
 `event.eve_event_id` is eve's `meta.id` under a partial unique index, and ingest uses
-`INSERT OR IGNORE` — so a reconnect or a full rewind is free. Two traps that a real turn
+`INSERT OR IGNORE` — so a reconnect or a full rewind is free. Three traps that real turns
 exposed and fixtures did not: token and turn **counters** must only accumulate for rows
-that were genuinely new, and `node_run.stream_cursor` is `from_index + batch.len()`, never
-`cursor + batch.len()` (that is right for a resume and silently wrong for a rewind).
+that were genuinely new; `node_run.stream_cursor` is `from_index + batch.len()`, never
+`cursor + batch.len()` (that is right for a resume and silently wrong for a rewind); and AI
+SDK v7's `inputTokens` is a total whose `cacheReadTokens` / `cacheWriteTokens` are subsets,
+so subtract those subsets before storing the uncached input column.

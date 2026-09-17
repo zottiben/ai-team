@@ -22,6 +22,27 @@ use crate::error::{Error, Result};
 /// How long to wait for a started process to answer `/eve/v1/health`.
 const HEALTH_TIMEOUT: Duration = Duration::from_secs(120);
 
+/// Credential/routing switches that could turn a subscription-backed generated model
+/// into metered API traffic merely because the operator's shell exported one. Keep the
+/// rest of the environment (PATH, HOME, git/cloud credentials used by authored tools),
+/// and preserve Claude OAuth credentials: those are the permitted subscription path.
+const METERED_MODEL_ENV: &[&str] = &[
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_BASE_URL",
+    "OPENAI_API_KEY",
+    "AI_GATEWAY_API_KEY",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX",
+    "CLAUDE_CODE_USE_FOUNDRY",
+];
+
+fn remove_metered_environment(command: &mut Command) {
+    for key in METERED_MODEL_ENV {
+        command.env_remove(key);
+    }
+}
+
 /// The environment a generated project needs, assembled in one place so a call site
 /// cannot forget one and get a confusing failure three layers down.
 #[derive(Debug, Clone)]
@@ -68,6 +89,7 @@ where
     F: FnMut(ProgressLine) + Send,
 {
     let mut command = Command::new(program);
+    remove_metered_environment(&mut command);
     command
         .args(args)
         .current_dir(dir)
@@ -153,6 +175,7 @@ impl EveProcess {
         // terminates. This is available on both daily-use targets (macOS and Linux).
         #[cfg(unix)]
         command.process_group(0);
+        remove_metered_environment(&mut command);
         env.apply(&mut command);
 
         let child = command
@@ -362,6 +385,26 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(seen, ["/tmp secret k"]);
+    }
+
+    #[tokio::test]
+    async fn metered_model_credentials_never_reach_a_generated_process() {
+        let mut command = Command::new("sh");
+        for key in METERED_MODEL_ENV {
+            command.env(key, "must-not-leak");
+        }
+        // OAuth is the Claude subscription credential and must survive the filter.
+        command.env("CLAUDE_CODE_OAUTH_TOKEN", "subscription-ok");
+        remove_metered_environment(&mut command);
+        command.args([
+            "-c",
+            "test -z \"$ANTHROPIC_API_KEY$ANTHROPIC_AUTH_TOKEN$ANTHROPIC_BASE_URL\
+             $OPENAI_API_KEY$AI_GATEWAY_API_KEY$CLAUDE_CODE_USE_BEDROCK\
+             $CLAUDE_CODE_USE_VERTEX$CLAUDE_CODE_USE_FOUNDRY\" &&\
+             test \"$CLAUDE_CODE_OAUTH_TOKEN\" = subscription-ok",
+        ]);
+        let status = command.status().await.unwrap();
+        assert!(status.success(), "metered model environment leaked");
     }
 
     #[test]

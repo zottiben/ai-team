@@ -12,7 +12,8 @@ mod probe;
 mod profile;
 
 use ailocal::{non_empty_env, AilocalSettings};
-use probe::{implemented, probe, provider_default};
+pub(crate) use probe::provider_default;
+use probe::{implemented, probe};
 pub use probe::{ProviderState, ProviderStatus};
 pub use profile::{ensure_machine_profile, MachineProfile, DEFAULT_MACHINE_PROFILE};
 
@@ -92,7 +93,11 @@ impl ModelRegistry {
                 requested_model: agent.model.clone(),
                 provider: agent.provider,
                 model: agent.model.clone(),
-                context_window: agent.context_window,
+                context_window: Some(
+                    agent
+                        .context_window
+                        .unwrap_or_else(|| provider_default(agent.provider).1),
+                ),
                 fallback_reason: None,
             });
         }
@@ -261,6 +266,18 @@ mod tests {
     }
 
     #[test]
+    fn an_allowed_claude_preference_gets_the_registry_context_default() {
+        let registry = ModelRegistry::new(profile(
+            "claude=true\nopenai=false\nzai=false\nlocal=true",
+            "\"claude\", \"openai\", \"zai\", \"local\"",
+        ));
+        let mut requested = agent(Provider::Claude, "sonnet");
+        requested.context_window = None;
+        let selected = registry.resolve(&requested).unwrap();
+        assert_eq!(selected.context_window, Some(200_000));
+    }
+
+    #[test]
     fn a_denied_provider_falls_back_in_the_profiles_order() {
         let registry = ModelRegistry::new(profile(
             "claude=false\nopenai=true\nzai=false\nlocal=true",
@@ -279,13 +296,14 @@ mod tests {
     }
 
     #[test]
-    fn claude_is_not_used_as_a_fallback_before_its_bridge_exists() {
+    fn claude_is_available_as_a_fallback_now_that_its_bridge_exists() {
         let registry = ModelRegistry::new(profile(
             "claude=true\nopenai=false\nzai=false\nlocal=true",
             "\"claude\", \"openai\", \"zai\", \"local\"",
         ));
         let selected = registry.resolve(&agent(Provider::ZAi, "glm-4.6")).unwrap();
-        assert_eq!(selected.provider, Provider::Local);
+        assert_eq!(selected.provider, Provider::Claude);
+        assert_eq!(selected.model, "sonnet");
     }
 
     #[test]

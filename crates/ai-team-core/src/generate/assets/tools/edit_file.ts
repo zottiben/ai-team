@@ -9,18 +9,24 @@ import { z } from "zod";
 
 import { editWorktreeFile } from "../lib/tools.js";
 
-export default defineTool({
+const inputSchema = z.object({
+  path: z.string().min(1),
+  oldText: z.string().min(1),
+  newText: z.string(),
+  replaceAll: z.boolean().optional(),
+});
+
+export const bridgedTool = {
   description:
     "Replace an exact block of text in a file in the leased worktree. oldText must " +
     "match exactly and must be unique unless replaceAll is set.",
-  inputSchema: z.object({
-    path: z.string().min(1),
-    oldText: z.string().min(1),
-    newText: z.string(),
-    replaceAll: z.boolean().optional(),
-  }),
-  label: { start: ({ path }) => `edit ${path}` },
-  async execute(input) {
+  inputSchema,
+  async execute(input: z.infer<typeof inputSchema>) {
     return await editWorktreeFile(input);
   },
+};
+
+export default defineTool({
+  ...bridgedTool,
+  label: { start: ({ path }) => `edit ${path}` },
 });

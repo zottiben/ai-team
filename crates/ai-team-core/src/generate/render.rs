@@ -28,6 +28,9 @@ const EVE_VERSION: &str = "0.58.1";
 const AI_SDK_VERSION: &str = "^7.0.105";
 const ZOD_VERSION: &str = "^4.1.12";
 const OPENAI_COMPATIBLE_VERSION: &str = "^2.0.0";
+// Exact because this package owns the Claude Agent SDK version and its permission
+// semantics. A silent minor bump here can change what `tools: []` or canUseTool means.
+const CLAUDE_CODE_VERSION: &str = "4.3.1";
 
 pub(crate) fn project(
     team: &Team,
@@ -50,7 +53,15 @@ pub(crate) fn project(
         .copied()
         .expect("check_roster proved one exists");
 
-    files.push(file("package.json", package_json(team)));
+    files.push(file(
+        "package.json",
+        package_json(
+            team,
+            agents
+                .iter()
+                .any(|agent| agent.provider == crate::Provider::Claude),
+        ),
+    ));
     files.push(file("tsconfig.json", TSCONFIG.to_string()));
     files.push(file(".gitignore", GITIGNORE.to_string()));
     files.push(file("README.md", README.to_string()));
@@ -61,7 +72,7 @@ pub(crate) fn project(
     files.push(file("agent/lib/worktree.ts", WORKTREE_LIB.to_string()));
     files.push(file("agent/lib/tools.ts", TOOLS_LIB.to_string()));
 
-    let root_model = model_expression(root_agent, ailocal_base_url)?;
+    let root_model = model_expression(root_agent, ailocal_base_url);
     required_env.extend(root_model.env.iter().copied());
     files.push(file(
         "agent/agent.ts",
@@ -75,7 +86,7 @@ pub(crate) fn project(
 
     for agent in &subagents {
         let dir = PathBuf::from("agent/subagents").join(&agent.role);
-        let model = model_expression(agent, ailocal_base_url)?;
+        let model = model_expression(agent, ailocal_base_url);
         required_env.extend(model.env.iter().copied());
 
         files.push(file(
@@ -124,41 +135,33 @@ fn file(path: &str, contents: String) -> GeneratedFile {
 fn tool_files(dir: &Path, agent: &Agent, depth: usize) -> Vec<GeneratedFile> {
     let tools = dir.join("tools");
     let up = "../".repeat(depth);
-    let rewrite = |asset: &str| asset.replace("../lib/", &format!("{up}lib/"));
-
-    // Every seat reads, and every seat runs commands: a verifier that cannot run the
-    // project's gates cannot verify anything.
-    let mut files = vec![
-        GeneratedFile {
-            path: tools.join("bash.ts"),
-            contents: rewrite(TOOL_BASH),
-        },
-        GeneratedFile {
-            path: tools.join("read_file.ts"),
-            contents: rewrite(TOOL_READ),
-        },
-    ];
-
-    // A read-only seat simply does not get the editing tools. This is the difference
-    // between an instruction not to write and not having the capability.
-    //
-    // It is not a claim that such a seat cannot write a byte: `bash` can redirect, and
-    // running a gate writes to build directories by design. The guarantee is narrower
-    // and worth stating precisely - a checker cannot *edit source through its tools*.
-    if !agent.read_only {
-        files.push(GeneratedFile {
-            path: tools.join("write_file.ts"),
-            contents: rewrite(TOOL_WRITE),
-        });
-        files.push(GeneratedFile {
-            path: tools.join("edit_file.ts"),
-            contents: rewrite(TOOL_EDIT),
-        });
-    }
-    files
+    agent_tools(agent)
+        .into_iter()
+        .map(|(name, asset)| GeneratedFile {
+            path: tools.join(format!("{name}.ts")),
+            contents: asset.replace("../lib/", &format!("{up}lib/")),
+        })
+        .collect()
 }
 
-fn package_json(team: &Team) -> String {
+/// Every seat reads and runs commands: a verifier that cannot run the project's gates
+/// cannot verify anything. A read-only seat gets no source-editing definitions at all.
+/// Keep this one list for both eve's discovery files and Claude's explicit MCP bridge so
+/// a tool can never exist on one route but not the other.
+fn agent_tools(agent: &Agent) -> Vec<(&'static str, &'static str)> {
+    let mut tools = vec![("bash", TOOL_BASH), ("read_file", TOOL_READ)];
+    if !agent.read_only {
+        tools.extend([("write_file", TOOL_WRITE), ("edit_file", TOOL_EDIT)]);
+    }
+    tools
+}
+
+fn package_json(team: &Team, includes_claude: bool) -> String {
+    let claude = if includes_claude {
+        format!("    \"ai-sdk-provider-claude-code\": \"{CLAUDE_CODE_VERSION}\",\n    ")
+    } else {
+        String::new()
+    };
     format!(
         "{{\n  \
          \"name\": \"ai-team-{}\",\n  \
@@ -173,7 +176,7 @@ fn package_json(team: &Team) -> String {
          }},\n  \
          \"dependencies\": {{\n    \
          \"@ai-sdk/openai-compatible\": \"{OPENAI_COMPATIBLE_VERSION}\",\n    \
-         \"ai\": \"{AI_SDK_VERSION}\",\n    \
+         {claude}\"ai\": \"{AI_SDK_VERSION}\",\n    \
          \"eve\": \"{EVE_VERSION}\",\n    \
          \"zod\": \"{ZOD_VERSION}\"\n  \
          }},\n  \
@@ -186,13 +189,58 @@ fn package_json(team: &Team) -> String {
     )
 }
 
+fn model_setup(agent: &Agent, model: &crate::generate::ModelExpression) -> (String, String) {
+    let mut imports = vec!["import { defineAgent } from \"eve\";".to_string()];
+    imports.extend(model.imports.iter().cloned());
+    if !model.bridge_tools {
+        return (imports.join("\n"), String::new());
+    }
+
+    let tool_names: Vec<_> = agent_tools(agent)
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect();
+    imports.extend(
+        tool_names
+            .iter()
+            .map(|name| format!("import {{ bridgedTool as {name} }} from \"./tools/{name}.js\";")),
+    );
+    let tools = tool_names.join(", ");
+    let allowed = tool_names
+        .iter()
+        .map(|name| format!("  \"mcp__eve__{name}\","))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let setup = format!(
+        "// Claude Code owns an inner agent loop, so eve's normal AI SDK tool path does\n\
+         // not reach it. Bridge only this seat's authored worktree tools in-process.\n\
+         const bridgedTools = {{ {tools} }};\n\
+         const allowedClaudeTools = new Set([\n{allowed}\n]);\n\
+         const claudeSettings = {{\n  \
+         mcpServers: {{ eve: createAiSdkMcpServer(\"eve\", bridgedTools) }},\n  \
+         allowedTools: [...allowedClaudeTools],\n  \
+         // Disable Claude Code's host Bash/Read/Write/Edit. The MCP tools above are\n  \
+         // the only route to the leased worktree.\n  \
+         tools: [],\n  \
+         // An omitted value inherits the human's CLAUDE.md, settings and MCPs.\n  \
+         settingSources: [],\n  \
+         // The callback is the Agent SDK approval boundary. Current generated tools\n  \
+         // are pre-approved above; anything else still fails closed here.\n  \
+         canUseTool: async (toolName: string) =>\n    \
+         allowedClaudeTools.has(toolName)\n      \
+         ? {{ behavior: \"allow\" as const }}\n      \
+         : {{\n          behavior: \"deny\" as const,\n          message: `Tool ${{toolName}} is not enabled for this ai-team seat`,\n        }},\n\
+         }};\n"
+    );
+    (imports.join("\n"), setup)
+}
+
 fn root_agent_ts(
     agent: &Agent,
     model: &crate::generate::ModelExpression,
     subagents: &[&Agent],
 ) -> String {
-    let mut imports = vec!["import { defineAgent } from \"eve\";".to_string()];
-    imports.extend(model.imports.iter().cloned());
+    let (imports, model_setup) = model_setup(agent, model);
 
     let roster = subagents
         .iter()
@@ -208,6 +256,7 @@ fn root_agent_ts(
          // Its subagents, one per seat on the team:\n\
          {roster}\n\n\
          {imports}\n\n\
+         {model_setup}\
          export default defineAgent({{\n  \
          model: {model_expr},\n  \
          reasoning: {reasoning:?},\n  \
@@ -222,7 +271,8 @@ fn root_agent_ts(
          }});\n",
         role = agent.role,
         roster = roster,
-        imports = imports.join("\n"),
+        imports = imports,
+        model_setup = model_setup,
         model_expr = model.expression,
         reasoning = reasoning_literal(agent),
         context = context_window(agent),
@@ -230,12 +280,12 @@ fn root_agent_ts(
 }
 
 fn subagent_ts(agent: &Agent, model: &crate::generate::ModelExpression) -> String {
-    let mut imports = vec!["import { defineAgent } from \"eve\";".to_string()];
-    imports.extend(model.imports.iter().cloned());
+    let (imports, model_setup) = model_setup(agent, model);
 
     format!(
         "// GENERATED by ai-team. Do not edit: change the team rows and regenerate.\n\n\
          {imports}\n\n\
+         {model_setup}\
          export default defineAgent({{\n  \
          // Required on a declared subagent: this is what the parent routes on.\n  \
          description: {description:?},\n  \
@@ -244,7 +294,8 @@ fn subagent_ts(agent: &Agent, model: &crate::generate::ModelExpression) -> Strin
          modelContextWindowTokens: {context},\n  \
          defaultTools: false,\n\
          }});\n",
-        imports = imports.join("\n"),
+        imports = imports,
+        model_setup = model_setup,
         description = one_line(&agent.purpose),
         model_expr = model.expression,
         reasoning = reasoning_literal(agent),

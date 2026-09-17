@@ -21,11 +21,14 @@ ait agents generate --project <slug>   # rewrite this directory from the rows
 
 `agent/tools/bash.ts`, `read_file.ts` and `write_file.ts` deliberately occupy the same
 slots as eve's sandbox defaults, replacing them. Agents edit the worktree ai-team leased
-for them, not eve's sandbox (D3).
+for them, not eve's sandbox (D3). On a Claude-subscription seat, `agent.ts` also hands the
+same implementations to Claude Code as an in-process MCP server; Claude Code's own host
+filesystem and shell tools are disabled.
 
 The worktree is `$AI_TEAM_WORKTREE`, set by ai-team on this process. One eve process is
 started per leased worktree (D10), so isolation is an OS fact rather than a check.
 
 There is no `agent/connections/` directory, deliberately. eve's MCP connections are
 HTTP-only, and ai-planner and file-sql both speak MCP over stdio - so they are reached
-another way, wired up in M2-S8.
+another way, wired up in M2-S8. Claude seats receive those external MCPs directly through
+the Claude Agent SDK rather than routing them through eve.

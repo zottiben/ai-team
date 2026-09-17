@@ -5,7 +5,6 @@
 //! `openai()` (a metered API key) from the same module. The spelling here is a security
 //! boundary, not a convenience.
 
-use crate::error::{Error, Result};
 use crate::model::{Agent, Provider};
 
 /// What an agent's model needs in the generated `agent.ts`.
@@ -17,38 +16,37 @@ pub struct ModelExpression {
     pub expression: String,
     /// Environment variables the process must carry for this to resolve.
     pub env: Vec<&'static str>,
+    /// Claude Code runs its own loop, so its model also needs the authored tools handed
+    /// to it as an in-process MCP server. Other AI SDK providers use eve's normal path.
+    pub bridge_tools: bool,
 }
 
 /// z.ai's GLM Coding Plan, openai-compatible and flat-rate.
 const ZAI_BASE_URL: &str = "https://api.z.ai/api/coding/paas/v4";
 
-pub(super) fn model_expression(agent: &Agent, ailocal_base_url: &str) -> Result<ModelExpression> {
+pub(super) fn model_expression(agent: &Agent, ailocal_base_url: &str) -> ModelExpression {
     match agent.provider {
-        Provider::Local => Ok(openai_compatible(
+        Provider::Local => openai_compatible(
             "ailocal",
             ailocal_base_url,
             "AI_TEAM_AILOCAL_KEY",
             &agent.model,
-        )),
-        Provider::ZAi => Ok(openai_compatible(
-            "zai",
-            ZAI_BASE_URL,
-            "AI_TEAM_ZAI_KEY",
-            &agent.model,
-        )),
-        Provider::OpenAi => Ok(ModelExpression {
+        ),
+        Provider::ZAi => openai_compatible("zai", ZAI_BASE_URL, "AI_TEAM_ZAI_KEY", &agent.model),
+        Provider::OpenAi => ModelExpression {
             imports: vec!["import { chatgpt } from \"eve/models/openai\";".to_string()],
             expression: format!("chatgpt({:?})", agent.model),
             env: Vec::new(),
-        }),
-        // The Claude subscription is real but its tool bridge is the next slice.
-        // Refusing names it rather than shipping a model that reaches no authored tool.
-        Provider::Claude => Err(Error::invalid(format!(
-            "agent {:?} is on the Claude subscription, which reaches eve through the \
-             createAiSdkMcpServer bridge - that is M1-S6. Until then, point it at `local` \
-             or `zai`.",
-            agent.role
-        ))),
+            bridge_tools: false,
+        },
+        Provider::Claude => ModelExpression {
+            imports: vec!["import { claudeCode, createAiSdkMcpServer } from \
+                 \"ai-sdk-provider-claude-code\";"
+                .to_string()],
+            expression: format!("claudeCode({:?}, claudeSettings)", agent.model),
+            env: Vec::new(),
+            bridge_tools: true,
+        },
     }
 }
 
@@ -69,21 +67,20 @@ fn openai_compatible(
              apiKey: process.env.{key_env} ?? \"\",\n  }})({model:?})"
         ),
         env: vec![key_env],
+        bridge_tools: false,
     }
 }
 
-/// What to tell eve when nobody has established the model's real context window.
+/// The context window to emit for an agent.
 ///
 /// eve refuses to compile compaction for a model it cannot size, and it can only size AI
-/// Gateway model IDs - which D8 guarantees we never use. So a number is always required.
-/// 32k is deliberately conservative: compacting sooner than necessary costs a summary
-/// call, while overflowing the window fails the turn. Explicit team values survive an
-/// allowed selection; a cross-provider fallback uses this safe floor.
-pub(super) const FALLBACK_CONTEXT_WINDOW: i64 = 32_768;
-
-/// The context window to emit for an agent.
+/// Gateway model IDs - which D8 guarantees we never use. Explicit team metadata wins;
+/// otherwise the subscription registry supplies the selected provider's conservative
+/// default (200k for Claude, 32k for the other current integrations).
 pub(super) fn context_window(agent: &Agent) -> i64 {
-    agent.context_window.unwrap_or(FALLBACK_CONTEXT_WINDOW)
+    agent
+        .context_window
+        .unwrap_or_else(|| crate::machine::provider_default(agent.provider).1)
 }
 
 /// eve's own spelling of reasoning effort. `Reasoning` mirrors it exactly, so this is a
@@ -127,8 +124,7 @@ mod tests {
         let expr = model_expression(
             &agent_on(Provider::Local, "auto"),
             "http://127.0.0.1:9191/v1",
-        )
-        .unwrap();
+        );
         assert!(expr.expression.contains("127.0.0.1:9191"));
         assert!(expr.expression.contains("\"auto\""));
         assert_eq!(expr.env, ["AI_TEAM_AILOCAL_KEY"]);
@@ -139,8 +135,7 @@ mod tests {
         let expr = model_expression(
             &agent_on(Provider::ZAi, "glm-4.6"),
             "http://127.0.0.1:8081/v1",
-        )
-        .unwrap();
+        );
         assert!(expr.expression.contains("api.z.ai/api/coding/paas/v4"));
         assert!(expr.expression.contains("\"glm-4.6\""));
     }
@@ -149,9 +144,13 @@ mod tests {
     fn no_generated_expression_ever_names_a_metered_key() {
         // The regression this guards: someone "fixes" an unsupported provider by
         // reaching for eve's anthropic()/openai() helpers, which read these.
-        for provider in [Provider::OpenAi, Provider::Local, Provider::ZAi] {
-            let expr =
-                model_expression(&agent_on(provider, "m"), "http://127.0.0.1:8081/v1").unwrap();
+        for provider in [
+            Provider::Claude,
+            Provider::OpenAi,
+            Provider::Local,
+            Provider::ZAi,
+        ] {
+            let expr = model_expression(&agent_on(provider, "m"), "http://127.0.0.1:8081/v1");
             let rendered = format!("{} {}", expr.imports.join(" "), expr.expression);
             assert!(!rendered.contains("OPENAI_API_KEY"), "{rendered}");
             assert!(!rendered.contains("ANTHROPIC_API_KEY"), "{rendered}");
@@ -164,18 +163,23 @@ mod tests {
         let expr = model_expression(
             &agent_on(Provider::OpenAi, "gpt-5.6-luna-fast"),
             "http://127.0.0.1:8081/v1",
-        )
-        .unwrap();
+        );
         assert!(expr.imports[0].contains("chatgpt"));
         assert!(expr.expression.starts_with("chatgpt("));
         assert!(expr.env.is_empty());
+        assert!(!expr.bridge_tools);
+    }
 
-        let claude = model_expression(
+    #[test]
+    fn claude_is_the_subscription_provider_with_the_explicit_tool_bridge() {
+        let expr = model_expression(
             &agent_on(Provider::Claude, "sonnet"),
             "http://127.0.0.1:8081/v1",
-        )
-        .unwrap_err();
-        assert!(claude.to_string().contains("M1-S6"), "{claude}");
+        );
+        assert!(expr.imports[0].contains("ai-sdk-provider-claude-code"));
+        assert_eq!(expr.expression, "claudeCode(\"sonnet\", claudeSettings)");
+        assert!(expr.env.is_empty());
+        assert!(expr.bridge_tools);
     }
 
     #[test]
@@ -184,8 +188,7 @@ mod tests {
         let expr = model_expression(
             &agent_on(Provider::Local, "we\"ird"),
             "http://127.0.0.1:8081/v1",
-        )
-        .unwrap();
+        );
         assert!(
             expr.expression.contains(r#""we\"ird""#),
             "{}",

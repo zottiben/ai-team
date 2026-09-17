@@ -33,14 +33,12 @@ pub struct ProviderStatus {
     pub detail: String,
 }
 
-/// Claude becomes a dispatchable eve model in M1-S6. It remains in the registry now so
-/// the profile format does not change one slice later, but a denied provider cannot fall
-/// back to an implementation that does not exist yet.
-pub(super) fn implemented(provider: Provider) -> bool {
-    provider != Provider::Claude
+/// Every provider in D8's registry now has a generated execution path.
+pub(super) fn implemented(_provider: Provider) -> bool {
+    true
 }
 
-pub(super) fn provider_default(provider: Provider) -> (&'static str, i64) {
+pub(crate) fn provider_default(provider: Provider) -> (&'static str, i64) {
     match provider {
         Provider::Claude => ("sonnet", 200_000),
         Provider::OpenAi => ("gpt-5.6-luna-fast", 32_768),
@@ -86,7 +84,7 @@ fn probe_claude() -> std::result::Result<String, String> {
     if status.get("loggedIn").and_then(serde_json::Value::as_bool) != Some(true) {
         return Err("Claude Code is not signed in".into());
     }
-    Err("Claude subscription is authenticated, but its eve bridge lands in M1-S6".into())
+    Ok("Claude subscription authenticated through Claude Code".into())
 }
 
 fn probe_chatgpt() -> std::result::Result<String, String> {

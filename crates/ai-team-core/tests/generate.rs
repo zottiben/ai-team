@@ -67,6 +67,10 @@ fn the_authored_tools_replace_eves_sandbox_defaults_at_the_same_slots() {
             "{slot} must call the worktree implementation"
         );
         assert!(
+            file.contents.contains("export const bridgedTool"),
+            "{slot} must expose the same implementation to Claude's MCP bridge"
+        );
+        assert!(
             !file.contents.contains("eve/tools/bash"),
             "{slot} must not re-export eve's sandbox tool"
         );
@@ -182,26 +186,89 @@ fn no_connections_are_generated_because_none_can_be() {
 }
 
 #[test]
-fn a_seat_on_an_unbuilt_provider_refuses_to_generate() {
-    // D11: better a loud refusal naming the slice than a project that looks wired and
-    // reaches the model with no tools, or on a metered key.
+fn a_claude_seat_bridges_only_its_authored_tools_into_the_subscription() {
     let (mut store, _, team) = seeded();
     let backend = store
         .agents(team)
         .unwrap()
         .into_iter()
-        .find(|a| a.role == "backend")
+        .find(|agent| agent.role == "backend")
         .unwrap();
     store
         .set_agent_model(backend.id, Provider::Claude, "sonnet")
         .unwrap();
 
-    let err = store
-        .generate_project(team, "/tmp/unused")
-        .unwrap_err()
-        .to_string();
-    assert!(err.contains("M1-S6"), "{err}");
-    assert!(err.contains("backend"), "{err}");
+    let generated = store.generate_project(team, "/tmp/unused").unwrap();
+    let agent = &generated
+        .file("agent/subagents/backend/agent.ts")
+        .unwrap()
+        .contents;
+    assert!(
+        agent.contains("claudeCode(\"sonnet\", claudeSettings)"),
+        "{agent}"
+    );
+    assert!(
+        agent.contains("modelContextWindowTokens: 200000"),
+        "{agent}"
+    );
+    assert!(
+        agent.contains("createAiSdkMcpServer(\"eve\", bridgedTools)"),
+        "{agent}"
+    );
+    assert!(agent.contains("settingSources: []"), "{agent}");
+    assert!(agent.contains("tools: []"), "{agent}");
+    assert!(agent.contains("canUseTool:"), "{agent}");
+    assert!(agent.contains("behavior: \"deny\""), "{agent}");
+    for tool in ["bash", "read_file", "write_file", "edit_file"] {
+        assert!(agent.contains(&format!("mcp__eve__{tool}")), "{agent}");
+        assert!(agent.contains(&format!("bridgedTool as {tool}")), "{agent}");
+    }
+    assert!(!agent.contains("ANTHROPIC_API_KEY"), "{agent}");
+
+    let package = &generated.file("package.json").unwrap().contents;
+    assert!(package.contains("ai-sdk-provider-claude-code"), "{package}");
+    assert!(!generated.required_env.contains(&"ANTHROPIC_API_KEY"));
+}
+
+#[test]
+fn a_read_only_claude_seat_cannot_recover_write_tools_through_the_bridge() {
+    let (mut store, _, team) = seeded();
+    let reviewer = store
+        .agents(team)
+        .unwrap()
+        .into_iter()
+        .find(|agent| agent.role == "reviewer")
+        .unwrap();
+    store
+        .set_agent_model(reviewer.id, Provider::Claude, "sonnet")
+        .unwrap();
+
+    let generated = store.generate_project(team, "/tmp/unused").unwrap();
+    let agent = &generated
+        .file("agent/subagents/reviewer/agent.ts")
+        .unwrap()
+        .contents;
+    for tool in ["bash", "read_file"] {
+        assert!(agent.contains(&format!("mcp__eve__{tool}")), "{agent}");
+    }
+    for tool in ["write_file", "edit_file"] {
+        assert!(!agent.contains(&format!("mcp__eve__{tool}")), "{agent}");
+        assert!(
+            !agent.contains(&format!("bridgedTool as {tool}")),
+            "{agent}"
+        );
+    }
+}
+
+#[test]
+fn a_team_without_claude_does_not_install_the_bridge_provider() {
+    let (store, _, team) = seeded();
+    let generated = store.generate_project(team, "/tmp/unused").unwrap();
+    let package = &generated.file("package.json").unwrap().contents;
+    assert!(
+        !package.contains("ai-sdk-provider-claude-code"),
+        "{package}"
+    );
 }
 
 #[test]

@@ -8,23 +8,31 @@ import { z } from "zod";
 
 import { runBash } from "../lib/tools.js";
 
-export default defineTool({
+const inputSchema = z.object({
+  command: z.string().min(1).describe("The shell command to run, as you would type it."),
+  timeoutMs: z
+    .number()
+    .int()
+    .optional()
+    .describe("Give up after this long. Defaults to 120000, capped at 600000."),
+});
+
+// Claude Code runs its own inner loop, so agent.ts imports this structural AI SDK tool
+// and gives it to an in-process MCP server. eve discovers the default export below.
+export const bridgedTool = {
   description:
     "Run a shell command in the worktree this agent has been leased. The working " +
     "directory is always the worktree root; paths outside it are not reachable.",
-  inputSchema: z.object({
-    command: z.string().min(1).describe("The shell command to run, as you would type it."),
-    timeoutMs: z
-      .number()
-      .int()
-      .optional()
-      .describe("Give up after this long. Defaults to 120000, capped at 600000."),
-  }),
+  inputSchema,
+  async execute(input: z.infer<typeof inputSchema>) {
+    return await runBash(input);
+  },
+};
+
+export default defineTool({
+  ...bridgedTool,
   label: {
     start: ({ command }) => `bash: ${command.split("\n")[0]?.slice(0, 80) ?? command}`,
-  },
-  async execute(input) {
-    return await runBash(input);
   },
   toModelOutput(output) {
     // The model needs the outcome and the text, not the cwd it cannot change.

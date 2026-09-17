@@ -7,17 +7,23 @@ import { z } from "zod";
 
 import { readWorktreeFile } from "../lib/tools.js";
 
-export default defineTool({
+const inputSchema = z.object({
+  path: z.string().min(1),
+  offset: z.number().int().min(0).optional().describe("First line to return, 0-based."),
+  limit: z.number().int().min(1).optional().describe("How many lines to return."),
+});
+
+export const bridgedTool = {
   description:
     "Read a text file from the leased worktree, with line numbers. Paths are relative " +
     "to the worktree root.",
-  inputSchema: z.object({
-    path: z.string().min(1),
-    offset: z.number().int().min(0).optional().describe("First line to return, 0-based."),
-    limit: z.number().int().min(1).optional().describe("How many lines to return."),
-  }),
-  label: { start: ({ path }) => `read ${path}` },
-  async execute(input) {
+  inputSchema,
+  async execute(input: z.infer<typeof inputSchema>) {
     return await readWorktreeFile(input);
   },
+};
+
+export default defineTool({
+  ...bridgedTool,
+  label: { start: ({ path }) => `read ${path}` },
 });
