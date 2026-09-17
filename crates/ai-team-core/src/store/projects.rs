@@ -1,5 +1,7 @@
 //! Projects and the repos they touch.
 
+use std::path::{Path, PathBuf};
+
 use rusqlite::{params, OptionalExtension, Row};
 
 use crate::error::{Error, Result};
@@ -118,6 +120,37 @@ impl Store {
                 ))
             }
         }
+    }
+
+    /// The project whose checkout contains `path` - how a bare `ait team show` knows
+    /// what you mean while you are standing in a repo.
+    ///
+    /// Paths are compared after resolving symlinks, because on macOS a worktree under
+    /// `/tmp` or `/var` really lives in `/private/...` and the two spellings would
+    /// otherwise never match (D12). A recorded path that no longer exists cannot be
+    /// resolved, so it is compared as written rather than dropped.
+    pub fn project_at(&self, path: &Path) -> Result<Option<Project>> {
+        let needle = real_path(path);
+        let mut best: Option<(usize, Project)> = None;
+
+        for project in self.projects()? {
+            for repo in self.project_repos(project.id)? {
+                let Some(main_path) = repo.main_path else {
+                    continue;
+                };
+                let root = real_path(Path::new(&main_path));
+                if !needle.starts_with(&root) {
+                    continue;
+                }
+                // Nested checkouts are legal, so the longest matching root wins - the
+                // innermost project is the one you are actually working in.
+                let depth = root.components().count();
+                if best.as_ref().is_none_or(|(best, _)| depth > *best) {
+                    best = Some((depth, project.clone()));
+                }
+            }
+        }
+        Ok(best.map(|(_, project)| project))
     }
 
     pub fn projects(&self) -> Result<Vec<Project>> {
@@ -297,6 +330,12 @@ impl Store {
 const PROJECT_SELECT: &str = "SELECT id, slug, name, kind, status, summary, brief_md, source, \
      source_key, source_url, team_id, rev, created_at, updated_at FROM project";
 
+/// Resolve symlinks so two spellings of one directory compare equal. A path that does
+/// not exist cannot be resolved and is returned as written.
+fn real_path(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
 fn project_from_row(r: &Row<'_>) -> rusqlite::Result<Project> {
     Ok(Project {
         id: r.get(0)?,
@@ -401,6 +440,70 @@ mod tests {
             s.find_project("nope"),
             Err(Error::NoSuchProject(_))
         ));
+    }
+
+    /// Runs on both CI legs on purpose: on macOS a `tempdir()` under `/var/folders`
+    /// resolves to `/private/var/folders`, so a comparison that skipped `canonicalize`
+    /// would pass here on Linux and find nothing on the primary platform (D12).
+    #[test]
+    fn the_checkout_you_are_standing_in_names_the_project() {
+        let mut s = store();
+        let outer = tempfile::tempdir().unwrap();
+        let inner = outer.path().join("vendor/inner");
+        std::fs::create_dir_all(inner.join("src")).unwrap();
+
+        let widget = s
+            .create_project(NewProject {
+                name: "Widget".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        s.attach_repo(
+            widget.id,
+            NewRepo {
+                main_path: Some(outer.path().to_string_lossy().into_owned()),
+                name: Some("widget".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            s.project_at(outer.path()).unwrap().map(|p| p.id),
+            Some(widget.id)
+        );
+        // A subdirectory of the checkout is still the checkout.
+        assert_eq!(
+            s.project_at(&inner.join("src")).unwrap().map(|p| p.id),
+            Some(widget.id)
+        );
+
+        // A nested checkout wins over the one containing it: it is the project you are
+        // actually working in.
+        let nested = s
+            .create_project(NewProject {
+                name: "Inner".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        s.attach_repo(
+            nested.id,
+            NewRepo {
+                main_path: Some(inner.to_string_lossy().into_owned()),
+                name: Some("inner".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            s.project_at(&inner.join("src")).unwrap().map(|p| p.id),
+            Some(nested.id)
+        );
+
+        // A sibling directory is nobody's checkout, and guessing would be worse than
+        // asking for --project.
+        let elsewhere = tempfile::tempdir().unwrap();
+        assert!(s.project_at(elsewhere.path()).unwrap().is_none());
     }
 
     #[test]

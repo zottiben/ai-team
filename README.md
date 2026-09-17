@@ -33,6 +33,26 @@ ait doctor    # paths, provider policy/reachability, and the embedded frontend
 ait ui        # open the window in a browser
 ```
 
+### The team
+
+`ait init` seeds six seats - an orchestrator, a planner, two makers and two checkers.
+The team is rows in the database, and the eve project under `.ai-team/agents/` is
+generated from them, so this is where a team is actually changed:
+
+```sh
+ait team show                                  # guardrails and every seat
+ait agents ls
+ait agents edit backend --model glm-4.6 --provider zai --reasoning high
+ait agents add --role release-manager --purpose 'Cuts releases.' --zone 'CHANGELOG.md'
+ait agents tools backend --deny bash --note 'the verifier runs the gates'
+ait team clone --from widget-service --to gadget-service
+```
+
+`--project` is optional: the checkout you are standing in decides. A seat owns paths (its
+zone), and the seat that owns a path is the one the orchestrator dispatches it to. A
+`--read-only` seat is generated with no editing tools at all rather than merely being
+asked not to write.
+
 ### Machine provider policy
 
 Team rows are portable preferences; `~/.config/ai-team/machine.toml` is the permission

@@ -437,6 +437,59 @@ fn the_instructions_tell_each_seat_what_it_owns() {
 }
 
 #[test]
+fn a_custom_prompt_is_rendered_into_the_seats_instructions() {
+    let (mut store, _, team) = seeded();
+    let backend = store
+        .agents(team)
+        .unwrap()
+        .into_iter()
+        .find(|agent| agent.role == "backend")
+        .unwrap();
+    let mut config = ai_team_core::NewAgent::from(&backend);
+    config.prompt_preset = None;
+    config.prompt_md = Some("Preserve wire compatibility, even when the schema changes.".into());
+    store.update_agent(backend.id, config).unwrap();
+
+    let generated = store.generate_project(team, "/tmp/unused").unwrap();
+    let instructions = &generated
+        .file("agent/subagents/backend/instructions.md")
+        .unwrap()
+        .contents;
+    assert!(instructions.contains("## Custom instructions"));
+    assert!(instructions.contains("Preserve wire compatibility"));
+}
+
+#[test]
+fn a_fallback_prompt_is_not_printed_twice() {
+    // A seat added without a preset gets its purpose as its prompt so it is never left
+    // with no instructions. Rendering it under its own heading as well would just spend
+    // the model's attention on a second copy of the sentence above it.
+    let (mut store, _, team) = seeded();
+    let backend = store
+        .agents(team)
+        .unwrap()
+        .into_iter()
+        .find(|agent| agent.role == "backend")
+        .unwrap();
+    let mut config = ai_team_core::NewAgent::from(&backend);
+    config.purpose = "Owns the server.".into();
+    config.prompt_preset = None;
+    config.prompt_md = Some("Owns the server.".into());
+    store.update_agent(backend.id, config).unwrap();
+
+    let generated = store.generate_project(team, "/tmp/unused").unwrap();
+    let instructions = &generated
+        .file("agent/subagents/backend/instructions.md")
+        .unwrap()
+        .contents;
+    assert!(
+        !instructions.contains("## Custom instructions"),
+        "{instructions}"
+    );
+    assert_eq!(instructions.matches("Owns the server.").count(), 1);
+}
+
+#[test]
 fn writing_replaces_the_tree_but_keeps_what_npm_and_eve_own() {
     // Regenerating must not cost a reinstall, and must not leave a stale seat behind.
     let dir = tempfile::tempdir().unwrap();

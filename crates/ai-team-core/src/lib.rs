@@ -34,7 +34,7 @@ pub use model::{
     NewProject, NewReminder, NewRepo, NodeRun, NodeStatus, OnFailure, Project, ProjectKind,
     ProjectRepo, ProjectSource, ProjectStatus, Provider, Reasoning, Recur, Reminder, ReminderKind,
     ReminderStatus, Review, ReviewComment, ReviewStatus, Run, RunStatus, RunTrigger, Team,
-    ToolEffect, Usage,
+    ToolEffect, ToolPolicy, Usage,
 };
 pub use paths::{data_dir, default_db_path, ensure_data_dir, machine_profile_path, HOME_ENV};
 pub use roles::{preset, RolePreset, DEFAULT_LOCAL_MODEL, DEFAULT_ROSTER};

@@ -5,7 +5,7 @@
 
 use clap::{Parser, Subcommand};
 
-use ai_team_core::{ProjectKind, Provider};
+use ai_team_core::{OnFailure, ProjectKind, Provider, Reasoning};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -29,6 +29,9 @@ pub(crate) enum Command {
     /// Inspect the database directly.
     #[command(subcommand)]
     Db(DbCommand),
+    /// Configure the team: its seats, their models, zones and tool rules.
+    #[command(subcommand)]
+    Team(TeamCommand),
     /// Generate the eve project from the team rows.
     #[command(subcommand)]
     Agents(AgentsCommand),
@@ -75,6 +78,86 @@ pub(crate) struct RunArgs {
 }
 
 #[derive(Debug, Subcommand)]
+pub(crate) enum TeamCommand {
+    /// List the teams, and the projects running them.
+    Ls,
+    /// Show one team: its guardrails and every seat on it.
+    Show {
+        /// A project, or a team's own slug. Defaults to the current directory's project.
+        team: Option<String>,
+    },
+    /// Change a team's name, description or guardrails.
+    Edit(TeamEditArgs),
+    /// Copy a team, its seats and their tool rules onto another project.
+    Clone {
+        /// The team to copy: a project running it, or a template's slug.
+        #[arg(long)]
+        from: String,
+        /// The project to put the copy on. It becomes that project's team.
+        #[arg(long)]
+        to: String,
+        /// What to call it. Defaults to the destination project's name.
+        #[arg(long)]
+        name: Option<String>,
+        /// Delete the team the destination was running instead of leaving it behind.
+        #[arg(long)]
+        replace: bool,
+    },
+    /// Delete a team and its seats. The project it ran keeps its runs and its history.
+    Rm {
+        /// A project, or a team's own slug.
+        team: String,
+        /// Required: this removes every seat on the team.
+        #[arg(long)]
+        yes: bool,
+    },
+}
+
+#[derive(Debug, clap::Args)]
+pub(crate) struct TeamEditArgs {
+    /// A project, or a team's own slug. Defaults to the current directory's project.
+    pub(crate) team: Option<String>,
+
+    #[arg(long)]
+    pub(crate) name: Option<String>,
+
+    #[arg(long)]
+    pub(crate) description: Option<String>,
+
+    /// How many seats may work at once.
+    #[arg(long)]
+    pub(crate) parallel_width: Option<i64>,
+
+    /// Token ceiling for a whole run. 0 removes it.
+    #[arg(long)]
+    pub(crate) budget_tokens_run: Option<i64>,
+
+    /// Token ceiling for one seat's turn. 0 removes it.
+    #[arg(long)]
+    pub(crate) budget_tokens_node: Option<i64>,
+
+    /// Wall-clock ceiling for a whole run, in seconds. 0 removes it.
+    #[arg(long)]
+    pub(crate) budget_seconds_run: Option<i64>,
+
+    /// Wall-clock ceiling for one seat's turn, in seconds. 0 removes it.
+    #[arg(long)]
+    pub(crate) budget_seconds_node: Option<i64>,
+
+    /// How many model turns one seat may take. 0 removes the cap.
+    #[arg(long)]
+    pub(crate) max_turns_node: Option<i64>,
+
+    /// How many times a failed seat may be repaired before `on-failure` applies.
+    #[arg(long)]
+    pub(crate) max_repairs: Option<i64>,
+
+    /// One of: retry, escalate, abort_branch.
+    #[arg(long, value_parser = parse_on_failure)]
+    pub(crate) on_failure: Option<OnFailure>,
+}
+
+#[derive(Debug, Subcommand)]
 pub(crate) enum AgentsCommand {
     /// Rewrite the generated eve project from the current team rows.
     Generate {
@@ -90,7 +173,47 @@ pub(crate) enum AgentsCommand {
         #[arg(long, short)]
         project: String,
     },
-    /// Point one seat at a different model. Full team editing is M2-S7.
+    /// List the seats on a project's team.
+    Ls {
+        /// Which project. Slug, id, or part of the name.
+        #[arg(long, short)]
+        project: Option<String>,
+    },
+    /// Show one seat in full: model, zone, prompt and tool rules.
+    Show {
+        #[arg(long, short)]
+        project: Option<String>,
+        /// Which seat, by role.
+        role: String,
+    },
+    /// Add a seat to the team.
+    Add(AgentAddArgs),
+    /// Change a seat. Only the flags you pass are touched.
+    Edit(AgentEditArgs),
+    /// Remove a seat. Its finished runs keep the role they recorded.
+    Rm {
+        #[arg(long, short)]
+        project: Option<String>,
+        role: String,
+        /// Required: a removed seat cannot be undone.
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Take a seat out of the roster without deleting it.
+    Disable {
+        #[arg(long, short)]
+        project: Option<String>,
+        role: String,
+    },
+    /// Put a disabled seat back.
+    Enable {
+        #[arg(long, short)]
+        project: Option<String>,
+        role: String,
+    },
+    /// Show or change one seat's tool rules. Deny always beats allow.
+    Tools(AgentToolsArgs),
+    /// Point one seat at a different model. Shorthand for `ait agents edit`.
     SetModel {
         #[arg(long, short)]
         project: String,
@@ -107,6 +230,136 @@ pub(crate) enum AgentsCommand {
         #[arg(long)]
         context_window: Option<i64>,
     },
+}
+
+#[derive(Debug, clap::Args)]
+pub(crate) struct AgentAddArgs {
+    #[arg(long, short)]
+    pub(crate) project: Option<String>,
+
+    /// The seat's role. A lowercase slug, unique on the team.
+    #[arg(long)]
+    pub(crate) role: String,
+
+    /// Start from a built-in preset of the same or another role.
+    #[arg(long)]
+    pub(crate) preset: Option<String>,
+
+    /// How it is addressed in the UI. Defaults to the role, or the preset's name.
+    #[arg(long)]
+    pub(crate) name: Option<String>,
+
+    /// One or two sentences on what this seat is for. It reaches the model.
+    #[arg(long)]
+    pub(crate) purpose: Option<String>,
+
+    /// One of: claude, openai, zai, local.
+    #[arg(long, value_parser = parse_provider)]
+    pub(crate) provider: Option<Provider>,
+
+    #[arg(long)]
+    pub(crate) model: Option<String>,
+
+    /// One of: none, low, medium, high.
+    #[arg(long, value_parser = parse_reasoning)]
+    pub(crate) reasoning: Option<Reasoning>,
+
+    /// A path glob this seat owns. Repeatable.
+    #[arg(long)]
+    pub(crate) zone: Vec<String>,
+
+    /// Its context window in tokens. Defaults to the provider's registry default.
+    #[arg(long)]
+    pub(crate) context_window: Option<i64>,
+
+    /// Replace the preset prompt with this file's contents.
+    #[arg(long)]
+    pub(crate) prompt_file: Option<String>,
+
+    /// A checker: generate it no write_file or edit_file tools at all.
+    #[arg(long)]
+    pub(crate) read_only: bool,
+
+    /// Where it sorts among the seats. Defaults to the end.
+    #[arg(long)]
+    pub(crate) ord: Option<i64>,
+}
+
+#[derive(Debug, clap::Args)]
+pub(crate) struct AgentEditArgs {
+    #[arg(long, short)]
+    pub(crate) project: Option<String>,
+
+    /// Which seat, by its current role.
+    pub(crate) role: String,
+
+    /// Rename the role itself.
+    #[arg(long)]
+    pub(crate) new_role: Option<String>,
+
+    #[arg(long)]
+    pub(crate) name: Option<String>,
+
+    #[arg(long)]
+    pub(crate) purpose: Option<String>,
+
+    #[arg(long, value_parser = parse_provider)]
+    pub(crate) provider: Option<Provider>,
+
+    #[arg(long)]
+    pub(crate) model: Option<String>,
+
+    #[arg(long, value_parser = parse_reasoning)]
+    pub(crate) reasoning: Option<Reasoning>,
+
+    /// Replace the owned paths. Repeatable; pass once with an empty string to clear.
+    #[arg(long)]
+    pub(crate) zone: Vec<String>,
+
+    #[arg(long)]
+    pub(crate) context_window: Option<i64>,
+
+    /// Replace the prompt with this file's contents.
+    #[arg(long)]
+    pub(crate) prompt_file: Option<String>,
+
+    /// Go back to a built-in preset's prompt.
+    #[arg(long, conflicts_with = "prompt_file")]
+    pub(crate) preset: Option<String>,
+
+    #[arg(long, conflicts_with = "writes")]
+    pub(crate) read_only: bool,
+
+    /// Undo --read-only: generate the editing tools again.
+    #[arg(long)]
+    pub(crate) writes: bool,
+
+    #[arg(long)]
+    pub(crate) ord: Option<i64>,
+}
+
+#[derive(Debug, clap::Args)]
+pub(crate) struct AgentToolsArgs {
+    #[arg(long, short)]
+    pub(crate) project: Option<String>,
+
+    pub(crate) role: String,
+
+    /// Allow a tool name or glob. Repeatable.
+    #[arg(long)]
+    pub(crate) allow: Vec<String>,
+
+    /// Deny a tool name or glob. Repeatable, and it wins over any allow.
+    #[arg(long)]
+    pub(crate) deny: Vec<String>,
+
+    /// Drop a rule entirely, so the caller's default decides again. Repeatable.
+    #[arg(long)]
+    pub(crate) clear: Vec<String>,
+
+    /// Why, recorded next to the rule.
+    #[arg(long)]
+    pub(crate) note: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -128,6 +381,18 @@ fn parse_kind(value: &str) -> Result<ProjectKind, String> {
 }
 
 fn parse_provider(value: &str) -> Result<Provider, String> {
+    value
+        .parse()
+        .map_err(|e: ai_team_core::Error| e.to_string())
+}
+
+fn parse_reasoning(value: &str) -> Result<Reasoning, String> {
+    value
+        .parse()
+        .map_err(|e: ai_team_core::Error| e.to_string())
+}
+
+fn parse_on_failure(value: &str) -> Result<OnFailure, String> {
     value
         .parse()
         .map_err(|e: ai_team_core::Error| e.to_string())

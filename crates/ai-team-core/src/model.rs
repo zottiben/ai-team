@@ -383,8 +383,37 @@ pub struct NewAgent {
     pub zone: String,
     pub prompt_preset: Option<String>,
     pub prompt_md: Option<String>,
+    pub context_window: Option<i64>,
     pub read_only: bool,
+    pub enabled: bool,
     pub ord: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ToolPolicy {
+    pub tool: String,
+    pub effect: ToolEffect,
+    pub note: Option<String>,
+}
+
+impl From<&Agent> for NewAgent {
+    fn from(agent: &Agent) -> Self {
+        NewAgent {
+            role: agent.role.clone(),
+            name: agent.name.clone(),
+            purpose: agent.purpose.clone(),
+            provider: agent.provider,
+            model: agent.model.clone(),
+            reasoning: agent.reasoning,
+            zone: agent.zone.clone(),
+            prompt_preset: agent.prompt_preset.clone(),
+            prompt_md: agent.prompt_md.clone(),
+            context_window: agent.context_window,
+            read_only: agent.read_only,
+            enabled: agent.enabled,
+            ord: agent.ord,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

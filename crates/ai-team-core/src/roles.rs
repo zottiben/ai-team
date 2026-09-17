@@ -100,7 +100,9 @@ impl RolePreset {
             zone: self.zone.to_string(),
             prompt_preset: Some(self.role.to_string()),
             prompt_md: None,
+            context_window: None,
             read_only: self.read_only,
+            enabled: true,
             ord,
         }
     }

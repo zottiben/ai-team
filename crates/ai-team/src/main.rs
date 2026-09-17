@@ -29,6 +29,7 @@ fn run() -> Result<()> {
         Command::Ui(args) => runtime()?.block_on(cmd::ui::run(args)),
         Command::Init(args) => cmd::init::run(args),
         Command::Db(command) => cmd::db::run(command),
+        Command::Team(command) => cmd::team::run(command),
         Command::Agents(command) => cmd::agents::run(command),
         Command::Run(args) => runtime()?.block_on(cmd::run::run(args)),
         Command::Doctor => {

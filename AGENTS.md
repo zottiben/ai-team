@@ -36,6 +36,7 @@ the login shell is zsh.
 | Desktop shell | `cargo clippy -p ai-team-desktop --all-targets -- -D warnings` |
 | Frontend | `cd ui && npm ci && npm run typecheck && npm test && npm run build` |
 | Run it | `ait init`, `ait doctor`, `./target/debug/ait ui --port 7788 --no-open` |
+| Configure the team | `ait team show`, `ait agents ls`, `ait agents edit <role> …` |
 | Drive an agent | `ait agents set-model …`, then `ait run -p <project> --worktree <dir> "…"` |
 | The database | `ait db path`, `ait db open` (TablePlus), `ait db views` |
 | Icons | `cd crates/ai-team-desktop/icons && sh regenerate.sh` |
@@ -101,6 +102,12 @@ cannot be bridged — disable them on these nodes.
 
 ### 3. The database is the team; the eve project is generated (D2)
 Never hand-edit anything under `.ai-team/agents/`. Change the team rows and regenerate.
+
+`ait team` and `ait agents` are that edit surface; `--project` is optional because
+`Store::project_at` resolves the checkout you are standing in. Two traps the schema sets:
+an `INTEGER PRIMARY KEY` is a **reused** rowid, so an `old.id != new.id` check across a
+delete silently compares one row to itself; and `project.team_id` has no FK (it forms a
+creation-time cycle with `team.project_id`), so deleting a team has to clear it by hand.
 
 The store (`ai-team-core`) is the **only** place that writes SQL — the CLI, the server and
 the desktop shell all go through it. The schema is one file, `migrations/001_core.sql`,

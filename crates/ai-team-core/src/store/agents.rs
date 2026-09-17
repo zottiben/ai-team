@@ -7,7 +7,7 @@
 use rusqlite::{params, OptionalExtension, Row};
 
 use crate::error::{Error, Result};
-use crate::model::{Agent, Guardrails, NewAgent, Provider, Team, ToolEffect};
+use crate::model::{Agent, Guardrails, NewAgent, Provider, Team, ToolEffect, ToolPolicy};
 use crate::roles::DEFAULT_ROSTER;
 use crate::store::{non_empty, Store};
 use crate::util::{now, slugify, zone_matches};
@@ -109,24 +109,154 @@ impl Store {
         Ok(rows)
     }
 
-    pub fn add_agent(&mut self, team_id: i64, new: NewAgent) -> Result<Agent> {
-        let role = new.role.trim().to_string();
-        if role.is_empty() {
-            return Err(Error::invalid("an agent needs a role"));
-        }
-        if new.prompt_preset.is_none() && new.prompt_md.is_none() {
+    /// A team name whose slug nothing is using yet, by appending a counter.
+    fn free_team_name(&self, wanted: &str) -> Result<String> {
+        let wanted = wanted.trim();
+        if slugify(wanted).is_empty() {
             return Err(Error::invalid(format!(
-                "agent {role:?} has neither a prompt preset nor a prompt"
+                "{wanted:?} does not reduce to a slug"
             )));
         }
+        if self.find_team(&slugify(wanted)).is_err() {
+            return Ok(wanted.to_string());
+        }
+        for suffix in 2..1000 {
+            let candidate = format!("{wanted} {suffix}");
+            if self.find_team(&slugify(&candidate)).is_err() {
+                return Ok(candidate);
+            }
+        }
+        Err(Error::invalid(format!(
+            "could not find a free name near {wanted:?}"
+        )))
+    }
+
+    /// Resolve a team by slug, then by id. A template has no project, so naming the
+    /// team itself is the only way to reach one.
+    pub fn find_team(&self, needle: &str) -> Result<Team> {
+        let needle = needle.trim();
+        if needle.is_empty() {
+            return Err(Error::invalid("which team?"));
+        }
+        if let Some(found) = self
+            .db()
+            .conn()
+            .query_row(
+                &format!("{TEAM_SELECT} WHERE slug = ?1"),
+                params![needle],
+                team_from_row,
+            )
+            .optional()?
+        {
+            return Ok(found);
+        }
+        if let Ok(id) = needle.parse::<i64>() {
+            if let Ok(found) = self.team(id) {
+                return Ok(found);
+            }
+        }
+        Err(Error::NoSuchTeam(needle.to_string()))
+    }
+
+    /// What a human means by "that team": the team a project is running, or a team named
+    /// directly. Projects win, because that is what almost every invocation means and a
+    /// project slug and a team slug can legitimately collide.
+    pub fn find_team_for(&self, needle: &str) -> Result<Team> {
+        if let Ok(project) = self.find_project(needle) {
+            return match project.team_id {
+                Some(team_id) => self.team(team_id),
+                None => Err(Error::invalid(format!(
+                    "{} has no team - `ait init` seeds one, or clone one onto it",
+                    project.slug
+                ))),
+            };
+        }
+        self.find_team(needle)
+    }
+
+    pub fn update_team(
+        &mut self,
+        team_id: i64,
+        name: &str,
+        description: &str,
+        guardrails: Guardrails,
+    ) -> Result<Team> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(Error::invalid("a team needs a name"));
+        }
+        let slug = slugify(name);
+        if slug.is_empty() {
+            return Err(Error::invalid(format!(
+                "{name:?} does not reduce to a slug"
+            )));
+        }
+        let at = now();
+        self.db_mut().write(|tx| {
+            let changed = tx
+                .execute(
+                    "UPDATE team
+                        SET slug = ?2, name = ?3, description = ?4, parallel_width = ?5,
+                            budget_tokens_run = ?6, budget_tokens_node = ?7,
+                            budget_seconds_run = ?8, budget_seconds_node = ?9,
+                            max_turns_node = ?10, max_repairs = ?11, on_failure = ?12,
+                            rev = rev + 1, updated_at = ?13
+                      WHERE id = ?1",
+                    params![
+                        team_id,
+                        slug,
+                        name,
+                        description.trim(),
+                        guardrails.parallel_width,
+                        guardrails.budget_tokens_run,
+                        guardrails.budget_tokens_node,
+                        guardrails.budget_seconds_run,
+                        guardrails.budget_seconds_node,
+                        guardrails.max_turns_node,
+                        guardrails.max_repairs,
+                        guardrails.on_failure,
+                        at,
+                    ],
+                )
+                .map_err(|error| duplicate_team(error, &slug))?;
+            if changed == 0 {
+                return Err(Error::NoSuchTeam(team_id.to_string()));
+            }
+            Ok(())
+        })?;
+        self.team(team_id)
+    }
+
+    pub fn delete_team(&mut self, team_id: i64) -> Result<()> {
+        self.db_mut().write(|tx| {
+            // project.team_id deliberately has no FK because it forms a creation-time
+            // cycle with team.project_id, so clear it explicitly before deleting.
+            tx.execute(
+                "UPDATE project SET team_id = NULL, rev = rev + 1, updated_at = ?2
+                  WHERE team_id = ?1",
+                params![team_id, now()],
+            )?;
+            let changed = tx.execute("DELETE FROM team WHERE id = ?1", params![team_id])?;
+            if changed == 0 {
+                return Err(Error::NoSuchTeam(team_id.to_string()));
+            }
+            Ok(())
+        })
+    }
+
+    pub fn add_agent(&mut self, team_id: i64, mut new: NewAgent) -> Result<Agent> {
+        normalise_agent(&mut new)?;
+        let role = new.role.clone();
         let at = now();
 
         let id = self.db_mut().write(|tx| {
             tx.execute(
                 "INSERT INTO agent
                    (team_id, ord, role, name, purpose, provider, model, reasoning, zone,
-                    prompt_preset, prompt_md, read_only, enabled, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 1, ?13, ?13)",
+                    prompt_preset, prompt_md, context_window, read_only, enabled,
+                    created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
+                         ?15, ?15)",
                 params![
                     team_id,
                     new.ord,
@@ -139,7 +269,9 @@ impl Store {
                     new.zone,
                     new.prompt_preset,
                     new.prompt_md,
+                    new.context_window,
                     i64::from(new.read_only),
+                    i64::from(new.enabled),
                     at
                 ],
             )
@@ -172,6 +304,56 @@ impl Store {
         Ok(rows)
     }
 
+    /// Replace the configurable part of a seat while keeping its identity and history.
+    pub fn update_agent(&mut self, agent_id: i64, mut update: NewAgent) -> Result<Agent> {
+        normalise_agent(&mut update)?;
+        let at = now();
+        self.db_mut().write(|tx| {
+            let changed = tx
+                .execute(
+                    "UPDATE agent
+                        SET ord = ?2, role = ?3, name = ?4, purpose = ?5, provider = ?6,
+                            model = ?7, reasoning = ?8, zone = ?9, prompt_preset = ?10,
+                            prompt_md = ?11, context_window = ?12, read_only = ?13,
+                            enabled = ?14, rev = rev + 1, updated_at = ?15
+                      WHERE id = ?1",
+                    params![
+                        agent_id,
+                        update.ord,
+                        update.role,
+                        update.name,
+                        update.purpose,
+                        update.provider,
+                        update.model,
+                        update.reasoning,
+                        update.zone,
+                        update.prompt_preset,
+                        update.prompt_md,
+                        update.context_window,
+                        i64::from(update.read_only),
+                        i64::from(update.enabled),
+                        at,
+                    ],
+                )
+                .map_err(|error| duplicate_agent(error, &update.role))?;
+            if changed == 0 {
+                return Err(Error::NoSuchAgent(agent_id.to_string()));
+            }
+            Ok(())
+        })?;
+        self.agent(agent_id)
+    }
+
+    pub fn delete_agent(&mut self, agent_id: i64) -> Result<()> {
+        self.db_mut().write(|tx| {
+            let changed = tx.execute("DELETE FROM agent WHERE id = ?1", params![agent_id])?;
+            if changed == 0 {
+                return Err(Error::NoSuchAgent(agent_id.to_string()));
+            }
+            Ok(())
+        })
+    }
+
     /// Repoint one seat at a different model. The commonest edit there is, and the one
     /// M1-S4's demo triggers a rebuild from.
     pub fn set_agent_model(
@@ -187,7 +369,10 @@ impl Store {
         let at = now();
         self.db_mut().write(|tx| {
             let changed = tx.execute(
-                "UPDATE agent SET provider = ?2, model = ?3, rev = rev + 1, updated_at = ?4
+                "UPDATE agent
+                    SET provider = ?2, model = ?3,
+                        context_window = CASE WHEN provider = ?2 THEN context_window ELSE NULL END,
+                        rev = rev + 1, updated_at = ?4
                   WHERE id = ?1",
                 params![agent_id, provider, model, at],
             )?;
@@ -253,6 +438,13 @@ impl Store {
         effect: ToolEffect,
         note: Option<&str>,
     ) -> Result<()> {
+        // Produce NoSuchAgent rather than a generic foreign-key error, and do it before
+        // validating the rule so callers can distinguish stale identity from bad input.
+        self.agent(agent_id)?;
+        let tool = tool.trim();
+        if tool.is_empty() {
+            return Err(Error::invalid("a tool policy needs a tool name or glob"));
+        }
         let at = now();
         self.db_mut().write(|tx| {
             tx.execute(
@@ -260,9 +452,37 @@ impl Store {
                  VALUES (?1, ?2, ?3, ?4, ?5)
                  ON CONFLICT (agent_id, tool)
                  DO UPDATE SET effect = excluded.effect, note = excluded.note",
-                params![agent_id, tool.trim(), effect, note, at],
+                params![agent_id, tool, effect, note.map(str::trim), at],
             )?;
             Ok(())
+        })
+    }
+
+    pub fn tool_policies(&self, agent_id: i64) -> Result<Vec<ToolPolicy>> {
+        self.agent(agent_id)?;
+        let mut stmt = self.db().conn().prepare(
+            "SELECT tool, effect, note FROM agent_tool_policy
+              WHERE agent_id = ?1 ORDER BY tool",
+        )?;
+        let policies = stmt
+            .query_map(params![agent_id], |row| {
+                Ok(ToolPolicy {
+                    tool: row.get(0)?,
+                    effect: row.get(1)?,
+                    note: non_empty(row.get(2)?),
+                })
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(policies)
+    }
+
+    pub fn remove_tool_policy(&mut self, agent_id: i64, tool: &str) -> Result<bool> {
+        self.agent(agent_id)?;
+        self.db_mut().write(|tx| {
+            Ok(tx.execute(
+                "DELETE FROM agent_tool_policy WHERE agent_id = ?1 AND tool = ?2",
+                params![agent_id, tool.trim()],
+            )? != 0)
         })
     }
 
@@ -305,25 +525,24 @@ impl Store {
     pub fn clone_team(&mut self, team_id: i64, onto_project: i64, name: &str) -> Result<Team> {
         let source = self.team(team_id)?;
         let agents = self.agents(team_id)?;
-        let clone = self.create_team(Some(onto_project), name, source.guardrails)?;
+        // Resolve the target first so a typo cannot leave behind an unattached clone.
+        self.project(onto_project)?;
+        // `ait init` already seeded the destination a team, so the obvious name is
+        // usually taken. Suffixing keeps the zero-flag form working and keeps the old
+        // team intact - it is somebody's configuration until they say otherwise.
+        let name = self.free_team_name(name)?;
+        let mut clone = self.create_team(Some(onto_project), &name, source.guardrails)?;
+        if !source.description.is_empty() {
+            clone = self.update_team(
+                clone.id,
+                &clone.name,
+                &source.description,
+                source.guardrails,
+            )?;
+        }
 
         for agent in agents {
-            let created = self.add_agent(
-                clone.id,
-                NewAgent {
-                    role: agent.role.clone(),
-                    name: agent.name.clone(),
-                    purpose: agent.purpose.clone(),
-                    provider: agent.provider,
-                    model: agent.model.clone(),
-                    reasoning: agent.reasoning,
-                    zone: agent.zone.clone(),
-                    prompt_preset: agent.prompt_preset.clone(),
-                    prompt_md: agent.prompt_md.clone(),
-                    read_only: agent.read_only,
-                    ord: agent.ord,
-                },
-            )?;
+            let created = self.add_agent(clone.id, NewAgent::from(&agent))?;
             // The policies travel with the seat. A cloned team whose tool rules were
             // left behind would be quietly more permissive than the one it came from.
             let mut stmt = self
@@ -339,8 +558,68 @@ impl Store {
             }
         }
 
+        // The clone is immediately the destination project's active team; otherwise
+        // `ait agents generate --project <to>` would keep rebuilding the old roster.
+        self.set_project_team(onto_project, Some(clone.id))?;
         self.team(clone.id)
     }
+}
+
+fn normalise_agent(agent: &mut NewAgent) -> Result<()> {
+    agent.role = agent.role.trim().to_string();
+    if agent.role.is_empty() {
+        return Err(Error::invalid("an agent needs a role"));
+    }
+    if slugify(&agent.role) != agent.role {
+        return Err(Error::invalid(
+            "an agent role must be a lowercase slug (for example `release-manager`)",
+        ));
+    }
+    agent.name = agent.name.trim().to_string();
+    if agent.name.is_empty() {
+        return Err(Error::invalid("an agent needs a display name"));
+    }
+    agent.model = agent.model.trim().to_string();
+    if agent.model.is_empty() {
+        return Err(Error::invalid("a model name cannot be empty"));
+    }
+    if agent.ord < 0 {
+        return Err(Error::invalid("an agent's order cannot be negative"));
+    }
+    if let Some(tokens) = agent.context_window {
+        if tokens < 1024 {
+            return Err(Error::invalid(format!(
+                "a {tokens}-token context window is not usable - did you mean {}?",
+                tokens * 1024
+            )));
+        }
+    }
+
+    agent.prompt_preset = agent
+        .prompt_preset
+        .take()
+        .map(|prompt| prompt.trim().to_string())
+        .filter(|prompt| !prompt.is_empty());
+    agent.prompt_md = agent
+        .prompt_md
+        .take()
+        .map(|prompt| prompt.trim().to_string())
+        .filter(|prompt| !prompt.is_empty());
+    match (&agent.prompt_preset, &agent.prompt_md) {
+        (Some(_), Some(_)) => {
+            return Err(Error::invalid(
+                "an agent must use either a prompt preset or a custom prompt, not both",
+            ));
+        }
+        (None, None) => {
+            return Err(Error::invalid(format!(
+                "agent {:?} has neither a prompt preset nor a custom prompt",
+                agent.role
+            )));
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 const TEAM_SELECT: &str = "SELECT id, project_id, slug, name, description, parallel_width, \
@@ -475,6 +754,88 @@ mod tests {
     }
 
     #[test]
+    fn teams_and_agents_can_be_updated_and_deleted_without_orphans() {
+        let mut s = Store::memory().unwrap();
+        let p = project(&mut s, "Widget");
+        let team = s.seed_default_team(p).unwrap();
+        let updated_team = s
+            .update_team(team.id, "Delivery crew", "Ships widgets.", team.guardrails)
+            .unwrap();
+        assert_eq!(updated_team.slug, "delivery-crew");
+        assert_eq!(updated_team.description, "Ships widgets.");
+
+        let backend = s
+            .agents(team.id)
+            .unwrap()
+            .into_iter()
+            .find(|agent| agent.role == "backend")
+            .unwrap();
+        let mut config = NewAgent::from(&backend);
+        config.role = "services".into();
+        config.reasoning = Reasoning::High;
+        config.prompt_preset = None;
+        config.prompt_md = Some("Keep public APIs backwards-compatible.".into());
+        config.context_window = Some(128_000);
+        let services = s.update_agent(backend.id, config).unwrap();
+        assert_eq!(services.role, "services");
+        assert_eq!(services.reasoning, Reasoning::High);
+        assert_eq!(services.context_window, Some(128_000));
+        assert_eq!(
+            services.prompt_md.as_deref(),
+            Some("Keep public APIs backwards-compatible.")
+        );
+
+        s.delete_agent(services.id).unwrap();
+        assert!(matches!(s.agent(services.id), Err(Error::NoSuchAgent(_))));
+        s.delete_team(team.id).unwrap();
+        assert_eq!(s.project(p).unwrap().team_id, None);
+        assert!(matches!(s.team(team.id), Err(Error::NoSuchTeam(_))));
+    }
+
+    /// Deleting a seat or a whole team must not rewrite what already happened. The
+    /// cascades that make this true are declared in the schema and enforced only because
+    /// the connection turns `foreign_keys` on, so both halves are asserted here.
+    #[test]
+    fn deleting_a_team_keeps_the_runs_it_already_did() {
+        use crate::model::{NodeStatus, RunTrigger};
+
+        let mut s = Store::memory().unwrap();
+        let p = project(&mut s, "Widget");
+        let team = s.seed_default_team(p).unwrap();
+        let backend = s
+            .agents(team.id)
+            .unwrap()
+            .into_iter()
+            .find(|agent| agent.role == "backend")
+            .unwrap();
+        s.set_tool_policy(backend.id, "bash", ToolEffect::Deny, None)
+            .unwrap();
+
+        let run = s.create_run(p, "ship it", RunTrigger::Manual).unwrap();
+        let node = s
+            .dispatch(
+                run.id,
+                backend.id,
+                None,
+                &crate::ModelRegistry::local_only(),
+            )
+            .unwrap();
+        s.set_node_status(node.id, NodeStatus::Done).unwrap();
+
+        s.delete_team(team.id).unwrap();
+
+        // The seat and its rules go; the evidence of what it did does not.
+        assert!(matches!(s.agent(backend.id), Err(Error::NoSuchAgent(_))));
+        let node = s.node_run(node.id).unwrap();
+        assert_eq!(node.role, "backend", "a finished run still says who did it");
+        assert_eq!(
+            node.agent_id, None,
+            "but no longer points at a deleted seat"
+        );
+        assert_eq!(s.run(run.id).unwrap().prompt, "ship it");
+    }
+
+    #[test]
     fn an_agent_needs_instructions_from_somewhere() {
         let mut s = Store::memory().unwrap();
         let p = project(&mut s, "Widget");
@@ -492,7 +853,9 @@ mod tests {
                 zone: String::new(),
                 prompt_preset: None,
                 prompt_md: None,
+                context_window: None,
                 read_only: false,
+                enabled: true,
                 ord: 0,
             },
         );
@@ -568,6 +931,29 @@ mod tests {
             .is_none());
     }
 
+    /// The window describes the model, so it cannot outlive a move to another account.
+    /// Relies on SQL evaluating every SET expression against the pre-update row.
+    #[test]
+    fn changing_account_drops_a_context_window_that_described_the_old_model() {
+        let mut s = Store::memory().unwrap();
+        let p = project(&mut s, "Widget");
+        let team = s.seed_default_team(p).unwrap();
+        let agent = s.agents(team.id).unwrap().into_iter().next().unwrap();
+        s.set_agent_context_window(agent.id, Some(32_768)).unwrap();
+
+        // Same account, different model: the operator's number is still theirs to keep.
+        let same = s
+            .set_agent_model(agent.id, Provider::Local, "other")
+            .unwrap();
+        assert_eq!(same.context_window, Some(32_768));
+
+        // Another account entirely: 32k was a fact about the model left behind.
+        let moved = s
+            .set_agent_model(agent.id, Provider::Claude, "sonnet")
+            .unwrap();
+        assert_eq!(moved.context_window, None);
+    }
+
     #[test]
     fn deny_beats_allow_and_an_unmatched_tool_falls_back() {
         let mut s = Store::memory().unwrap();
@@ -580,11 +966,15 @@ mod tests {
         s.set_tool_policy(agent.id, "bash_root", ToolEffect::Deny, Some("never"))
             .unwrap();
 
+        assert_eq!(s.tool_policies(agent.id).unwrap().len(), 2);
         assert!(s.tool_allowed(agent.id, "bash_read", false).unwrap());
         assert!(!s.tool_allowed(agent.id, "bash_root", false).unwrap());
         // No rule at all: the caller's default decides, not the absence of a rule.
         assert!(!s.tool_allowed(agent.id, "write", false).unwrap());
         assert!(s.tool_allowed(agent.id, "write", true).unwrap());
+        assert!(s.remove_tool_policy(agent.id, "bash_root").unwrap());
+        assert!(!s.remove_tool_policy(agent.id, "bash_root").unwrap());
+        assert!(s.tool_allowed(agent.id, "bash_root", false).unwrap());
     }
 
     #[test]
@@ -592,7 +982,15 @@ mod tests {
         let mut s = Store::memory().unwrap();
         let from = project(&mut s, "Widget");
         let onto = project(&mut s, "Gadget");
-        let source = s.seed_default_team(from).unwrap();
+        let mut source = s.seed_default_team(from).unwrap();
+        source = s
+            .update_team(
+                source.id,
+                &source.name,
+                "The portable team description.",
+                source.guardrails,
+            )
+            .unwrap();
 
         let backend = s
             .agents(source.id)
@@ -602,12 +1000,17 @@ mod tests {
             .unwrap();
         s.set_agent_model(backend.id, Provider::ZAi, "glm-4.6")
             .unwrap();
+        s.set_agent_context_window(backend.id, Some(128_000))
+            .unwrap();
+        s.set_agent_enabled(backend.id, false).unwrap();
         s.set_tool_policy(backend.id, "bash_root", ToolEffect::Deny, Some("never"))
             .unwrap();
 
         let clone = s.clone_team(source.id, onto, "Gadget team").unwrap();
         assert_eq!(clone.project_id, Some(onto));
         assert_eq!(clone.guardrails, source.guardrails);
+        assert_eq!(clone.description, source.description);
+        assert_eq!(s.project(onto).unwrap().team_id, Some(clone.id));
 
         let cloned_backend = s
             .agents(clone.id)
@@ -617,6 +1020,8 @@ mod tests {
             .unwrap();
         assert_eq!(cloned_backend.provider, Provider::ZAi);
         assert_eq!(cloned_backend.model, "glm-4.6");
+        assert_eq!(cloned_backend.context_window, Some(128_000));
+        assert!(!cloned_backend.enabled);
         assert!(!s
             .tool_allowed(cloned_backend.id, "bash_root", true)
             .unwrap());
