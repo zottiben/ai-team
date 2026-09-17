@@ -52,7 +52,12 @@ jobs:
           HTML
           touch _site/.nojekyll
 
+      # enablement, so the first push to a fresh clone turns Pages on itself rather
+      # than failing with "Get Pages site failed" and waiting for someone to find the
+      # setting. Needs the pages: write permission granted above.
       - uses: actions/configure-pages@v5
+        with:
+          enablement: true
       - uses: actions/upload-pages-artifact@v3
         with:
           path: _site

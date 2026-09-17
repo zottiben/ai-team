@@ -21,11 +21,19 @@ all-features = true
 # Unmaintained crates we pull in directly are our problem; deep in someone else's tree
 # they usually are not actionable, so only the workspace's own choices are flagged.
 unmaintained = "workspace"
+# Unsound findings stay "all", unlike unmaintained: a soundness hole anywhere in the
+# tree can still be reached at run time. Each one that survives has to be named below
+# with a reason, so it is a decision in a diff rather than a default.
 unsound = "all"
-ignore = []
+ignore = [
+  { id = "RUSTSEC-2024-0429", reason = "glib's VariantStrIter iterator impls are unsound. It arrives only through tauri -> gtk, which we do not choose and cannot patch, and ai-team never constructs a GVariant string iterator itself. Revisit when the gtk stack bumps glib; drop this entry the moment it does." },
+]
 
 [licenses]
 confidence-threshold = 0.93
+# The list below is a statement of what we accept, not an inventory of what we happen
+# to use, so an allowed licence nothing pulls in is not worth a warning.
+unused-allowed-license = "allow"
 allow = [
     "MIT",
     "Apache-2.0",
@@ -44,7 +52,12 @@ exceptions = []
 # "warn", not "deny": Tauri and axum legitimately land on different minor versions of
 # shared crates, and a red gate we routinely override stops being a gate.
 multiple-versions = "warn"
+# A `*` version requirement on a registry crate is a real hazard - it silently accepts
+# a breaking release. The four workspace crates depend on each other by path and have
+# no version requirement at all, which is not the same thing, so they are exempt (this
+# is what `publish = false` in the workspace manifest buys).
 wildcards = "deny"
+allow-wildcard-paths = true
 deny = [
     # D8: subscription-backed providers only. A metered HTTP client for a model API is
     # exactly the dependency that would quietly reintroduce an API-key path, so the

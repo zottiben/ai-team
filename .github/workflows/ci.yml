@@ -78,8 +78,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # Deliberately not EmbarkStudios/cargo-deny-action: it runs in a musl container,
+      # where rust-toolchain.toml resolves to a target triple the image does not have
+      # and every invocation opens with a toolchain override error. A prebuilt binary on
+      # the normal runner reads the same pin as every other job.
+      - uses: dtolnay/rust-toolchain@1.98.1
+      - uses: taiki-e/install-action@cargo-deny
       # A new transitive dependency with a bad licence, a known advisory or an unvetted
       # source has to be argued for in a diff rather than arriving silently.
-      - uses: EmbarkStudios/cargo-deny-action@v2
-        with:
-          command: check
+      - run: cargo deny check

@@ -14,10 +14,14 @@ command -v magick >/dev/null || { echo "need ImageMagick" >&2; exit 1; }
 rsvg-convert -w 1024 -h 1024 mark.svg -o mark.png
 cp mark.png icon.png
 
-magick mark.png -resize 32x32 32x32.png
-magick mark.png -resize 64x64 64x64.png
-magick mark.png -resize 128x128 128x128.png
-magick mark.png -resize 256x256 "128x128@2x.png"
+# PNG32: is load-bearing, not belt-and-braces. ImageMagick will happily palette-optimise
+# a small flat-coloured image down to 8-bit colormap, and `tauri::generate_context!()`
+# then panics at compile time with "icon ... is not RGBA" - a build failure that reads
+# like a code problem and is actually this line.
+magick mark.png -resize 32x32 PNG32:32x32.png
+magick mark.png -resize 64x64 PNG32:64x64.png
+magick mark.png -resize 128x128 PNG32:128x128.png
+magick mark.png -resize 256x256 "PNG32:128x128@2x.png"
 magick mark.png -define icon:auto-resize=256,128,64,48,32,16 icon.ico
 
 # ImageMagick's ICNS writer only emits one size, which macOS then scales badly in the

@@ -23,6 +23,10 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/zottiben/ai-team"
+# Not going to crates.io. This is one person's tool, installed from a release or from
+# git, and saying so lets `cargo deny` treat the workspace path deps as what they are
+# rather than as wildcard requirements on a registry.
+publish = false
 
 [workspace.dependencies]
 anyhow = "1"
