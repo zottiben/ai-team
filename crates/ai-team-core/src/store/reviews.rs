@@ -268,7 +268,14 @@ mod tests {
             .into_iter()
             .find(|a| a.role == "backend")
             .unwrap();
-        let node = s.dispatch(run.id, backend.id, Some("PR1")).unwrap();
+        let node = s
+            .dispatch(
+                run.id,
+                backend.id,
+                Some("PR1"),
+                &crate::ModelRegistry::local_only(),
+            )
+            .unwrap();
         (s, p.id, node.id)
     }
 

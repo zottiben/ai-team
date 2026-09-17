@@ -6,8 +6,8 @@
 //! joins wrong is invisible to a unit test and obvious here.
 
 use ai_team_core::{
-    CommentStatus, DiffSide, EventKind, NewComment, NewEvent, NewProject, NewRepo, NodeStatus,
-    Provider, ReviewStatus, RunStatus, RunTrigger, Store, Usage,
+    CommentStatus, DiffSide, EventKind, NewComment, NewEvent, NewProject, NewRepo, NodeRun,
+    NodeStatus, Provider, ReviewStatus, RunStatus, RunTrigger, Store, Usage,
 };
 
 struct Harness {
@@ -56,6 +56,17 @@ impl Harness {
     fn view_count(&self, view: &str) -> i64 {
         self.outside()
             .query_row(&format!("SELECT COUNT(*) FROM {view}"), [], |r| r.get(0))
+            .unwrap()
+    }
+
+    fn dispatch(&mut self, run: i64, agent: i64, slice: &str) -> NodeRun {
+        self.store
+            .dispatch(
+                run,
+                agent,
+                Some(slice),
+                &ai_team_core::ModelRegistry::local_only(),
+            )
             .unwrap()
     }
 }
@@ -120,8 +131,8 @@ fn a_whole_run_hangs_together_and_the_views_report_it() {
         backend.id
     );
 
-    let be = h.store.dispatch(run.id, backend.id, Some("PR1")).unwrap();
-    let fe = h.store.dispatch(run.id, frontend.id, Some("PR2")).unwrap();
+    let be = h.dispatch(run.id, backend.id, "PR1");
+    let fe = h.dispatch(run.id, frontend.id, "PR2");
     h.store
         .attach_worktree(be.id, "/tmp/wt/PR1", Some("slice/PR1"), Some("lease-1"))
         .unwrap();
@@ -168,7 +179,7 @@ fn a_whole_run_hangs_together_and_the_views_report_it() {
     h.store
         .block_node(be.id, "cargo test failed: 2 tests")
         .unwrap();
-    let retry = h.store.dispatch(run.id, backend.id, Some("PR1")).unwrap();
+    let retry = h.dispatch(run.id, backend.id, "PR1");
     assert_eq!(retry.attempt, 2);
     // The sibling is untouched: a failed node fails its own branch (M2-S10).
     assert_eq!(h.store.node_run(fe.id).unwrap().status, NodeStatus::Running);

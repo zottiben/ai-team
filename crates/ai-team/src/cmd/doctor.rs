@@ -57,6 +57,28 @@ pub(crate) fn run() {
         }),
     );
 
+    match core::ModelRegistry::load() {
+        Ok(registry) => {
+            for status in registry.statuses() {
+                println!(
+                    "  {:<18} {:<11} {}",
+                    format!("provider {}", status.provider),
+                    status.state.as_str(),
+                    status.detail
+                );
+            }
+        }
+        Err(error) => {
+            for provider in core::Provider::ALL {
+                println!(
+                    "  {:<18} {:<11} {error}",
+                    format!("provider {provider}"),
+                    "denied"
+                );
+            }
+        }
+    }
+
     let bundle = ai_team_ui::bundle();
     if bundle.embedded {
         println!("  {:<18} {} files compiled in", "frontend", bundle.files);

@@ -8,4 +8,4 @@ mod event;
 mod ingest;
 
 pub use event::{Disposition, StreamEvent, StreamMeta};
-pub use ingest::Ingested;
+pub use ingest::{Ingested, TerminalState};

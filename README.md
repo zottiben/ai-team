@@ -28,9 +28,43 @@ Until the first release is tagged there is nothing to download, so the script fa
 to building from source and needs a Rust toolchain ([rustup.rs](https://rustup.rs)).
 
 ```sh
-ait doctor    # paths, machine profile, and whether the frontend was compiled in
+ait init      # register this checkout and create a local-only machine profile
+ait doctor    # paths, provider policy/reachability, and the embedded frontend
 ait ui        # open the window in a browser
 ```
+
+### Machine provider policy
+
+Team rows are portable preferences; `~/.config/ai-team/machine.toml` is the permission
+boundary on this machine. `ait init` creates a fail-closed default that allows only the
+loopback ai-local gateway. Account-backed providers have to be enabled deliberately:
+
+```toml
+version = 1
+fallback = ["claude", "openai", "zai", "local"]
+
+[providers]
+claude = true
+openai = true
+zai = false # forbidden on this work machine
+local = true
+```
+
+When a seat's preferred provider is denied, the first allowed provider in `fallback`
+whose integration exists is used with the registry's conservative default model. The
+fallback is printed and recorded as an append-only run event. Reachability does **not**
+change routing: a transient outage must not silently send work to another account.
+
+The four allowed paths are deliberately specific:
+
+- `claude` — the OAuthed Claude Code CLI; its eve bridge lands in M1-S6.
+- `openai` — eve's `chatgpt()` subscription broker, never its metered `openai()` helper.
+- `zai` — a GLM Coding Plan token in `AI_TEAM_ZAI_KEY`, sent only to the coding-plan URL.
+- `local` — host, port, and gateway key read from ai-local's own config.
+
+`ait doctor` reports each as `allowed`, `denied`, or `unreachable`. The profile is checked
+again when every node is dispatched, including scheduled runs; hiding a denied provider
+in the picker is not treated as enforcement.
 
 ## Develop
 

@@ -87,7 +87,14 @@ fn a_generated_project_boots_and_its_turn_lands_in_sqlite() {
         .into_iter()
         .find(|a| a.role == "orchestrator")
         .unwrap();
-    let node = store.dispatch(run.id, orchestrator.id, None).unwrap();
+    let node = store
+        .dispatch(
+            run.id,
+            orchestrator.id,
+            None,
+            &ai_team_core::ModelRegistry::local_only(),
+        )
+        .unwrap();
     store
         .attach_worktree(node.id, &worktree.to_string_lossy(), None, None)
         .unwrap();
@@ -108,9 +115,15 @@ fn a_generated_project_boots_and_its_turn_lands_in_sqlite() {
     let out = store.ingest_ndjson(node.id, from_index, &ndjson).unwrap();
     println!(
         "recorded {} ignored {} steps {} finished {}",
-        out.recorded, out.ignored, out.steps, out.finished
+        out.recorded,
+        out.ignored,
+        out.steps,
+        out.terminal.is_some()
     );
-    assert!(out.finished, "the turn did not reach a terminal event");
+    assert!(
+        out.terminal.is_some(),
+        "the turn did not reach a terminal event"
+    );
     assert!(out.recorded > 0, "nothing was written to the event log");
 
     // Re-reading the same stream must not produce a second copy - the property the

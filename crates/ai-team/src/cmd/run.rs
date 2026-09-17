@@ -18,6 +18,7 @@ use crate::cli::RunArgs;
 pub(crate) async fn run(args: RunArgs) -> Result<()> {
     let db = core::default_db_path()?;
     let mut store = Store::open(&db).with_context(|| format!("opening {}", db.display()))?;
+    let registry = core::ModelRegistry::load().context("loading the machine profile")?;
 
     let project = store.find_project(&args.project)?;
     let team_id = project
@@ -40,14 +41,19 @@ pub(crate) async fn run(args: RunArgs) -> Result<()> {
     // Always regenerate: the team rows are the source of truth, and a stale project is
     // how an agent ends up running the model you changed an hour ago (D2).
     let project_dir = store.agents_dir(&project.slug)?;
-    let generated = store.generate_project(team_id, &project_dir)?;
+    let generated = store.generate_project_for_machine(team_id, &project_dir, &registry)?;
     generated.write()?;
     println!("generated {} files", generated.files.len());
+    for resolution in &generated.resolutions {
+        if let Some(notice) = resolution.notice() {
+            println!("  fallback           {notice}");
+        }
+    }
 
     let env = EveEnv {
         worktree: worktree.clone(),
         token: core::mint_token(),
-        provider_keys: provider_keys(&generated.required_env),
+        provider_keys: registry.provider_environment(&generated.required_env)?,
     };
     let supervisor = Supervisor::new(&project_dir, env);
 
@@ -73,7 +79,7 @@ pub(crate) async fn run(args: RunArgs) -> Result<()> {
         .into_iter()
         .find(|a| a.role == core::ROOT_ROLE)
         .context("the team has no orchestrator")?;
-    let node = store.dispatch(run.id, orchestrator.id, None)?;
+    let node = store.dispatch(run.id, orchestrator.id, None, &registry)?;
     store.attach_worktree(node.id, &worktree.to_string_lossy(), None, None)?;
     store.set_node_status(node.id, NodeStatus::Running)?;
 
@@ -107,21 +113,14 @@ fn settle(
 ) -> Result<()> {
     // Parked outranks finished: a turn that asked a question and then hit a terminal
     // event is still waiting on a person, and calling it done would strand it.
-    let status = if outcome.approvals.is_empty() {
-        if outcome.finished {
-            NodeStatus::Done
-        } else {
-            NodeStatus::Failed
-        }
-    } else {
-        NodeStatus::Parked
-    };
+    let status = outcome_status(outcome);
     store.set_node_status(node_run_id, status)?;
     store.set_run_status(
         run_id,
         match status {
             NodeStatus::Done => RunStatus::Done,
             NodeStatus::Parked => RunStatus::Blocked,
+            NodeStatus::Cancelled => RunStatus::Cancelled,
             _ => RunStatus::Failed,
         },
     )?;
@@ -161,6 +160,17 @@ fn settle(
         println!("\n{failures} failure event(s) - see `ait db open`");
     }
     Ok(())
+}
+
+fn outcome_status(outcome: &core::TurnOutcome) -> NodeStatus {
+    if !outcome.approvals.is_empty() {
+        return NodeStatus::Parked;
+    }
+    match outcome.terminal {
+        Some(core::TerminalState::Completed) => NodeStatus::Done,
+        Some(core::TerminalState::Cancelled) => NodeStatus::Cancelled,
+        Some(core::TerminalState::Failed) | None => NodeStatus::Failed,
+    }
 }
 
 /// Install, build, and report every line as it happens.
@@ -211,40 +221,36 @@ async fn build(supervisor: &Supervisor, store: &mut Store, run_id: i64) -> Resul
     Ok(())
 }
 
-/// Read the provider keys a generated project asked for out of the environment.
-///
-/// Missing ones are passed through as empty rather than refused here: the machine
-/// profile is what decides whether a provider is allowed (D8, M1-S5), and failing at
-/// this layer would pre-empt it with a worse error message.
-fn provider_keys(required: &[&'static str]) -> Vec<(String, String)> {
-    required
-        .iter()
-        .filter(|key| key.ends_with("_KEY"))
-        .map(|key| {
-            let value = std::env::var(key).ok().unwrap_or_else(|| ailocal_key(key));
-            ((*key).to_string(), value)
-        })
-        .collect()
-}
-
-/// ai-local writes its gateway key to a known path, so the common case needs no
-/// environment variable at all. M1-S5 generalises this into the model registry.
-fn ailocal_key(key: &str) -> String {
-    if key != "AI_TEAM_AILOCAL_KEY" {
-        return String::new();
-    }
-    std::env::var("HOME")
-        .ok()
-        .map(|home| PathBuf::from(home).join(".config/ailocal/gateway.key"))
-        .and_then(|path| std::fs::read_to_string(path).ok())
-        .map(|key| key.trim().to_string())
-        .unwrap_or_default()
-}
-
 fn truncate(text: &str, max: usize) -> String {
     let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
     if flat.chars().count() <= max {
         return flat;
     }
     flat.chars().take(max.saturating_sub(1)).collect::<String>() + "\u{2026}"
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_terminal_model_failure_cannot_be_reported_as_done() {
+        let failed = core::TurnOutcome {
+            terminal: Some(core::TerminalState::Failed),
+            ..Default::default()
+        };
+        assert_eq!(outcome_status(&failed), NodeStatus::Failed);
+
+        let completed = core::TurnOutcome {
+            terminal: Some(core::TerminalState::Completed),
+            ..Default::default()
+        };
+        assert_eq!(outcome_status(&completed), NodeStatus::Done);
+
+        let cancelled = core::TurnOutcome {
+            terminal: Some(core::TerminalState::Cancelled),
+            ..Default::default()
+        };
+        assert_eq!(outcome_status(&cancelled), NodeStatus::Cancelled);
+    }
 }

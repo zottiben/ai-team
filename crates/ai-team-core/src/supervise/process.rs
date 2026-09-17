@@ -147,8 +147,12 @@ impl EveProcess {
             // on /eve/v1, and keeping these pipes open would need a reader forever.
             .stdout(Stdio::null())
             .stderr(Stdio::null())
-            // The one that matters: a dropped handle must not leave a server behind.
             .kill_on_drop(true);
+        // npx is a wrapper. Killing only it leaves its Node child serving forever, so
+        // every supervised tree gets its own process group and the group is what Drop
+        // terminates. This is available on both daily-use targets (macOS and Linux).
+        #[cfg(unix)]
+        command.process_group(0);
         env.apply(&mut command);
 
         let child = command
@@ -202,10 +206,38 @@ impl EveProcess {
 
     /// Stop it, and wait for it to actually be gone.
     pub async fn stop(mut self) -> Result<()> {
-        self.child.start_kill()?;
-        let _ = tokio::time::timeout(Duration::from_secs(10), self.child.wait()).await;
+        signal_process_tree(&mut self.child, "TERM");
+        if tokio::time::timeout(Duration::from_secs(10), self.child.wait())
+            .await
+            .is_err()
+        {
+            signal_process_tree(&mut self.child, "KILL");
+            let _ = self.child.wait().await;
+        }
         Ok(())
     }
+}
+
+impl Drop for EveProcess {
+    fn drop(&mut self) {
+        signal_process_tree(&mut self.child, "KILL");
+    }
+}
+
+fn signal_process_tree(child: &mut Child, signal: &str) {
+    #[cfg(unix)]
+    if let Some(pid) = child.id() {
+        // Negative PID means process group. stdout/stderr are null because this also
+        // runs from Drop, where emitting a secondary cleanup error would hide the first.
+        let _ = std::process::Command::new("kill")
+            .args([format!("-{signal}"), format!("-{pid}")])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+    // Windows has no Unix process groups; this at least preserves the old direct-child
+    // guarantee there. macOS and Linux take the group path above.
+    let _ = child.start_kill();
 }
 
 /// Ask the OS for a free loopback port.
@@ -346,26 +378,57 @@ mod tests {
         assert!(bound.is_ok(), "port {port} was not released");
     }
 
+    #[cfg(unix)]
     #[tokio::test]
-    async fn a_started_process_is_killed_when_its_handle_drops() {
-        // The property that keeps a developer's machine from filling with orphaned Node
-        // servers. Uses `sleep` rather than eve so the test needs no build.
-        let mut command = Command::new("sleep");
-        command.arg("300").kill_on_drop(true).stdout(Stdio::null());
+    async fn a_wrappers_descendant_is_killed_when_the_eve_handle_drops() {
+        // npx -> node is the real shape. Testing `sleep` directly only proves that
+        // kill_on_drop kills the wrapper, which is how seven old eve servers escaped.
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("child.pid");
+        let script = format!("sleep 300 & echo $! > {}; wait", pid_file.display());
+        let mut command = Command::new("sh");
+        command
+            .args(["-c", &script])
+            .process_group(0)
+            .kill_on_drop(true)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
         let child = command.spawn().unwrap();
-        let pid = child.id().expect("a pid");
+        let process = EveProcess {
+            child,
+            port: 0,
+            token: "test".into(),
+        };
 
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        while !pid_file.exists() && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let descendant: u32 = std::fs::read_to_string(&pid_file)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        assert!(process_alive(descendant));
+
+        drop(process);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        while process_alive(descendant) && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
         assert!(
-            std::path::Path::new(&format!("/proc/{pid}")).exists() || cfg!(target_os = "macos")
+            !process_alive(descendant),
+            "descendant {descendant} outlived its eve handle"
         );
-        drop(child);
+    }
 
-        // kill_on_drop reaps asynchronously; give the runtime a moment to do it.
-        tokio::time::sleep(Duration::from_millis(300)).await;
-        let alive = std::process::Command::new("kill")
+    #[cfg(unix)]
+    fn process_alive(pid: u32) -> bool {
+        std::process::Command::new("kill")
             .args(["-0", &pid.to_string()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .status()
-            .is_ok_and(|s| s.success());
-        assert!(!alive, "process {pid} outlived its handle");
+            .is_ok_and(|status| status.success())
     }
 }

@@ -74,6 +74,15 @@ impl StreamEvent {
         )
     }
 
+    /// A terminal failure, rather than merely a failed step the model may repair.
+    pub fn is_failed_terminal(&self) -> bool {
+        matches!(self.kind.as_str(), "turn.failed" | "session.failed")
+    }
+
+    pub fn is_cancelled_terminal(&self) -> bool {
+        self.kind == "turn.cancelled"
+    }
+
     /// Does this event mean a human is being asked for something?
     pub fn is_awaiting_input(&self) -> bool {
         self.kind == "input.requested"

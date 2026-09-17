@@ -113,8 +113,10 @@ sql_enum! {
         /// as a model provider (D7).
         Claude => "claude",
         /// ChatGPT subscription, through eve's own `/login`.
+        #[serde(rename = "openai")]
         OpenAi => "openai",
         /// GLM Coding Plan - flat rate, openai-compatible.
+        #[serde(rename = "zai")]
         ZAi => "zai",
         /// The ailocal gateway on loopback. Free, and always allowed.
         Local => "local",

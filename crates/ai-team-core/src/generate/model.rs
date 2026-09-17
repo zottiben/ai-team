@@ -1,10 +1,9 @@
 //! Turning an `agent` row's provider and model into the expression `agent.ts` uses.
 //!
-//! Only the providers that can be generated *correctly* are generated (D11). Emitting
-//! eve's `anthropic()` or `openai()` helpers would be worse than refusing: both read an
-//! API key from the environment, which is exactly the metered path D8 exists to
-//! prevent, and a Claude node wired without the `createAiSdkMcpServer` bridge would
-//! reach the model with no tools at all.
+//! Only the providers that can be generated *correctly* are generated (D11). In
+//! particular, eve exports both `chatgpt()` (the local subscription token broker) and
+//! `openai()` (a metered API key) from the same module. The spelling here is a security
+//! boundary, not a convenience.
 
 use crate::error::{Error, Result};
 use crate::model::{Agent, Provider};
@@ -20,16 +19,14 @@ pub struct ModelExpression {
     pub env: Vec<&'static str>,
 }
 
-/// The ailocal gateway. Free, on loopback, and allowed by every machine profile.
-const AILOCAL_BASE_URL: &str = "http://127.0.0.1:8081/v1";
 /// z.ai's GLM Coding Plan, openai-compatible and flat-rate.
 const ZAI_BASE_URL: &str = "https://api.z.ai/api/coding/paas/v4";
 
-pub(super) fn model_expression(agent: &Agent) -> Result<ModelExpression> {
+pub(super) fn model_expression(agent: &Agent, ailocal_base_url: &str) -> Result<ModelExpression> {
     match agent.provider {
         Provider::Local => Ok(openai_compatible(
             "ailocal",
-            AILOCAL_BASE_URL,
+            ailocal_base_url,
             "AI_TEAM_AILOCAL_KEY",
             &agent.model,
         )),
@@ -39,25 +36,23 @@ pub(super) fn model_expression(agent: &Agent) -> Result<ModelExpression> {
             "AI_TEAM_ZAI_KEY",
             &agent.model,
         )),
-        // Both are real subscription paths, and both need a slice's worth of work that
-        // has not happened yet. Refusing names the slice rather than shipping something
-        // that looks wired and is not.
+        Provider::OpenAi => Ok(ModelExpression {
+            imports: vec!["import { chatgpt } from \"eve/models/openai\";".to_string()],
+            expression: format!("chatgpt({:?})", agent.model),
+            env: Vec::new(),
+        }),
+        // The Claude subscription is real but its tool bridge is the next slice.
+        // Refusing names it rather than shipping a model that reaches no authored tool.
         Provider::Claude => Err(Error::invalid(format!(
             "agent {:?} is on the Claude subscription, which reaches eve through the \
              createAiSdkMcpServer bridge - that is M1-S6. Until then, point it at `local` \
              or `zai`.",
             agent.role
         ))),
-        Provider::OpenAi => Err(Error::invalid(format!(
-            "agent {:?} is on the ChatGPT subscription, whose credential path under \
-             `eve start` is unproven - that is M1-S5. Until then, point it at `local` or \
-             `zai`.",
-            agent.role
-        ))),
     }
 }
 
-/// Both remaining providers speak the OpenAI wire format, so they differ only in base
+/// The compatible providers speak the OpenAI wire format, so they differ only in base
 /// URL and key.
 fn openai_compatible(
     name: &str,
@@ -82,8 +77,8 @@ fn openai_compatible(
 /// eve refuses to compile compaction for a model it cannot size, and it can only size AI
 /// Gateway model IDs - which D8 guarantees we never use. So a number is always required.
 /// 32k is deliberately conservative: compacting sooner than necessary costs a summary
-/// call, while overflowing the window fails the turn. M1-S5 resolves the real value from
-/// the provider; until then this is the floor a modern local model comfortably clears.
+/// call, while overflowing the window fails the turn. Explicit team values survive an
+/// allowed selection; a cross-provider fallback uses this safe floor.
 pub(super) const FALLBACK_CONTEXT_WINDOW: i64 = 32_768;
 
 /// The context window to emit for an agent.
@@ -129,15 +124,23 @@ mod tests {
 
     #[test]
     fn local_points_at_the_ailocal_gateway_on_loopback() {
-        let expr = model_expression(&agent_on(Provider::Local, "auto")).unwrap();
-        assert!(expr.expression.contains("127.0.0.1:8081"));
+        let expr = model_expression(
+            &agent_on(Provider::Local, "auto"),
+            "http://127.0.0.1:9191/v1",
+        )
+        .unwrap();
+        assert!(expr.expression.contains("127.0.0.1:9191"));
         assert!(expr.expression.contains("\"auto\""));
         assert_eq!(expr.env, ["AI_TEAM_AILOCAL_KEY"]);
     }
 
     #[test]
     fn zai_points_at_the_coding_plan_endpoint() {
-        let expr = model_expression(&agent_on(Provider::ZAi, "glm-4.6")).unwrap();
+        let expr = model_expression(
+            &agent_on(Provider::ZAi, "glm-4.6"),
+            "http://127.0.0.1:8081/v1",
+        )
+        .unwrap();
         assert!(expr.expression.contains("api.z.ai/api/coding/paas/v4"));
         assert!(expr.expression.contains("\"glm-4.6\""));
     }
@@ -146,8 +149,9 @@ mod tests {
     fn no_generated_expression_ever_names_a_metered_key() {
         // The regression this guards: someone "fixes" an unsupported provider by
         // reaching for eve's anthropic()/openai() helpers, which read these.
-        for provider in [Provider::Local, Provider::ZAi] {
-            let expr = model_expression(&agent_on(provider, "m")).unwrap();
+        for provider in [Provider::OpenAi, Provider::Local, Provider::ZAi] {
+            let expr =
+                model_expression(&agent_on(provider, "m"), "http://127.0.0.1:8081/v1").unwrap();
             let rendered = format!("{} {}", expr.imports.join(" "), expr.expression);
             assert!(!rendered.contains("OPENAI_API_KEY"), "{rendered}");
             assert!(!rendered.contains("ANTHROPIC_API_KEY"), "{rendered}");
@@ -156,17 +160,32 @@ mod tests {
     }
 
     #[test]
-    fn the_unbuilt_providers_refuse_and_name_their_slice() {
-        let claude = model_expression(&agent_on(Provider::Claude, "sonnet")).unwrap_err();
+    fn chatgpt_is_the_subscription_helper_not_the_metered_openai_helper() {
+        let expr = model_expression(
+            &agent_on(Provider::OpenAi, "gpt-5.6-luna-fast"),
+            "http://127.0.0.1:8081/v1",
+        )
+        .unwrap();
+        assert!(expr.imports[0].contains("chatgpt"));
+        assert!(expr.expression.starts_with("chatgpt("));
+        assert!(expr.env.is_empty());
+
+        let claude = model_expression(
+            &agent_on(Provider::Claude, "sonnet"),
+            "http://127.0.0.1:8081/v1",
+        )
+        .unwrap_err();
         assert!(claude.to_string().contains("M1-S6"), "{claude}");
-        let openai = model_expression(&agent_on(Provider::OpenAi, "gpt-5.6")).unwrap_err();
-        assert!(openai.to_string().contains("M1-S5"), "{openai}");
     }
 
     #[test]
     fn a_model_name_with_a_quote_in_it_cannot_break_out_of_the_literal() {
         // Model names come from the database, and the database is edited by a human.
-        let expr = model_expression(&agent_on(Provider::Local, "we\"ird")).unwrap();
+        let expr = model_expression(
+            &agent_on(Provider::Local, "we\"ird"),
+            "http://127.0.0.1:8081/v1",
+        )
+        .unwrap();
         assert!(
             expr.expression.contains(r#""we\"ird""#),
             "{}",

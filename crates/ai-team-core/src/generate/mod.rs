@@ -17,6 +17,7 @@ use std::path::{Path, PathBuf};
 pub use model::ModelExpression;
 
 use crate::error::{Error, Result};
+use crate::machine::{ModelRegistry, ModelResolution};
 use crate::model::{Agent, Team};
 use crate::store::Store;
 
@@ -39,6 +40,9 @@ pub struct GeneratedProject {
     /// Environment variables the supervisor must set for this project to resolve its
     /// models. Collected from the agents rather than assumed.
     pub required_env: Vec<&'static str>,
+    /// The policy result for every generated seat. A fallback is visible here, in the
+    /// terminal, and again as an event when the seat is dispatched.
+    pub resolutions: Vec<ModelResolution>,
 }
 
 impl GeneratedProject {
@@ -115,7 +119,51 @@ impl Store {
             .into_iter()
             .filter(|a| a.enabled)
             .collect();
-        render::project(&team, &agents, root.into())
+        let resolutions = agents
+            .iter()
+            .map(|agent| ModelResolution {
+                role: agent.role.clone(),
+                requested_provider: agent.provider,
+                requested_model: agent.model.clone(),
+                provider: agent.provider,
+                model: agent.model.clone(),
+                context_window: agent.context_window,
+                fallback_reason: None,
+            })
+            .collect();
+        render::project(
+            &team,
+            &agents,
+            root.into(),
+            "http://127.0.0.1:8081/v1",
+            resolutions,
+        )
+    }
+
+    /// Build for this machine, resolving every seat through its allow-list first.
+    ///
+    /// This does not replace the dispatch-time check: a generated directory is cached
+    /// output, whereas dispatch is the point at which permission has to be enforced.
+    pub fn generate_project_for_machine(
+        &self,
+        team_id: i64,
+        root: impl Into<PathBuf>,
+        registry: &ModelRegistry,
+    ) -> Result<GeneratedProject> {
+        let team = self.team(team_id)?;
+        let agents: Vec<Agent> = self
+            .agents(team_id)?
+            .into_iter()
+            .filter(|agent| agent.enabled)
+            .collect();
+        let (effective, resolutions) = registry.resolve_agents(&agents)?;
+        render::project(
+            &team,
+            &effective,
+            root.into(),
+            registry.ailocal_base_url(),
+            resolutions,
+        )
     }
 
     /// The conventional location for a project's generated eve project.

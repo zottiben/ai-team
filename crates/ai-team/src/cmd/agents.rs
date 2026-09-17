@@ -21,9 +21,11 @@ pub(crate) fn run(command: AgentsCommand) -> Result<()> {
                 .team_id
                 .with_context(|| format!("{} has no team - run `ait init` first", project.slug))?;
 
+            let registry =
+                ai_team_core::ModelRegistry::load().context("loading the machine profile")?;
             let root = store.agents_dir(&project.slug)?;
             let generated = store
-                .generate_project(team_id, &root)
+                .generate_project_for_machine(team_id, &root, &registry)
                 .context("generating the eve project")?;
 
             if dry_run {
@@ -40,13 +42,25 @@ pub(crate) fn run(command: AgentsCommand) -> Result<()> {
                 );
             }
 
-            if !generated.required_env.is_empty() {
+            for resolution in &generated.resolutions {
+                if let Some(notice) = resolution.notice() {
+                    println!("  fallback           {notice}");
+                }
+            }
+
+            let provider_keys: Vec<_> = generated
+                .required_env
+                .iter()
+                .copied()
+                .filter(|key| key.ends_with("_KEY"))
+                .collect();
+            if !provider_keys.is_empty() {
                 println!("\nThis project needs:");
-                for key in &generated.required_env {
-                    let state = if std::env::var_os(key).is_some() {
-                        "set"
+                for key in provider_keys {
+                    let state = if registry.provider_environment(&[key]).is_ok() {
+                        "configured"
                     } else {
-                        "NOT set"
+                        "NOT configured"
                     };
                     println!("  {key:<24} {state}");
                 }

@@ -6,7 +6,7 @@
 //! failure nobody notices until an agent does something it should not have been able to.
 
 use ai_team_core::{
-    Guardrails, NewProject, Provider, Store, ToolEffect, DEFAULT_ROSTER, ROOT_ROLE,
+    Guardrails, ModelRegistry, NewProject, Provider, Store, ToolEffect, DEFAULT_ROSTER, ROOT_ROLE,
 };
 
 fn seeded() -> (Store, i64, i64) {
@@ -202,6 +202,63 @@ fn a_seat_on_an_unbuilt_provider_refuses_to_generate() {
         .to_string();
     assert!(err.contains("M1-S6"), "{err}");
     assert!(err.contains("backend"), "{err}");
+}
+
+#[test]
+fn openai_uses_eves_chatgpt_subscription_helper() {
+    let (mut store, _, team) = seeded();
+    let orchestrator = store
+        .agents(team)
+        .unwrap()
+        .into_iter()
+        .find(|agent| agent.role == "orchestrator")
+        .unwrap();
+    store
+        .set_agent_model(orchestrator.id, Provider::OpenAi, "gpt-5.6-luna-fast")
+        .unwrap();
+
+    let generated = store.generate_project(team, "/tmp/unused").unwrap();
+    let root = &generated.file("agent/agent.ts").unwrap().contents;
+    assert!(root.contains("import { chatgpt } from \"eve/models/openai\""));
+    assert!(root.contains("chatgpt(\"gpt-5.6-luna-fast\")"));
+    assert!(
+        !root.contains("openai("),
+        "the metered helper must never be emitted"
+    );
+    assert!(!generated.required_env.contains(&"OPENAI_API_KEY"));
+}
+
+#[test]
+fn machine_generation_applies_the_same_visible_fallback_as_dispatch() {
+    let (mut store, _, team) = seeded();
+    let backend = store
+        .agents(team)
+        .unwrap()
+        .into_iter()
+        .find(|agent| agent.role == "backend")
+        .unwrap();
+    store
+        .set_agent_model(backend.id, Provider::ZAi, "glm-4.6")
+        .unwrap();
+
+    let generated = store
+        .generate_project_for_machine(team, "/tmp/unused", &ModelRegistry::local_only())
+        .unwrap();
+    let resolution = generated
+        .resolutions
+        .iter()
+        .find(|resolution| resolution.role == "backend")
+        .unwrap();
+    assert_eq!(resolution.provider, Provider::Local);
+    assert_eq!(resolution.model, "auto");
+    assert!(resolution.fell_back());
+
+    let backend_ts = &generated
+        .file("agent/subagents/backend/agent.ts")
+        .unwrap()
+        .contents;
+    assert!(backend_ts.contains(")(\"auto\")"), "{backend_ts}");
+    assert!(!backend_ts.contains("api.z.ai"), "{backend_ts}");
 }
 
 #[test]

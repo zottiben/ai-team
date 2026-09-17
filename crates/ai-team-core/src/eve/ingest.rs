@@ -13,6 +13,14 @@ use crate::model::Usage;
 use crate::store::Store;
 use crate::util::now;
 
+/// How a stream reached its terminal event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TerminalState {
+    Completed,
+    Failed,
+    Cancelled,
+}
+
 /// What one batch of stream events did.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Ingested {
@@ -27,8 +35,9 @@ pub struct Ingested {
     pub usage: Usage,
     /// Steps seen, which is what `node_run.turns` counts.
     pub steps: i64,
-    /// A terminal event arrived; the supervisor can stop reading.
-    pub finished: bool,
+    /// The terminal event, when one arrived. A failed step alone does not set this:
+    /// eve may repair a tool/model step and complete the same turn successfully.
+    pub terminal: Option<TerminalState>,
     /// The run is parked on a human.
     pub awaiting_input: bool,
 }
@@ -54,7 +63,13 @@ impl Store {
         // still tells us the turn finished.
         for event in events {
             if event.is_terminal() {
-                out.finished = true;
+                out.terminal = Some(if event.is_failed_terminal() {
+                    TerminalState::Failed
+                } else if event.is_cancelled_terminal() {
+                    TerminalState::Cancelled
+                } else {
+                    TerminalState::Completed
+                });
             }
             if event.is_awaiting_input() {
                 out.awaiting_input = true;
@@ -178,7 +193,14 @@ mod tests {
             .into_iter()
             .find(|a| a.role == "backend")
             .unwrap();
-        let node = store.dispatch(run.id, backend.id, Some("PR1")).unwrap();
+        let node = store
+            .dispatch(
+                run.id,
+                backend.id,
+                Some("PR1"),
+                &crate::ModelRegistry::local_only(),
+            )
+            .unwrap();
         (store, node.id)
     }
 
@@ -200,7 +222,7 @@ mod tests {
         let (mut store, node_id) = node();
         let out = store.ingest_ndjson(node_id, 0, TURN).unwrap();
 
-        assert!(out.finished, "session.waiting ends the turn");
+        assert_eq!(out.terminal, Some(TerminalState::Completed));
         assert_eq!(out.recorded, 6, "the six events worth keeping");
         assert_eq!(
             out.ignored, 3,
@@ -300,7 +322,41 @@ mod tests {
         );
         let out = store.ingest_ndjson(node_id, 0, &ndjson).unwrap();
         assert_eq!(out.recorded, 2);
-        assert!(out.finished);
+        assert_eq!(out.terminal, Some(TerminalState::Completed));
+    }
+
+    #[test]
+    fn only_a_terminal_failure_marks_the_turn_failed() {
+        let (mut store, node_id) = node();
+        let repaired = store
+            .ingest_ndjson(
+                node_id,
+                0,
+                r#"{"type":"step.failed","data":{"message":"retry me"},"meta":{"id":"evt_step"}}"#,
+            )
+            .unwrap();
+        assert_eq!(
+            repaired.terminal, None,
+            "a later retry may still finish the turn"
+        );
+
+        let failed = store
+            .ingest_ndjson(
+                node_id,
+                1,
+                r#"{"type":"turn.failed","data":{"message":"no credential"},"meta":{"id":"evt_turn"}}"#,
+            )
+            .unwrap();
+        assert_eq!(failed.terminal, Some(TerminalState::Failed));
+
+        let cancelled = store
+            .ingest_ndjson(
+                node_id,
+                2,
+                r#"{"type":"turn.cancelled","data":{},"meta":{"id":"evt_cancel"}}"#,
+            )
+            .unwrap();
+        assert_eq!(cancelled.terminal, Some(TerminalState::Cancelled));
     }
 
     #[test]
@@ -354,7 +410,7 @@ mod tests {
             .unwrap();
 
         assert!(out.awaiting_input);
-        assert!(!out.finished, "parked is not finished");
+        assert_eq!(out.terminal, None, "parked is not finished");
 
         // And it is in the approvals queue the Console reads.
         let run_id = store.node_run(node_id).unwrap().run_id;

@@ -6,8 +6,9 @@
 //!
 //! The *model* each role prefers is deliberately not settled here - that is open
 //! question 10, and it depends on the machine profile (D8). Every preset ships pointing
-//! at `local`, which is free and always allowed, so a fresh install runs rather than
-//! failing on a provider the machine denies. M1-S5 replaces this with real routing.
+//! at `local`, which is free and is the only provider the default machine profile allows.
+//! A person's preferred models are team-row edits; dispatch resolves them through the
+//! current machine without rewriting the portable team.
 
 use crate::model::{NewAgent, Provider, Reasoning};
 
@@ -109,8 +110,7 @@ impl RolePreset {
 ///
 /// Not a model name: ailocal picks its own default per machine (whatever is installed
 /// and fits the VRAM budget), so naming one here would be a guess that is wrong on every
-/// machine but this one. `auto` means "ask the gateway", and M1-S5 is where that
-/// resolution actually happens.
+/// machine but this one. `auto` means "ask the gateway".
 pub const DEFAULT_LOCAL_MODEL: &str = "auto";
 
 pub fn preset(role: &str) -> Option<&'static RolePreset> {

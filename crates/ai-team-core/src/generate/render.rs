@@ -29,7 +29,13 @@ const AI_SDK_VERSION: &str = "^7.0.105";
 const ZOD_VERSION: &str = "^4.1.12";
 const OPENAI_COMPATIBLE_VERSION: &str = "^2.0.0";
 
-pub(crate) fn project(team: &Team, agents: &[Agent], root: PathBuf) -> Result<GeneratedProject> {
+pub(crate) fn project(
+    team: &Team,
+    agents: &[Agent],
+    root: PathBuf,
+    ailocal_base_url: &str,
+    resolutions: Vec<crate::ModelResolution>,
+) -> Result<GeneratedProject> {
     check_roster(team, agents)?;
 
     let mut files = Vec::new();
@@ -55,7 +61,7 @@ pub(crate) fn project(team: &Team, agents: &[Agent], root: PathBuf) -> Result<Ge
     files.push(file("agent/lib/worktree.ts", WORKTREE_LIB.to_string()));
     files.push(file("agent/lib/tools.ts", TOOLS_LIB.to_string()));
 
-    let root_model = model_expression(root_agent)?;
+    let root_model = model_expression(root_agent, ailocal_base_url)?;
     required_env.extend(root_model.env.iter().copied());
     files.push(file(
         "agent/agent.ts",
@@ -69,7 +75,7 @@ pub(crate) fn project(team: &Team, agents: &[Agent], root: PathBuf) -> Result<Ge
 
     for agent in &subagents {
         let dir = PathBuf::from("agent/subagents").join(&agent.role);
-        let model = model_expression(agent)?;
+        let model = model_expression(agent, ailocal_base_url)?;
         required_env.extend(model.env.iter().copied());
 
         files.push(file(
@@ -94,6 +100,7 @@ pub(crate) fn project(team: &Team, agents: &[Agent], root: PathBuf) -> Result<Ge
         root,
         files,
         required_env,
+        resolutions,
     })
 }
 

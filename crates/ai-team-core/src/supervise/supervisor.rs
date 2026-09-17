@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::error::{Error, Result};
-use crate::eve::StreamEvent;
+use crate::eve::{StreamEvent, TerminalState};
 use crate::model::{EventKind, NewEvent, Usage};
 use crate::store::Store;
 use crate::supervise::client::{approvals_in, Approval, EveClient};
@@ -49,8 +49,8 @@ pub struct TurnOutcome {
     pub duplicates: usize,
     pub usage: Usage,
     pub steps: i64,
-    /// The turn reached a terminal event.
-    pub finished: bool,
+    /// How the turn ended, or `None` while it is parked/in flight.
+    pub terminal: Option<TerminalState>,
     /// The turn is parked on these.
     pub approvals: Vec<Approval>,
 }
@@ -235,7 +235,9 @@ where
                             outcome.duplicates += batch.duplicates;
                             outcome.usage += batch.usage;
                             outcome.steps += batch.steps;
-                            outcome.finished |= batch.finished;
+                            if batch.terminal.is_some() {
+                                outcome.terminal = batch.terminal;
+                            }
                             buffer.clear();
                         }
                         Err(e) => {
@@ -268,7 +270,9 @@ where
         outcome.duplicates += batch.duplicates;
         outcome.usage += batch.usage;
         outcome.steps += batch.steps;
-        outcome.finished |= batch.finished;
+        if batch.terminal.is_some() {
+            outcome.terminal = batch.terminal;
+        }
     }
 
     Ok(outcome)
@@ -334,7 +338,14 @@ mod tests {
             .into_iter()
             .find(|a| a.role == "backend")
             .unwrap();
-        let node = store.dispatch(run.id, agent.id, Some("PR1")).unwrap();
+        let node = store
+            .dispatch(
+                run.id,
+                agent.id,
+                Some("PR1"),
+                &crate::ModelRegistry::local_only(),
+            )
+            .unwrap();
         (store, run.id, node.id)
     }
 

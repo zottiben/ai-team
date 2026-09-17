@@ -3,7 +3,8 @@
 use rusqlite::{params, OptionalExtension, Row};
 
 use crate::error::{Error, Result};
-use crate::model::{NodeRun, NodeStatus, Provider, Run, RunStatus, RunTrigger, Usage};
+use crate::machine::ModelRegistry;
+use crate::model::{EventKind, NodeRun, NodeStatus, Provider, Run, RunStatus, RunTrigger, Usage};
 use crate::store::{non_empty, Store};
 use crate::util::now;
 
@@ -148,8 +149,12 @@ impl Store {
         run_id: i64,
         agent_id: i64,
         slice_key: Option<&str>,
+        registry: &ModelRegistry,
     ) -> Result<NodeRun> {
         let agent = self.agent(agent_id)?;
+        // The picker and generated project are not a permission boundary. Resolve again
+        // here so a scheduled, unattended run cannot reach a denied account (D8).
+        let resolution = registry.resolve(&agent)?;
         let at = now();
 
         // A retry is a new row, not an edit. Losing the first attempt would lose the
@@ -171,14 +176,42 @@ impl Store {
                     run_id,
                     agent_id,
                     agent.role,
-                    agent.provider,
-                    agent.model,
+                    resolution.provider,
+                    resolution.model,
                     attempt,
                     slice_key,
                     at
                 ],
             )?;
-            Ok(tx.last_insert_rowid())
+            let node_id = tx.last_insert_rowid();
+            if let Some(summary) = resolution.notice() {
+                let payload = serde_json::to_string(&serde_json::json!({
+                    "requested": {
+                        "provider": resolution.requested_provider,
+                        "model": resolution.requested_model,
+                    },
+                    "selected": {
+                        "provider": resolution.provider,
+                        "model": resolution.model,
+                    },
+                    "reason": resolution.fallback_reason,
+                }))?;
+                tx.execute(
+                    "INSERT INTO event
+                       (run_id, node_run_id, at, kind, actor, summary, payload_json)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    params![
+                        run_id,
+                        node_id,
+                        at,
+                        EventKind::Note,
+                        agent.role,
+                        summary,
+                        payload
+                    ],
+                )?;
+            }
+            Ok(node_id)
         })?;
 
         self.node_run(id)
@@ -507,11 +540,25 @@ mod tests {
             .unwrap();
         let agent = backend(&s, team);
 
-        let first = s.dispatch(run.id, agent, Some("PR1")).unwrap();
+        let first = s
+            .dispatch(
+                run.id,
+                agent,
+                Some("PR1"),
+                &crate::ModelRegistry::local_only(),
+            )
+            .unwrap();
         assert_eq!(first.attempt, 1);
         s.block_node(first.id, "verifier rejected it").unwrap();
 
-        let second = s.dispatch(run.id, agent, Some("PR1")).unwrap();
+        let second = s
+            .dispatch(
+                run.id,
+                agent,
+                Some("PR1"),
+                &crate::ModelRegistry::local_only(),
+            )
+            .unwrap();
         assert_eq!(second.attempt, 2);
         assert_ne!(second.id, first.id);
 
@@ -526,6 +573,62 @@ mod tests {
     }
 
     #[test]
+    fn dispatch_enforces_the_machine_profile_and_records_a_visible_fallback() {
+        let (mut s, project, team) = seeded();
+        let run = s
+            .create_run(project, "ship it", RunTrigger::Scheduled)
+            .unwrap();
+        let agent_id = backend(&s, team);
+        s.set_agent_model(agent_id, Provider::ZAi, "glm-4.6")
+            .unwrap();
+
+        // The default machine policy denies every account provider and permits local.
+        // Scheduled is deliberate: this is the path that has no picker or human nearby.
+        let node = s
+            .dispatch(
+                run.id,
+                agent_id,
+                Some("PR1"),
+                &crate::ModelRegistry::local_only(),
+            )
+            .unwrap();
+        assert_eq!(node.provider, Provider::Local);
+        assert_eq!(node.model, "auto");
+        // Team intent stays portable; only this run's historical snapshot is resolved.
+        assert_eq!(s.agent(agent_id).unwrap().provider, Provider::ZAi);
+
+        let events = s.node_events(node.id, 10).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, EventKind::Note);
+        assert!(events[0].summary.contains("zai/glm-4.6 -> local/auto"));
+        assert_eq!(
+            events[0].payload.as_ref().unwrap()["requested"]["provider"],
+            "zai"
+        );
+    }
+
+    #[test]
+    fn dispatch_refuses_when_the_preference_and_every_fallback_are_denied() {
+        let (mut s, project, team) = seeded();
+        let run = s
+            .create_run(project, "ship it", RunTrigger::Scheduled)
+            .unwrap();
+        let source = "version=1\nfallback=[\"claude\",\"openai\",\"zai\",\"local\"]\n\
+                      [providers]\nclaude=false\nopenai=false\nzai=false\nlocal=false\n";
+        let registry = crate::ModelRegistry::new(crate::MachineProfile::parse(source).unwrap());
+
+        let error = s
+            .dispatch(run.id, backend(&s, team), Some("PR1"), &registry)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("no allowed, implemented fallback"),
+            "{error}"
+        );
+        assert!(s.node_runs(run.id).unwrap().is_empty());
+    }
+
+    #[test]
     fn a_node_records_who_did_the_work_even_after_the_agent_changes() {
         let (mut s, project, team) = seeded();
         let run = s
@@ -533,7 +636,14 @@ mod tests {
             .unwrap();
         let agent = backend(&s, team);
 
-        let node = s.dispatch(run.id, agent, Some("PR1")).unwrap();
+        let node = s
+            .dispatch(
+                run.id,
+                agent,
+                Some("PR1"),
+                &crate::ModelRegistry::local_only(),
+            )
+            .unwrap();
         assert_eq!(node.provider, Provider::Local);
 
         s.set_agent_model(agent, Provider::ZAi, "glm-4.6").unwrap();
@@ -547,7 +657,14 @@ mod tests {
         let run = s
             .create_run(project, "ship it", RunTrigger::Manual)
             .unwrap();
-        let node = s.dispatch(run.id, backend(&s, team), Some("PR1")).unwrap();
+        let node = s
+            .dispatch(
+                run.id,
+                backend(&s, team),
+                Some("PR1"),
+                &crate::ModelRegistry::local_only(),
+            )
+            .unwrap();
 
         // The measured cold-then-warm Claude shape.
         s.record_usage(
@@ -599,7 +716,14 @@ mod tests {
                 Ok(())
             })
             .unwrap();
-        let node = s.dispatch(run.id, backend(&s, team), Some("PR1")).unwrap();
+        let node = s
+            .dispatch(
+                run.id,
+                backend(&s, team),
+                Some("PR1"),
+                &crate::ModelRegistry::local_only(),
+            )
+            .unwrap();
 
         assert!(!s.run_over_budget(run.id).unwrap());
         s.record_usage(
@@ -632,8 +756,22 @@ mod tests {
             .unwrap()
             .id;
 
-        let a = s.dispatch(run.id, backend_id, Some("PR1")).unwrap();
-        let b = s.dispatch(run.id, frontend_id, Some("PR2")).unwrap();
+        let a = s
+            .dispatch(
+                run.id,
+                backend_id,
+                Some("PR1"),
+                &crate::ModelRegistry::local_only(),
+            )
+            .unwrap();
+        let b = s
+            .dispatch(
+                run.id,
+                frontend_id,
+                Some("PR2"),
+                &crate::ModelRegistry::local_only(),
+            )
+            .unwrap();
         s.set_node_status(b.id, NodeStatus::Running).unwrap();
 
         s.block_node(a.id, "gate failed twice").unwrap();
@@ -650,7 +788,14 @@ mod tests {
         let run = s
             .create_run(project, "ship it", RunTrigger::Manual)
             .unwrap();
-        let node = s.dispatch(run.id, backend(&s, team), Some("PR1")).unwrap();
+        let node = s
+            .dispatch(
+                run.id,
+                backend(&s, team),
+                Some("PR1"),
+                &crate::ModelRegistry::local_only(),
+            )
+            .unwrap();
 
         let attached = s
             .attach_worktree(node.id, "/tmp/wt/PR1", Some("slice/PR1"), Some("lease-7"))

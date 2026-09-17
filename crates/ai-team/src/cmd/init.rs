@@ -12,6 +12,14 @@ use ai_team_core::{NewProject, NewRepo, ProjectKind, Store};
 use crate::cli::InitArgs;
 
 pub(crate) fn run(args: InitArgs) -> Result<()> {
+    let (profile_path, profile_created) = ai_team_core::ensure_machine_profile()?;
+    if profile_created {
+        println!(
+            "Created {} (local allowed; account providers denied)",
+            profile_path.display()
+        );
+    }
+
     let db_path = ai_team_core::default_db_path()?;
     let fresh = !db_path.exists();
     let mut store =

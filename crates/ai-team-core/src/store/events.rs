@@ -212,9 +212,21 @@ mod tests {
         let (mut s, run_id) = run();
         let team = s.project(1).unwrap().team_id.unwrap();
         let agent = s.agents(team).unwrap()[2].id;
-        let node = s.dispatch(run_id, agent, Some("PR1")).unwrap();
+        let node = s
+            .dispatch(
+                run_id,
+                agent,
+                Some("PR1"),
+                &crate::ModelRegistry::local_only(),
+            )
+            .unwrap();
         let other = s
-            .dispatch(run_id, s.agents(team).unwrap()[3].id, Some("PR2"))
+            .dispatch(
+                run_id,
+                s.agents(team).unwrap()[3].id,
+                Some("PR2"),
+                &crate::ModelRegistry::local_only(),
+            )
             .unwrap();
 
         s.append_event(

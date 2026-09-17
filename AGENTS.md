@@ -69,13 +69,16 @@ forbids some providers outright. Never introduce a metered API key path.
 | Provider | Auth |
 | --- | --- |
 | Claude | Claude subscription, via the OAuthed Claude Code CLI |
-| OpenAI | ChatGPT subscription, via eve `/login` |
+| OpenAI | ChatGPT subscription, via eve's `chatgpt()` helper and `/login` |
 | z.ai GLM | GLM Coding Plan (flat), openai-compatible at `https://api.z.ai/api/coding/paas/v4` |
 | local | free, openai-compatible at the ailocal gateway on `127.0.0.1:8081` |
 
 A machine profile (`~/.config/ai-team/machine.toml`) allows or denies each provider and is
 enforced **at dispatch**, not only in the UI picker — a scheduled unattended run must not be
-able to reach a denied provider.
+able to reach a denied provider. `ait init` creates the local-only default. Its `fallback`
+array is a total ranking; a denied preference uses the first allowed, implemented provider
+and records a Note event. Do not fall back on a transient health failure: that would silently
+send work to a different account.
 
 ### 2. One runtime: eve (D7)
 Every agent is an eve node. There is no second executor and no Pi. A Claude-subscription
@@ -150,9 +153,10 @@ is a process ai-team started on `127.0.0.1`, so a TLS stack and a connection poo
 be cost with no benefit — but **chunked framing has to be right**: eve streams NDJSON and
 a chunk boundary lands mid-line constantly, so only whole lines are handed on.
 
-One eve process per leased worktree means one `EveProcess`, and it is `kill_on_drop` —
-leaking a Node server per crash is how a machine ends up full of them. Read both child
-pipes concurrently: draining stdout first deadlocks the moment npm fills stderr.
+One eve process per leased worktree means one `EveProcess`. `npx` is only a wrapper, so
+`kill_on_drop` on its direct child is insufficient — start it in its own Unix process group
+and signal the **group**, or the Node server survives. Read both child pipes concurrently:
+draining stdout first deadlocks the moment npm fills stderr.
 
 ### 7. Ingest eve's stream exactly once
 `event.eve_event_id` is eve's `meta.id` under a partial unique index, and ingest uses
