@@ -24,6 +24,7 @@ mod roles;
 mod store;
 mod supervise;
 mod util;
+mod workflow;
 
 pub use context::{figma_links, parse_url, Source, CLICKUP_READ_TOOLS, FIGMA_READ_TOOLS};
 pub use db::Db;
@@ -54,6 +55,7 @@ pub use supervise::{
     ProgressLine, Supervisor, TurnOutcome,
 };
 pub use util::{normalise_remote, now, slugify, zone_matches};
+pub use workflow::{run as run_workflow, Progress, Request};
 
 /// The workspace version, compiled in.
 ///

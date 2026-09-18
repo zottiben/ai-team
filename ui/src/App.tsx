@@ -1,12 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { Approvals, Prompt, Seats } from "./Console";
 import {
+  approvals as fetchApprovals,
   health,
   projects as fetchProjects,
   run as fetchRun,
   runEvents as fetchRunEvents,
   runs as fetchRuns,
   subscribe,
+  type Approval,
   type Health,
   type Project,
   type Run,
@@ -30,6 +33,7 @@ export default function App() {
   const [selected, setSelected] = useState<number | null>(null);
   const [detail, setDetail] = useState<RunDetail | null>(null);
   const [events, setEvents] = useState<RunEvent[]>([]);
+  const [pending, setPending] = useState<Approval[]>([]);
   const [overlay, setOverlay] = useState<null | "about">(null);
   const [expanded, setExpanded] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
@@ -64,15 +68,20 @@ export default function App() {
     if (selected === null) {
       setDetail(null);
       setEvents([]);
+      setPending([]);
       return;
     }
     try {
+      // The approvals are an addition to this panel, not the point of it. Folding them
+      // into the same failure as the run itself means one bad response blanks a view
+      // that could have rendered everything else.
       const [next, nextEvents] = await Promise.all([
         fetchRun(selected),
         fetchRunEvents(selected),
       ]);
       setDetail(next);
       setEvents(nextEvents);
+      setPending(await fetchApprovals(selected).catch(() => []));
     } catch (error: unknown) {
       setProblem(error instanceof Error ? error.message : String(error));
     }
@@ -168,8 +177,17 @@ export default function App() {
 
       <main className="main">
         <div className="main__header">
-          <h2>Runs</h2>
+          <h2>Console</h2>
           {problem !== null && <span className="error">{problem}</span>}
+        </div>
+
+        <Prompt
+          project={projects.find((entry) => entry.id === project)?.slug ?? null}
+          onStarted={() => void refresh()}
+        />
+
+        <div className="main__header">
+          <h2>Runs</h2>
         </div>
 
         {shown.length === 0 && (
@@ -214,22 +232,16 @@ export default function App() {
           </span>
           <p className="muted">{detail.prompt}</p>
 
-          <div className="list">
-            {detail.nodes.map((node) => (
-              <div key={node.id} className="card">
-                <div className="card__row">
-                  <span className="status" data-status={node.status}>
-                    {node.role}
-                    {node.attempt > 1 && ` (attempt ${node.attempt})`}
-                  </span>
-                  <span className="faint mono">{node.slice_key ?? ""}</span>
-                </div>
-                {node.branch !== null && <span className="faint mono">{node.branch}</span>}
-                {node.blocked_reason !== null && (
-                  <span className="error">{node.blocked_reason}</span>
-                )}
-              </div>
-            ))}
+          <Approvals run={detail} pending={pending} onAnswered={() => void refreshSelected()} />
+
+          <span className="dock__title">Team</span>
+          <Seats nodes={detail.nodes} />
+
+          <div className="card__row">
+            <span className="dock__title">Spent</span>
+            <span className="mono faint">
+              {detail.usage.tokens_in + detail.usage.tokens_out + detail.usage.cache_write} billable
+            </span>
           </div>
 
           <div className="card__row">

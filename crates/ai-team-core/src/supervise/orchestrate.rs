@@ -88,8 +88,11 @@ impl Orchestrator {
         store.set_node_status(node.id, NodeStatus::Running)?;
 
         let env = self.env(&self.repo)?;
-        let mut supervisor = Supervisor::new(&self.project_dir, env);
+        let mut supervisor = Supervisor::new(&self.project_dir, env.clone());
         let client = supervisor.start().await?;
+        if let Some(port) = supervisor.port() {
+            store.attach_eve(node.id, port, &env.token)?;
+        }
 
         let outcome = match run_turn(store, node.id, &client, prompt, on_event).await {
             Ok((_, outcome)) => outcome,
@@ -110,8 +113,16 @@ impl Orchestrator {
     ///
     /// Unroutable slices are reported rather than guessed at: dispatching a slice to a
     /// seat that does not own its paths is how two agents end up in one file.
-    pub async fn routable(&self, store: &Store) -> Result<Routing> {
-        route(store, self.team_id, self.planner.slices().await?)
+    /// The slices the board currently offers. Fetched separately from routing them so
+    /// no database borrow is held across the call to ai-planner - which would make every
+    /// future containing this one unspawnable, since a connection is not `Sync`.
+    pub async fn offered(&self) -> Result<Vec<Slice>> {
+        self.planner.slices().await
+    }
+
+    /// Which of those this team can build, and who builds each.
+    pub fn routable(&self, store: &Store, slices: Vec<Slice>) -> Result<Routing> {
+        route(store, self.team_id, slices)
     }
 
     /// Phase two: build the ready slices, several at a time.
@@ -127,7 +138,8 @@ impl Orchestrator {
     where
         F: FnMut(&str) + Send,
     {
-        let (routed, unrouted) = self.routable(store).await?;
+        let offered = self.offered().await?;
+        let (routed, unrouted) = self.routable(store, offered)?;
         let mut out = Orchestration {
             unrouted,
             dispatched: Vec::new(),
@@ -709,6 +721,11 @@ async fn take_turn(
     let mut supervisor = Supervisor::new(project_dir, env.clone());
     let turn = async {
         let client = supervisor.start().await?;
+        // Recorded as soon as it serves: a window opened mid-run needs this to reach an
+        // agent this process started, including to answer what it is parked on.
+        if let Some(port) = supervisor.port() {
+            store.attach_eve(node_run_id, port, &env.token)?;
+        }
         let (_, outcome) = run_turn(store, node_run_id, &client, instruction, |_| {}).await?;
         Ok::<_, Error>(outcome)
     }
@@ -960,6 +977,11 @@ async fn check(
     let mut supervisor = Supervisor::new(project_dir, env.clone());
     let verdict = async {
         let client = supervisor.start().await?;
+        // The verifier can park on a question too, and an unanswerable one stalls the
+        // whole slice. Recorded for the same reason every other node's is.
+        if let Some(port) = supervisor.port() {
+            store.attach_eve(node.id, port, &env.token)?;
+        }
         let (_, outcome) = run_turn(
             store,
             node.id,

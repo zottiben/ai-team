@@ -1,203 +1,104 @@
 //! `ait run` without `--worktree`: plan, then build the ready slices in parallel.
 //!
-//! The ordering lives in core's `Orchestrator`. This is the surface: resolve what the
-//! run needs, build the generated project once, and report what happened in the terms a
-//! human thinks in - slices, seats and worktrees.
+//! The ordering lives in core's `run_workflow`, because the window starts runs too and
+//! two copies of that sequence would drift. This is the terminal's view of it: turn each
+//! step into a line, and report what came back in the terms a human thinks in - slices,
+//! seats and branches.
+
+use std::io::{IsTerminal, Write};
+use std::time::Instant;
 
 use anyhow::{Context, Result};
 
 use ai_team_core as core;
-use ai_team_core::{NodeStatus, Planner, RunStatus, RunTrigger, Store, Worktrees};
+use ai_team_core::{NodeStatus, Store};
 
 use crate::cli::RunArgs;
 
 pub(crate) async fn run(args: RunArgs) -> Result<()> {
-    let db = core::default_db_path()?;
-    let mut store = Store::open(&db).with_context(|| format!("opening {}", db.display()))?;
-    let registry = core::ModelRegistry::load().context("loading the machine profile")?;
-
-    let project = store.find_project(&args.project)?;
-    let team_id = project
-        .team_id
-        .with_context(|| format!("{} has no team - run `ait init` first", project.slug))?;
-    let team = store.team(team_id)?;
-
-    // The repository is where the plan lives and where the worktree pool is rooted. A
-    // project with no repo attached (D6 allows that) has nowhere to lease from, and
-    // saying so beats leasing out of whatever directory the shell happened to be in.
-    let (repo, planner, worktrees) = neighbours(&store, &project, args.plan.as_deref()).await?;
-
-    // Does the board already have work? A second `ait run` on a plan that is mid-flight
-    // should pick that up rather than plan it again: planning twice gives somebody the
-    // same slice twice, and the duplicate is only noticed once two agents are building
-    // it. `--replan` is how you ask for a new plan anyway.
-    let ready = planner.slices().await.map_or(0, |slices| {
-        slices
-            .into_iter()
-            .filter(ai_team_core::Slice::is_dispatchable)
-            .count()
-    });
-    let planning = args.replan || ready == 0;
-
-    let prompt = match (&args.prompt, planning) {
-        (Some(prompt), _) => prompt.clone(),
-        // Nothing to plan from and nothing ready: there is no work to do either way.
-        (None, true) => anyhow::bail!(
-            "nothing on the plan is ready to build, so there is nothing to pick up. \
-             Give a prompt to plan from."
-        ),
-        (None, false) => format!("build the {ready} ready slice(s)"),
+    let request = core::Request {
+        project: args.project.clone(),
+        prompt: args.prompt.clone(),
+        plan: args.plan.clone(),
+        width: args.width,
+        replan: args.replan,
+        plan_only: args.plan_only,
     };
 
-    let run = store.create_run(project.id, &prompt, RunTrigger::Manual)?;
-    println!("run {} on {}", run.id, repo.display());
+    // A carriage return only redraws on a terminal. Piped to a file or a CI log it runs
+    // every line together into one unreadable smear, so the fallback is periodic.
+    let redraw = std::io::stdout().is_terminal();
+    let started = Instant::now();
+    let mut build_lines = 0usize;
 
-    // Always regenerate: the team rows are the source of truth (D2).
-    let project_dir = store.agents_dir(&project.slug)?;
-    let generated = store.generate_project_for_machine(team_id, &project_dir, &registry)?;
-    generated.write()?;
-    println!("generated {} files", generated.files.len());
-    for resolution in &generated.resolutions {
-        if let Some(notice) = resolution.notice() {
-            println!("  fallback           {notice}");
-        }
-    }
+    let done = core::run_workflow(&request, |progress| {
+        report(progress, redraw, started, &mut build_lines);
+    })
+    .await
+    .context("running the workflow")?;
 
-    // Built once, then started once per lease: the project is the team, and every node
-    // in this run is a seat on it.
-    let width = args
-        .width
-        .unwrap_or(usize::try_from(team.guardrails.parallel_width).unwrap_or(2));
-    let orchestrator = core::Orchestrator {
-        db_path: db.clone(),
-        project_dir: project_dir.clone(),
-        repo: repo.clone(),
-        run_id: run.id,
-        team_id,
-        registry: registry.clone(),
-        required_env: generated.required_env.clone(),
-        parallel_width: width,
-        planner,
-        worktrees,
-    };
-
-    let supervisor = orchestrator.builder()?;
-    crate::cmd::run::build(&supervisor, &mut store, run.id).await?;
-
-    // --- plan -----------------------------------------------------------------------
-    if planning {
-        plan(&orchestrator, &mut store, run.id, &prompt).await?;
-    } else {
-        println!(
-            "\n{ready} slice(s) already ready, so planning was skipped.{}",
-            if args.prompt.is_some() {
-                " Your prompt was not planned from - pass --replan for that."
-            } else {
-                ""
-            }
-        );
-    }
     if args.plan_only {
-        store.set_run_status(run.id, RunStatus::Done)?;
-        if planning {
-            println!("\nplan written. `aip show` reads it.");
-        }
+        println!("\nplan written. `aip show` reads it.");
         return Ok(());
     }
 
-    // --- build ----------------------------------------------------------------------
-    store.set_run_status(run.id, RunStatus::Running)?;
-    if let Some(note) = orchestrator.verifier_note(&store)? {
-        // Said before the work rather than after: it changes how much the green at the
-        // end is worth, and that is worth knowing up front.
-        println!("\nnote: {note}");
-        store.append_event(
-            run.id,
-            core::NewEvent::new(core::EventKind::Note, note).by("orchestrator"),
-        )?;
-    }
-    println!("\ndispatching (width {width})");
-    let done = orchestrator
-        .build_slices(&mut store, |line| println!("  {line}"))
-        .await?;
-
-    report(&mut store, run.id, &done)
+    let db = core::default_db_path()?;
+    let mut store = Store::open(&db)?;
+    summarise(&mut store, &done)
 }
 
-/// Where the work happens, and the two tools that make it possible.
-///
-/// Both are checked before anything is created: a run that cannot lease a worktree has
-/// nothing to do, and finding that out after the plan is written wastes a turn.
-async fn neighbours(
-    store: &Store,
-    project: &ai_team_core::Project,
-    plan: Option<&str>,
-) -> Result<(std::path::PathBuf, Planner, Worktrees)> {
-    let repo = store
-        .project_repos(project.id)?
-        .into_iter()
-        .find_map(|repo| repo.main_path)
-        .with_context(|| {
-            format!(
-                "{} has no checkout attached, so there is nothing to lease worktrees from. \
-                 Run `ait init` in the repository, or pass --worktree to run a single turn.",
-                project.slug
-            )
-        })?;
-    let repo = std::path::PathBuf::from(repo)
-        .canonicalize()
-        .context("the project's checkout no longer exists")?;
-
-    let planner = match plan {
-        Some(plan) => Planner::at(&repo).for_plan(plan.to_string()),
-        None => Planner::at(&repo),
-    };
-    let worktrees = Worktrees::at(&repo);
-    if let Err(reason) = planner.check().await {
-        anyhow::bail!("{reason}");
-    }
-    if let Err(reason) = worktrees.check().await {
-        anyhow::bail!("{reason}");
-    }
-    Ok((repo, planner, worktrees))
-}
-
-/// The planning turn: one prompt in, an ai-planner plan out.
-async fn plan(
-    orchestrator: &core::Orchestrator,
-    store: &mut Store,
-    run_id: i64,
-    prompt: &str,
-) -> Result<()> {
-    store.set_run_status(run_id, RunStatus::Planning)?;
-    println!("\nplanning");
-    let outcome = orchestrator
-        .plan(store, prompt, |event| {
-            if let core::Disposition::Record(kind, summary) = event.classify() {
-                println!(
-                    "  {:<18} {}",
-                    format!("{kind:?}").to_lowercase(),
-                    truncate(&summary, 90)
-                );
+fn report(progress: core::Progress, redraw: bool, started: Instant, lines: &mut usize) {
+    match progress {
+        core::Progress::Started { run_id, repo } => {
+            println!("run {run_id} on {}", repo.display());
+        }
+        core::Progress::Generated { files, fallbacks } => {
+            println!("generated {files} files");
+            for notice in fallbacks {
+                println!("  fallback           {notice}");
             }
-        })
-        .await
-        .context("the orchestrator could not write a plan")?;
-
-    if core::outcome_status(&outcome) != NodeStatus::Done {
-        store.set_run_status(run_id, RunStatus::Failed)?;
-        anyhow::bail!("planning did not finish - see `ait db open`");
+        }
+        core::Progress::Building(build) => {
+            *lines += 1;
+            if redraw {
+                print!(
+                    "\r  {} {:>5} lines  {:.0}s  {:<50}",
+                    build.phase.as_str(),
+                    lines,
+                    started.elapsed().as_secs_f32(),
+                    truncate(&build.line, 50)
+                );
+                let _ = std::io::stdout().flush();
+            } else if lines.is_multiple_of(25) {
+                println!("  {} {lines} lines", build.phase.as_str());
+            }
+        }
+        core::Progress::Built { lines: total } => {
+            if redraw {
+                print!("\r");
+            }
+            println!(
+                "  built in {:.0}s ({total} lines){:30}",
+                started.elapsed().as_secs_f32(),
+                ""
+            );
+        }
+        core::Progress::Planning => println!("\nplanning"),
+        core::Progress::PlanSkipped { ready } => {
+            println!("\n{ready} slice(s) already ready, so planning was skipped.");
+        }
+        core::Progress::Note(line) => println!("  {}", truncate(&line, 108)),
+        core::Progress::Caution(note) => println!("\nnote: {note}"),
+        core::Progress::Dispatching { width } => println!("\ndispatching (width {width})"),
+        core::Progress::Routed { slice, role } => println!("  {slice} -> {role}"),
     }
-    Ok(())
 }
 
-fn report(store: &mut Store, run_id: i64, done: &core::Orchestration) -> Result<()> {
+fn summarise(store: &mut Store, done: &core::Orchestration) -> Result<()> {
     for (key, reason) in &done.unrouted {
         println!("  {key} was not dispatched: {reason}");
     }
-
     if done.dispatched.is_empty() {
-        store.set_run_status(run_id, RunStatus::Blocked)?;
         println!("\nNothing was dispatched. `aip slice ls` shows what the plan says.");
         return Ok(());
     }
@@ -219,29 +120,23 @@ fn report(store: &mut Store, run_id: i64, done: &core::Orchestration) -> Result<
     println!();
     crate::cmd::table(&["SLICE", "SEAT", "RESULT", "BRANCH"], &rows);
 
-    let usage = store.run_usage(run_id)?;
-    println!(
-        "\ntokens  in {} out {} cache-read {} cache-write {}  (billable {})",
-        usage.tokens_in,
-        usage.tokens_out,
-        usage.cache_read,
-        usage.cache_write,
-        usage.billable()
-    );
+    if let Some(node) = done.dispatched.first() {
+        let usage = store.run_usage(store.node_run(node.node_run_id)?.run_id)?;
+        println!(
+            "\ntokens  in {} out {} cache-read {} cache-write {}  (billable {})",
+            usage.tokens_in,
+            usage.tokens_out,
+            usage.cache_read,
+            usage.cache_write,
+            usage.billable()
+        );
+    }
 
-    // A run is only done when every node it dispatched is. Anything else leaves the
-    // board and the database disagreeing about whether there is work left.
     let failed = done
         .dispatched
         .iter()
         .filter(|node| node.status != NodeStatus::Done)
         .count();
-    let status = if failed > 0 || !done.unrouted.is_empty() {
-        RunStatus::Blocked
-    } else {
-        RunStatus::Done
-    };
-    store.set_run_status(run_id, status)?;
     if failed > 0 {
         println!("{failed} node(s) did not finish - see `ait db open`");
     }

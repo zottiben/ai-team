@@ -354,3 +354,75 @@ button.card:hover {
   padding: 0 var(--space-1);
   color: var(--text-primary-faint);
 }
+
+/* --- the console -------------------------------------------------------------- */
+
+.prompt {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  background: var(--surface-panel-default);
+  border: 1px solid var(--border-subtle-default);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+}
+
+.prompt__input {
+  font: inherit;
+  color: var(--text-primary-default);
+  background: var(--surface-canvas-default);
+  border: 1px solid var(--border-subtle-default);
+  border-radius: var(--radius-sm);
+  padding: var(--space-3);
+  resize: vertical;
+  min-height: 4.5rem;
+}
+
+.prompt__input::placeholder {
+  color: var(--text-primary-faint);
+}
+
+.prompt__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+/* The org graph. A column of seats rather than a drawn graph: the edges in this team are
+ * always the same shape, and what changes - who is busy - reads better as a list. */
+.seats {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.seat {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border-subtle-default);
+  border-left-width: 3px;
+  border-left-color: var(--status-queued-default);
+  border-radius: var(--radius-sm);
+  background: var(--surface-panel-raised);
+}
+
+.seat[data-status="running"] { border-left-color: var(--status-running-default); }
+.seat[data-status="done"] { border-left-color: var(--status-done-default); }
+.seat[data-status="failed"] { border-left-color: var(--status-failed-default); }
+.seat[data-status="parked"] { border-left-color: var(--status-parked-default); }
+.seat[data-status="blocked"] { border-left-color: var(--status-blocked-default); }
+.seat[data-status="cancelled"] { border-left-color: var(--status-cancelled-default); }
+
+/* A run that is waiting is doing nothing, so this is loud on purpose. */
+.approvals {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--status-parked-default);
+  border-radius: var(--radius-md);
+  background: var(--accent-action-muted);
+}

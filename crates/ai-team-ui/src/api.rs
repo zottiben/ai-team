@@ -15,6 +15,7 @@ use std::time::Duration;
 use axum::extract::{Path, Query, State};
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::routing::get;
+use axum::Json as JsonBody;
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use tokio_stream::StreamExt as _;
@@ -36,6 +37,115 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/runs/{id}", get(run))
         .route("/runs/{id}/events", get(run_events))
         .route("/events", get(stream))
+        .route("/runs", axum::routing::post(start))
+        .route("/runs/{id}/approvals", get(approvals))
+        .route("/runs/{id}/approvals", axum::routing::post(answer))
+}
+
+#[derive(Debug, Deserialize)]
+struct StartRequest {
+    project: String,
+    prompt: Option<String>,
+    plan: Option<String>,
+    #[serde(default)]
+    replan: bool,
+    #[serde(default)]
+    plan_only: bool,
+}
+
+/// Start a run from the window.
+///
+/// Returns as soon as the work is under way rather than when it finishes: a run takes
+/// minutes, and an HTTP request that waits for one is a request that times out. The run
+/// records itself in the database as it goes, which is what the window is already
+/// watching - so "started" is genuinely all the caller needs.
+async fn start(
+    State(state): State<AppState>,
+    JsonBody(request): JsonBody<StartRequest>,
+) -> Result<Json<serde_json::Value>> {
+    // Checked here so an obvious mistake answers immediately rather than failing inside
+    // a task nobody is waiting on.
+    {
+        let store = state.store()?;
+        let store = store.lock();
+        store.find_project(&request.project)?;
+    }
+
+    let spec = ai_team_core::Request {
+        project: request.project,
+        prompt: request.prompt,
+        plan: request.plan,
+        width: None,
+        replan: request.replan,
+        plan_only: request.plan_only,
+    };
+    tokio::spawn(async move {
+        // Its own store: `run_workflow` opens one, and the handler's is held by a mutex
+        // the request will drop long before this finishes.
+        if let Err(error) = ai_team_core::run_workflow(&spec, |_| {}).await {
+            // Nothing to return to - the window reads the run's own rows, and a
+            // workflow that failed before creating one has nowhere to write. stderr is
+            // where `ait ui` is already being watched from.
+            eprintln!("ai-team: run failed: {error}");
+        }
+    });
+    Ok(Json(serde_json::json!({ "started": true })))
+}
+
+/// What a run is parked on, if anything.
+async fn approvals(State(state): State<AppState>, Path(id): Path<i64>) -> Result<Json<Vec<Event>>> {
+    let store = state.store()?;
+    let store = store.lock();
+    Ok(Json(store.pending_approvals(id)?))
+}
+
+#[derive(Debug, Deserialize)]
+struct AnswerRequest {
+    /// Which node asked. The question belongs to a turn, not to the run as a whole.
+    node: i64,
+    request: String,
+    /// The option the human picked, by the id eve offered it under.
+    chose: String,
+}
+
+/// Answer a question an agent asked.
+///
+/// The node records where its eve is listening and the secret it checks, so this reaches
+/// the agent over loopback whichever process started it - the window can answer what the
+/// terminal's run is parked on.
+async fn answer(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    JsonBody(request): JsonBody<AnswerRequest>,
+) -> Result<Json<serde_json::Value>> {
+    let (port, token, session) = {
+        let store = state.store()?;
+        let store = store.lock();
+        let node = store.node_run(request.node)?;
+        if node.run_id != id {
+            return Err(crate::error::Error::Core(ai_team_core::Error::invalid(
+                "that node belongs to a different run",
+            )));
+        }
+        (
+            node.eve_port,
+            node.eve_token.clone(),
+            node.session_id.clone(),
+        )
+    };
+
+    let (Some(port), Some(token), Some(session)) = (port, token, session) else {
+        return Err(crate::error::Error::Core(ai_team_core::Error::invalid(
+            "that node has no agent listening - it has already finished or its process \
+             has gone",
+        )));
+    };
+
+    let client = ai_team_core::EveClient::new(u16::try_from(port).unwrap_or(0), &token);
+    client
+        .respond(&session, &request.request, &request.chose)
+        .await?;
+    Ok(Json(serde_json::json!({ "answered": true })))
 }
 
 #[derive(Debug, Serialize)]

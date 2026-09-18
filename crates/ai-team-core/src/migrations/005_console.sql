@@ -1,0 +1,15 @@
+-- Let any ai-team process answer a question an agent asked (M3-S12).
+--
+-- `node_run.eve_port` already records where a node's supervised eve is listening, but
+-- the shared secret its channel checks was minted per supervising process and kept in
+-- memory. So a run started from the terminal could park on a question that the window
+-- could see and could not answer, which is the wrong half of a feature.
+--
+-- This does not widen the trust boundary. The token only authorises a loopback process
+-- that already holds this database - and anything that can read this file can already
+-- read every prompt, every event and every credential path in it. What it buys is that
+-- the window and the terminal are two doors into one run rather than two applications.
+--
+-- It is short-lived by construction: the token dies with the process that minted it, and
+-- a node whose eve has exited is unreachable whatever this column says.
+ALTER TABLE node_run ADD COLUMN eve_token TEXT;

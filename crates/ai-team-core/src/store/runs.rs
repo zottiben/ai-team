@@ -310,6 +310,26 @@ impl Store {
 
     /// Mark a node blocked. Its siblings are untouched on purpose: a failed node fails
     /// its own branch without poisoning the run (M2-S10).
+    /// Record where this node's supervised eve is listening, and the secret it checks.
+    ///
+    /// Written as soon as the process serves, so a window opened mid-run can reach an
+    /// agent the terminal started - including to answer a question it is parked on.
+    pub fn attach_eve(&mut self, node_run_id: i64, port: u16, token: &str) -> Result<()> {
+        let at = now();
+        self.db_mut().write(|tx| {
+            let changed = tx.execute(
+                "UPDATE node_run SET eve_port = ?2, eve_token = ?3, rev = rev + 1,
+                        updated_at = ?4
+                  WHERE id = ?1",
+                params![node_run_id, i64::from(port), token, at],
+            )?;
+            if changed == 0 {
+                return Err(Error::NoSuchNodeRun(node_run_id.to_string()));
+            }
+            Ok(())
+        })
+    }
+
     pub fn block_node(&mut self, node_run_id: i64, reason: &str) -> Result<NodeRun> {
         let at = now();
         self.db_mut().write(|tx| {
@@ -424,7 +444,7 @@ fn run_from_row(r: &Row<'_>) -> rusqlite::Result<Run> {
 }
 
 const NODE_SELECT: &str = "SELECT id, run_id, agent_id, role, provider, model, status, attempt, \
-     slice_key, worktree_path, branch, lease_id, session_id, eve_port, stream_cursor, \
+     slice_key, worktree_path, branch, lease_id, session_id, eve_port, eve_token, stream_cursor, \
      tokens_in, tokens_out, tokens_cache_read, tokens_cache_write, turns, blocked_reason, \
      started_at, ended_at, rev, created_at, updated_at FROM node_run";
 
@@ -444,20 +464,21 @@ fn node_from_row(r: &Row<'_>) -> rusqlite::Result<NodeRun> {
         lease_id: non_empty(r.get(11)?),
         session_id: non_empty(r.get(12)?),
         eve_port: r.get(13)?,
-        stream_cursor: r.get(14)?,
+        eve_token: non_empty(r.get(14)?),
+        stream_cursor: r.get(15)?,
         usage: Usage {
-            tokens_in: r.get(15)?,
-            tokens_out: r.get(16)?,
-            cache_read: r.get(17)?,
-            cache_write: r.get(18)?,
+            tokens_in: r.get(16)?,
+            tokens_out: r.get(17)?,
+            cache_read: r.get(18)?,
+            cache_write: r.get(19)?,
         },
-        turns: r.get(19)?,
-        blocked_reason: non_empty(r.get(20)?),
-        started_at: non_empty(r.get(21)?),
-        ended_at: non_empty(r.get(22)?),
-        rev: r.get(23)?,
-        created_at: r.get(24)?,
-        updated_at: r.get(25)?,
+        turns: r.get(20)?,
+        blocked_reason: non_empty(r.get(21)?),
+        started_at: non_empty(r.get(22)?),
+        ended_at: non_empty(r.get(23)?),
+        rev: r.get(24)?,
+        created_at: r.get(25)?,
+        updated_at: r.get(26)?,
     })
 }
 

@@ -458,8 +458,11 @@ pub struct NodeRun {
     pub branch: Option<String>,
     pub lease_id: Option<String>,
     pub session_id: Option<String>,
-    /// The loopback port this node's supervised `eve start` was given (D10).
+    /// The loopback port this node's supervised `eve start` was given (D10), and the
+    /// secret its channel checks. Recorded so the window can answer a question the
+    /// terminal's agent asked - see migration 005 for why that is not a wider boundary.
     pub eve_port: Option<i64>,
+    pub eve_token: Option<String>,
     /// How many of eve's stream events have been consumed. This is eve's own
     /// `startIndex`, an absolute count - resuming asks for `?startIndex=<this>`.
     pub stream_cursor: i64,

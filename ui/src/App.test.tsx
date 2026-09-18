@@ -88,6 +88,7 @@ it("opens a run in the dock and closes it with Escape", async () => {
       usage: { tokens_in: 1, tokens_out: 2, cache_read: 0, cache_write: 0 },
     },
     "/runs/7/events": [{ id: 1, kind: "note", actor: null, summary: "did the thing", at: "" }],
+    "/runs/7/approvals": [],
   });
 
   render(<App />);

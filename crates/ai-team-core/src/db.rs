@@ -21,6 +21,7 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
         "guardrails",
         include_str!("migrations/004_guardrails.sql"),
     ),
+    (5, "console", include_str!("migrations/005_console.sql")),
 ];
 
 /// The number of `v_` views the schema ships. Asserted in tests, because a view silently
@@ -173,13 +174,13 @@ mod tests {
         let path = tmp.path().join("team.db");
 
         let db = Db::open_or_create(&path).unwrap();
-        assert_eq!(db.schema_version().unwrap(), 4);
+        assert_eq!(db.schema_version().unwrap(), 5);
         assert_eq!(db.pending_migrations().unwrap(), 0);
         drop(db);
 
         // Re-opening must not re-apply anything.
         let db = Db::open(&path).unwrap();
-        assert_eq!(db.schema_version().unwrap(), 4);
+        assert_eq!(db.schema_version().unwrap(), 5);
 
         let views: i64 = db
             .conn()

@@ -119,6 +119,51 @@ export function runEvents(id: number, after?: number): Promise<RunEvent[]> {
   return api<RunEvent[]>(`/runs/${id}/events${after === undefined ? "" : `?after=${after}`}`);
 }
 
+export type Approval = {
+  id: number;
+  node_run_id: number | null;
+  summary: string;
+  payload: { request_id?: string; options?: { id: string; label: string }[] } | null;
+};
+
+export async function post<T>(path: string, body: unknown): Promise<T> {
+  const current = token();
+  const response = await fetch(`/api${path}`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      ...(current ? { [TOKEN_HEADER]: current } : {}),
+    },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    const problem = (await response.json().catch(() => null)) as { error?: string } | null;
+    throw new Error(problem?.error ?? `${path} failed with ${response.status}`);
+  }
+  return (await response.json()) as T;
+}
+
+/** Start a run. Returns once it is under way, not once it has finished. */
+export function startRun(request: {
+  project: string;
+  prompt?: string;
+  replan?: boolean;
+}): Promise<{ started: boolean }> {
+  return post("/runs", request);
+}
+
+export function approvals(runId: number): Promise<Approval[]> {
+  return api<Approval[]>(`/runs/${runId}/approvals`);
+}
+
+/** Answer what a parked node asked. */
+export function answer(
+  runId: number,
+  body: { node: number; request: string; chose: string },
+): Promise<{ answered: boolean }> {
+  return post(`/runs/${runId}/approvals`, body);
+}
+
 /**
  * Subscribe to "something changed".
  *
