@@ -61,7 +61,7 @@ isn't covered, ask and record it with `aip decision add`.
 
 ## Hard rules
 
-Fourteen decisions are recorded in the plan (`aip decision ls`). These eight are the ones
+Fourteen decisions are recorded in the plan (`aip decision ls`). These nine are the ones
 an agent will otherwise get wrong, so they are repeated here.
 
 ### 1. Subscription-backed models only (D8)
@@ -192,7 +192,23 @@ committed to an `ai-team/<slice>` branch *before* the lease goes back. The workt
 git worktrees of one repo, so the branch survives; the worktree does not. A turn that
 reports done but changed no file is recorded as **failed**, not done.
 
-### 8. Ingest eve's stream exactly once
+### 8. Done means this project's gates pass (M2-S9)
+`gates.rs` **discovers** the checks from the repo's own manifests - cargo, and only the
+npm scripts a `package.json` actually declares, including a nested `ui/`. Never hardcode
+`cargo test`: a verifier that runs the wrong command reports green for a check that never
+ran. No manifest means *no gates*, which is reported, not treated as a pass.
+
+The verifier is asked the three things a green test run does not answer - **existence,
+substantive, wired** - and answers `VERDICT: pass|reject`. Reading it **fails closed**:
+anything that is not an explicit pass is a rejection.
+
+Two rules the loop broke once each. A model's answer is captured from the **stream**
+(`StreamEvent::assistant_message`), never by filtering `Note` rows back out of the event
+table - ai-team's own dispatch notices live in that column and parsed as a verdict. And a
+repair is a **retry**, so every attempt dispatches its own `node_run` row: reusing one
+loses the earlier evidence and hands the next turn a finished session's cursor.
+
+### 9. Ingest eve's stream exactly once
 `event.eve_event_id` is eve's `meta.id` under a partial unique index, and ingest uses
 `INSERT OR IGNORE` — so a reconnect or a full rewind is free. Three traps that real turns
 exposed and fixtures did not: token and turn **counters** must only accumulate for rows

@@ -33,8 +33,8 @@ impl Store {
             tx.execute(
                 "INSERT INTO run
                    (project_id, team_id, prompt, trigger, parallel_width, budget_tokens,
-                    budget_seconds, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)",
+                    budget_seconds, max_repairs, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)",
                 params![
                     project_id,
                     project.team_id,
@@ -43,6 +43,7 @@ impl Store {
                     guardrails.parallel_width,
                     guardrails.budget_tokens_run,
                     guardrails.budget_seconds_run,
+                    guardrails.max_repairs,
                     at
                 ],
             )?;
@@ -387,8 +388,8 @@ impl Store {
 }
 
 const RUN_SELECT: &str = "SELECT id, project_id, team_id, prompt, status, trigger, plan_slug, \
-     parallel_width, budget_tokens, budget_seconds, blocked_reason, started_at, ended_at, rev, \
-     created_at, updated_at FROM run";
+     parallel_width, budget_tokens, budget_seconds, max_repairs, blocked_reason, started_at, \
+     ended_at, rev, created_at, updated_at FROM run";
 
 fn run_from_row(r: &Row<'_>) -> rusqlite::Result<Run> {
     Ok(Run {
@@ -402,12 +403,13 @@ fn run_from_row(r: &Row<'_>) -> rusqlite::Result<Run> {
         parallel_width: r.get(7)?,
         budget_tokens: r.get(8)?,
         budget_seconds: r.get(9)?,
-        blocked_reason: non_empty(r.get(10)?),
-        started_at: non_empty(r.get(11)?),
-        ended_at: non_empty(r.get(12)?),
-        rev: r.get(13)?,
-        created_at: r.get(14)?,
-        updated_at: r.get(15)?,
+        max_repairs: r.get(10)?,
+        blocked_reason: non_empty(r.get(11)?),
+        started_at: non_empty(r.get(12)?),
+        ended_at: non_empty(r.get(13)?),
+        rev: r.get(14)?,
+        created_at: r.get(15)?,
+        updated_at: r.get(16)?,
     })
 }
 

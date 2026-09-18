@@ -215,23 +215,80 @@ impl Orchestrator {
             )));
         }
 
-        let node = store.dispatch(self.run_id, agent_id, Some(&slice.key), &self.registry)?;
-        store.attach_worktree(node.id, &worktree.to_string_lossy(), None, None)?;
-        store.set_node_status(node.id, NodeStatus::Running)?;
-
         Ok(NodeTask {
             db_path: self.db_path.clone(),
             project_dir: self.project_dir.clone(),
             env: self.env(&worktree)?,
-            node_run_id: node.id,
+            agent_id,
+            registry: self.registry.clone(),
             slice_key: slice.key.clone(),
             title: slice.title.clone(),
-            role: node.role,
             prompt: slice_prompt(slice),
             worktree,
             lease,
             planner: self.planner.clone(),
+            run_id: self.run_id,
+            // Read off the run, never back through the team: what this run was allowed
+            // to spend is a fact about this run (D2).
+            max_repairs: store.run(self.run_id)?.max_repairs,
+            verifier: self.verifier(store)?,
         })
+    }
+
+    /// Whether the verifier is a genuinely second opinion.
+    ///
+    /// A checker on the same model as the maker shares its blind spots: it tends to find
+    /// the mistakes that model does not make and miss the ones it does. That is a team
+    /// configuration choice, not an error, so this reports rather than refuses.
+    pub fn verifier_note(&self, store: &Store) -> Result<Option<String>> {
+        let agents = store.agents(self.team_id)?;
+        let Some(verifier) = agents
+            .iter()
+            .find(|agent| agent.role == crate::VERIFIER_ROLE && agent.enabled)
+        else {
+            return Ok(Some(
+                "this team has no verifier, so the project's own gates are the whole check"
+                    .to_string(),
+            ));
+        };
+
+        // Compare what will actually run, not what the rows prefer: the machine profile
+        // may have collapsed two different preferences onto one allowed provider.
+        let effective = |agent: &crate::model::Agent| {
+            self.registry
+                .resolve(agent)
+                .map(|resolved| format!("{}/{}", resolved.provider, resolved.model))
+        };
+        let checker = effective(verifier)?;
+        let shared: Vec<&str> = agents
+            .iter()
+            .filter(|agent| agent.enabled && !agent.read_only)
+            .filter(|agent| effective(agent).is_ok_and(|model| model == checker))
+            .map(|agent| agent.role.as_str())
+            .collect();
+
+        Ok((!shared.is_empty()).then(|| {
+            format!(
+                "the verifier runs {checker}, the same model as {} - a second opinion \
+                 from one model shares its blind spots",
+                shared.join(", ")
+            )
+        }))
+    }
+
+    /// The seat that checks the makers, if the team has one.
+    ///
+    /// A team without a verifier is a team whose gates are the whole check, which is a
+    /// legitimate choice and not an error - the seat is configuration, like every other.
+    fn verifier(&self, store: &Store) -> Result<Option<VerifierSeat>> {
+        Ok(store
+            .agents(self.team_id)?
+            .into_iter()
+            .find(|agent| agent.role == crate::VERIFIER_ROLE && agent.enabled)
+            .map(|agent| VerifierSeat {
+                agent_id: agent.id,
+                registry: self.registry.clone(),
+            }))
     }
 
     fn env(&self, worktree: &Path) -> Result<EveEnv> {
@@ -250,14 +307,17 @@ struct NodeTask {
     db_path: PathBuf,
     project_dir: PathBuf,
     env: EveEnv,
-    node_run_id: i64,
+    agent_id: i64,
+    registry: ModelRegistry,
     slice_key: String,
     title: String,
-    role: String,
     prompt: String,
     worktree: PathBuf,
     lease: crate::neighbours::Lease,
     planner: Planner,
+    run_id: i64,
+    max_repairs: i64,
+    verifier: Option<VerifierSeat>,
 }
 
 /// Drive one slice to completion in its own worktree, on its own connection.
@@ -269,36 +329,44 @@ async fn run_one(task: NodeTask) -> Result<Dispatched> {
         db_path,
         project_dir,
         env,
-        node_run_id,
+        agent_id,
+        registry,
         slice_key,
         title,
-        role,
         prompt,
         worktree,
         lease,
         planner,
+        run_id,
+        max_repairs,
+        verifier,
     } = task;
 
     let mut store = Store::open(&db_path)?;
-    let mut supervisor = Supervisor::new(&project_dir, env);
 
-    let result = async {
-        let client = supervisor.start().await?;
-        let (_, outcome) = run_turn(&mut store, node_run_id, &client, &prompt, |_| {}).await?;
-        Ok::<_, Error>(outcome)
-    }
-    .await;
-
-    // Stop the process before anything else can fail: the lease is returned on drop, but
-    // an eve server holding a port is not.
-    let _ = supervisor.stop().await;
-
-    let outcome = match result {
-        Ok(outcome) => outcome,
+    let Attempted {
+        outcome,
+        rejection,
+        attempt,
+        node_run_id,
+        role,
+    } = match attempt_until_accepted(AttemptArgs {
+        store: &mut store,
+        project_dir: &project_dir,
+        env: &env,
+        agent_id,
+        registry: &registry,
+        run_id,
+        slice_key: &slice_key,
+        worktree: &worktree,
+        max_repairs,
+        verifier: verifier.as_ref(),
+        first: prompt,
+    })
+    .await
+    {
+        Ok(attempted) => attempted,
         Err(error) => {
-            store.set_node_status(node_run_id, NodeStatus::Failed)?;
-            // Hand the slice back so the next run can pick it up, and say why on the
-            // board rather than only in ai-team's own event log.
             let _ = planner.release(&slice_key, &worktree).await;
             let _ = planner
                 .log(
@@ -310,44 +378,27 @@ async fn run_one(task: NodeTask) -> Result<Dispatched> {
             return Err(error);
         }
     };
-
     let mut status = outcome_status(&outcome);
-
-    // Commit before the lease goes back. `awt return` cleans and resets the worktree, so
-    // this is the only thing standing between the work and losing it - and a branch in
-    // the shared object store is what a human reviews afterwards.
-    let mut branch = None;
-    if status == NodeStatus::Done {
-        let name = format!("ai-team/{}", slice_key.to_lowercase());
-        match git::commit_all(&worktree, &name, &format!("{slice_key}: {}", title.trim())).await {
-            Ok(Some(sha)) => {
-                branch = Some(name.clone());
-                store.attach_worktree(
-                    node_run_id,
-                    &worktree.to_string_lossy(),
-                    Some(&name),
-                    None,
-                )?;
-                let _ = planner.set_branch(&slice_key, &name).await;
-                let _ = planner
-                    .log(
-                        &format!("ai-team built {slice_key} on {name} ({})", &sha[..12]),
-                        Some(&slice_key),
-                    )
-                    .await;
-            }
-            Ok(None) => {
-                // A turn that reports done but changed no file did not build the slice.
-                // Calling that success puts a green row on the board for work nobody did.
-                status = NodeStatus::Failed;
-                store.block_node(node_run_id, "the turn finished without changing a file")?;
-            }
-            Err(error) => {
-                status = NodeStatus::Failed;
-                store.block_node(node_run_id, &format!("could not commit its work: {error}"))?;
-            }
-        }
+    if let Some(reason) = &rejection {
+        // The budget ran out with the work still rejected. Recording it as done would
+        // put a branch on the board that nothing checked.
+        status = NodeStatus::Failed;
+        store.block_node(
+            node_run_id,
+            &format!("rejected after {attempt} repair(s): {reason}"),
+        )?;
     }
+
+    let branch = land(
+        &mut store,
+        &planner,
+        &worktree,
+        node_run_id,
+        &slice_key,
+        &title,
+        &mut status,
+    )
+    .await?;
     store.set_node_status(node_run_id, status)?;
 
     // The board follows what actually happened. A parked node is still somebody's, so
@@ -416,6 +467,355 @@ fn route(store: &Store, team_id: i64, slices: Vec<Slice>) -> Result<Routing> {
         }
     }
     Ok((routed, unrouted))
+}
+
+/// Commit the work onto a branch, before the lease goes back.
+///
+/// `awt return` cleans and resets the worktree, so this is the only thing standing
+/// between the work and losing it - and a branch in the shared object store is what a
+/// human reviews afterwards. Downgrades `status` if there turns out to be nothing there.
+async fn land(
+    store: &mut Store,
+    planner: &Planner,
+    worktree: &Path,
+    node_run_id: i64,
+    slice_key: &str,
+    title: &str,
+    status: &mut NodeStatus,
+) -> Result<Option<String>> {
+    if *status != NodeStatus::Done {
+        return Ok(None);
+    }
+    let name = format!("ai-team/{}", slice_key.to_lowercase());
+    match git::commit_all(worktree, &name, &format!("{slice_key}: {}", title.trim())).await {
+        Ok(Some(sha)) => {
+            store.attach_worktree(node_run_id, &worktree.to_string_lossy(), Some(&name), None)?;
+            let _ = planner.set_branch(slice_key, &name).await;
+            let _ = planner
+                .log(
+                    &format!("ai-team built {slice_key} on {name} ({})", &sha[..12]),
+                    Some(slice_key),
+                )
+                .await;
+            Ok(Some(name))
+        }
+        Ok(None) => {
+            // A turn that reports done but changed no file did not build the slice.
+            // Calling that success puts a green row on the board for work nobody did.
+            *status = NodeStatus::Failed;
+            store.block_node(node_run_id, "the turn finished without changing a file")?;
+            Ok(None)
+        }
+        Err(error) => {
+            *status = NodeStatus::Failed;
+            store.block_node(node_run_id, &format!("could not commit its work: {error}"))?;
+            Ok(None)
+        }
+    }
+}
+
+/// How a node's work ended, after however many repairs it took.
+struct Attempted {
+    outcome: TurnOutcome,
+    /// Why it was still rejected when the budget ran out, if it was.
+    rejection: Option<String>,
+    attempt: i64,
+    /// The row for the attempt that actually produced this outcome.
+    node_run_id: i64,
+    role: String,
+}
+
+/// Everything the build-check-repair loop needs. A struct because the alternative is
+/// eleven positional arguments, where swapping two `&str`s compiles.
+struct AttemptArgs<'a> {
+    store: &'a mut Store,
+    project_dir: &'a Path,
+    env: &'a EveEnv,
+    agent_id: i64,
+    registry: &'a ModelRegistry,
+    run_id: i64,
+    slice_key: &'a str,
+    worktree: &'a Path,
+    max_repairs: i64,
+    verifier: Option<&'a VerifierSeat>,
+    first: String,
+}
+
+/// Build, check, repair, until it is accepted or the repair budget is spent.
+///
+/// The maker takes a turn; the project's own gates run against what it left behind; the
+/// verifier reads the result. Anything short of both passing goes back to the maker with
+/// the evidence attached, because "it failed" without the output is not something a
+/// model can act on.
+///
+/// All of it happens inside the lease: the worktree is reset when it goes back, so there
+/// is no checking the work afterwards.
+async fn attempt_until_accepted(args: AttemptArgs<'_>) -> Result<Attempted> {
+    let AttemptArgs {
+        store,
+        project_dir,
+        env,
+        agent_id,
+        registry,
+        run_id,
+        slice_key,
+        worktree,
+        max_repairs,
+        verifier,
+        first,
+    } = args;
+
+    let mut attempt = 0;
+    let mut instruction = first;
+
+    loop {
+        // A fresh row per attempt, never an edit (D2). The first attempt's evidence is
+        // what analytics is made of, and reusing one row would also hand the next turn
+        // the previous session id and stream cursor - which is exactly how a repaired
+        // turn ends up reading a stream that has already finished.
+        let node = store.dispatch(run_id, agent_id, Some(slice_key), registry)?;
+        store.attach_worktree(node.id, &worktree.to_string_lossy(), None, None)?;
+        store.set_node_status(node.id, NodeStatus::Running)?;
+        let node_run_id = node.id;
+
+        let mut supervisor = Supervisor::new(project_dir, env.clone());
+        let turn = async {
+            let client = supervisor.start().await?;
+            let (_, outcome) = run_turn(store, node_run_id, &client, &instruction, |_| {}).await?;
+            Ok::<_, Error>(outcome)
+        }
+        .await;
+        // Stop before anything else can fail: the lease is returned on drop, an eve
+        // server holding a port is not.
+        let _ = supervisor.stop().await;
+        let turn = match turn {
+            Ok(turn) => turn,
+            Err(error) => {
+                store.set_node_status(node_run_id, NodeStatus::Failed)?;
+                return Err(error);
+            }
+        };
+
+        // A parked turn is waiting on a person, and checking an unfinished thing would
+        // reject it for not being finished. Leave it parked with its question intact.
+        if outcome_status(&turn) != NodeStatus::Done {
+            return Ok(Attempted {
+                outcome: turn,
+                rejection: None,
+                attempt,
+                node_run_id,
+                role: node.role,
+            });
+        }
+
+        let reason = match check(store, node_run_id, worktree, project_dir, env, verifier).await? {
+            Verdict::Accepted => {
+                return Ok(Attempted {
+                    outcome: turn,
+                    rejection: None,
+                    attempt,
+                    node_run_id,
+                    role: node.role,
+                })
+            }
+            Verdict::Rejected(reason) => reason,
+        };
+
+        store.append_event(
+            run_id,
+            NewEvent::new(
+                EventKind::Note,
+                format!("{slice_key} rejected on attempt {}", attempt + 1),
+            )
+            .on_node(node_run_id)
+            .by(&node.role)
+            .with(serde_json::json!({ "reason": reason })),
+        )?;
+        // Each rejected attempt keeps its own verdict, rather than the last one
+        // overwriting what the earlier ones found.
+        store.block_node(node_run_id, &truncate_reason(&reason))?;
+        store.set_node_status(node_run_id, NodeStatus::Failed)?;
+
+        if attempt >= max_repairs {
+            return Ok(Attempted {
+                outcome: turn,
+                rejection: Some(reason),
+                attempt,
+                node_run_id,
+                role: node.role,
+            });
+        }
+        attempt += 1;
+        instruction = repair_prompt(slice_key, &reason);
+    }
+}
+
+/// A rejection can be a whole build log; `blocked_reason` is a column somebody reads in
+/// a table. The full evidence is on the event beside it.
+fn truncate_reason(reason: &str) -> String {
+    let first = reason
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or(reason);
+    if first.chars().count() <= 200 {
+        return first.to_string();
+    }
+    first.chars().take(199).collect::<String>() + "…"
+}
+
+/// The seat that checks the makers, resolved once per run.
+#[derive(Debug, Clone)]
+struct VerifierSeat {
+    agent_id: i64,
+    registry: ModelRegistry,
+}
+
+/// The answer to "is this actually done?".
+enum Verdict {
+    Accepted,
+    Rejected(String),
+}
+
+/// Run the project's own gates, then let the verifier read what the maker left.
+///
+/// Gates first, because they are cheap, objective, and their output is the evidence the
+/// verifier reasons from. A model asked to judge without them is guessing.
+async fn check(
+    store: &mut Store,
+    node_run_id: i64,
+    worktree: &Path,
+    project_dir: &Path,
+    env: &EveEnv,
+    verifier: Option<&VerifierSeat>,
+) -> Result<Verdict> {
+    let gates = crate::gates::discover_gates(worktree);
+    if gates.is_empty() {
+        // No manifest, so nothing to run. Say so rather than treating silence as a pass:
+        // the verifier still reads the diff, and the human should know what was skipped.
+        store.append_event(
+            store.node_run(node_run_id)?.run_id,
+            NewEvent::new(
+                EventKind::Note,
+                "no gates found in this worktree - nothing automatic was run",
+            )
+            .on_node(node_run_id),
+        )?;
+    }
+
+    let results = crate::gates::run_gates(worktree, &gates).await?;
+    let evidence = crate::gates::evidence(&results);
+    let run_id = store.node_run(node_run_id)?.run_id;
+    for result in &results {
+        store.append_event(
+            run_id,
+            NewEvent::new(
+                if result.passed {
+                    EventKind::Note
+                } else {
+                    EventKind::Failed
+                },
+                format!(
+                    "gate {} `{}` {}",
+                    result.gate.kind.as_str(),
+                    result.gate.command(),
+                    if result.passed { "passed" } else { "failed" }
+                ),
+            )
+            .on_node(node_run_id)
+            .with(serde_json::json!({ "output": result.output })),
+        )?;
+    }
+
+    if !gates.is_empty() && !crate::gates::all_passed(&results) {
+        // A failing gate is already a rejection with evidence attached. Asking a model to
+        // confirm it would spend a turn to reach the same answer.
+        return Ok(Verdict::Rejected(evidence));
+    }
+
+    let Some(verifier) = verifier else {
+        // No verifier seat on this team. The gates are the whole check, and they passed.
+        return Ok(Verdict::Accepted);
+    };
+
+    let node = store.dispatch(run_id, verifier.agent_id, None, &verifier.registry)?;
+    store.attach_worktree(node.id, &worktree.to_string_lossy(), None, None)?;
+    store.set_node_status(node.id, NodeStatus::Running)?;
+
+    // Captured off the stream rather than read back out of the event table. A node's
+    // Note events also carry ai-team's own bookkeeping - the model-fallback notice, for
+    // one - and parsing that as the verifier's answer rejects work it never looked at.
+    let mut said = String::new();
+    let mut supervisor = Supervisor::new(project_dir, env.clone());
+    let verdict = async {
+        let client = supervisor.start().await?;
+        let (_, outcome) = run_turn(
+            store,
+            node.id,
+            &client,
+            &verify_prompt(&evidence),
+            |event| {
+                if let Some(message) = event.assistant_message() {
+                    said = message.to_string();
+                }
+            },
+        )
+        .await?;
+        Ok::<_, Error>(outcome)
+    }
+    .await;
+    let _ = supervisor.stop().await;
+
+    let outcome = match verdict {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            store.set_node_status(node.id, NodeStatus::Failed)?;
+            // A verifier that could not run has not approved anything.
+            return Ok(Verdict::Rejected(format!(
+                "the verifier could not run: {error}"
+            )));
+        }
+    };
+    store.set_node_status(node.id, outcome_status(&outcome))?;
+    Ok(read_verdict(&said))
+}
+
+/// Read the verifier's answer.
+///
+/// Fails closed: anything that is not an explicit pass is a rejection. A verifier whose
+/// reply could not be read has not approved the work, and defaulting the other way is
+/// how an unchecked branch reaches somebody who trusted that this ran.
+fn read_verdict(said: &str) -> Verdict {
+    let lower = said.to_lowercase();
+    if let Some(at) = lower.rfind("verdict:") {
+        let tail = &lower[at + "verdict:".len()..];
+        if tail.trim_start().starts_with("pass") {
+            return Verdict::Accepted;
+        }
+    }
+    Verdict::Rejected(if said.trim().is_empty() {
+        "the verifier said nothing".to_string()
+    } else {
+        said.trim().to_string()
+    })
+}
+
+fn verify_prompt(evidence: &str) -> String {
+    format!(
+        "Check the work in this worktree. `git diff HEAD` and `git status` show what \
+         changed.\n\n\
+         The project's own gates have already been run:\n\n{evidence}\n\n\
+         Decide whether this is actually done, and answer with `VERDICT: pass` or \
+         `VERDICT: reject` on its own line."
+    )
+}
+
+fn repair_prompt(slice_key: &str, reason: &str) -> String {
+    format!(
+        "Your work on {slice_key} was rejected. Fix it in this worktree.\n\n\
+         {reason}\n\n\
+         Address the specific problem above rather than starting over, and run the \
+         project's own checks yourself before you finish."
+    )
 }
 
 /// What a seat is actually asked to do with a slice.
@@ -525,6 +925,51 @@ mod tests {
         // Not "unroutable" either: there is nothing wrong with them, they are just not
         // this run's to take.
         assert!(unrouted.is_empty(), "{unrouted:?}");
+    }
+
+    #[test]
+    fn a_verdict_that_is_not_an_explicit_pass_is_a_rejection() {
+        // Fails closed on purpose. A verifier whose answer could not be read has not
+        // approved anything, and defaulting the other way is how an unchecked branch
+        // reaches the person who trusted that this ran.
+        assert!(matches!(
+            read_verdict("Looks right to me.\nVERDICT: pass"),
+            Verdict::Accepted
+        ));
+        assert!(matches!(read_verdict("verdict:   PASS"), Verdict::Accepted));
+
+        for said in [
+            "VERDICT: reject - subtract() returns 0",
+            "This all looks good and complete!",
+            "I could not find the files.",
+            "",
+        ] {
+            assert!(
+                matches!(read_verdict(said), Verdict::Rejected(_)),
+                "{said:?} must not read as approval"
+            );
+        }
+
+        // The last verdict wins: a model that reconsiders mid-answer means the later one.
+        assert!(matches!(
+            read_verdict("VERDICT: pass\n...actually no.\nVERDICT: reject"),
+            Verdict::Rejected(_)
+        ));
+    }
+
+    #[test]
+    fn a_rejection_carries_what_the_maker_needs_to_act_on() {
+        let Verdict::Rejected(reason) = read_verdict("VERDICT: reject - subtract() returns 0")
+        else {
+            panic!("expected a rejection");
+        };
+        assert!(reason.contains("subtract() returns 0"));
+
+        // And that reason is what reaches the maker, not a bare "it failed".
+        let prompt = repair_prompt("PR1", &reason);
+        assert!(prompt.contains("PR1"));
+        assert!(prompt.contains("subtract() returns 0"));
+        assert!(prompt.contains("rather than starting over"));
     }
 
     #[test]

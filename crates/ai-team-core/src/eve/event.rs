@@ -136,6 +136,18 @@ impl StreamEvent {
         })
     }
 
+    /// What the model actually said, when this event is it finishing a message.
+    ///
+    /// Distinct from reading `Note` rows back out of the event table: those also carry
+    /// ai-team's own bookkeeping, and a caller looking for the model's answer must not
+    /// be handed a dispatch notice that happens to sit in the same column.
+    pub fn assistant_message(&self) -> Option<&str> {
+        if self.kind != "message.completed" {
+            return None;
+        }
+        self.data.get("message").and_then(serde_json::Value::as_str)
+    }
+
     /// The session id eve assigned, when the event carries one.
     pub fn session_id(&self) -> Option<&str> {
         self.data
@@ -336,6 +348,24 @@ mod tests {
         let e = event(r#"{"type":"turn.completed","data":{}}"#);
         assert_eq!(e.event_id(), None);
         assert!(e.is_terminal());
+    }
+
+    #[test]
+    fn only_a_finished_message_counts_as_what_the_model_said() {
+        // The verifier's verdict is read from this. Widening it to any event carrying a
+        // "message" field would let ai-team's own notes answer for the model.
+        let said = event(
+            r#"{"type":"message.completed","data":{"message":"VERDICT: pass"},"meta":{"id":"e1"}}"#,
+        );
+        assert_eq!(said.assistant_message(), Some("VERDICT: pass"));
+
+        for other in [
+            r#"{"type":"message.appended","data":{"message":"VERDICT: pa"}}"#,
+            r#"{"type":"turn.completed","data":{"message":"anything"}}"#,
+            r#"{"type":"message.completed","data":{}}"#,
+        ] {
+            assert_eq!(event(other).assistant_message(), None, "{other}");
+        }
     }
 
     #[test]

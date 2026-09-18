@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use crate::error::Result;
 use crate::generate::model::{context_window, model_expression, reasoning_literal};
-use crate::generate::{check_roster, GeneratedFile, GeneratedProject, ROOT_ROLE};
+use crate::generate::{check_roster, GeneratedFile, GeneratedProject, ROOT_ROLE, VERIFIER_ROLE};
 use crate::model::{Agent, Team};
 
 const WORKTREE_LIB: &str = include_str!("assets/lib/worktree.ts");
@@ -433,12 +433,41 @@ fn subagent_instructions(agent: &Agent) -> String {
          ## Where you are\n\n\
          You are in a git worktree leased for this run. Your tools act on it and cannot \
          reach outside it.\n\
-         {zone}{access}",
+         {zone}{access}{verifying}",
         name = agent.name,
         purpose = agent.purpose,
         custom = custom,
+        verifying = if agent.role == VERIFIER_ROLE {
+            VERIFIER_INSTRUCTIONS
+        } else {
+            ""
+        },
     )
 }
+
+/// What the verifier is actually looking for.
+///
+/// The gates have already run by the time it reads a diff, so "the tests pass" is not
+/// news and is not what it is for. The three questions below are the ones a green test
+/// run does not answer, and they are the failures that actually get shipped: a function
+/// that exists but returns a constant, or one that is perfect and never called.
+const VERIFIER_INSTRUCTIONS: &str = "\n## What you are checking\n\n\
+     The project's own gates have already been run and their output is in the request. \
+     Do not re-run them to decide; read them. Your job is the three things a passing \
+     test run does not tell anybody:\n\n\
+     1. **Existence** - is the thing that was asked for actually there? Read the files. A \
+     summary saying it was added is not evidence that it was.\n\
+     2. **Substantive** - does it do the work, or does it only look like it? A function \
+     that returns a constant, a branch that swallows the error, a test asserting \
+     `true == true`, a TODO where the logic should be.\n\
+     3. **Wired** - is it reachable? Exported, registered, called, routed. Code nothing \
+     refers to is not a feature, however correct it is.\n\n\
+     Answer with `VERDICT: pass` or `VERDICT: reject` on its own line. A rejection must \
+     say which of the three failed and quote the file and line that shows it, because \
+     the maker is given your words and nothing else. If the gates failed, it is a \
+     rejection - say which gate.\n\n\
+     Reject work that is not done. Passing something through because it is close is how \
+     a stub reaches the human who trusted this ran.\n";
 
 /// A seat's custom prompt, unless it only repeats the purpose printed above it.
 ///

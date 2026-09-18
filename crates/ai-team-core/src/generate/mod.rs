@@ -24,6 +24,10 @@ use crate::store::Store;
 /// The role that becomes the root agent. Every other seat is a declared subagent.
 pub const ROOT_ROLE: &str = "orchestrator";
 
+/// The seat that checks the makers' work (M2-S9). Named rather than inferred from
+/// `read_only`, because the reviewer is read-only too and is asked a different question.
+pub const VERIFIER_ROLE: &str = "verifier";
+
 /// A file the generator will write.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GeneratedFile {

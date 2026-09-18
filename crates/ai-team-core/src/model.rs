@@ -428,6 +428,8 @@ pub struct Run {
     pub parallel_width: i64,
     pub budget_tokens: Option<i64>,
     pub budget_seconds: Option<i64>,
+    /// How many times a failing node may be repaired before `on_failure` applies.
+    pub max_repairs: i64,
     pub blocked_reason: Option<String>,
     pub started_at: Option<String>,
     pub ended_at: Option<String>,

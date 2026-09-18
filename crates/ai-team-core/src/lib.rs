@@ -12,6 +12,7 @@
 mod db;
 mod error;
 mod eve;
+mod gates;
 mod generate;
 mod machine;
 mod model;
@@ -25,7 +26,8 @@ mod util;
 pub use db::Db;
 pub use error::{Error, Result};
 pub use eve::{Disposition, Ingested, StreamEvent, StreamMeta, TerminalState};
-pub use generate::{GeneratedFile, GeneratedProject, ModelExpression, ROOT_ROLE};
+pub use gates::{all_passed, discover_gates, evidence, run_gates, Gate, GateKind, GateResult};
+pub use generate::{GeneratedFile, GeneratedProject, ModelExpression, ROOT_ROLE, VERIFIER_ROLE};
 pub use machine::{
     ensure_machine_profile, MachineProfile, ModelRegistry, ModelResolution, ProviderState,
     ProviderStatus, DEFAULT_MACHINE_PROFILE,

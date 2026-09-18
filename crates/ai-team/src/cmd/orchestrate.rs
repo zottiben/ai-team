@@ -115,6 +115,15 @@ pub(crate) async fn run(args: RunArgs) -> Result<()> {
 
     // --- build ----------------------------------------------------------------------
     store.set_run_status(run.id, RunStatus::Running)?;
+    if let Some(note) = orchestrator.verifier_note(&store)? {
+        // Said before the work rather than after: it changes how much the green at the
+        // end is worth, and that is worth knowing up front.
+        println!("\nnote: {note}");
+        store.append_event(
+            run.id,
+            core::NewEvent::new(core::EventKind::Note, note).by("orchestrator"),
+        )?;
+    }
     println!("\ndispatching (width {width})");
     let done = orchestrator
         .build_slices(&mut store, |line| println!("  {line}"))

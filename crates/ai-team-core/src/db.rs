@@ -15,6 +15,7 @@ use crate::util::now;
 const MIGRATIONS: &[(i64, &str, &str)] = &[
     (1, "core", include_str!("migrations/001_core.sql")),
     (2, "eve", include_str!("migrations/002_eve.sql")),
+    (3, "repairs", include_str!("migrations/003_repairs.sql")),
 ];
 
 /// The number of `v_` views the schema ships. Asserted in tests, because a view silently
@@ -167,13 +168,13 @@ mod tests {
         let path = tmp.path().join("team.db");
 
         let db = Db::open_or_create(&path).unwrap();
-        assert_eq!(db.schema_version().unwrap(), 2);
+        assert_eq!(db.schema_version().unwrap(), 3);
         assert_eq!(db.pending_migrations().unwrap(), 0);
         drop(db);
 
         // Re-opening must not re-apply anything.
         let db = Db::open(&path).unwrap();
-        assert_eq!(db.schema_version().unwrap(), 2);
+        assert_eq!(db.schema_version().unwrap(), 3);
 
         let views: i64 = db
             .conn()
