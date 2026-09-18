@@ -10,7 +10,7 @@ import {
   type TreeEntry,
   type Where,
 } from "./api";
-import { stateFor } from "./editor";
+import { stateFor } from "./codemirror";
 
 /** One open file. The saved text is kept so dirty is a comparison, not a guess. */
 type Buffer = {

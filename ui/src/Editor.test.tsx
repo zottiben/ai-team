@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, expect, it, vi } from "vitest";
 
 import { Editor } from "./Editor";
-import { languageFor } from "./editor";
+import { languageFor } from "./codemirror";
 
 afterEach(() => {
   vi.unstubAllGlobals();
