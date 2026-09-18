@@ -32,6 +32,7 @@ mod store;
 mod supervise;
 mod terminal;
 mod today;
+mod update;
 mod util;
 mod workflow;
 
@@ -82,6 +83,10 @@ pub use supervise::{
 };
 pub use terminal::{Chunk, Listed, Terminals};
 pub use today::{from_question, from_store as today_from_store, rank as rank_today, Item, Urgency};
+pub use update::{
+    apply as apply_update, check as check_update, current_version, is_newer,
+    method as install_method, Available, Method, Step,
+};
 pub use util::{normalise_remote, now, rfc3339_in, slugify, zone_matches};
 pub use workflow::{run as run_workflow, Progress, Request};
 

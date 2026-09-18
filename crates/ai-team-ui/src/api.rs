@@ -46,6 +46,7 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/tree", get(tree))
         .route("/file", get(read_file).post(write_file))
         .route("/search", get(search))
+        .route("/update", get(update_check).post(update_apply))
         .route("/scm", get(scm))
         .route("/scm/stage", axum::routing::post(scm_stage))
         .route("/scm/commit", axum::routing::post(scm_commit))
@@ -182,6 +183,59 @@ async fn write_file(
         )))
     })?;
     Ok(Json(serde_json::json!({ "saved": request.path })))
+}
+
+async fn update_check() -> Result<Json<ai_team_core::Available>> {
+    Ok(Json(ai_team_core::check_update().await))
+}
+
+/// What an update did, reported at the end rather than streamed.
+///
+/// The steps are bounded and short - download, verify, replace - and an SSE channel for
+/// four of them would be more moving parts than the thing it reports on. The window shows
+/// an indeterminate bar while this request is in flight, which is honest: nobody knows
+/// how long a download takes.
+#[derive(Debug, Serialize)]
+struct Updated {
+    version: String,
+    /// Always true when this returns Ok. The window restarts on it rather than inferring
+    /// success from the absence of an error.
+    restart_required: bool,
+}
+
+async fn update_apply(State(state): State<AppState>) -> Result<Json<Updated>> {
+    let _ = &state;
+    let available = ai_team_core::check_update().await;
+
+    if let Some(blocked) = available.blocked {
+        return Err(crate::error::Error::Core(ai_team_core::Error::invalid(
+            blocked,
+        )));
+    }
+    let Some(latest) = available.latest.filter(|_| available.can_update) else {
+        return Err(crate::error::Error::Core(ai_team_core::Error::invalid(
+            "already up to date",
+        )));
+    };
+
+    if available.method == ai_team_core::Method::Source {
+        return Err(crate::error::Error::Core(ai_team_core::Error::invalid(
+            "this copy was built from source - update it with `cargo install --git \
+             https://github.com/zottiben/ai-team ai-team --locked`",
+        )));
+    }
+
+    // The binary actually running, not whichever `ait` is first on PATH: the window is
+    // served by this process and it is this process that has to be replaced.
+    let binary = std::env::current_exe().map_err(|error| {
+        crate::error::Error::Core(ai_team_core::Error::invalid(format!("where am I? {error}")))
+    })?;
+
+    ai_team_core::apply_update(&latest, &binary, |_| {}).await?;
+    Ok(Json(Updated {
+        version: latest,
+        restart_required: true,
+    }))
 }
 
 #[derive(Debug, Serialize)]

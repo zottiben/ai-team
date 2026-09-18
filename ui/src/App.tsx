@@ -8,6 +8,7 @@ import { Review } from "./Review";
 import { Schedule } from "./Schedule";
 import { Source } from "./Source";
 import { Today } from "./Today";
+import { UpdateBanner } from "./Update";
 import {
   approvals as fetchApprovals,
   health,
@@ -218,6 +219,7 @@ export default function App() {
               <span>{option}</span>
             </button>
           ))}
+          <UpdateBanner />
           <button type="button" className="nav-item" onClick={() => setOverlay("about")}>
             <span>About</span>
             <span className="kbd">Esc</span>

@@ -469,6 +469,22 @@ export function scmPush(where: Where): Promise<{ pushed: string }> {
   return post("/scm/push", where);
 }
 
+export type Available = {
+  current: string;
+  latest: string | null;
+  method: "release" | "source" | "unknown";
+  can_update: boolean;
+  blocked: string | null;
+};
+
+export function updateCheck(): Promise<Available> {
+  return api<Available>("/update");
+}
+
+export function updateApply(): Promise<{ version: string; restart_required: boolean }> {
+  return post("/update", {});
+}
+
 export function post<T>(path: string, body: unknown): Promise<T> {
   return request(path, "POST", body);
 }

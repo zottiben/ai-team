@@ -140,9 +140,13 @@ install_from_source() {
   ok "ait installed"
   INSTALLED_AIT=$(command -v ait 2>/dev/null || printf '%s' "$HOME/.cargo/bin/ait")
 
-  # A source install supersedes release provenance. Leaving the marker behind would
-  # make a later self-update replace this build with a stock release.
-  rm -f "$HOME/.ai-team/install-method"
+  # A source install supersedes release provenance. Leaving a stale `release` marker
+  # would make a later self-update replace this build with a stock release - so it is
+  # overwritten rather than removed, because "built from source" is something `ait update`
+  # can act on and an absent marker is not: it cannot tell a source build from a binary
+  # somebody's package manager owns, and has to refuse both.
+  mkdir -p "$HOME/.ai-team"
+  printf 'source\n' > "$HOME/.ai-team/install-method"
 }
 
 if [ "$from_source" = yes ]; then

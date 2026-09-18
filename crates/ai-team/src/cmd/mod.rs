@@ -11,6 +11,7 @@ pub(crate) mod stats;
 pub(crate) mod team;
 pub(crate) mod today;
 pub(crate) mod ui;
+pub(crate) mod update;
 
 use anyhow::{Context, Result};
 

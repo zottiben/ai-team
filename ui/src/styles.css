@@ -959,3 +959,42 @@ button.card:hover {
   flex: 1;
   resize: vertical;
 }
+
+/* --- the update offer --------------------------------------------------------- */
+
+.update {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  margin-bottom: var(--space-2);
+  background: var(--surface-panel-raised);
+  border: 1px solid var(--border-strong-default);
+  border-radius: var(--radius-md);
+  font-size: var(--text-xs);
+}
+
+/* Indeterminate: nobody knows how long a download takes, and a bar that invents a
+ * percentage is a bar that lies. */
+.update__bar {
+  height: 3px;
+  border-radius: var(--radius-sm);
+  background: var(--accent-action-muted);
+  overflow: hidden;
+  position: relative;
+}
+
+.update__bar::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  width: 40%;
+  border-radius: var(--radius-sm);
+  background: var(--accent-action-default);
+  animation: update-slide 1.1s ease-in-out infinite;
+}
+
+@keyframes update-slide {
+  from { transform: translateX(-100%); }
+  to   { transform: translateX(250%); }
+}

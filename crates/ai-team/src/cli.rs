@@ -48,6 +48,12 @@ pub(crate) enum Command {
     /// Reminders, the idea inbox, and runs scheduled for later.
     #[command(subcommand)]
     Remind(RemindCommand),
+    /// Replace this binary with the latest release.
+    Update {
+        /// Say what is available without installing it.
+        #[arg(long)]
+        check: bool,
+    },
     /// Check the install: paths, the machine profile, and the embedded bundle.
     Doctor,
 }
