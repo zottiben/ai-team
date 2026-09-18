@@ -436,10 +436,24 @@ mod tests {
 
     #[test]
     fn free_ports_are_actually_free() {
-        let port = free_port().unwrap();
-        // If it were still held, binding again would fail.
-        let bound = std::net::TcpListener::bind(("127.0.0.1", port));
-        assert!(bound.is_ok(), "port {port} was not released");
+        // The property that matters: `free_port` does not keep the port it hands out, so
+        // the eve process it is handed to can bind it.
+        //
+        // Attempted several times rather than once, because there is a genuine race here
+        // that no amount of care removes - between this returning a port and anything
+        // binding it, the OS may hand the same one to somebody else, and this crate's own
+        // suite now binds sockets in several tests at once. One failure is that race;
+        // every attempt failing would mean `free_port` is holding the socket open, which
+        // is the bug worth catching.
+        let mut released = false;
+        for _ in 0..8 {
+            let port = free_port().unwrap();
+            if std::net::TcpListener::bind(("127.0.0.1", port)).is_ok() {
+                released = true;
+                break;
+            }
+        }
+        assert!(released, "free_port never released a port it handed out");
     }
 
     #[cfg(unix)]
