@@ -5,7 +5,10 @@
     "module": "ESNext",
     "moduleResolution": "bundler",
     "jsx": "react-jsx",
-    "types": ["vite/client", "vitest/globals"],
+    // "node" is not decoration: the token tests read the stylesheets off disk. Naming it
+    // here keeps the typecheck self-contained - TypeScript otherwise walks up and can
+    // find an @types/node in a parent directory that CI does not have.
+    "types": ["vite/client", "vitest/globals", "node"],
     "strict": true,
     "noUncheckedIndexedAccess": true,
     "noUnusedLocals": true,
