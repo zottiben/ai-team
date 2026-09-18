@@ -12,7 +12,7 @@ rusqlite.workspace = true
 rustix.workspace = true
 # Loopback HTTP and process supervision. `net` and `io-util` for the eve client,
 # `process` for the supervised npm/eve children, `time` for the idle timeouts.
-tokio = { workspace = true, features = ["net", "io-util", "process", "time", "macros", "rt"] }
+tokio = { workspace = true, features = ["net", "io-util", "process", "time", "macros", "rt", "sync"] }
 serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true

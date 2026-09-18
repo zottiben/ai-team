@@ -21,14 +21,24 @@ struct Inner {
     /// `Store` is not `Sync`, and axum hands a clone of this to every request - so the
     /// handlers take turns rather than each opening their own.
     store: Option<Mutex<Store>>,
+    /// The language servers this process has running. Shared rather than per-request:
+    /// rust-analyzer takes the better part of a minute to index, so a server started for
+    /// one request has to still be there for the next.
+    lsp: ai_team_core::Pool,
 }
 
 impl AppState {
+    /// The language server pool, for the routes that need one.
+    pub fn lsp(&self) -> &ai_team_core::Pool {
+        &self.inner.lsp
+    }
+
     pub fn new(token: impl Into<String>) -> Self {
         Self {
             inner: Arc::new(Inner {
                 token: token.into(),
                 store: None,
+                lsp: ai_team_core::Pool::new(),
             }),
         }
     }
@@ -39,6 +49,7 @@ impl AppState {
             inner: Arc::new(Inner {
                 token: self.inner.token.clone(),
                 store: Some(Mutex::new(store)),
+                lsp: ai_team_core::Pool::new(),
             }),
         }
     }

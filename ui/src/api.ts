@@ -366,6 +366,50 @@ export function search(where: Where, q: string): Promise<Hit[]> {
   return api<Hit[]>(`/search?${scope(where, { q })}`);
 }
 
+export type LspRange = {
+  start: { line: number; character: number };
+  end: { line: number; character: number };
+};
+
+export type LspDiagnostic = {
+  range: LspRange;
+  severity: number | null;
+  source: string | null;
+  message: string;
+};
+
+export type Diagnostics = {
+  /** False when no server handles this language - the gutter draws nothing. */
+  analysed: boolean;
+  /** Null until the server has published at all, which is not the same as clean. */
+  diagnostics: LspDiagnostic[] | null;
+};
+
+export type RenameEdit = { path: string; range: LspRange; new_text: string };
+
+/** Every language request carries the buffer, so a mistake is seen before it is saved. */
+type LspBody = Where & { path: string; text: string; line?: number; character?: number };
+
+export function lspDiagnostics(body: LspBody): Promise<Diagnostics> {
+  return post("/lsp/diagnostics", body);
+}
+
+export function lspHover(body: LspBody): Promise<{ text: string } | null> {
+  return post("/lsp/hover", body);
+}
+
+export function lspDefinition(body: LspBody): Promise<{ path: string; range: LspRange }[]> {
+  return post("/lsp/definition", body);
+}
+
+export function lspCompletion(body: LspBody): Promise<string[]> {
+  return post("/lsp/completion", body);
+}
+
+export function lspRename(body: LspBody & { new_name: string }): Promise<RenameEdit[]> {
+  return post("/lsp/rename", body);
+}
+
 export function post<T>(path: string, body: unknown): Promise<T> {
   return request(path, "POST", body);
 }

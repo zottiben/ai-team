@@ -11,6 +11,7 @@ import {
   type Where,
 } from "./api";
 import { stateFor } from "./codemirror";
+import { languageServer } from "./language";
 
 /** One open file. The saved text is kept so dirty is a comparison, not a guess. */
 type Buffer = {
@@ -137,6 +138,7 @@ export function Editor({ project, node }: { project: string | null; node: number
         ) : current.editable ? (
           <Surface
             key={current.path}
+            where={{ project, node }}
             path={current.path}
             text={current.saved}
             onChange={(text) =>
@@ -164,10 +166,12 @@ export function Editor({ project, node }: { project: string | null; node: number
  * text underneath a live view would discard the undo history along with it.
  */
 function Surface({
+  where,
   path,
   text,
   onChange,
 }: {
+  where: Where;
   path: string;
   text: string;
   onChange: (text: string) => void;
@@ -179,7 +183,12 @@ function Surface({
   useEffect(() => {
     if (host.current === null) return undefined;
     const view = new EditorView({
-      state: stateFor(path, text, (value) => latest.current(value)),
+      state: stateFor(
+        path,
+        text,
+        (value) => latest.current(value),
+        languageServer(where, path),
+      ),
       parent: host.current,
     });
     return () => view.destroy();

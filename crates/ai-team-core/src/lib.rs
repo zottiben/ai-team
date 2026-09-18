@@ -20,6 +20,7 @@ mod gates;
 mod generate;
 mod guardrails;
 mod house;
+mod lsp;
 mod machine;
 mod model;
 mod neighbours;
@@ -44,6 +45,10 @@ pub use gates::{all_passed, discover_gates, evidence, run_gates, Gate, GateKind,
 pub use generate::{GeneratedFile, GeneratedProject, ModelExpression, ROOT_ROLE, VERIFIER_ROLE};
 pub use guardrails::{node_may_continue, run_may_continue, Exceeded, Fallout};
 pub use house::{read as read_house_rules, section as house_section, Rules};
+pub use lsp::{
+    language_for, language_id, workspace_root, Client, Diagnostic, Hover, Language, Location, Pool,
+    Position, Range,
+};
 pub use machine::{
     ensure_machine_profile, ContextSource, MachineProfile, ModelRegistry, ModelResolution,
     ProviderState, ProviderStatus, DEFAULT_MACHINE_PROFILE,

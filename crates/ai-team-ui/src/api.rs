@@ -46,6 +46,11 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/tree", get(tree))
         .route("/file", get(read_file).post(write_file))
         .route("/search", get(search))
+        .route("/lsp/diagnostics", axum::routing::post(diagnostics))
+        .route("/lsp/hover", axum::routing::post(hover))
+        .route("/lsp/definition", axum::routing::post(definition))
+        .route("/lsp/completion", axum::routing::post(completion))
+        .route("/lsp/rename", axum::routing::post(rename))
         .route("/analytics", get(analytics))
         .route("/reminders", get(reminders).post(add_reminder))
         .route("/reminders/{id}", axum::routing::delete(drop_reminder))
@@ -165,6 +170,146 @@ async fn write_file(
         )))
     })?;
     Ok(Json(serde_json::json!({ "saved": request.path })))
+}
+
+/// What every language request needs: which checkout, which file, and its current text.
+///
+/// The text comes from the editor rather than from disk, because the whole point is to
+/// see a mistake before saving it. A server told about the file on disk would report
+/// diagnostics for code the human is no longer looking at.
+#[derive(Debug, Deserialize)]
+struct LspRequest {
+    project: String,
+    #[serde(default)]
+    node: Option<i64>,
+    path: String,
+    text: String,
+    #[serde(default)]
+    line: i64,
+    #[serde(default)]
+    character: i64,
+    #[serde(default)]
+    new_name: Option<String>,
+}
+
+impl LspRequest {
+    fn at(&self) -> ai_team_core::Position {
+        ai_team_core::Position {
+            line: self.line,
+            character: self.character,
+        }
+    }
+}
+
+/// Resolve the server for a request and tell it what the buffer currently says.
+///
+/// `None` when no server handles this language, which is the ordinary answer for a README
+/// and is not an error.
+async fn attach(
+    state: &AppState,
+    request: &LspRequest,
+) -> Result<Option<std::sync::Arc<ai_team_core::Client>>> {
+    let worktree = worktree_for(state, &request.project, request.node)?;
+    let Some(client) = state.lsp().for_file(&worktree, &request.path).await? else {
+        return Ok(None);
+    };
+    client.sync(&request.path, &request.text).await?;
+    Ok(Some(client))
+}
+
+#[derive(Debug, Serialize)]
+struct Diagnostics {
+    /// False when no server handles this language. The gutter draws nothing rather than
+    /// implying the file is clean.
+    analysed: bool,
+    /// None until the server has published for this file at all - which is not the same
+    /// as an empty list, and drawing them the same way says a file is clean when nobody
+    /// has looked at it yet.
+    diagnostics: Option<Vec<ai_team_core::Diagnostic>>,
+}
+
+async fn diagnostics(
+    State(state): State<AppState>,
+    JsonBody(request): JsonBody<LspRequest>,
+) -> Result<Json<Diagnostics>> {
+    let Some(client) = attach(&state, &request).await? else {
+        return Ok(Json(Diagnostics {
+            analysed: false,
+            diagnostics: None,
+        }));
+    };
+    Ok(Json(Diagnostics {
+        analysed: true,
+        diagnostics: client.diagnostics(&request.path).await,
+    }))
+}
+
+async fn hover(
+    State(state): State<AppState>,
+    JsonBody(request): JsonBody<LspRequest>,
+) -> Result<Json<Option<ai_team_core::Hover>>> {
+    let Some(client) = attach(&state, &request).await? else {
+        return Ok(Json(None));
+    };
+    Ok(Json(client.hover(&request.path, request.at()).await?))
+}
+
+async fn definition(
+    State(state): State<AppState>,
+    JsonBody(request): JsonBody<LspRequest>,
+) -> Result<Json<Vec<ai_team_core::Location>>> {
+    let Some(client) = attach(&state, &request).await? else {
+        return Ok(Json(Vec::new()));
+    };
+    Ok(Json(client.definition(&request.path, request.at()).await?))
+}
+
+async fn completion(
+    State(state): State<AppState>,
+    JsonBody(request): JsonBody<LspRequest>,
+) -> Result<Json<Vec<String>>> {
+    let Some(client) = attach(&state, &request).await? else {
+        return Ok(Json(Vec::new()));
+    };
+    Ok(Json(client.completion(&request.path, request.at()).await?))
+}
+
+#[derive(Debug, Serialize)]
+struct RenameEdit {
+    path: String,
+    range: ai_team_core::Range,
+    new_text: String,
+}
+
+/// What a rename would change, without changing it.
+///
+/// Returned rather than applied: a rename can touch files the human has open with unsaved
+/// work in them, and writing over that from under the editor is the kind of thing nobody
+/// forgives. The window shows the edits and applies them through the buffers it owns.
+async fn rename(
+    State(state): State<AppState>,
+    JsonBody(request): JsonBody<LspRequest>,
+) -> Result<Json<Vec<RenameEdit>>> {
+    let Some(new_name) = request.new_name.clone() else {
+        return Err(crate::error::Error::Core(ai_team_core::Error::invalid(
+            "a rename needs a new name",
+        )));
+    };
+    let Some(client) = attach(&state, &request).await? else {
+        return Ok(Json(Vec::new()));
+    };
+    Ok(Json(
+        client
+            .rename(&request.path, request.at(), &new_name)
+            .await?
+            .into_iter()
+            .map(|(path, range, new_text)| RenameEdit {
+                path,
+                range,
+                new_text,
+            })
+            .collect(),
+    ))
 }
 
 #[derive(Debug, Deserialize)]
