@@ -627,14 +627,19 @@ mod tests {
             .spawn()
             .expect("the copy should be runnable");
 
-        // Writing over it is refused while it runs.
+        // Linux refuses to write over an executing file - ETXTBSY - and macOS does not:
+        // the text-segment protection is a Linux one. Which means a naive updater that
+        // writes in place passes on the Mac and fails on the machine this is built on,
+        // the opposite of the usual direction (D12). The rename below is correct on both,
+        // so it is what ships; this only records the difference.
+        #[cfg(target_os = "linux")]
         assert!(
             std::fs::OpenOptions::new()
                 .write(true)
                 .truncate(true)
                 .open(&target)
                 .is_err(),
-            "the kernel should refuse to write an executing file"
+            "Linux should refuse to write an executing file"
         );
 
         let fresh = dir.path().join("fresh");
