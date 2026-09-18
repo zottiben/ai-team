@@ -154,33 +154,54 @@ pub fn list(worktree: &Path, relative: &str) -> Result<Vec<Entry>> {
 /// Resolve a path inside a worktree, refusing anything that leaves it.
 ///
 /// The window sends paths a human clicked, but the route that accepts them is an HTTP
-/// endpoint on loopback and `../../../../etc/passwd` is one curl away. Canonicalised
-/// because on macOS `/tmp` is a symlink into `/private` and a string comparison against
-/// an uncanonicalised root rejects perfectly legitimate paths (D12).
+/// endpoint on loopback and `../../../../etc/passwd` is one curl away.
+///
+/// The `..` segments are resolved *lexically*, before touching the filesystem, and that
+/// order is the whole point. An earlier version canonicalised and compared the result,
+/// falling back to the raw path when canonicalising failed - and a raw path still
+/// containing `..` string-prefixes its own root, so it passed. On Linux the fallback
+/// almost never ran, because `<tmp>/../../etc` resolves to a real `/etc`; on macOS, where
+/// the temporary directory is several levels inside `/private/var/folders`, the
+/// intermediate directory does not exist, canonicalising failed, and the guard waved the
+/// path through. Found on the macOS leg and nowhere else (D12).
+///
+/// Symlinks are then checked against the canonicalised root, which also handles macOS
+/// resolving `/tmp` and `/var` into `/private`.
 pub fn safe_join(worktree: &Path, relative: &str) -> Result<PathBuf> {
+    use std::path::Component;
+
     let root = worktree
         .canonicalize()
         .map_err(|error| Error::invalid(format!("no such worktree: {error}")))?;
-    // Joined as given. Stripping a leading slash first would quietly turn
-    // `/etc/passwd` into `<worktree>/etc/passwd` - safe, but it rewrites the caller's
-    // input instead of refusing it. `Path::join` replaces the whole path when the
-    // argument is absolute, which is exactly what makes the guard below catch it.
-    let joined = root.join(relative);
 
-    // Canonicalise the deepest part that exists, so a path to a file being created still
-    // gets checked rather than skipping the guard.
-    let resolved = joined.canonicalize().unwrap_or_else(|_| {
-        joined
-            .parent()
-            .and_then(|parent| parent.canonicalize().ok())
-            .map_or_else(
-                || joined.clone(),
-                |parent| parent.join(joined.file_name().unwrap_or_default()),
-            )
-    });
+    let mut resolved = root.clone();
+    for component in Path::new(relative).components() {
+        match component {
+            // An absolute path, or a Windows prefix, is not a path inside this worktree.
+            Component::RootDir | Component::Prefix(_) => {
+                return Err(Error::invalid("that path is outside the worktree"));
+            }
+            Component::CurDir => {}
+            Component::ParentDir => {
+                // Refusing rather than clamping: silently turning `../../etc/passwd` into
+                // a path inside the worktree answers a question nobody asked.
+                if !resolved.pop() || !resolved.starts_with(&root) {
+                    return Err(Error::invalid("that path is outside the worktree"));
+                }
+            }
+            Component::Normal(part) => resolved.push(part),
+        }
+    }
 
-    if !resolved.starts_with(&root) {
-        return Err(Error::invalid("that path is outside the worktree"));
+    // Lexically inside is not the same as actually inside: a symlink in the worktree can
+    // point anywhere. Checked only when the path exists, so saving a new file still works.
+    if let Ok(real) = resolved.canonicalize() {
+        if !real.starts_with(&root) {
+            return Err(Error::invalid(
+                "that path leaves the worktree through a symlink",
+            ));
+        }
+        return Ok(real);
     }
     Ok(resolved)
 }
@@ -233,6 +254,11 @@ mod tests {
         assert!(safe_join(dir.path(), "../../etc/passwd").is_err());
         assert!(safe_join(dir.path(), "/etc/passwd").is_err());
         assert!(safe_join(dir.path(), "src/../../..").is_err());
+
+        // The shape that slipped through on macOS: enough `..` to leave, with no real
+        // directory anywhere along the way for `canonicalize` to resolve.
+        assert!(safe_join(dir.path(), "../../nowhere/at/all/passwd").is_err());
+        assert!(safe_join(dir.path(), "a/b/../../../escape").is_err());
     }
 
     #[test]
@@ -240,6 +266,18 @@ mod tests {
         let dir = repo();
         let path = safe_join(dir.path(), "src/lib.rs").unwrap();
         assert!(path.ends_with("src/lib.rs"));
+    }
+
+    #[test]
+    fn a_symlink_out_of_the_worktree_is_refused() {
+        // Lexically inside is not actually inside.
+        let dir = repo();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret"), "shh").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(outside.path().join("secret"), dir.path().join("link")).unwrap();
+        #[cfg(unix)]
+        assert!(safe_join(dir.path(), "link").is_err());
     }
 
     #[test]
