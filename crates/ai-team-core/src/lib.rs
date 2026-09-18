@@ -11,6 +11,7 @@
 
 mod context;
 mod db;
+mod diff;
 mod error;
 mod eve;
 mod gates;
@@ -20,6 +21,7 @@ mod machine;
 mod model;
 mod neighbours;
 mod paths;
+mod review;
 mod roles;
 mod store;
 mod supervise;
@@ -29,6 +31,7 @@ mod workflow;
 
 pub use context::{figma_links, parse_url, Source, CLICKUP_READ_TOOLS, FIGMA_READ_TOOLS};
 pub use db::Db;
+pub use diff::{parse as parse_diff, FileDiff, FileStatus, Hunk, Line, LineKind};
 pub use error::{Error, Result};
 pub use eve::{Disposition, Ingested, StreamEvent, StreamMeta, TerminalState};
 pub use gates::{all_passed, discover_gates, evidence, run_gates, Gate, GateKind, GateResult};
@@ -47,6 +50,10 @@ pub use model::{
 };
 pub use neighbours::{Lease, PlanSummary, Planner, PoolEntry, Question, Slice, Worktrees};
 pub use paths::{data_dir, default_db_path, ensure_data_dir, machine_profile_path, HOME_ENV};
+pub use review::{
+    amendment, as_instructions, deliver as deliver_review, diff_for, instructions_for,
+    pending as pending_review, responsible, steerable, Audience, Pending, Submitted,
+};
 pub use roles::{preset, RolePreset, DEFAULT_LOCAL_MODEL, DEFAULT_ROSTER};
 pub use store::Store;
 pub use supervise::{

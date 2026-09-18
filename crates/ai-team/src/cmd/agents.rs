@@ -357,7 +357,24 @@ fn edit(store: &mut Store, args: AgentEditArgs) -> Result<()> {
         }
     }
     if let Some(model) = args.model {
-        update.model = model;
+        // `--model claude/sonnet` is what everybody types, because that is how the table
+        // prints it back. Taken literally it stores a model id no provider has, and the
+        // run fails much later with a message about the wrong thing - so read the
+        // provider off the front when it names one.
+        match model
+            .split_once('/')
+            .and_then(|(provider, rest)| Some((provider.parse().ok()?, rest)))
+        {
+            Some((provider, rest)) => {
+                let provider: ai_team_core::Provider = provider;
+                update.model = rest.to_string();
+                if args.context_window.is_none() && provider != agent.provider {
+                    update.context_window = None;
+                }
+                update.provider = provider;
+            }
+            None => update.model = model,
+        }
     }
     if let Some(reasoning) = args.reasoning {
         update.reasoning = reasoning;
@@ -442,4 +459,33 @@ fn tools(store: &mut Store, args: AgentToolsArgs) -> Result<()> {
         crate::cmd::team::stale_notice();
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use ai_team_core::Provider;
+
+    /// `--model claude/sonnet` is what everybody types, because that is exactly how
+    /// `ait agents ls` prints it back. Taken literally it stored `claude/sonnet` as the
+    /// model *under the old provider*, and the run then failed much later complaining
+    /// about something else entirely.
+    fn split(model: &str) -> Option<(Provider, &str)> {
+        model
+            .split_once('/')
+            .and_then(|(provider, rest)| Some((provider.parse().ok()?, rest)))
+    }
+
+    #[test]
+    fn a_provider_qualified_model_sets_the_provider_too() {
+        assert_eq!(split("claude/sonnet"), Some((Provider::Claude, "sonnet")));
+        assert_eq!(split("zai/glm-4.6"), Some((Provider::ZAi, "glm-4.6")));
+    }
+
+    #[test]
+    fn a_model_whose_name_merely_contains_a_slash_is_left_alone() {
+        // Plenty of real model ids have one, and stealing the front of those would be a
+        // worse bug than the one this fixes.
+        assert_eq!(split("qwen/qwen3-coder"), None);
+        assert_eq!(split("sonnet"), None);
+    }
 }

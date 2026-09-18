@@ -179,6 +179,89 @@ export function today(): Promise<TodayItem[]> {
   return api<TodayItem[]>("/today");
 }
 
+export type DiffLine = {
+  kind: "context" | "added" | "removed";
+  old: number | null;
+  new: number | null;
+  text: string;
+};
+
+export type FileDiff = {
+  path: string;
+  old_path: string | null;
+  status: "added" | "modified" | "removed" | "renamed";
+  binary: boolean;
+  hunks: { header: string; old_start: number; new_start: number; lines: DiffLine[] }[];
+  additions: number;
+  deletions: number;
+};
+
+export type Comment = {
+  id: number;
+  review_id: number;
+  parent_id: number | null;
+  file_path: string | null;
+  side: "old" | "new" | null;
+  line_start: number | null;
+  line_end: number | null;
+  author: string;
+  body: string;
+  status: "open" | "resolved" | "outdated";
+  created_at: string;
+};
+
+export type Review = {
+  id: number;
+  project_id: number;
+  run_id: number | null;
+  node_run_id: number | null;
+  title: string;
+  status: string;
+  branch: string | null;
+  submitted_at: string | null;
+};
+
+export type ReviewDetail = Review & {
+  files: FileDiff[];
+  comments: Comment[];
+  steerable: boolean;
+};
+
+export type Submitted =
+  | { outcome: "steered"; node_run_id: number; comments: number }
+  | { outcome: "planned"; slice_key: string; comments: number }
+  | { outcome: "accepted" };
+
+export function reviews(openOnly = true): Promise<Review[]> {
+  return api<Review[]>(`/reviews?open_only=${openOnly}`);
+}
+
+export function review(id: number): Promise<ReviewDetail> {
+  return api<ReviewDetail>(`/reviews/${id}`);
+}
+
+export function addComment(
+  id: number,
+  body: {
+    body: string;
+    file_path?: string;
+    side?: "old" | "new";
+    line_start?: number;
+    line_end?: number;
+    parent_id?: number;
+  },
+): Promise<Comment> {
+  return post(`/reviews/${id}/comments`, body);
+}
+
+export function resolveComment(id: number): Promise<Comment> {
+  return post(`/comments/${id}/resolve`, {});
+}
+
+export function submitReview(id: number, status: string): Promise<Submitted> {
+  return post(`/reviews/${id}/submit`, { status });
+}
+
 export async function post<T>(path: string, body: unknown): Promise<T> {
   const current = token();
   const response = await fetch(`/api${path}`, {

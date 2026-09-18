@@ -73,6 +73,14 @@
   --status-parked-default: #e8c46a;
   --status-blocked-default: #e8c46a;
   --status-cancelled-default: #6b7483;
+
+  /* Diff surfaces. Tinted rather than saturated: a whole file of added lines should read
+   * as a file, not as a warning. The `line` pair is the row; the `emphasis` pair is for
+   * marking the changed words within one. */
+  --surface-added-default: rgb(95 208 138 / 12%);
+  --surface-added-emphasis: rgb(95 208 138 / 24%);
+  --surface-removed-default: rgb(244 119 107 / 12%);
+  --surface-removed-emphasis: rgb(244 119 107 / 24%);
 }
 
 [data-theme="light"] {
@@ -98,6 +106,13 @@
   --accent-action-default: #2563eb;
   --accent-action-hover: #1d4ed8;
   --accent-action-muted: rgb(37 99 235 / 12%);
+
+  /* Lighter tints on a white canvas: the same alpha that reads as a hint on dark reads
+   * as a highlighter on white. */
+  --surface-added-default: rgb(26 145 80 / 10%);
+  --surface-added-emphasis: rgb(26 145 80 / 20%);
+  --surface-removed-default: rgb(207 52 40 / 9%);
+  --surface-removed-emphasis: rgb(207 52 40 / 18%);
 
   --status-queued-default: #858e9d;
   --status-running-default: #2563eb;

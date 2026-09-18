@@ -123,6 +123,41 @@ pub(crate) async fn ignore_build_output(worktree: &Path) -> Result<()> {
     Ok(())
 }
 
+/// The commit a branch forked from, which is what a review should be measured against.
+///
+/// Diffing a branch against the *tip* of main shows every change anybody else landed in
+/// the meantime as though the agent had made it. The fork point shows only its work.
+pub(crate) async fn merge_base(worktree: &Path, base: &str, head: &str) -> Result<String> {
+    Ok(git(worktree, &["merge-base", base, head])
+        .await?
+        .trim()
+        .to_string())
+}
+
+pub(crate) async fn rev_parse(worktree: &Path, rev: &str) -> Result<String> {
+    Ok(git(worktree, &["rev-parse", rev]).await?.trim().to_string())
+}
+
+/// The unified diff between two commits.
+///
+/// `--no-color` because a configured `color.ui = always` would otherwise wrap every line
+/// in escape codes and the parser would read them as content. `--find-renames` so a moved
+/// file reads as a move rather than as a whole file deleted and another one written.
+pub(crate) async fn diff(worktree: &Path, base: &str, head: &str) -> Result<String> {
+    git(
+        worktree,
+        &[
+            "diff",
+            "--no-color",
+            "--find-renames",
+            "--unified=3",
+            base,
+            head,
+        ],
+    )
+    .await
+}
+
 async fn git(worktree: &Path, args: &[&str]) -> Result<String> {
     let output = Command::new("git")
         .args(args)

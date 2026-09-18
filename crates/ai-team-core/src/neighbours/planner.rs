@@ -168,6 +168,54 @@ impl Planner {
         }
     }
 
+    /// Add a slice, choosing a key that is not taken.
+    ///
+    /// ai-planner keys are the human's handle for a slice, so this picks the next free
+    /// number under a prefix rather than inventing something unpronounceable.
+    pub async fn add_slice(
+        &self,
+        prefix: &str,
+        title: &str,
+        scope: &str,
+        demo: &str,
+        touches: &[&str],
+    ) -> Result<String> {
+        let taken: Vec<String> = self.slices().await?.into_iter().map(|s| s.key).collect();
+        // Bounded: one more than the number taken is always free, so this cannot run on.
+        let key = (1..=taken.len() + 1)
+            .map(|n| format!("{prefix}{n}"))
+            .find(|key| !taken.contains(key))
+            .unwrap_or_else(|| format!("{prefix}1"));
+
+        // The `Touches:` trailer is what zone routing reads, so a slice without one can
+        // never be dispatched to anybody (D14).
+        let scope = format!("{}\n\nTouches: {}", scope.trim(), touches.join(", "));
+        self.output(&[
+            "slice", "add", &key, title, "--scope", &scope, "--demo", demo,
+        ])
+        .await?;
+        Ok(key)
+    }
+
+    /// Append to a slice's scope, keeping what is already there.
+    ///
+    /// Used when a review changes what the work is. The verifier checks a commit against
+    /// the slice spec, so feedback that only reaches the agent produces work that is
+    /// right and rejected.
+    pub async fn amend_scope(&self, key: &str, addition: &str) -> Result<()> {
+        let existing = self
+            .slices()
+            .await?
+            .into_iter()
+            .find(|slice| slice.key == key)
+            .and_then(|slice| slice.scope_md)
+            .unwrap_or_default();
+        let scope = format!("{}\n\n{}", existing.trim_end(), addition.trim());
+        self.output(&["slice", "edit", key, "--scope", &scope])
+            .await?;
+        Ok(())
+    }
+
     pub async fn set_status(&self, key: &str, status: &str, reason: Option<&str>) -> Result<()> {
         let mut args = vec!["slice", "set", key, status];
         if let Some(reason) = reason {

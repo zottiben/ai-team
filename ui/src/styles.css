@@ -516,3 +516,134 @@ button.card:hover {
 .today__first .card {
   background: var(--surface-canvas-default);
 }
+
+/* --- review ------------------------------------------------------------------- */
+
+.review {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-height: 0;
+}
+
+.review__actions {
+  display: flex;
+  gap: var(--space-2);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border-subtle-default);
+}
+
+.notice {
+  padding: var(--space-3);
+  background: var(--surface-panel-raised);
+  border: 1px solid var(--border-strong-default);
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+}
+
+.diff {
+  border: 1px solid var(--border-subtle-default);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.diff__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface-panel-default);
+  border-bottom: 1px solid var(--border-subtle-default);
+  font-size: var(--text-sm);
+}
+
+.diff__hunk-head {
+  padding: var(--space-1) var(--space-3);
+  color: var(--text-primary-muted);
+  background: var(--surface-panel-default);
+  font-size: var(--text-xs);
+}
+
+/* A diff line is a grid, not a flex row: the gutters have to hold their width or the
+ * code column jitters line to line and becomes unreadable. */
+.diff__line {
+  display: grid;
+  grid-template-columns: 3.5rem 3.5rem 1.5rem 1fr;
+  align-items: start;
+  font-size: var(--text-sm);
+}
+
+.diff__line[data-kind="added"] {
+  background: var(--surface-added-default);
+}
+
+.diff__line[data-kind="removed"] {
+  background: var(--surface-removed-default);
+}
+
+.diff__num {
+  padding: 0 var(--space-2);
+  color: var(--text-primary-faint);
+  text-align: right;
+  user-select: none;
+  font-size: var(--text-xs);
+  line-height: 1.6;
+}
+
+/* Hidden until the row is hovered or focused, so the gutter is not a wall of plus
+ * signs - but reachable by keyboard, which display:none would not be. */
+.diff__add {
+  opacity: 0;
+  border: 0;
+  background: none;
+  color: var(--accent-action-default);
+  cursor: pointer;
+  font: inherit;
+  padding: 0;
+}
+
+.diff__line:hover .diff__add,
+.diff__add:focus-visible {
+  opacity: 1;
+}
+
+.diff__text {
+  padding-right: var(--space-3);
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--font-mono);
+  line-height: 1.6;
+}
+
+.diff__comment {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: var(--space-2) var(--space-3) var(--space-2) 8.5rem;
+  padding: var(--space-3);
+  background: var(--surface-panel-default);
+  border-left: 2px solid var(--border-strong-default);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+}
+
+.diff__comment[data-status="resolved"] {
+  opacity: 0.6;
+}
+
+.diff__compose {
+  display: flex;
+  gap: var(--space-2);
+  margin: var(--space-2) var(--space-3) var(--space-2) 8.5rem;
+}
+
+.diff__compose textarea {
+  flex: 1;
+  font: inherit;
+  color: var(--text-primary-default);
+  background: var(--surface-canvas-default);
+  border: 1px solid var(--border-subtle-default);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2);
+  resize: vertical;
+}

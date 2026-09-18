@@ -43,6 +43,198 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/board", get(board))
         .route("/board/slices/{key}", axum::routing::post(move_slice))
         .route("/today", get(today))
+        .route("/reviews", get(reviews))
+        .route("/reviews/{id}", get(review))
+        .route("/reviews/{id}/comments", axum::routing::post(add_comment))
+        .route("/reviews/{id}/submit", axum::routing::post(submit))
+        .route("/comments/{id}/resolve", axum::routing::post(resolve))
+}
+
+#[derive(Debug, Deserialize)]
+struct ReviewQuery {
+    project: Option<String>,
+    #[serde(default)]
+    open_only: bool,
+}
+
+async fn reviews(
+    State(state): State<AppState>,
+    Query(query): Query<ReviewQuery>,
+) -> Result<Json<Vec<ai_team_core::Review>>> {
+    let store = state.store()?;
+    let store = store.lock();
+    let project = match &query.project {
+        Some(slug) => Some(store.find_project(slug)?.id),
+        None => None,
+    };
+    Ok(Json(store.reviews(project, query.open_only)?))
+}
+
+/// A review, its diff, and everything anybody has said about it.
+#[derive(Debug, Serialize)]
+struct ReviewDetail {
+    #[serde(flatten)]
+    review: ai_team_core::Review,
+    files: Vec<ai_team_core::FileDiff>,
+    comments: Vec<ai_team_core::ReviewComment>,
+    /// Whether the node that wrote this is still up. The surface says which of the two
+    /// things submitting will do, rather than letting it be a surprise.
+    steerable: bool,
+}
+
+async fn review(State(state): State<AppState>, Path(id): Path<i64>) -> Result<Json<ReviewDetail>> {
+    let (review, comments, repo) = {
+        let store = state.store()?;
+        let store = store.lock();
+        let review = store.review(id)?;
+        let comments = store.comments(id)?;
+        let repo = store
+            .project_repos(review.project_id)?
+            .into_iter()
+            .find_map(|repo| repo.main_path)
+            .ok_or_else(|| {
+                crate::error::Error::Core(ai_team_core::Error::invalid(
+                    "that project has no checkout, so there is no diff to show",
+                ))
+            })?;
+        (review, comments, repo)
+    };
+
+    // Read the node in a synchronous window, then let the lock go: what follows talks to
+    // git and to the agent, and a future holding a `Store` is neither `Send` nor
+    // spawnable.
+    let node = {
+        let store = state.store()?;
+        let store = store.lock();
+        ai_team_core::responsible(&store, &review)
+    };
+
+    let files = ai_team_core::diff_for(&review, std::path::Path::new(&repo)).await?;
+    let steerable = ai_team_core::steerable(node).await;
+
+    Ok(Json(ReviewDetail {
+        review,
+        files,
+        comments,
+        steerable,
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+struct CommentRequest {
+    #[serde(default)]
+    parent_id: Option<i64>,
+    #[serde(default)]
+    file_path: Option<String>,
+    #[serde(default)]
+    side: Option<ai_team_core::DiffSide>,
+    #[serde(default)]
+    line_start: Option<i64>,
+    #[serde(default)]
+    line_end: Option<i64>,
+    body: String,
+}
+
+async fn add_comment(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    JsonBody(request): JsonBody<CommentRequest>,
+) -> Result<Json<ai_team_core::ReviewComment>> {
+    let store = state.store()?;
+    let mut store = store.lock();
+    Ok(Json(store.comment(
+        id,
+        ai_team_core::NewComment {
+            parent_id: request.parent_id,
+            file_path: request.file_path,
+            side: request.side,
+            line_start: request.line_start,
+            line_end: request.line_end,
+            // The window is the human's surface; anything an agent writes goes in
+            // through core, not through here.
+            author: "human".into(),
+            body: request.body,
+        },
+    )?))
+}
+
+async fn resolve(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> Result<Json<ai_team_core::ReviewComment>> {
+    let store = state.store()?;
+    let mut store = store.lock();
+    Ok(Json(store.resolve_comment(
+        id,
+        ai_team_core::CommentStatus::Resolved,
+    )?))
+}
+
+#[derive(Debug, Deserialize)]
+struct SubmitRequest {
+    status: ai_team_core::ReviewStatus,
+}
+
+/// Submit a review, which either steers the node that wrote the code or puts the work on
+/// the plan for whoever picks it up next.
+async fn submit(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    JsonBody(request): JsonBody<SubmitRequest>,
+) -> Result<Json<ai_team_core::Submitted>> {
+    // Everything the database knows, read before any await and released after.
+    let (pending, node, repo) = {
+        let store = state.store()?;
+        let store = store.lock();
+        let pending = ai_team_core::pending_review(&store, id)?;
+        let node = ai_team_core::responsible(&store, &pending.review);
+        let repo = store
+            .project_repos(pending.review.project_id)?
+            .into_iter()
+            .find_map(|repo| repo.main_path)
+            .ok_or_else(|| {
+                crate::error::Error::Core(ai_team_core::Error::invalid(
+                    "that project has no checkout, so feedback has nowhere to go",
+                ))
+            })?;
+        (pending, node, repo)
+    };
+
+    // Both paths write to ai-planner through its own CLI (D4).
+    let for_plan = repo.clone();
+    let outcome = ai_team_core::deliver_review(
+        &pending,
+        node,
+        |title, scope| async move {
+            ai_team_core::Planner::at(for_plan)
+                .add_slice(
+                    "RV",
+                    &title,
+                    &scope,
+                    "the comments are addressed and the gates pass",
+                    // The feedback could name anywhere in the diff, so the slice is
+                    // offered to whichever seat owns what it mentions rather than pinned
+                    // to a zone chosen here.
+                    &["**"],
+                )
+                .await
+        },
+        |key, addition| async move {
+            ai_team_core::Planner::at(repo)
+                .amend_scope(&key, &addition)
+                .await
+        },
+    )
+    .await?;
+
+    // Recorded only once delivery succeeded. A review marked submitted after a refused
+    // hand-off is the quiet failure this path exists to avoid.
+    {
+        let store = state.store()?;
+        let mut store = store.lock();
+        store.submit_review(id, request.status)?;
+    }
+    Ok(Json(outcome))
 }
 
 /// What to work on now, across every project.

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { Board } from "./Board";
 import { Approvals, Prompt, Seats } from "./Console";
+import { Review } from "./Review";
 import { Today } from "./Today";
 import {
   approvals as fetchApprovals,
@@ -28,7 +29,12 @@ import { apply, followSystem, stored, type Theme } from "./theme";
  * surface - Esc has to know what is on top, and only this level does.
  */
 /** Named once, near the type, rather than in a ternary chain that grows a branch per view. */
-const VIEW_NAMES = { today: "Today", console: "Console", board: "Board" } as const;
+const VIEW_NAMES = {
+  today: "Today",
+  console: "Console",
+  board: "Board",
+  review: "Review",
+} as const;
 
 export default function App() {
   const [theme, setTheme] = useState<Theme>(stored);
@@ -39,7 +45,7 @@ export default function App() {
   const [detail, setDetail] = useState<RunDetail | null>(null);
   const [events, setEvents] = useState<RunEvent[]>([]);
   const [pending, setPending] = useState<Approval[]>([]);
-  const [view, setView] = useState<"today" | "console" | "board">("today");
+  const [view, setView] = useState<keyof typeof VIEW_NAMES>("today");
   const [overlay, setOverlay] = useState<null | "about">(null);
   // Bumped on every server tick, so the board re-reads without owning a subscription.
   const [tick, setTick] = useState(0);
@@ -140,7 +146,7 @@ export default function App() {
 
         <nav className="sidebar__section" aria-label="Views">
           <span className="sidebar__label">View</span>
-          {(["today", "console", "board"] as const).map((option) => (
+          {(["today", "console", "board", "review"] as const).map((option) => (
             <button
               type="button"
               key={option}
@@ -212,6 +218,8 @@ export default function App() {
             }}
           />
         )}
+
+        {view === "review" && <Review tick={tick} />}
 
         {view === "board" && (
           <Board
