@@ -426,3 +426,68 @@ button.card:hover {
   border-radius: var(--radius-md);
   background: var(--accent-action-muted);
 }
+
+/* --- the board ---------------------------------------------------------------- */
+
+.board {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-height: 0;
+}
+
+/* Columns scroll sideways rather than wrapping: seven statuses in a fixed order is the
+ * shape of the workflow, and a board that reflows as work moves has to be re-read. */
+.board__columns {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(13rem, 1fr);
+  gap: var(--space-3);
+  overflow-x: auto;
+  padding-bottom: var(--space-2);
+}
+
+.board__column {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.board__column-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding-bottom: var(--space-2);
+  border-bottom: 1px solid var(--border-subtle-default);
+}
+
+.board__card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  background: var(--surface-panel-default);
+  border: 1px solid var(--border-subtle-default);
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+}
+
+.board__move {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-xs);
+}
+
+.board__move select {
+  font: inherit;
+  flex: 1;
+  min-width: 0;
+  color: var(--text-primary-default);
+  background: var(--surface-canvas-default);
+  border: 1px solid var(--border-subtle-default);
+  border-radius: var(--radius-sm);
+  padding: var(--space-1);
+}

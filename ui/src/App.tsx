@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { Board } from "./Board";
 import { Approvals, Prompt, Seats } from "./Console";
 import {
   approvals as fetchApprovals,
@@ -34,7 +35,10 @@ export default function App() {
   const [detail, setDetail] = useState<RunDetail | null>(null);
   const [events, setEvents] = useState<RunEvent[]>([]);
   const [pending, setPending] = useState<Approval[]>([]);
+  const [view, setView] = useState<"console" | "board">("console");
   const [overlay, setOverlay] = useState<null | "about">(null);
+  // Bumped on every server tick, so the board re-reads without owning a subscription.
+  const [tick, setTick] = useState(0);
   const [expanded, setExpanded] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const [info, setInfo] = useState<Health | null>(null);
@@ -100,6 +104,7 @@ export default function App() {
   onTick.current = () => {
     void refresh();
     void refreshSelected();
+    setTick((value) => value + 1);
   };
   useEffect(() => subscribe(() => onTick.current()), []);
 
@@ -128,6 +133,21 @@ export default function App() {
           <h1>ai-team</h1>
           <span className="sidebar__version">{info?.version ?? ""}</span>
         </div>
+
+        <nav className="sidebar__section" aria-label="Views">
+          <span className="sidebar__label">View</span>
+          {(["console", "board"] as const).map((option) => (
+            <button
+              type="button"
+              key={option}
+              className="nav-item"
+              aria-current={view === option}
+              onClick={() => setView(option)}
+            >
+              <span>{option === "console" ? "Console" : "Board"}</span>
+            </button>
+          ))}
+        </nav>
 
         <nav className="sidebar__section" aria-label="Projects">
           <span className="sidebar__label">Projects</span>
@@ -176,6 +196,15 @@ export default function App() {
       </aside>
 
       <main className="main">
+        {view === "board" && (
+          <Board
+            project={projects.find((entry) => entry.id === project)?.slug ?? null}
+            tick={tick}
+          />
+        )}
+
+        {view === "console" && (
+          <>
         <div className="main__header">
           <h2>Console</h2>
           {problem !== null && <span className="error">{problem}</span>}
@@ -215,6 +244,8 @@ export default function App() {
             </button>
           ))}
         </div>
+          </>
+        )}
       </main>
 
       {/* One surface at a time, and it collapses rather than covering what it describes. */}

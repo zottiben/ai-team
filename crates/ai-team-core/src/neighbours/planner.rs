@@ -18,7 +18,7 @@ use crate::error::{Error, Result};
 
 /// One slice as ai-planner reports it. Only the fields dispatch actually reads: the plan
 /// document is the human's, and mirroring all of it here would be the copy D4 forbids.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
 pub struct Slice {
     pub key: String,
     pub title: String,
@@ -66,6 +66,17 @@ impl Slice {
     }
 }
 
+/// Which plan a checkout is working, as ai-planner reports it.
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
+pub struct PlanSummary {
+    pub plan: String,
+    pub title: String,
+    pub status: String,
+    /// The slice this worktree has claimed, when it has one.
+    #[serde(default)]
+    pub slice: Option<String>,
+}
+
 /// The `aip` CLI, rooted at one checkout.
 ///
 /// `-C` rather than the process's own working directory, because ai-team drives several
@@ -101,6 +112,14 @@ impl Planner {
             Ok(version) => Ok(version.trim().to_string()),
             Err(error) => Err(format!("ai-planner is not usable: {error}")),
         }
+    }
+
+    /// Which plan this checkout resolves to, and what it is called.
+    pub async fn current(&self) -> Result<PlanSummary> {
+        let json = self.output(&["current", "--json"]).await?;
+        serde_json::from_str(&json).map_err(|error| {
+            Error::invalid(format!("could not read `aip current --json`: {error}"))
+        })
     }
 
     pub async fn slices(&self) -> Result<Vec<Slice>> {

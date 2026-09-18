@@ -126,6 +126,45 @@ export type Approval = {
   payload: { request_id?: string; options?: { id: string; label: string }[] } | null;
 };
 
+export type BoardSlice = {
+  key: string;
+  title: string;
+  status: string;
+  ord: number;
+  scope_md: string | null;
+  demo_md: string | null;
+  claimed_by: string | null;
+  owner: string | null;
+  touches: string[];
+};
+
+export type Board = {
+  plan: { plan: string; title: string; status: string; slice: string | null };
+  slices: BoardSlice[];
+};
+
+/** The statuses ai-planner recognises, in the order work moves through them. */
+export const BOARD_COLUMNS = [
+  "draft",
+  "ready",
+  "active",
+  "in_review",
+  "blocked",
+  "done",
+  "deferred",
+] as const;
+
+export function board(project: string): Promise<Board> {
+  return api<Board>(`/board?project=${encodeURIComponent(project)}`);
+}
+
+export function moveSlice(
+  key: string,
+  body: { project: string; status: string; reason?: string },
+): Promise<{ moved: string }> {
+  return post(`/board/slices/${encodeURIComponent(key)}`, body);
+}
+
 export async function post<T>(path: string, body: unknown): Promise<T> {
   const current = token();
   const response = await fetch(`/api${path}`, {

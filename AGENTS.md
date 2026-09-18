@@ -63,7 +63,7 @@ isn't covered, ask and record it with `aip decision add`.
 
 ## Hard rules
 
-Fifteen decisions are recorded in the plan (`aip decision ls`). These twelve are the ones
+Sixteen decisions are recorded in the plan (`aip decision ls`). These twelve are the ones
 an agent will otherwise get wrong, so they are repeated here.
 
 ### 1. Subscription-backed models only (D8)

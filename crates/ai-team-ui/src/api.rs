@@ -40,6 +40,112 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/runs", axum::routing::post(start))
         .route("/runs/{id}/approvals", get(approvals))
         .route("/runs/{id}/approvals", axum::routing::post(answer))
+        .route("/board", get(board))
+        .route("/board/slices/{key}", axum::routing::post(move_slice))
+}
+
+/// A slice, plus the one thing ai-team knows about it that ai-planner does not: which
+/// seat would build it.
+#[derive(Debug, Serialize)]
+struct BoardSlice {
+    #[serde(flatten)]
+    slice: ai_team_core::Slice,
+    /// The seat whose zone owns the paths this slice touches, if any owns them. `None`
+    /// is a real answer - a slice nobody owns is reported rather than guessed at, which
+    /// is the same rule dispatch follows.
+    owner: Option<String>,
+    /// The paths it declared, so a card can say why it routed where it did.
+    touches: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct Board {
+    plan: ai_team_core::PlanSummary,
+    slices: Vec<BoardSlice>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BoardQuery {
+    /// Which project's plan. The board belongs to a checkout, and a project is how the
+    /// window names one.
+    project: String,
+}
+
+/// Resolve the project's checkout, which is where its plan lives.
+fn planner_for(state: &AppState, project: &str) -> Result<(ai_team_core::Planner, i64)> {
+    let store = state.store()?;
+    let store = store.lock();
+    let project = store.find_project(project)?;
+    let team_id = project.team_id.ok_or_else(|| {
+        crate::error::Error::Core(ai_team_core::Error::invalid("that project has no team"))
+    })?;
+    let repo = store
+        .project_repos(project.id)?
+        .into_iter()
+        .find_map(|repo| repo.main_path)
+        .ok_or_else(|| {
+            crate::error::Error::Core(ai_team_core::Error::invalid(
+                "that project has no checkout, so it has no plan to show",
+            ))
+        })?;
+    Ok((ai_team_core::Planner::at(repo), team_id))
+}
+
+async fn board(
+    State(state): State<AppState>,
+    Query(query): Query<BoardQuery>,
+) -> Result<Json<Board>> {
+    // The planner is resolved, and the store lock released, before any of the awaits
+    // below: `aip` is another program, and holding a database connection across it
+    // would block every other request for the duration.
+    let (planner, team_id) = planner_for(&state, &query.project)?;
+    let plan = planner.current().await?;
+    let slices = planner.slices().await?;
+
+    let store = state.store()?;
+    let store = store.lock();
+    let slices = slices
+        .into_iter()
+        .map(|slice| {
+            let touches = slice.touches();
+            let owner = touches
+                .iter()
+                .find_map(|path| store.agent_for_path(team_id, path).transpose())
+                .transpose()?
+                .map(|agent| agent.role);
+            Ok(BoardSlice {
+                slice,
+                owner,
+                touches,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(Json(Board { plan, slices }))
+}
+
+#[derive(Debug, Deserialize)]
+struct MoveRequest {
+    project: String,
+    status: String,
+    /// Required by ai-planner when blocking, and worth having anyway.
+    reason: Option<String>,
+}
+
+/// Move a card.
+///
+/// Writes through ai-planner rather than into ai-team's own database, so `aip status` in
+/// a terminal and this board are the same state rather than two that agree until they
+/// do not.
+async fn move_slice(
+    State(state): State<AppState>,
+    Path(key): Path<String>,
+    JsonBody(request): JsonBody<MoveRequest>,
+) -> Result<Json<serde_json::Value>> {
+    let (planner, _) = planner_for(&state, &request.project)?;
+    planner
+        .set_status(&key, &request.status, request.reason.as_deref())
+        .await?;
+    Ok(Json(serde_json::json!({ "moved": key })))
 }
 
 #[derive(Debug, Deserialize)]
