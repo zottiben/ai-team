@@ -53,6 +53,23 @@ zone), and the seat that owns a path is the one the orchestrator dispatches it t
 `--read-only` seat is generated with no editing tools at all rather than merely being
 asked not to write.
 
+### One prompt, several agents
+
+```sh
+ait run -p widget "Add a subtract function with a test, and show it in the UI."
+```
+
+The orchestrator turns the prompt into an [ai-planner](https://github.com/zottiben/ai-planner)
+plan. ai-team then gives every ready slice its own worktree leased from
+[ai-worktree](https://github.com/zottiben/ai-worktree), hands it to the seat whose zone
+owns the paths it touches, and builds as many at once as the team's parallel width allows.
+Each node's work is committed to an `ai-team/<slice>` branch before its worktree goes back
+to the pool, and the slice moves to `in_review` pointing at that branch.
+
+Both tools are used over their own command line and neither is vendored, so `aip` and
+`awt` keep working on their own. `ait doctor` says whether they are installed;
+`--plan-only` stops after the plan, and `--worktree <dir>` runs a single turn instead.
+
 ### Machine provider policy
 
 Team rows are portable preferences; `~/.config/ai-team/machine.toml` is the permission

@@ -53,6 +53,13 @@ pub struct EveEnv {
     pub token: String,
     /// Provider keys, as `(name, value)`.
     pub provider_keys: Vec<(String, String)>,
+    /// The checkout the plan belongs to, and which plan on it.
+    ///
+    /// Deliberately not the worktree: a lease is a copy, and a plan written inside one
+    /// is a plan nobody finds again. Both are optional so a single-node run that has no
+    /// plan still starts.
+    pub plan_root: Option<PathBuf>,
+    pub plan_slug: Option<String>,
 }
 
 impl EveEnv {
@@ -62,6 +69,16 @@ impl EveEnv {
         for (key, value) in &self.provider_keys {
             command.env(key, value);
         }
+        // Absent rather than empty when there is no plan: the tool checks for the
+        // variable and an empty string would read as "the root is the empty path".
+        match &self.plan_root {
+            Some(root) => command.env("AI_TEAM_PLAN_ROOT", root),
+            None => command.env_remove("AI_TEAM_PLAN_ROOT"),
+        };
+        match &self.plan_slug {
+            Some(slug) => command.env("AI_TEAM_PLAN_SLUG", slug),
+            None => command.env_remove("AI_TEAM_PLAN_SLUG"),
+        };
     }
 }
 
@@ -300,6 +317,8 @@ mod tests {
             worktree: PathBuf::from("/tmp"),
             token: "secret".into(),
             provider_keys: vec![("AI_TEAM_AILOCAL_KEY".into(), "k".into())],
+            plan_root: Some(PathBuf::from("/repo")),
+            plan_slug: Some("widget".into()),
         }
     }
 

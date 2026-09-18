@@ -32,8 +32,9 @@ fn run() -> Result<()> {
         Command::Team(command) => cmd::team::run(command),
         Command::Agents(command) => cmd::agents::run(command),
         Command::Run(args) => runtime()?.block_on(cmd::run::run(args)),
+        // Doctor probes the neighbours by running them, so it needs the runtime too.
         Command::Doctor => {
-            cmd::doctor::run();
+            runtime()?.block_on(cmd::doctor::run());
             Ok(())
         }
     }

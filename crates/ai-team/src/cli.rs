@@ -69,9 +69,24 @@ pub(crate) struct RunArgs {
     #[arg(long, short)]
     pub(crate) project: String,
 
-    /// The worktree the agent may act on. Defaults to the current directory.
+    /// Run one turn in this directory instead of planning and dispatching.
+    ///
+    /// Without it, the orchestrator writes a plan and each ready slice is built in its
+    /// own leased worktree.
     #[arg(long)]
     pub(crate) worktree: Option<String>,
+
+    /// Which ai-planner plan to work on. Defaults to the one this checkout resolves to.
+    #[arg(long)]
+    pub(crate) plan: Option<String>,
+
+    /// How many slices may build at once. Defaults to the team's parallel width.
+    #[arg(long)]
+    pub(crate) width: Option<usize>,
+
+    /// Write the plan, then stop before building anything.
+    #[arg(long)]
+    pub(crate) plan_only: bool,
 
     /// What to ask it to do.
     pub(crate) prompt: String,

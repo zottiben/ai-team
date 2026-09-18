@@ -11,7 +11,7 @@ use ai_team_core as core;
 /// Infallible on purpose: every line reports what it found, including "unavailable", so
 /// there is nothing left for a caller to handle. A doctor that can itself fail is a
 /// doctor you cannot run when things are broken.
-pub(crate) fn run() {
+pub(crate) async fn run() {
     println!("ai-team {}", core::VERSION);
 
     line(
@@ -76,6 +76,26 @@ pub(crate) fn run() {
                     "denied"
                 );
             }
+        }
+    }
+
+    // The neighbours ai-team borrows rather than absorbs (D4). Absent is not fatal - a
+    // single-node `ait run --worktree` needs neither - so each says what it blocks.
+    for (label, outcome, blocks) in [
+        (
+            "ai-planner",
+            core::Planner::at(".").check().await,
+            "planning and dispatch",
+        ),
+        (
+            "ai-worktree",
+            core::Worktrees::at(".").check().await,
+            "leasing a worktree per slice",
+        ),
+    ] {
+        match outcome {
+            Ok(version) => println!("  {label:<18} {version}"),
+            Err(_) => println!("  {label:<18} not installed - {blocks} is unavailable"),
         }
     }
 

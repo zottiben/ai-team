@@ -2,6 +2,7 @@ pub(crate) mod agents;
 pub(crate) mod db;
 pub(crate) mod doctor;
 pub(crate) mod init;
+pub(crate) mod orchestrate;
 pub(crate) mod run;
 pub(crate) mod team;
 pub(crate) mod ui;

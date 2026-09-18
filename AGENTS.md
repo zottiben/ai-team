@@ -37,7 +37,8 @@ the login shell is zsh.
 | Frontend | `cd ui && npm ci && npm run typecheck && npm test && npm run build` |
 | Run it | `ait init`, `ait doctor`, `./target/debug/ait ui --port 7788 --no-open` |
 | Configure the team | `ait team show`, `ait agents ls`, `ait agents edit <role> …` |
-| Drive an agent | `ait agents set-model …`, then `ait run -p <project> --worktree <dir> "…"` |
+| Plan and dispatch | `ait run -p <project> "…"` (add `--plan-only` to stop after planning) |
+| Drive one agent | `ait run -p <project> --worktree <dir> "…"` |
 | The database | `ait db path`, `ait db open` (TablePlus), `ait db views` |
 | Icons | `cd crates/ai-team-desktop/icons && sh regenerate.sh` |
 
@@ -60,7 +61,7 @@ isn't covered, ask and record it with `aip decision add`.
 
 ## Hard rules
 
-Thirteen decisions are recorded in the plan (`aip decision ls`). These seven are the ones
+Fourteen decisions are recorded in the plan (`aip decision ls`). These eight are the ones
 an agent will otherwise get wrong, so they are repeated here.
 
 ### 1. Subscription-backed models only (D8)
@@ -154,8 +155,10 @@ Four things about eve that cost a build each to learn:
 impossible to run standalone is the wrong change.
 
 They are **not** reachable as eve connections: `defineMcpClientConnection` requires an
-HTTP url, and `aip serve` / file-sql speak MCP over stdio. Nothing generates
-`agent/connections/` — M2-S8 picks the route that actually works.
+HTTP url, and `aip serve` / file-sql speak MCP over stdio, so nothing generates
+`agent/connections/`. The route that works is a **generated tool that shells out to the
+neighbour's own CLI** — `agent/lib/plan.ts` drives `aip`, and Rust drives `awt` and `git`
+from `neighbours/`. Adding a neighbour means adding a wrapper, never a dependency.
 
 ### 6. Supervision talks HTTP by hand
 `supervise/http.rs` is a small HTTP/1.1 client, not a dependency. Everything it talks to
@@ -168,7 +171,28 @@ One eve process per leased worktree means one `EveProcess`. `npx` is only a wrap
 and signal the **group**, or the Node server survives. Read both child pipes concurrently:
 draining stdout first deadlocks the moment npm fills stderr.
 
-### 7. Ingest eve's stream exactly once
+### 7. The orchestrator plans; Rust leases and dispatches (D14)
+`ait run` without `--worktree` runs the orchestrator seat to write an ai-planner plan,
+then **Rust** reads the ready slices back, leases a worktree each with `awt`, and starts
+one eve process per lease. An agent shelling out to `awt` and spawning sibling agents
+would be the supervisor's job done with no budget or failure isolation around it.
+
+ai-planner has **no dependency edges** — only `ord`, `status`, and a claim scoped to a
+worktree. So dispatch means *ready, claimed, and the owning seat is idle*; a dependent
+slice is held back by being left `blocked` rather than `ready`. Never add a deps table
+here: that is plan structure, and copying it is what D4 forbids.
+
+Routing is by **zone**. A slice must name the paths it touches (`plan_add_slice` requires
+it, and writes them as a `Touches:` trailer on the scope); the seat whose zone owns them
+builds it. A slice nobody owns is reported undone rather than given to somebody — guessing
+is how two agents end up in one file.
+
+**A leased worktree is borrowed.** `awt return` cleans and resets it, so a node's work is
+committed to an `ai-team/<slice>` branch *before* the lease goes back. The worktrees are
+git worktrees of one repo, so the branch survives; the worktree does not. A turn that
+reports done but changed no file is recorded as **failed**, not done.
+
+### 8. Ingest eve's stream exactly once
 `event.eve_event_id` is eve's `meta.id` under a partial unique index, and ingest uses
 `INSERT OR IGNORE` — so a reconnect or a full rewind is free. Three traps that real turns
 exposed and fixtures did not: token and turn **counters** must only accumulate for rows

@@ -13,10 +13,14 @@ use crate::model::{Agent, Team};
 
 const WORKTREE_LIB: &str = include_str!("assets/lib/worktree.ts");
 const TOOLS_LIB: &str = include_str!("assets/lib/tools.ts");
+const PLAN_LIB: &str = include_str!("assets/lib/plan.ts");
 const TOOL_BASH: &str = include_str!("assets/tools/bash.ts");
 const TOOL_READ: &str = include_str!("assets/tools/read_file.ts");
 const TOOL_WRITE: &str = include_str!("assets/tools/write_file.ts");
 const TOOL_EDIT: &str = include_str!("assets/tools/edit_file.ts");
+const TOOL_PLAN_ADD: &str = include_str!("assets/tools/plan_add_slice.ts");
+const TOOL_PLAN_NOTE: &str = include_str!("assets/tools/plan_note.ts");
+const TOOL_PLAN_READ: &str = include_str!("assets/tools/plan_read.ts");
 const CHANNEL_EVE: &str = include_str!("assets/channels/eve.ts");
 const TSCONFIG: &str = include_str!("assets/tsconfig.json");
 const GITIGNORE: &str = include_str!("assets/gitignore");
@@ -71,6 +75,7 @@ pub(crate) fn project(
     files.push(file("agent/channels/eve.ts", CHANNEL_EVE.to_string()));
     files.push(file("agent/lib/worktree.ts", WORKTREE_LIB.to_string()));
     files.push(file("agent/lib/tools.ts", TOOLS_LIB.to_string()));
+    files.push(file("agent/lib/plan.ts", PLAN_LIB.to_string()));
 
     let root_model = model_expression(root_agent, ailocal_base_url);
     required_env.extend(root_model.env.iter().copied());
@@ -153,7 +158,26 @@ fn agent_tools(agent: &Agent) -> Vec<(&'static str, &'static str)> {
     if !agent.read_only {
         tools.extend([("write_file", TOOL_WRITE), ("edit_file", TOOL_EDIT)]);
     }
+    if plans(agent) {
+        tools.extend([
+            ("plan_add_slice", TOOL_PLAN_ADD),
+            ("plan_note", TOOL_PLAN_NOTE),
+            ("plan_read", TOOL_PLAN_READ),
+        ]);
+    } else {
+        // A maker still reads the board it is working from; it just does not shape it.
+        tools.push(("plan_read", TOOL_PLAN_READ));
+    }
     tools
+}
+
+/// Which seats may shape the plan.
+///
+/// The orchestrator and the planner, and nobody else: a maker that can add slices can
+/// give itself work, and the board a human reads stops being a plan and becomes a log of
+/// whatever the agents felt like doing.
+fn plans(agent: &Agent) -> bool {
+    agent.role == ROOT_ROLE || agent.role == "planner"
 }
 
 fn package_json(team: &Team, includes_claude: bool) -> String {
@@ -323,12 +347,18 @@ fn instructions(team: &Team, root: &Agent, subagents: &[&Agent]) -> String {
 
     out.push_str(
         "## Where you are\n\n\
-         You are working in a git worktree that ai-team leased for this run. Your tools \
-         act on it and cannot reach outside it. It is a real checkout: build it, test it, \
-         and run the project's own checks in it.\n\n\
-         The plan lives in ai-planner and is the source of truth for what to build. Claim \
-         a slice before you start it and move it when it lands - a plan that disagrees \
-         with reality is worse than no plan. How you reach it is wired up in M2-S8.\n\n",
+         You are working in a git checkout. Your tools act on it and cannot reach outside \
+         it. It is real: build it, test it, and run the project's own checks in it.\n\n\
+         ## How the work gets done\n\n\
+         You do not build the slices yourself and you do not dispatch anybody. Turn the \
+         request into a plan, and ai-team gives each ready slice its own worktree and the \
+         seat whose zone owns it.\n\n\
+         Read the plan first with `plan_read`. It is a board that outlives this \
+         conversation, so add only what is genuinely missing - a slice that repeats one \
+         already there gives somebody the same work twice.\n\n\
+         Every slice you add must name the paths it touches. That is what routes it: a \
+         slice naming no path this team owns cannot be given to anybody, and is reported \
+         back to the human undone. Keep each slice small enough to demo on its own.\n\n",
     );
 
     out.push_str("## Your team\n\n");

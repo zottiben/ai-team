@@ -20,6 +20,25 @@ use crate::supervise::Flow;
 /// couple of seconds of stream.
 const FLUSH_EVERY: usize = 25;
 
+/// What a finished turn means for the node that ran it.
+///
+/// Parked outranks finished: a turn that asked a human something and then hit a terminal
+/// event is still waiting on them, and calling it done would strand the question. A turn
+/// with no terminal event at all did not finish, so it is a failure rather than a
+/// success nobody saw the end of.
+pub fn outcome_status(outcome: &TurnOutcome) -> crate::model::NodeStatus {
+    use crate::model::NodeStatus;
+
+    if !outcome.approvals.is_empty() {
+        return NodeStatus::Parked;
+    }
+    match outcome.terminal {
+        Some(TerminalState::Completed) => NodeStatus::Done,
+        Some(TerminalState::Cancelled) => NodeStatus::Cancelled,
+        Some(TerminalState::Failed) | None => NodeStatus::Failed,
+    }
+}
+
 /// How a build is getting on, for a progress bar.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BuildProgress {
@@ -397,6 +416,8 @@ mod tests {
                 worktree: dir.path().to_path_buf(),
                 token: "t".into(),
                 provider_keys: vec![],
+                plan_root: None,
+                plan_slug: None,
             },
         );
         let err = supervisor.start().await.unwrap_err().to_string();
@@ -412,6 +433,8 @@ mod tests {
                 worktree: dir.path().to_path_buf(),
                 token: "t".into(),
                 provider_keys: vec![],
+                plan_root: None,
+                plan_slug: None,
             },
         );
         let err = supervisor

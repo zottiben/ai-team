@@ -1,8 +1,8 @@
 //! `ait run` - one prompt, through a supervised eve process, into the database.
 //!
 //! This is the single-node path: generate if needed, install, build, start, drive one
-//! turn, and report what it spent. The orchestrator that plans and dispatches *several*
-//! nodes across worktrees is M2-S8; everything it will need is already here.
+//! turn, and report what it spent. It is what `--worktree` selects; without it, `run`
+//! hands over to `orchestrate`, which plans and then dispatches a node per slice.
 
 use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
@@ -16,6 +16,16 @@ use ai_team_core::{EveEnv, EventKind, NodeStatus, RunStatus, RunTrigger, Store, 
 use crate::cli::RunArgs;
 
 pub(crate) async fn run(args: RunArgs) -> Result<()> {
+    // Two shapes, and the flag says which: name a worktree and one seat takes one turn
+    // in it; name none and the orchestrator plans, then every ready slice is built in a
+    // worktree of its own.
+    match args.worktree.clone() {
+        Some(worktree) => single_node(args, PathBuf::from(worktree)).await,
+        None => crate::cmd::orchestrate::run(args).await,
+    }
+}
+
+async fn single_node(args: RunArgs, worktree: PathBuf) -> Result<()> {
     let db = core::default_db_path()?;
     let mut store = Store::open(&db).with_context(|| format!("opening {}", db.display()))?;
     let registry = core::ModelRegistry::load().context("loading the machine profile")?;
@@ -25,12 +35,6 @@ pub(crate) async fn run(args: RunArgs) -> Result<()> {
         .team_id
         .with_context(|| format!("{} has no team - run `ait init` first", project.slug))?;
 
-    // The worktree. M2-S8 leases one per slice with `awt get --lease`; a single-node run
-    // works in a directory the caller names, defaulting to where they are standing.
-    let worktree = match &args.worktree {
-        Some(path) => PathBuf::from(path),
-        None => std::env::current_dir().context("reading the current directory")?,
-    };
     let worktree = worktree
         .canonicalize()
         .with_context(|| format!("{} does not exist", worktree.display()))?;
@@ -54,6 +58,10 @@ pub(crate) async fn run(args: RunArgs) -> Result<()> {
         worktree: worktree.clone(),
         token: core::mint_token(),
         provider_keys: registry.provider_environment(&generated.required_env)?,
+        // A single-node run is not working a plan, so the plan tools stay unconfigured
+        // and fail closed rather than writing to whichever plan the cwd resolves to.
+        plan_root: None,
+        plan_slug: None,
     };
     let supervisor = Supervisor::new(&project_dir, env);
 
@@ -113,7 +121,7 @@ fn settle(
 ) -> Result<()> {
     // Parked outranks finished: a turn that asked a question and then hit a terminal
     // event is still waiting on a person, and calling it done would strand it.
-    let status = outcome_status(outcome);
+    let status = core::outcome_status(outcome);
     store.set_node_status(node_run_id, status)?;
     store.set_run_status(
         run_id,
@@ -162,22 +170,11 @@ fn settle(
     Ok(())
 }
 
-fn outcome_status(outcome: &core::TurnOutcome) -> NodeStatus {
-    if !outcome.approvals.is_empty() {
-        return NodeStatus::Parked;
-    }
-    match outcome.terminal {
-        Some(core::TerminalState::Completed) => NodeStatus::Done,
-        Some(core::TerminalState::Cancelled) => NodeStatus::Cancelled,
-        Some(core::TerminalState::Failed) | None => NodeStatus::Failed,
-    }
-}
-
 /// Install, build, and report every line as it happens.
 ///
 /// The bar is a spinner with a line count rather than a percentage: neither npm nor eve
 /// offers a total, and inventing one would be a progress bar that lies.
-async fn build(supervisor: &Supervisor, store: &mut Store, run_id: i64) -> Result<()> {
+pub(crate) async fn build(supervisor: &Supervisor, store: &mut Store, run_id: i64) -> Result<()> {
     let started = Instant::now();
     let mut lines = 0usize;
     let mut build_events = Vec::new();
@@ -239,18 +236,18 @@ mod tests {
             terminal: Some(core::TerminalState::Failed),
             ..Default::default()
         };
-        assert_eq!(outcome_status(&failed), NodeStatus::Failed);
+        assert_eq!(core::outcome_status(&failed), NodeStatus::Failed);
 
         let completed = core::TurnOutcome {
             terminal: Some(core::TerminalState::Completed),
             ..Default::default()
         };
-        assert_eq!(outcome_status(&completed), NodeStatus::Done);
+        assert_eq!(core::outcome_status(&completed), NodeStatus::Done);
 
         let cancelled = core::TurnOutcome {
             terminal: Some(core::TerminalState::Cancelled),
             ..Default::default()
         };
-        assert_eq!(outcome_status(&cancelled), NodeStatus::Cancelled);
+        assert_eq!(core::outcome_status(&cancelled), NodeStatus::Cancelled);
     }
 }

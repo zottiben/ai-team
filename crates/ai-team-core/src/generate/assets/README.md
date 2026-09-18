@@ -30,5 +30,9 @@ started per leased worktree (D10), so isolation is an OS fact rather than a chec
 
 There is no `agent/connections/` directory, deliberately. eve's MCP connections are
 HTTP-only, and ai-planner and file-sql both speak MCP over stdio - so they are reached
-another way, wired up in M2-S8. Claude seats receive those external MCPs directly through
-the Claude Agent SDK rather than routing them through eve.
+another way: `agent/lib/plan.ts` drives ai-planner's own `aip` CLI, and the `plan_*` slots
+re-export from it. Claude seats receive external MCPs directly through the Claude Agent SDK
+rather than routing them through eve.
+
+Only the orchestrator and the planner get `plan_add_slice` and `plan_note`. Every seat gets
+`plan_read`: a maker reads the board it works from, it just does not shape it.

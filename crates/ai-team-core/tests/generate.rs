@@ -92,6 +92,63 @@ fn the_authored_tools_replace_eves_sandbox_defaults_at_the_same_slots() {
 }
 
 #[test]
+fn only_the_seats_that_plan_can_shape_the_plan() {
+    // A maker that can add slices can give itself work, and the board a human reads
+    // stops being a plan. Everyone reads it; two seats write it.
+    let (store, _, team) = seeded();
+    let generated = store.generate_project(team, "/tmp/unused").unwrap();
+
+    for (dir, writes_plan) in [
+        ("agent".to_string(), true),
+        ("agent/subagents/planner".to_string(), true),
+        ("agent/subagents/backend".to_string(), false),
+        ("agent/subagents/frontend".to_string(), false),
+        ("agent/subagents/verifier".to_string(), false),
+        ("agent/subagents/reviewer".to_string(), false),
+    ] {
+        let reads = generated.file(&format!("{dir}/tools/plan_read.ts"));
+        assert!(reads.is_some(), "{dir} must be able to read the board");
+
+        for slot in ["plan_add_slice", "plan_note"] {
+            let path = format!("{dir}/tools/{slot}.ts");
+            assert_eq!(
+                generated.file(&path).is_some(),
+                writes_plan,
+                "{path} present should be {writes_plan}"
+            );
+        }
+    }
+
+    // The shared implementation is emitted once, and the slots re-export from it.
+    assert!(generated.file("agent/lib/plan.ts").is_some());
+    let root = &generated
+        .file("agent/tools/plan_add_slice.ts")
+        .unwrap()
+        .contents;
+    assert!(root.contains(r#"from "../lib/plan.js""#), "{root}");
+    let sub = &generated
+        .file("agent/subagents/planner/tools/plan_add_slice.ts")
+        .unwrap()
+        .contents;
+    assert!(sub.contains(r#"from "../../../lib/plan.js""#), "{sub}");
+}
+
+#[test]
+fn the_orchestrator_is_told_it_plans_rather_than_builds() {
+    // D14: it writes the plan and ai-team dispatches. An orchestrator that thinks it
+    // should build the slices itself does the work in the wrong worktree.
+    let (store, _, team) = seeded();
+    let generated = store.generate_project(team, "/tmp/unused").unwrap();
+    let instructions = &generated.file("agent/instructions.md").unwrap().contents;
+
+    assert!(instructions.contains("You do not build the slices yourself"));
+    assert!(
+        instructions.contains("name the paths it touches"),
+        "a slice with no paths cannot be routed to a seat"
+    );
+}
+
+#[test]
 fn a_read_only_seat_does_not_get_write_tools_at_all() {
     // The verifier and the reviewer are checkers. This is the difference between an
     // instruction not to write and an inability to.
@@ -172,7 +229,7 @@ fn no_connections_are_generated_because_none_can_be() {
     // eve's `defineMcpClientConnection` requires an HTTP url and has no stdio variant,
     // but ai-planner (`aip serve`) and file-sql both speak MCP over stdio. A generated
     // `agent/connections/ai_planner.ts` would be fiction that happens to typecheck.
-    // M2-S8 picks the route that actually works; until then the directory does not exist.
+    // The route that works is a generated tool shelling out to `aip` (agent/lib/plan.ts).
     let (store, _, team) = seeded();
     let generated = store.generate_project(team, "/tmp/unused").unwrap();
 

@@ -15,6 +15,7 @@ mod eve;
 mod generate;
 mod machine;
 mod model;
+mod neighbours;
 mod paths;
 mod roles;
 mod store;
@@ -36,13 +37,15 @@ pub use model::{
     ReminderStatus, Review, ReviewComment, ReviewStatus, Run, RunStatus, RunTrigger, Team,
     ToolEffect, ToolPolicy, Usage,
 };
+pub use neighbours::{Lease, Planner, PoolEntry, Slice, Worktrees};
 pub use paths::{data_dir, default_db_path, ensure_data_dir, machine_profile_path, HOME_ENV};
 pub use roles::{preset, RolePreset, DEFAULT_LOCAL_MODEL, DEFAULT_ROSTER};
 pub use store::Store;
 pub use supervise::{
-    approvals_in, drive_turn, free_port, mint_token, reattach, record_build_progress, run_turn,
-    AgentInfo, Approval, ApprovalOption, BuildPhase, BuildProgress, EveClient, EveEnv, EveProcess,
-    Flow, ProgressLine, Supervisor, TurnOutcome,
+    approvals_in, drive_turn, free_port, mint_token, outcome_status, reattach,
+    record_build_progress, run_turn, AgentInfo, Approval, ApprovalOption, BuildPhase,
+    BuildProgress, Dispatched, EveClient, EveEnv, EveProcess, Flow, Orchestration, Orchestrator,
+    ProgressLine, Supervisor, TurnOutcome,
 };
 pub use util::{normalise_remote, now, slugify, zone_matches};
 
