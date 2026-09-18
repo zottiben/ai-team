@@ -5,6 +5,7 @@ pub(crate) mod ingest;
 pub(crate) mod init;
 pub(crate) mod orchestrate;
 pub(crate) mod run;
+pub(crate) mod stats;
 pub(crate) mod team;
 pub(crate) mod today;
 pub(crate) mod ui;

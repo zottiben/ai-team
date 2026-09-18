@@ -262,6 +262,37 @@ export function submitReview(id: number, status: string): Promise<Submitted> {
   return post(`/reviews/${id}/submit`, { status });
 }
 
+export type AnalyticsRow = {
+  group: string;
+  attempts: number;
+  accepted: number;
+  rejected: number;
+  slices_accepted: number;
+  tokens_in: number;
+  tokens_out: number;
+  cache_read: number;
+  cache_write: number;
+  seconds: number;
+  cycle_seconds: number;
+  gates_run: number;
+  gates_passed: number;
+  accepted_rate: number | null;
+  rework: number | null;
+  total_input: number;
+  input_per_accepted: number | null;
+  cache_hit_rate: number | null;
+  yield_per_k: number | null;
+  gate_pass_rate: number | null;
+  cycle_time: number | null;
+};
+
+export type GroupBy = "agent" | "model" | "team" | "project";
+
+export function analytics(by: GroupBy, project: string | null): Promise<AnalyticsRow[]> {
+  const scope = project === null ? "" : `&project=${encodeURIComponent(project)}`;
+  return api<AnalyticsRow[]>(`/analytics?by=${by}${scope}`);
+}
+
 export async function post<T>(path: string, body: unknown): Promise<T> {
   const current = token();
   const response = await fetch(`/api${path}`, {

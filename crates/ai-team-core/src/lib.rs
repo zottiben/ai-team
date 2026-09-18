@@ -9,6 +9,7 @@
 //! ai-planner (D4); this crate only ever references them by their own keys, because a
 //! local copy of a slice's title is a second source of truth that drifts.
 
+mod analytics;
 mod context;
 mod db;
 mod diff;
@@ -29,6 +30,7 @@ mod today;
 mod util;
 mod workflow;
 
+pub use analytics::{rollup, By, Row};
 pub use context::{figma_links, parse_url, Source, CLICKUP_READ_TOOLS, FIGMA_READ_TOOLS};
 pub use db::Db;
 pub use diff::{parse as parse_diff, FileDiff, FileStatus, Hunk, Line, LineKind};

@@ -43,11 +43,70 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/board", get(board))
         .route("/board/slices/{key}", axum::routing::post(move_slice))
         .route("/today", get(today))
+        .route("/analytics", get(analytics))
         .route("/reviews", get(reviews))
         .route("/reviews/{id}", get(review))
         .route("/reviews/{id}/comments", axum::routing::post(add_comment))
         .route("/reviews/{id}/submit", axum::routing::post(submit))
         .route("/comments/{id}/resolve", axum::routing::post(resolve))
+}
+
+#[derive(Debug, Deserialize)]
+struct AnalyticsQuery {
+    #[serde(default = "by_agent")]
+    by: ai_team_core::By,
+    project: Option<String>,
+}
+
+fn by_agent() -> ai_team_core::By {
+    ai_team_core::By::Agent
+}
+
+/// One row per group, with the ratios computed where they mean something.
+///
+/// The ratios are `Option` all the way to the client: a pairing with no history has not
+/// earned a bad score, and a 0% rendered for a model nobody has tried is how a good model
+/// gets retired.
+#[derive(Debug, Serialize)]
+struct AnalyticsRow {
+    #[serde(flatten)]
+    row: ai_team_core::Row,
+    accepted_rate: Option<f64>,
+    rework: Option<f64>,
+    total_input: i64,
+    input_per_accepted: Option<f64>,
+    cache_hit_rate: Option<f64>,
+    yield_per_k: Option<f64>,
+    gate_pass_rate: Option<f64>,
+    cycle_time: Option<f64>,
+}
+
+async fn analytics(
+    State(state): State<AppState>,
+    Query(query): Query<AnalyticsQuery>,
+) -> Result<Json<Vec<AnalyticsRow>>> {
+    let store = state.store()?;
+    let store = store.lock();
+    let project = match &query.project {
+        Some(slug) => Some(store.find_project(slug)?.id),
+        None => None,
+    };
+    Ok(Json(
+        ai_team_core::rollup(&store, query.by, project)?
+            .into_iter()
+            .map(|row| AnalyticsRow {
+                accepted_rate: row.accepted_rate(),
+                rework: row.rework(),
+                total_input: row.total_input(),
+                input_per_accepted: row.input_per_accepted(),
+                cache_hit_rate: row.cache_hit_rate(),
+                yield_per_k: row.yield_per_k(),
+                gate_pass_rate: row.gate_pass_rate(),
+                cycle_time: row.cycle_time(),
+                row,
+            })
+            .collect(),
+    ))
 }
 
 #[derive(Debug, Deserialize)]

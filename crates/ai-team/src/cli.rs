@@ -41,8 +41,32 @@ pub(crate) enum Command {
     Run(RunArgs),
     /// What to work on now, across every project. Ranked, not just listed.
     Today,
+    /// Which agent-model pairing is earning its seat.
+    Stats(StatsArgs),
     /// Check the install: paths, the machine profile, and the embedded bundle.
     Doctor,
+}
+
+#[derive(Debug, clap::Args)]
+pub(crate) struct StatsArgs {
+    /// How to group the numbers.
+    #[arg(long, default_value = "agent", value_parser = parse_by)]
+    pub(crate) by: ai_team_core::By,
+    /// Only this project. Defaults to every one.
+    #[arg(long, short)]
+    pub(crate) project: Option<String>,
+}
+
+fn parse_by(value: &str) -> std::result::Result<ai_team_core::By, String> {
+    match value {
+        "agent" => Ok(ai_team_core::By::Agent),
+        "model" => Ok(ai_team_core::By::Model),
+        "team" => Ok(ai_team_core::By::Team),
+        "project" => Ok(ai_team_core::By::Project),
+        other => Err(format!(
+            "unknown grouping `{other}` - try agent, model, team or project"
+        )),
+    }
 }
 
 #[derive(Debug, clap::Args)]

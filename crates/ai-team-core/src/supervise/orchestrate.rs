@@ -951,7 +951,15 @@ async fn check(
                 ),
             )
             .on_node(node_run_id)
-            .with(serde_json::json!({ "output": result.output })),
+            // Structured, not only prose. Analytics reads `passed` and `gate` from
+            // here; a rate computed by matching English in `summary` breaks the first
+            // time somebody improves the wording (rule 8).
+            .with(serde_json::json!({
+                "gate": result.gate.kind.as_str(),
+                "command": result.gate.command(),
+                "passed": result.passed,
+                "output": result.output,
+            })),
         )?;
     }
 
