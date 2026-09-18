@@ -15,12 +15,18 @@ pub enum Error {
 
     #[error("unauthorized")]
     Unauthorized,
+
+    #[error("this server was started without a database - run `ait init` first")]
+    NoStore,
 }
 
 impl IntoResponse for Error {
     fn into_response(self) -> Response {
         let status = match self {
             Error::Unauthorized => StatusCode::UNAUTHORIZED,
+            // Not an internal error: the server is working, there is just nothing for it
+            // to show yet, and the window can say so instead of looking broken.
+            Error::NoStore => StatusCode::SERVICE_UNAVAILABLE,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };
         // A JSON body, always: the frontend reads one shape whether a call succeeded or

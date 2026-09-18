@@ -4,12 +4,10 @@
 //! the facts that distinguish a working install from a confusing one: the version, and
 //! whether a real frontend bundle was compiled in.
 
-use axum::routing::get;
-use axum::{Json, Router};
+use axum::Json;
 use serde::Serialize;
 
 use crate::assets;
-use crate::state::AppState;
 
 #[derive(Debug, Serialize)]
 pub struct Health {
@@ -18,11 +16,7 @@ pub struct Health {
     pub bundle_files: usize,
 }
 
-pub(crate) fn routes() -> Router<AppState> {
-    Router::new().route("/health", get(health))
-}
-
-async fn health() -> Json<Health> {
+pub(crate) async fn health() -> Json<Health> {
     Json(Health {
         version: ai_team_core::VERSION,
         bundle_embedded: assets::is_embedded(),

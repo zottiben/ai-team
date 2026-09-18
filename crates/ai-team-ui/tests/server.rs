@@ -17,6 +17,48 @@ struct Harness {
 }
 
 impl Harness {
+    /// A server with a real database behind it, seeded with one run.
+    fn with_store() -> (Harness, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("team.db");
+        let mut store = ai_team_core::Store::init(&path).unwrap();
+        let project = store
+            .create_project(ai_team_core::NewProject {
+                name: "Widget".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        store.seed_default_team(project.id).unwrap();
+        store
+            .create_run(project.id, "add subtract", ai_team_core::RunTrigger::Manual)
+            .unwrap();
+        drop(store);
+
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let server = runtime
+            .block_on(Server::bind(ServeOptions {
+                store: Some(ai_team_core::Store::open(&path).unwrap()),
+                ..Default::default()
+            }))
+            .unwrap();
+        let addr = server.addr();
+        let token = server.token().to_string();
+        runtime.spawn(async move {
+            let _ = server.serve().await;
+        });
+        (
+            Harness {
+                addr,
+                token,
+                _runtime: runtime,
+            },
+            dir,
+        )
+    }
+
     fn start() -> Harness {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
@@ -153,10 +195,67 @@ fn the_url_carries_the_token() {
         .block_on(Server::bind(ServeOptions {
             port: 0,
             token: Some("fixed-token".into()),
+            store: None,
         }))
         .unwrap();
 
     assert!(expected.contains(&app.token));
     assert_eq!(server.token(), "fixed-token");
     assert!(server.url().ends_with("token=fixed-token"));
+}
+
+#[test]
+fn the_api_is_a_view_over_the_database() {
+    let (app, _dir) = Harness::with_store();
+
+    let projects = app.get("/api/projects");
+    assert_eq!(projects.status, 200);
+    assert!(
+        projects.body.contains("\"name\":\"Widget\""),
+        "{}",
+        projects.body
+    );
+    // The count a sidebar shows, computed server-side so two windows cannot disagree.
+    assert!(
+        projects.body.contains("\"open_runs\":1"),
+        "{}",
+        projects.body
+    );
+
+    let runs = app.get("/api/runs");
+    assert!(runs.body.contains("add subtract"), "{}", runs.body);
+
+    // A run carries its nodes and its spend, because the dock renders all three and
+    // three round trips to draw one panel is three chances to show a half-updated run.
+    let detail = app.get("/api/runs/1");
+    assert_eq!(detail.status, 200);
+    assert!(detail.body.contains("\"nodes\""), "{}", detail.body);
+    assert!(detail.body.contains("\"usage\""), "{}", detail.body);
+}
+
+#[test]
+fn a_server_with_no_database_says_so_instead_of_failing() {
+    // `ait ui` before `ait init` is a normal first run. The window should explain
+    // itself, not look broken - and health must still answer, since that is what
+    // `ait doctor` asks.
+    let app = Harness::start();
+
+    assert_eq!(app.get("/api/health").status, 200);
+
+    let projects = app.get("/api/projects");
+    assert_eq!(projects.status, 503, "not a 500: nothing is broken");
+    assert!(projects.body.contains("ait init"), "{}", projects.body);
+}
+
+#[test]
+fn the_event_stream_needs_a_token_like_everything_else() {
+    // EventSource cannot set a header, so the stream takes its token from the query -
+    // which makes it exactly the route where an auth hole would go unnoticed.
+    let (app, _dir) = Harness::with_store();
+    assert_eq!(app.get_anonymous("/api/events").status, 401);
+    assert_eq!(
+        app.get_anonymous(&format!("/api/events?{TOKEN_QUERY}=wrong"))
+            .status,
+        401
+    );
 }

@@ -1,42 +1,304 @@
-import { useEffect, useState } from "react";
-import { health, type Health } from "./api";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-// The app shell - sidebar, console, right dock - is M3-S11. Until then this proves the
-// one thing M0-S1 is responsible for: the bundle in the binary is being served, and the
-// page behind it can reach the API with the token it was handed.
+import {
+  health,
+  projects as fetchProjects,
+  run as fetchRun,
+  runEvents as fetchRunEvents,
+  runs as fetchRuns,
+  subscribe,
+  type Health,
+  type Project,
+  type Run,
+  type RunDetail,
+  type RunEvent,
+} from "./api";
+import { apply, followSystem, stored, type Theme } from "./theme";
+
+/**
+ * The shell: sidebar, main, right dock.
+ *
+ * One surface at a time in the dock, one overlay at a time, and Esc always dismisses the
+ * topmost thing. That last rule is why the key handler lives here rather than in each
+ * surface - Esc has to know what is on top, and only this level does.
+ */
 export default function App() {
-  const [state, setState] = useState<Health | Error | null>(null);
+  const [theme, setTheme] = useState<Theme>(stored);
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [runs, setRuns] = useState<Run[]>([]);
+  const [project, setProject] = useState<number | null>(null);
+  const [selected, setSelected] = useState<number | null>(null);
+  const [detail, setDetail] = useState<RunDetail | null>(null);
+  const [events, setEvents] = useState<RunEvent[]>([]);
+  const [overlay, setOverlay] = useState<null | "about">(null);
+  const [expanded, setExpanded] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  const [info, setInfo] = useState<Health | null>(null);
 
   useEffect(() => {
-    let live = true;
-    health()
-      .then((value) => live && setState(value))
-      .catch((error: unknown) => {
-        if (live) setState(error instanceof Error ? error : new Error(String(error)));
-      });
-    return () => {
-      live = false;
-    };
+    apply(theme);
+    return followSystem(() => theme);
+  }, [theme]);
+
+  useEffect(() => {
+    health().then(setInfo).catch(() => setInfo(null));
   }, []);
 
+  const refresh = useCallback(async () => {
+    try {
+      const [nextProjects, nextRuns] = await Promise.all([
+        fetchProjects(),
+        fetchRuns(project ?? undefined),
+      ]);
+      setProjects(nextProjects);
+      setRuns(nextRuns);
+      setProblem(null);
+    } catch (error: unknown) {
+      setProblem(error instanceof Error ? error.message : String(error));
+    }
+  }, [project]);
+
+  // The selected run is refetched separately: it changes far more often than the lists,
+  // and a turn in flight should not redraw the sidebar on every event.
+  const refreshSelected = useCallback(async () => {
+    if (selected === null) {
+      setDetail(null);
+      setEvents([]);
+      return;
+    }
+    try {
+      const [next, nextEvents] = await Promise.all([
+        fetchRun(selected),
+        fetchRunEvents(selected),
+      ]);
+      setDetail(next);
+      setEvents(nextEvents);
+    } catch (error: unknown) {
+      setProblem(error instanceof Error ? error.message : String(error));
+    }
+  }, [selected]);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+  useEffect(() => {
+    void refreshSelected();
+  }, [refreshSelected]);
+
+  // One subscription for the window. The tick says only that the database moved; what
+  // that means depends on what is on screen, so both views re-read.
+  const onTick = useRef<() => void>(() => {});
+  onTick.current = () => {
+    void refresh();
+    void refreshSelected();
+  };
+  useEffect(() => subscribe(() => onTick.current()), []);
+
+  // Esc dismisses the topmost surface, innermost first. A single handler, because
+  // "topmost" is a fact about the whole shell.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      if (overlay !== null) setOverlay(null);
+      else if (expanded) setExpanded(false);
+      else if (selected !== null) setSelected(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [overlay, expanded, selected]);
+
+  const shown = useMemo(
+    () => (project === null ? runs : runs.filter((r) => r.project_id === project)),
+    [runs, project],
+  );
+
   return (
-    <main>
-      <h1>ai-team</h1>
-      <p>Nothing is wired up yet. This is the workspace skeleton.</p>
-      {state === null && <p>Checking the server…</p>}
-      {state instanceof Error && <p className="error">Cannot reach the server: {state.message}</p>}
-      {state !== null && !(state instanceof Error) && (
-        <dl>
-          <dt>version</dt>
-          <dd>{state.version}</dd>
-          <dt>frontend</dt>
-          <dd>
-            {state.bundle_embedded
-              ? `${state.bundle_files} files compiled in`
-              : "not compiled in"}
-          </dd>
-        </dl>
+    <div className="shell">
+      <aside className="sidebar">
+        <div className="sidebar__brand">
+          <h1>ai-team</h1>
+          <span className="sidebar__version">{info?.version ?? ""}</span>
+        </div>
+
+        <nav className="sidebar__section" aria-label="Projects">
+          <span className="sidebar__label">Projects</span>
+          <button
+            type="button"
+            className="nav-item"
+            aria-current={project === null}
+            onClick={() => setProject(null)}
+          >
+            <span>Everything</span>
+            <span className="nav-item__count">{runs.length}</span>
+          </button>
+          {projects.map((entry) => (
+            <button
+              type="button"
+              key={entry.id}
+              className="nav-item"
+              aria-current={project === entry.id}
+              onClick={() => setProject(entry.id)}
+            >
+              <span>{entry.name}</span>
+              <span className="nav-item__count">{entry.open_runs > 0 ? entry.open_runs : ""}</span>
+            </button>
+          ))}
+          {projects.length === 0 && <span className="faint">None yet - `ait init`.</span>}
+        </nav>
+
+        <div className="sidebar__section" style={{ marginTop: "auto" }}>
+          <span className="sidebar__label">Theme</span>
+          {(["system", "dark", "light"] as const).map((option) => (
+            <button
+              type="button"
+              key={option}
+              className="nav-item"
+              aria-current={theme === option}
+              onClick={() => setTheme(option)}
+            >
+              <span>{option}</span>
+            </button>
+          ))}
+          <button type="button" className="nav-item" onClick={() => setOverlay("about")}>
+            <span>About</span>
+            <span className="kbd">Esc</span>
+          </button>
+        </div>
+      </aside>
+
+      <main className="main">
+        <div className="main__header">
+          <h2>Runs</h2>
+          {problem !== null && <span className="error">{problem}</span>}
+        </div>
+
+        {shown.length === 0 && (
+          <p className="empty">
+            No runs yet. Start one with <code className="mono">ait run -p &lt;project&gt;</code> and
+            it will appear here.
+          </p>
+        )}
+
+        <div className="list">
+          {shown.map((entry) => (
+            <button
+              type="button"
+              key={entry.id}
+              className="card"
+              onClick={() => setSelected(entry.id)}
+            >
+              <div className="card__row">
+                <span className="status" data-status={entry.status}>
+                  {entry.status}
+                </span>
+                <span className="faint mono">#{entry.id}</span>
+              </div>
+              <span>{entry.prompt}</span>
+            </button>
+          ))}
+        </div>
+      </main>
+
+      {/* One surface at a time, and it collapses rather than covering what it describes. */}
+      {detail !== null && (
+        <aside className="dock">
+          <div className="dock__header">
+            <span className="dock__title">Run #{detail.id}</span>
+            <button type="button" className="button" onClick={() => setSelected(null)}>
+              Close
+            </button>
+          </div>
+
+          <span className="status" data-status={detail.status}>
+            {detail.status}
+          </span>
+          <p className="muted">{detail.prompt}</p>
+
+          <div className="list">
+            {detail.nodes.map((node) => (
+              <div key={node.id} className="card">
+                <div className="card__row">
+                  <span className="status" data-status={node.status}>
+                    {node.role}
+                    {node.attempt > 1 && ` (attempt ${node.attempt})`}
+                  </span>
+                  <span className="faint mono">{node.slice_key ?? ""}</span>
+                </div>
+                {node.branch !== null && <span className="faint mono">{node.branch}</span>}
+                {node.blocked_reason !== null && (
+                  <span className="error">{node.blocked_reason}</span>
+                )}
+              </div>
+            ))}
+          </div>
+
+          <div className="card__row">
+            <span className="dock__title">Events</span>
+            <button type="button" className="button" onClick={() => setExpanded(true)}>
+              Expand
+            </button>
+          </div>
+          <Events events={events.slice(-25)} />
+        </aside>
       )}
-    </main>
+
+      {/* A full-window view, for when the dock is too narrow to read a turn in. */}
+      {expanded && detail !== null && (
+        <section className="full-view">
+          <div className="main__header">
+            <h2>Run #{detail.id}</h2>
+            <button type="button" className="button" onClick={() => setExpanded(false)}>
+              Close <span className="kbd">Esc</span>
+            </button>
+          </div>
+          <Events events={events} />
+        </section>
+      )}
+
+      {overlay === "about" && (
+        <div
+          className="scrim"
+          role="presentation"
+          onClick={(event) => event.target === event.currentTarget && setOverlay(null)}
+        >
+          <div className="overlay" role="dialog" aria-modal="true" aria-label="About ai-team">
+            <h2 style={{ margin: 0 }}>ai-team</h2>
+            <p className="muted">
+              A team of agents, working your plan in leased worktrees. This window is a view
+              over the same database the CLI writes - nothing here holds state of its own.
+            </p>
+            <dl className="mono">
+              <dt className="faint">version</dt>
+              <dd>{info?.version ?? "unknown"}</dd>
+              <dt className="faint">frontend</dt>
+              <dd>
+                {info?.bundle_embedded === true
+                  ? `${info.bundle_files} files compiled in`
+                  : "not compiled in"}
+              </dd>
+            </dl>
+            <button type="button" className="button button--primary" onClick={() => setOverlay(null)}>
+              Close
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Events({ events }: { events: RunEvent[] }) {
+  if (events.length === 0) {
+    return <p className="faint">Nothing recorded yet.</p>;
+  }
+  return (
+    <div className="events">
+      {events.map((event) => (
+        <div key={event.id} className="event">
+          <span className="event__kind">{event.kind}</span>
+          <span>{event.summary}</span>
+        </div>
+      ))}
+    </div>
   );
 }

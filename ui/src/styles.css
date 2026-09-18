@@ -1,70 +1,356 @@
-/* The design tokens land in M3-S11. This is only enough to make the skeleton legible
-   rather than an unstyled stack of text. */
+@import "./tokens.css";
 
-:root {
-  --bg: #ffffff;
-  --fg: #1c1d20;
-  --muted: #6b6f76;
-  --line: #e3e5e9;
-  --accent: #3f6ef0;
-  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-  font-size: 15px;
-  line-height: 1.55;
+/* The shell. Nothing here names a colour: every value comes from the token layer, which
+ * is what lets the theme switch repaint the whole window at once. */
+
+* {
+  box-sizing: border-box;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #17181b;
-    --fg: #e8eaed;
-    --muted: #9aa0a8;
-    --line: #2c2e33;
-    --accent: #7d9bff;
-  }
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
 }
 
 body {
+  background: var(--surface-canvas-default);
+  color: var(--text-primary-default);
+  font-family: var(--font-ui);
+  font-size: var(--text-md);
+  -webkit-font-smoothing: antialiased;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+
+:focus-visible {
+  outline: 2px solid var(--border-focus-default);
+  outline-offset: 1px;
+}
+
+/* --- the shell ---------------------------------------------------------------- */
+
+.shell {
+  display: grid;
+  /* The dock is one column that collapses, rather than an overlay: a surface that
+   * covers the thing it describes is a surface you close to read what it is about. */
+  grid-template-columns: var(--sidebar-width) 1fr auto;
+  grid-template-rows: 100%;
+  height: 100%;
+}
+
+.sidebar {
+  background: var(--surface-panel-default);
+  border-right: 1px solid var(--border-subtle-default);
+  padding: var(--space-4) var(--space-3);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.sidebar__brand {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  padding: 0 var(--space-2);
+}
+
+.sidebar__brand h1 {
+  font-size: var(--text-md);
   margin: 0;
-  min-height: 100vh;
+  letter-spacing: 0.01em;
+}
+
+.sidebar__version {
+  color: var(--text-primary-faint);
+  font-size: var(--text-xs);
+  font-family: var(--font-mono);
+}
+
+.sidebar__section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.sidebar__label {
+  color: var(--text-primary-faint);
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 0 var(--space-2);
+  margin-bottom: var(--space-1);
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-2);
+  border-radius: var(--radius-sm);
+  text-align: left;
+  color: var(--text-primary-muted);
+  transition: background var(--motion-fast), color var(--motion-fast);
+}
+
+.nav-item:hover {
+  background: var(--surface-panel-hover);
+  color: var(--text-primary-default);
+}
+
+.nav-item[aria-current="true"] {
+  background: var(--surface-panel-selected);
+  color: var(--text-primary-default);
+}
+
+.nav-item__count {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-primary-faint);
+}
+
+.main {
+  overflow-y: auto;
+  padding: var(--space-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.main__header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+
+.main__header h2 {
+  margin: 0;
+  font-size: var(--text-lg);
+}
+
+.muted {
+  color: var(--text-primary-muted);
+}
+
+.faint {
+  color: var(--text-primary-faint);
+}
+
+.mono {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+}
+
+/* --- the right dock ----------------------------------------------------------- */
+
+.dock {
+  width: var(--dock-width);
+  background: var(--surface-panel-default);
+  border-left: 1px solid var(--border-subtle-default);
+  padding: var(--space-4);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.dock__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.dock__title {
+  font-size: var(--text-sm);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-primary-faint);
+}
+
+/* --- overlays and full-window views ------------------------------------------- */
+
+.scrim {
+  position: fixed;
+  inset: 0;
+  background: var(--surface-scrim-default);
   display: grid;
   place-items: center;
-  background: var(--bg);
-  color: var(--fg);
+  padding: var(--space-8);
 }
 
-main {
-  width: min(34rem, 100% - 3rem);
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  padding: 1.75rem;
+.overlay {
+  background: var(--surface-overlay-default);
+  border: 1px solid var(--border-strong-default);
+  border-radius: var(--radius-md);
+  padding: var(--space-6);
+  width: min(32rem, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
 }
 
-h1 {
-  margin: 0 0 0.25rem;
-  font-size: 1.1rem;
-  letter-spacing: -0.01em;
+.full-view {
+  position: fixed;
+  inset: 0;
+  background: var(--surface-canvas-default);
+  padding: var(--space-8);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
 }
 
-p {
-  margin: 0 0 1.25rem;
-  color: var(--muted);
+/* --- pieces ------------------------------------------------------------------- */
+
+.card {
+  background: var(--surface-panel-default);
+  border: 1px solid var(--border-subtle-default);
+  border-radius: var(--radius-md);
+  padding: var(--space-3) var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  text-align: left;
+  width: 100%;
+  transition: border-color var(--motion-fast), background var(--motion-fast);
 }
 
-dl {
-  display: grid;
-  grid-template-columns: max-content 1fr;
-  gap: 0.35rem 1.25rem;
-  margin: 0;
+button.card:hover {
+  background: var(--surface-panel-hover);
+  border-color: var(--border-strong-default);
 }
 
-dt {
-  color: var(--muted);
+.card__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
 }
 
-dd {
-  margin: 0;
-  font-variant-numeric: tabular-nums;
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+/* A status reads as a word and a colour. The dot carries the colour so the word stays
+ * legible against any surface, including at the contrast a light theme gives it. */
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--text-primary-muted);
+}
+
+.status::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--status-color, var(--status-queued-default));
+}
+
+.status[data-status="queued"] { --status-color: var(--status-queued-default); }
+.status[data-status="planning"],
+.status[data-status="running"] { --status-color: var(--status-running-default); }
+.status[data-status="done"] { --status-color: var(--status-done-default); }
+.status[data-status="failed"] { --status-color: var(--status-failed-default); }
+.status[data-status="parked"] { --status-color: var(--status-parked-default); }
+.status[data-status="blocked"] { --status-color: var(--status-blocked-default); }
+.status[data-status="cancelled"] { --status-color: var(--status-cancelled-default); }
+
+/* A running row breathes, so an open window tells you something is happening from
+ * across the desk. Respects a reduced-motion preference. */
+.status[data-status="running"]::before,
+.status[data-status="planning"]::before {
+  animation: pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  50% { opacity: 0.35; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
+.button {
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-subtle-default);
+  color: var(--text-primary-muted);
+  font-size: var(--text-sm);
+  transition: background var(--motion-fast), color var(--motion-fast);
+}
+
+.button:hover {
+  background: var(--surface-panel-hover);
+  color: var(--text-primary-default);
+}
+
+.button--primary {
+  background: var(--accent-action-default);
+  border-color: var(--accent-action-default);
+  color: var(--text-inverse-default);
+}
+
+.button--primary:hover {
+  background: var(--accent-action-hover);
+  border-color: var(--accent-action-hover);
+  color: var(--text-inverse-default);
 }
 
 .error {
-  color: var(--accent);
+  color: var(--status-failed-default);
+}
+
+.events {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+
+.event {
+  display: grid;
+  grid-template-columns: 6.5rem 1fr;
+  gap: var(--space-2);
+  padding: var(--space-1) 0;
+  border-bottom: 1px solid var(--border-subtle-default);
+}
+
+.event__kind {
+  color: var(--text-primary-faint);
+}
+
+.empty {
+  color: var(--text-primary-faint);
+  padding: var(--space-6);
+  text-align: center;
+}
+
+.kbd {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  border: 1px solid var(--border-subtle-default);
+  border-bottom-width: 2px;
+  border-radius: var(--radius-sm);
+  padding: 0 var(--space-1);
+  color: var(--text-primary-faint);
 }

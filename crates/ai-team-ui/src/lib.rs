@@ -8,6 +8,7 @@
 //! `M0-S1` establishes the shape: bound to loopback, token-gated, serving the embedded
 //! bundle and `/api/health`. The real routes arrive with the store.
 
+mod api;
 mod assets;
 mod auth;
 mod error;
@@ -40,12 +41,17 @@ pub struct Bundle {
     pub files: usize,
 }
 
-#[derive(Debug, Clone, Default)]
+// Not `Clone`: it owns a database connection, and two servers sharing one would be two
+// writers behind one lock rather than the two processes SQLite already handles.
+#[derive(Debug, Default)]
 pub struct ServeOptions {
     /// 0 asks the OS for a free one, so two windows never fight over a number.
     pub port: u16,
     /// Supply one to keep a URL stable across restarts. Otherwise it is minted fresh.
     pub token: Option<String>,
+    /// The database to read. Without one the window serves, reports its health, and says
+    /// there is nothing to show - which is a better answer than refusing to start.
+    pub store: Option<ai_team_core::Store>,
 }
 
 /// Bound, but not yet serving.
@@ -67,9 +73,12 @@ impl Server {
             Some(t) if !t.trim().is_empty() => t,
             _ => auth::mint_token()?,
         };
-        let state = AppState::new(token.as_str());
+        let mut state = AppState::new(token.as_str());
+        if let Some(store) = options.store {
+            state = state.with_store(store);
+        }
 
-        let api = health::routes().route_layer(axum::middleware::from_fn_with_state(
+        let api = api::routes().route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth::require_token,
         ));

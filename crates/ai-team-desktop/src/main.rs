@@ -43,7 +43,15 @@ fn run() -> Result<()> {
 
     let (ready, started) = mpsc::channel();
     runtime.spawn(async move {
-        match Server::bind(ServeOptions::default()).await {
+        // The same database the CLI writes, so the window and the terminal are two
+        // views of one thing rather than two applications that agree by accident.
+        let options = ServeOptions {
+            store: ai_team_core::default_db_path()
+                .ok()
+                .and_then(|path| ai_team_core::Store::open(&path).ok()),
+            ..Default::default()
+        };
+        match Server::bind(options).await {
             Ok(server) => {
                 let _ = ready.send(Ok(server.url()));
                 let _ = server.serve().await;

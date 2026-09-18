@@ -7,9 +7,18 @@ use ai_team_ui::{ServeOptions, Server};
 use crate::cli::UiArgs;
 
 pub(crate) async fn run(args: UiArgs) -> Result<()> {
+    // A missing database is not a reason to refuse to start: the window says so, and
+    // `ait init` is the fix. Anything else would make a first run look broken.
+    let db = ai_team_core::default_db_path()?;
+    let store = ai_team_core::Store::open(&db).ok();
+    if store.is_none() {
+        println!("No database at {} yet - run `ait init`.", db.display());
+    }
+
     let server = Server::bind(ServeOptions {
         port: args.port,
         token: None,
+        store,
     })
     .await
     .context("starting the local server")?;

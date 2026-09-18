@@ -1,0 +1,109 @@
+/* The semantic token layer.
+ *
+ * Every surface resolves `--{category}-{role}-{state}`; nothing outside this file names
+ * a colour. That is the rule that makes a theme switch repaint everything at once, and
+ * it is the one worth enforcing - a single raw hex in a component is a component that
+ * stays dark when the window goes light.
+ *
+ * The palette below is the only place raw hex appears. Read it as: the theme picks the
+ * values, the app picks the meanings, and they meet here.
+ */
+
+:root {
+  /* Not colours: the rhythm everything else is measured in. */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+
+  --radius-sm: 4px;
+  --radius-md: 8px;
+
+  --font-ui: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+
+  --text-xs: 0.75rem;
+  --text-sm: 0.8125rem;
+  --text-md: 0.9375rem;
+  --text-lg: 1.125rem;
+
+  /* Layout constants the shell is drawn from. */
+  --sidebar-width: 15rem;
+  --dock-width: 22rem;
+
+  /* How quickly a surface answers. Long enough to read as motion, short enough that a
+   * mouse-first UI never feels like it is waiting for the animation. */
+  --motion-fast: 90ms;
+}
+
+/* Dark is the default: this is a tool that sits open next to a terminal all day. */
+:root,
+[data-theme="dark"] {
+  color-scheme: dark;
+
+  --surface-canvas-default: #0e1013;
+  --surface-panel-default: #16191e;
+  --surface-panel-raised: #1c2027;
+  --surface-panel-hover: #22262f;
+  --surface-panel-selected: #262c37;
+  --surface-overlay-default: #1a1e24;
+  --surface-scrim-default: rgb(0 0 0 / 55%);
+
+  --text-primary-default: #e6e9ef;
+  --text-primary-muted: #9aa3b2;
+  --text-primary-faint: #6b7483;
+  --text-inverse-default: #0e1013;
+
+  --border-subtle-default: #262b33;
+  --border-strong-default: #363d48;
+  --border-focus-default: #6ea8fe;
+
+  --accent-action-default: #6ea8fe;
+  --accent-action-hover: #8dbaff;
+  --accent-action-muted: rgb(110 168 254 / 16%);
+
+  /* Run and node states. These are semantic first: `running` happens to be blue, but a
+   * surface asks for "running", never for blue. */
+  --status-queued-default: #6b7483;
+  --status-running-default: #6ea8fe;
+  --status-done-default: #5fd08a;
+  --status-failed-default: #f4776b;
+  --status-parked-default: #e8c46a;
+  --status-blocked-default: #e8c46a;
+  --status-cancelled-default: #6b7483;
+}
+
+[data-theme="light"] {
+  color-scheme: light;
+
+  --surface-canvas-default: #f6f7f9;
+  --surface-panel-default: #ffffff;
+  --surface-panel-raised: #ffffff;
+  --surface-panel-hover: #eef0f4;
+  --surface-panel-selected: #e4e8ef;
+  --surface-overlay-default: #ffffff;
+  --surface-scrim-default: rgb(16 20 26 / 35%);
+
+  --text-primary-default: #16191e;
+  --text-primary-muted: #5a6373;
+  --text-primary-faint: #858e9d;
+  --text-inverse-default: #ffffff;
+
+  --border-subtle-default: #dfe3ea;
+  --border-strong-default: #c3cad6;
+  --border-focus-default: #2563eb;
+
+  --accent-action-default: #2563eb;
+  --accent-action-hover: #1d4ed8;
+  --accent-action-muted: rgb(37 99 235 / 12%);
+
+  --status-queued-default: #858e9d;
+  --status-running-default: #2563eb;
+  --status-done-default: #1a7f4b;
+  --status-failed-default: #c4342a;
+  --status-parked-default: #9a6b00;
+  --status-blocked-default: #9a6b00;
+  --status-cancelled-default: #858e9d;
+}

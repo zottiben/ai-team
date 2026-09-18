@@ -99,6 +99,20 @@ impl Store {
         Ok(rows)
     }
 
+    /// The largest event id in the database, or -1 when there are none.
+    ///
+    /// One indexed lookup that moves whenever any node in any run does anything, which
+    /// is what makes it a usable "has something changed?" for a window polling from
+    /// another process.
+    pub fn latest_event_id(&self) -> Result<i64> {
+        Ok(self
+            .db()
+            .conn()
+            .query_row("SELECT COALESCE(MAX(id), -1) FROM event", [], |row| {
+                row.get(0)
+            })?)
+    }
+
     pub fn event_count(&self, run_id: i64) -> Result<i64> {
         Ok(self.db().conn().query_row(
             "SELECT COUNT(*) FROM event WHERE run_id = ?1",
