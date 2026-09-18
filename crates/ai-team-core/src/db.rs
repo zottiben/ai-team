@@ -22,6 +22,7 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
         include_str!("migrations/004_guardrails.sql"),
     ),
     (5, "console", include_str!("migrations/005_console.sql")),
+    (6, "schedule", include_str!("migrations/006_schedule.sql")),
 ];
 
 /// The number of `v_` views the schema ships. Asserted in tests, because a view silently
@@ -174,13 +175,13 @@ mod tests {
         let path = tmp.path().join("team.db");
 
         let db = Db::open_or_create(&path).unwrap();
-        assert_eq!(db.schema_version().unwrap(), 5);
+        assert_eq!(db.schema_version().unwrap(), 6);
         assert_eq!(db.pending_migrations().unwrap(), 0);
         drop(db);
 
         // Re-opening must not re-apply anything.
         let db = Db::open(&path).unwrap();
-        assert_eq!(db.schema_version().unwrap(), 5);
+        assert_eq!(db.schema_version().unwrap(), 6);
 
         let views: i64 = db
             .conn()
@@ -321,25 +322,31 @@ mod tests {
     }
 
     #[test]
-    fn a_scheduled_run_must_carry_a_prompt() {
+    fn a_scheduled_run_must_carry_a_project() {
+        // 006 replaced the old "must carry a prompt" rule. Since Q14 an empty prompt
+        // means "build whatever the plan has ready", which is the most useful thing to
+        // schedule - but with no project there is nowhere to lease a worktree and no
+        // plan to read, and the failure would come at two in the morning.
         let mut db = Db::memory().unwrap();
         db.write(seed_run).unwrap();
 
         assert!(db
             .conn()
             .execute(
-                "INSERT INTO reminder (project_id, kind, title, created_at, updated_at)
-                 VALUES (1, 'scheduled_run', 'nightly', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+                "INSERT INTO reminder (kind, title, prompt, created_at, updated_at)
+                 VALUES ('scheduled_run', 'nightly', 'tidy the tests',
+                         '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
                 [],
             )
             .is_err());
 
+        // And a prompt is genuinely optional now.
         assert!(db
             .conn()
             .execute(
-                "INSERT INTO reminder (project_id, kind, title, prompt, created_at, updated_at)
-                 VALUES (1, 'scheduled_run', 'nightly', 'tidy the tests',
-                         '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+                "INSERT INTO reminder (project_id, kind, title, created_at, updated_at)
+                 VALUES (1, 'scheduled_run', 'nightly', '2026-01-01T00:00:00Z',
+                         '2026-01-01T00:00:00Z')",
                 [],
             )
             .is_ok());

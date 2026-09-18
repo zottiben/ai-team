@@ -35,6 +35,9 @@ fn run() -> Result<()> {
         Command::Run(args) => runtime()?.block_on(cmd::run::run(args)),
         // Today asks ai-planner for its open questions, so it needs the runtime.
         Command::Today => runtime()?.block_on(cmd::today::run()).map_err(Into::into),
+        Command::Remind(command) => cmd::remind::run(command),
+        // The daemon is a loop of timers and processes, so it needs the runtime.
+        Command::Daemon => runtime()?.block_on(cmd::daemon::run()).map_err(Into::into),
         // Stats is a single query over the database and needs no runtime at all.
         Command::Stats(args) => cmd::stats::run(args).map_err(Into::into),
         // Doctor probes the neighbours by running them, so it needs the runtime too.

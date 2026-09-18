@@ -44,11 +44,85 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/board/slices/{key}", axum::routing::post(move_slice))
         .route("/today", get(today))
         .route("/analytics", get(analytics))
+        .route("/reminders", get(reminders).post(add_reminder))
+        .route("/reminders/{id}", axum::routing::delete(drop_reminder))
         .route("/reviews", get(reviews))
         .route("/reviews/{id}", get(review))
         .route("/reviews/{id}/comments", axum::routing::post(add_comment))
         .route("/reviews/{id}/submit", axum::routing::post(submit))
         .route("/comments/{id}/resolve", axum::routing::post(resolve))
+}
+
+#[derive(Debug, Deserialize)]
+struct RemindersQuery {
+    project: Option<String>,
+    kind: Option<ai_team_core::ReminderKind>,
+}
+
+async fn reminders(
+    State(state): State<AppState>,
+    Query(query): Query<RemindersQuery>,
+) -> Result<Json<Vec<ai_team_core::Reminder>>> {
+    let store = state.store()?;
+    let store = store.lock();
+    let project = match &query.project {
+        Some(slug) => Some(store.find_project(slug)?.id),
+        None => None,
+    };
+    Ok(Json(store.reminders(project, query.kind)?))
+}
+
+#[derive(Debug, Deserialize)]
+struct NewReminderRequest {
+    title: String,
+    #[serde(default)]
+    kind: Option<ai_team_core::ReminderKind>,
+    #[serde(default)]
+    project: Option<String>,
+    #[serde(default)]
+    due_at: Option<String>,
+    #[serde(default)]
+    recur: Option<ai_team_core::Recur>,
+    #[serde(default)]
+    prompt: Option<String>,
+    #[serde(default)]
+    body: Option<String>,
+}
+
+async fn add_reminder(
+    State(state): State<AppState>,
+    JsonBody(request): JsonBody<NewReminderRequest>,
+) -> Result<Json<ai_team_core::Reminder>> {
+    let store = state.store()?;
+    let mut store = store.lock();
+    let project = match &request.project {
+        Some(slug) => Some(store.find_project(slug)?.id),
+        None => None,
+    };
+    Ok(Json(store.add_reminder(ai_team_core::NewReminder {
+        project_id: project,
+        team_id: None,
+        kind: request.kind,
+        title: request.title,
+        body: request.body.unwrap_or_default(),
+        prompt: request.prompt,
+        due_at: request.due_at,
+        recur: request.recur,
+    })?))
+}
+
+/// Cancelled rather than deleted: what was scheduled and then called off is worth being
+/// able to see, and `event` is not the only place history matters.
+async fn drop_reminder(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> Result<Json<ai_team_core::Reminder>> {
+    let store = state.store()?;
+    let mut store = store.lock();
+    Ok(Json(store.set_reminder_status(
+        id,
+        ai_team_core::ReminderStatus::Cancelled,
+    )?))
 }
 
 #[derive(Debug, Deserialize)]

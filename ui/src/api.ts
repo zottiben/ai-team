@@ -293,15 +293,53 @@ export function analytics(by: GroupBy, project: string | null): Promise<Analytic
   return api<AnalyticsRow[]>(`/analytics?by=${by}${scope}`);
 }
 
-export async function post<T>(path: string, body: unknown): Promise<T> {
+export type Reminder = {
+  id: number;
+  project_id: number | null;
+  kind: "reminder" | "idea" | "scheduled_run";
+  title: string;
+  body: string;
+  prompt: string | null;
+  due_at: string | null;
+  recur: string | null;
+  status: "pending" | "fired" | "done" | "cancelled";
+  last_fired_at: string | null;
+};
+
+export function reminders(project: string | null): Promise<Reminder[]> {
+  const scope = project === null ? "" : `?project=${encodeURIComponent(project)}`;
+  return api<Reminder[]>(`/reminders${scope}`);
+}
+
+export function addReminder(body: {
+  title: string;
+  kind?: Reminder["kind"];
+  project?: string;
+  due_at?: string;
+  recur?: string;
+  prompt?: string;
+}): Promise<Reminder> {
+  return post("/reminders", body);
+}
+
+export function cancelReminder(id: number): Promise<Reminder> {
+  return request(`/reminders/${id}`, "DELETE");
+}
+
+export function post<T>(path: string, body: unknown): Promise<T> {
+  return request(path, "POST", body);
+}
+
+/** One place that writes, so the token and the error shape are decided once. */
+export async function request<T>(path: string, method: string, body?: unknown): Promise<T> {
   const current = token();
   const response = await fetch(`/api${path}`, {
-    method: "POST",
+    method,
     headers: {
-      "content-type": "application/json",
+      ...(body === undefined ? {} : { "content-type": "application/json" }),
       ...(current ? { [TOKEN_HEADER]: current } : {}),
     },
-    body: JSON.stringify(body),
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
   if (!response.ok) {
     const problem = (await response.json().catch(() => null)) as { error?: string } | null;

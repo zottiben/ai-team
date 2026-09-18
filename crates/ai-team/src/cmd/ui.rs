@@ -23,6 +23,18 @@ pub(crate) async fn run(args: UiArgs) -> Result<()> {
     .await
     .context("starting the local server")?;
 
+    // The clock runs here too, so having the window open is enough to fire a reminder.
+    // `ait daemon` runs the same loop for when it is not - claiming is a guarded update,
+    // so both being up is safe rather than merely tolerated.
+    tokio::spawn(ai_team_core::serve_schedule(|fired| {
+        let what = match (fired.started, fired.run_id) {
+            (true, Some(id)) => format!("started run #{id}"),
+            (true, None) => "started a run".into(),
+            (false, _) => fired.problem.clone().unwrap_or_else(|| "announced".into()),
+        };
+        println!("scheduler: {} - {what}", fired.reminder.title);
+    }));
+
     let url = server.url();
     println!("ai-team is at {url}");
     if !args.no_open {

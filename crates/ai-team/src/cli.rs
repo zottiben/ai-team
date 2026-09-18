@@ -43,8 +43,50 @@ pub(crate) enum Command {
     Today,
     /// Which agent-model pairing is earning its seat.
     Stats(StatsArgs),
+    /// Run the scheduler without the window, so reminders fire when ai-team is closed.
+    Daemon,
+    /// Reminders, the idea inbox, and runs scheduled for later.
+    #[command(subcommand)]
+    Remind(RemindCommand),
     /// Check the install: paths, the machine profile, and the embedded bundle.
     Doctor,
+}
+
+#[derive(Debug, clap::Subcommand)]
+pub(crate) enum RemindCommand {
+    /// What is scheduled.
+    Ls,
+    /// A one-off or recurring reminder.
+    Add(RemindArgs),
+    /// Something to think about later. No date needed - that is what makes it an inbox.
+    Idea(RemindArgs),
+    /// Start a run unattended at a due time.
+    Run(RemindArgs),
+    /// Cancel one.
+    Rm { id: i64 },
+}
+
+#[derive(Debug, clap::Args)]
+pub(crate) struct RemindArgs {
+    pub(crate) title: String,
+    /// When, as RFC3339.
+    #[arg(long)]
+    pub(crate) at: Option<String>,
+    /// When, relative: `30m`, `2h`, `1d`. A bare number is minutes.
+    #[arg(long)]
+    pub(crate) r#in: Option<String>,
+    /// daily | weekdays | weekly | monthly
+    #[arg(long)]
+    pub(crate) every: Option<String>,
+    /// Which project. A scheduled run defaults to the checkout you are standing in.
+    #[arg(long, short)]
+    pub(crate) project: Option<String>,
+    /// What to build, for a scheduled run. Omit to build whatever the plan has ready.
+    #[arg(long)]
+    pub(crate) prompt: Option<String>,
+    /// Anything worth remembering alongside it.
+    #[arg(long)]
+    pub(crate) note: Option<String>,
 }
 
 #[derive(Debug, clap::Args)]

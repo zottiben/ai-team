@@ -4,6 +4,7 @@ import { Analytics } from "./Analytics";
 import { Board } from "./Board";
 import { Approvals, Prompt, Seats } from "./Console";
 import { Review } from "./Review";
+import { Schedule } from "./Schedule";
 import { Today } from "./Today";
 import {
   approvals as fetchApprovals,
@@ -36,6 +37,7 @@ const VIEW_NAMES = {
   board: "Board",
   review: "Review",
   analytics: "Analytics",
+  schedule: "Schedule",
 } as const;
 
 export default function App() {
@@ -148,7 +150,8 @@ export default function App() {
 
         <nav className="sidebar__section" aria-label="Views">
           <span className="sidebar__label">View</span>
-          {(["today", "console", "board", "review", "analytics"] as const).map((option) => (
+          {(["today", "console", "board", "review", "analytics", "schedule"] as const).map(
+            (option) => (
             <button
               type="button"
               key={option}
@@ -158,7 +161,8 @@ export default function App() {
             >
               <span>{VIEW_NAMES[option]}</span>
             </button>
-          ))}
+            ),
+          )}
         </nav>
 
         <nav className="sidebar__section" aria-label="Projects">
@@ -222,6 +226,13 @@ export default function App() {
         )}
 
         {view === "review" && <Review tick={tick} />}
+
+        {view === "schedule" && (
+          <Schedule
+            project={projects.find((entry) => entry.id === project)?.slug ?? null}
+            tick={tick}
+          />
+        )}
 
         {view === "analytics" && (
           <Analytics

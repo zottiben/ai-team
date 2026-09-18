@@ -17,11 +17,13 @@ impl Store {
             return Err(Error::invalid("a reminder needs a title"));
         }
         let kind = new.kind.unwrap_or(ReminderKind::Reminder);
-        if kind == ReminderKind::ScheduledRun
-            && new.prompt.as_deref().unwrap_or("").trim().is_empty()
-        {
+        // A scheduled run needs somewhere to run, but not something to say. An empty
+        // prompt means "build whatever the plan already has ready" everywhere else in
+        // ai-team since Q14, and that is precisely what a nightly wants - the alternative
+        // is writing out a prompt that describes the plan you already wrote.
+        if kind == ReminderKind::ScheduledRun && new.project_id.is_none() {
             return Err(Error::invalid(
-                "a scheduled run needs a prompt - there would be nothing to submit",
+                "a scheduled run needs a project - there would be nowhere to run",
             ));
         }
         // A recurrence with no first occurrence never fires.
@@ -118,6 +120,55 @@ impl Store {
     /// A recurring one is rolled forward to its next occurrence and stays pending; a
     /// one-off is done. Rolling forward from the *due* time rather than from now is what
     /// stops a daily 09:00 reminder drifting later every day it fires late.
+    /// Take a due reminder, if nobody else has.
+    ///
+    /// Two schedulers is the normal case, not a mistake: the window runs one so having
+    /// it open is enough, and the daemon runs one so closing it does not stop the clock.
+    /// What makes that safe is here rather than in a rule about who may run - the update
+    /// is guarded on the `rev` the caller read, so exactly one claim can win and the
+    /// loser is told it lost. Without it a scheduled run fires twice, which means two
+    /// unattended agents in one repository.
+    ///
+    /// Returns the reminder as it now stands, or `None` if somebody else took it.
+    pub fn claim_reminder(&mut self, reminder: &Reminder) -> Result<Option<Reminder>> {
+        let at = now();
+        let next = reminder
+            .recur
+            .and_then(|r| {
+                reminder
+                    .due_at
+                    .as_deref()
+                    .map(|due| next_occurrence(due, r))
+            })
+            .transpose()?;
+
+        let id = reminder.id;
+        let rev = reminder.rev;
+        let won = self.db_mut().write(|tx| {
+            let changed = match &next {
+                Some(next_due) => tx.execute(
+                    "UPDATE reminder SET due_at = ?2, last_fired_at = ?3, status = 'pending',
+                                         rev = rev + 1, updated_at = ?3
+                      WHERE id = ?1 AND rev = ?4 AND status = 'pending'",
+                    params![id, next_due, at, rev],
+                )?,
+                None => tx.execute(
+                    "UPDATE reminder SET status = 'fired', last_fired_at = ?2, rev = rev + 1,
+                                         updated_at = ?2
+                      WHERE id = ?1 AND rev = ?3 AND status = 'pending'",
+                    params![id, at, rev],
+                )?,
+            };
+            Ok(changed == 1)
+        })?;
+
+        if won {
+            Ok(Some(self.reminder(id)?))
+        } else {
+            Ok(None)
+        }
+    }
+
     pub fn fire_reminder(&mut self, id: i64) -> Result<Reminder> {
         let reminder = self.reminder(id)?;
         let at = now();
@@ -230,25 +281,40 @@ mod tests {
     }
 
     #[test]
-    fn a_scheduled_run_without_a_prompt_is_refused() {
+    fn a_scheduled_run_without_a_project_is_refused() {
+        // Nowhere to run is a mistake worth catching while somebody is looking, not at
+        // two in the morning when it fires.
         let mut s = store();
         let bad = s.add_reminder(NewReminder {
             kind: Some(ReminderKind::ScheduledRun),
             title: "nightly tidy".into(),
+            prompt: Some("tidy the flaky tests".into()),
             due_at: Some("2026-09-18T09:00:00Z".into()),
             ..Default::default()
         });
-        assert!(bad.is_err(), "it would fire and do nothing");
+        assert!(bad.is_err(), "it would fire and have nowhere to go");
+    }
 
-        assert!(s
-            .add_reminder(NewReminder {
-                kind: Some(ReminderKind::ScheduledRun),
-                title: "nightly tidy".into(),
-                prompt: Some("tidy the flaky tests".into()),
-                due_at: Some("2026-09-18T09:00:00Z".into()),
+    #[test]
+    fn a_scheduled_run_needs_no_prompt_because_empty_means_build_what_is_ready() {
+        // Which is what `ait run` with no prompt has meant since Q14, and is precisely
+        // what a nightly wants - the alternative is writing a prompt that describes the
+        // plan you already wrote.
+        let mut s = store();
+        let project = s
+            .create_project(crate::model::NewProject {
+                name: "Widget".into(),
                 ..Default::default()
             })
-            .is_ok());
+            .unwrap();
+        let added = s.add_reminder(NewReminder {
+            project_id: Some(project.id),
+            kind: Some(ReminderKind::ScheduledRun),
+            title: "nightly build".into(),
+            due_at: Some("2026-09-18T09:00:00Z".into()),
+            ..Default::default()
+        });
+        assert!(added.is_ok(), "{:?}", added.err());
     }
 
     #[test]

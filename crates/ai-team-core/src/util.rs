@@ -13,6 +13,16 @@ pub fn now() -> String {
         .unwrap_or_default()
 }
 
+/// The same format, `seconds` from now. Used for scheduling, where "in two hours" is how
+/// a human says it and an absolute instant is what the clock compares.
+pub fn rfc3339_in(seconds: i64) -> String {
+    (OffsetDateTime::now_utc() + time::Duration::seconds(seconds))
+        .replace_nanosecond(0)
+        .unwrap_or_else(|_| OffsetDateTime::now_utc())
+        .format(&Rfc3339)
+        .unwrap_or_default()
+}
+
 /// `ACME-1234 - Reusable Date Range Picker` -> `acme-1234-reusable-date-range-picker`
 pub fn slugify(input: &str) -> String {
     let mut out = String::with_capacity(input.len());

@@ -11,6 +11,7 @@
 
 mod analytics;
 mod context;
+mod daemon;
 mod db;
 mod diff;
 mod error;
@@ -24,6 +25,7 @@ mod neighbours;
 mod paths;
 mod review;
 mod roles;
+mod schedule;
 mod store;
 mod supervise;
 mod today;
@@ -32,6 +34,7 @@ mod workflow;
 
 pub use analytics::{rollup, By, Row};
 pub use context::{figma_links, parse_url, Source, CLICKUP_READ_TOOLS, FIGMA_READ_TOOLS};
+pub use daemon::{once as tick_once, serve as serve_schedule};
 pub use db::Db;
 pub use diff::{parse as parse_diff, FileDiff, FileStatus, Hunk, Line, LineKind};
 pub use error::{Error, Result};
@@ -57,6 +60,7 @@ pub use review::{
     pending as pending_review, responsible, steerable, Audience, Pending, Submitted,
 };
 pub use roles::{preset, RolePreset, DEFAULT_LOCAL_MODEL, DEFAULT_ROSTER};
+pub use schedule::{act, announcement, claim_due, notify, runnable, tick, Fired, TICK};
 pub use store::Store;
 pub use supervise::{
     approvals_in, drive_turn, free_port, mint_token, outcome_status, reattach,
@@ -65,7 +69,7 @@ pub use supervise::{
     ProgressLine, Supervisor, TurnOutcome,
 };
 pub use today::{from_question, from_store as today_from_store, rank as rank_today, Item, Urgency};
-pub use util::{normalise_remote, now, slugify, zone_matches};
+pub use util::{normalise_remote, now, rfc3339_in, slugify, zone_matches};
 pub use workflow::{run as run_workflow, Progress, Request};
 
 /// The workspace version, compiled in.
