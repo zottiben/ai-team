@@ -82,7 +82,9 @@ pub use supervise::{
     ProgressLine, Supervisor, TurnOutcome,
 };
 pub use terminal::{Chunk, Listed, Terminals};
-pub use today::{from_question, from_store as today_from_store, rank as rank_today, Item, Urgency};
+pub use today::{
+    from_question, from_slice, from_store as today_from_store, rank as rank_today, Item, Urgency,
+};
 pub use update::{
     apply as apply_update, check as check_update, current_version, is_newer,
     method as install_method, Available, Method, Step,

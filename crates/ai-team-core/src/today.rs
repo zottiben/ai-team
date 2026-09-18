@@ -223,6 +223,30 @@ fn slipped(due: &str, at: &str) -> i64 {
     }
 }
 
+/// A slice the plan says is waiting on a person, as an item.
+///
+/// Work an agent finished and left `in_review` is the commonest thing waiting after a
+/// run, and it lives in ai-planner rather than in ai-team's own `review` table - so
+/// without this, the most likely answer to "I just ran something, what now" was
+/// "nothing".
+pub fn from_slice(project: &str, key: &str, title: &str, status: &str) -> Option<Item> {
+    let (urgency, detail) = match status {
+        "in_review" => (Urgency::Review, "finished, waiting for you to look at it"),
+        // Blocked work will not unblock itself, and the reason is on the slice.
+        "blocked" => (Urgency::Failed, "blocked - the plan says why"),
+        _ => return None,
+    };
+    Some(Item {
+        urgency,
+        kind: "slice".into(),
+        title: format!("{key} - {title}"),
+        detail: Some(detail.into()),
+        project: Some(project.to_string()),
+        run_id: None,
+        since: None,
+    })
+}
+
 /// An open question ai-planner is holding, as an item.
 pub fn from_question(project: &str, question: &str, asked: Option<String>) -> Item {
     Item {
@@ -336,6 +360,30 @@ mod tests {
     #[test]
     fn a_clock_that_cannot_be_read_does_not_raise_the_alarm() {
         assert_eq!(slipped("whenever", "2026-09-18T04:00:00Z"), 0);
+    }
+
+    #[test]
+    fn a_slice_left_in_review_is_the_answer_to_what_now() {
+        // The commonest thing waiting after a run, and it lives in ai-planner rather than
+        // in ai-team's own review table - so without it Today was empty the moment a run
+        // succeeded, which is exactly when somebody looks.
+        let item = from_slice("widget", "S1", "Add subtract", "in_review").unwrap();
+        assert_eq!(item.urgency, Urgency::Review);
+        assert!(item.title.contains("S1"));
+
+        // Blocked work will not unblock itself.
+        assert_eq!(
+            from_slice("widget", "S2", "x", "blocked").unwrap().urgency,
+            Urgency::Failed
+        );
+
+        // Everything else is work in progress or work done, and neither wants a human.
+        for status in ["ready", "active", "done", "draft", "deferred"] {
+            assert!(
+                from_slice("widget", "S3", "x", status).is_none(),
+                "{status}"
+            );
+        }
     }
 
     #[test]

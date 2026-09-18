@@ -43,7 +43,7 @@ function stub(board: unknown) {
 }
 
 it("shows the plan's slices in the columns work moves through", async () => {
-  stub({ plan: PLAN, slices: [slice("S1", "ready"), slice("S2", "done")] });
+  stub({ plan: PLAN, next_step: null, slices: [slice("S1", "ready"), slice("S2", "done")] });
   render(<Board project="widget" tick={0} />);
 
   expect(await screen.findByText("Widget plan")).toBeDefined();
@@ -59,7 +59,7 @@ it("shows the plan's slices in the columns work moves through", async () => {
 
 it("says which seat would build each slice", async () => {
   // ai-team's own question, not the plan's: which zone covers the paths it declared.
-  stub({ plan: PLAN, slices: [slice("S1", "ready")] });
+  stub({ plan: PLAN, next_step: null, slices: [slice("S1", "ready")] });
   render(<Board project="widget" tick={0} />);
   expect(await screen.findByText("backend")).toBeDefined();
 });
@@ -67,14 +67,14 @@ it("says which seat would build each slice", async () => {
 it("says plainly when nobody owns a slice", async () => {
   // A slice no zone covers is reported undone rather than handed to somebody, so the
   // board should not imply it is ready to go.
-  stub({ plan: PLAN, slices: [slice("S9", "ready", { owner: null, touches: ["docs/x.md"] })] });
+  stub({ plan: PLAN, next_step: null, slices: [slice("S9", "ready", { owner: null, touches: ["docs/x.md"] })] });
   render(<Board project="widget" tick={0} />);
   expect(await screen.findByText("unowned")).toBeDefined();
 });
 
 it("moving a card writes back through ai-planner", async () => {
   const user = userEvent.setup();
-  const calls = stub({ plan: PLAN, slices: [slice("S1", "ready")] });
+  const calls = stub({ plan: PLAN, next_step: null, slices: [slice("S1", "ready")] });
   render(<Board project="widget" tick={0} />);
 
   await screen.findByText("S1 title");
@@ -88,7 +88,7 @@ it("moving a card writes back through ai-planner", async () => {
 
 it("blocking a card carries a reason, because the next session needs one", async () => {
   const user = userEvent.setup();
-  const calls = stub({ plan: PLAN, slices: [slice("S1", "ready")] });
+  const calls = stub({ plan: PLAN, next_step: null, slices: [slice("S1", "ready")] });
   render(<Board project="widget" tick={0} />);
 
   await screen.findByText("S1 title");
@@ -113,8 +113,16 @@ it("says what is wrong rather than showing an empty board", async () => {
   expect(await screen.findByText(/no checkout/)).toBeDefined();
 });
 
+it("a checkout with no plan is told what to do, not shown an error", async () => {
+  // Where every new project starts. Answering with ai-planner's own "not registered"
+  // made a first look at the Board a red message about a tool the reader may not have met.
+  stub({ plan: null, slices: [], next_step: "Run `aip new` in it." });
+  render(<Board project="widget" tick={0} />);
+  expect(await screen.findByText(/aip new/)).toBeDefined();
+});
+
 it("asks for a project before reading anything", async () => {
-  const calls = stub({ plan: PLAN, slices: [] });
+  const calls = stub({ plan: PLAN, next_step: null, slices: [] });
   render(<Board project={null} tick={0} />);
   expect(screen.getByText(/Pick a project/)).toBeDefined();
   expect(calls).toHaveLength(0);

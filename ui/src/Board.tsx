@@ -62,6 +62,12 @@ export function Board({ project, tick }: { project: string | null; tick: number 
     return <p className="empty">Reading the plan…</p>;
   }
 
+  // Every project starts here: a checkout nobody has planned in yet. Said as the next
+  // step rather than as an empty board, which reads as something having gone wrong.
+  if (data.plan === null) {
+    return <p className="empty">{data.next_step ?? "This checkout has no plan yet."}</p>;
+  }
+
   return (
     <div className="board">
       <div className="main__header">

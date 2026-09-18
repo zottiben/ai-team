@@ -31,7 +31,8 @@ pub(crate) async fn run() -> Result<()> {
     for (slug, repo) in checkouts {
         // Best effort: a checkout that has moved, or one with no plan yet, must not
         // empty the list for every other project.
-        let Ok(questions) = ai_team_core::Planner::at(repo).open_questions().await else {
+        let planner = ai_team_core::Planner::at(repo);
+        let Ok(questions) = planner.open_questions().await else {
             continue;
         };
         for question in questions {
@@ -40,6 +41,15 @@ pub(crate) async fn run() -> Result<()> {
                 &question.body,
                 question.asked_at,
             ));
+        }
+        // Work an agent finished and left `in_review` is the commonest thing waiting
+        // after a run, and it lives on the plan rather than in ai-team's own tables.
+        for slice in planner.slices().await.unwrap_or_default() {
+            if let Some(item) =
+                ai_team_core::from_slice(&slug, &slice.key, &slice.title, &slice.status)
+            {
+                items.push(item);
+            }
         }
     }
 

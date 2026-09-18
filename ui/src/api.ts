@@ -139,8 +139,10 @@ export type BoardSlice = {
 };
 
 export type Board = {
-  plan: { plan: string; title: string; status: string; slice: string | null };
+  /** Null when this checkout has no plan yet - a normal state, not a failure. */
+  plan: { plan: string; title: string; status: string; slice: string | null } | null;
   slices: BoardSlice[];
+  next_step: string | null;
 };
 
 /** The statuses ai-planner recognises, in the order work moves through them. */

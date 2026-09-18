@@ -960,7 +960,8 @@ async fn today(State(state): State<AppState>) -> Result<Json<Vec<ai_team_core::I
     for (slug, repo) in checkouts {
         // Best effort per project: a checkout that has been deleted, or one with no plan
         // yet, must not empty the whole list for every other project.
-        let Ok(questions) = ai_team_core::Planner::at(repo).open_questions().await else {
+        let planner = ai_team_core::Planner::at(repo);
+        let Ok(questions) = planner.open_questions().await else {
             continue;
         };
         for question in questions {
@@ -969,6 +970,15 @@ async fn today(State(state): State<AppState>) -> Result<Json<Vec<ai_team_core::I
                 &question.body,
                 question.asked_at,
             ));
+        }
+        // Work an agent finished and left `in_review` is the commonest thing waiting
+        // after a run, and it lives on the plan rather than in ai-team's own tables.
+        for slice in planner.slices().await.unwrap_or_default() {
+            if let Some(item) =
+                ai_team_core::from_slice(&slug, &slice.key, &slice.title, &slice.status)
+            {
+                items.push(item);
+            }
         }
     }
 
@@ -991,8 +1001,14 @@ struct BoardSlice {
 
 #[derive(Debug, Serialize)]
 struct Board {
-    plan: ai_team_core::PlanSummary,
+    /// `None` when this checkout has no plan yet, which is where every new project
+    /// starts. A repository nobody has run `aip new` in is not a broken one, and
+    /// answering with ai-planner's own "not registered" error makes a first look at the
+    /// Board a red message about a tool the reader may not have met.
+    plan: Option<ai_team_core::PlanSummary>,
     slices: Vec<BoardSlice>,
+    /// What to do about it, when there is nothing to show.
+    next_step: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1030,7 +1046,20 @@ async fn board(
     // below: `aip` is another program, and holding a database connection across it
     // would block every other request for the duration.
     let (planner, team_id) = planner_for(&state, &query.project)?;
-    let plan = planner.current().await?;
+
+    // A checkout with no plan is a normal, early state rather than a failure, so it is
+    // reported as an empty board with an instruction instead of ai-planner's own error.
+    let Ok(plan) = planner.current().await else {
+        return Ok(Json(Board {
+            plan: None,
+            slices: Vec::new(),
+            next_step: Some(
+                "This checkout has no plan yet. Run `aip new \"<what you are building>\"` \
+                 in it, or start a run and the orchestrator will write one."
+                    .into(),
+            ),
+        }));
+    };
     let slices = planner.slices().await?;
 
     let store = state.store()?;
@@ -1051,7 +1080,11 @@ async fn board(
             })
         })
         .collect::<Result<Vec<_>>>()?;
-    Ok(Json(Board { plan, slices }))
+    Ok(Json(Board {
+        plan: Some(plan),
+        slices,
+        next_step: None,
+    }))
 }
 
 #[derive(Debug, Deserialize)]

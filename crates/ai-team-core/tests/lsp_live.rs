@@ -22,6 +22,15 @@ fn installed(command: &str) -> bool {
         .is_ok_and(|status| status.success())
 }
 
+/// How long to wait for a real language server to have an opinion.
+///
+/// Generous on purpose. These drive live servers, and rust-analyzer's first answer costs
+/// an index build - which on a laptop is seconds and on a loaded CI runner, sharing cores
+/// with the rest of this suite compiling, is minutes. A tight deadline here does not
+/// catch anything; it just fails on a busy machine, and a test that fails when the runner
+/// is busy gets muted.
+const PATIENCE: Duration = Duration::from_secs(180);
+
 /// Wait for a server to publish diagnostics for a file.
 ///
 /// Polled rather than awaited once: rust-analyzer builds its index before it says
@@ -78,8 +87,9 @@ async fn rust_analyzer_attaches_and_reports_a_type_error() {
         .await
         .unwrap();
 
-    let found = wait_for_diagnostics(&client, "src/lib.rs", Duration::from_secs(90)).await;
-    let found = found.expect("rust-analyzer should publish for an open file");
+    let found = wait_for_diagnostics(&client, "src/lib.rs", PATIENCE)
+        .await
+        .expect("rust-analyzer published nothing at all - was the machine this loaded?");
 
     // Asserted on what is stable rather than on rustc's phrasing: the wording here is
     // "expected i32, found &'static str", not "mismatched types", and pinning a test to a
@@ -119,7 +129,7 @@ async fn rust_analyzer_answers_hover_and_definition() {
     client.sync("src/lib.rs", source).await.unwrap();
 
     // Give it a moment to index before asking; an answer of None early is not an error.
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
+    let deadline = tokio::time::Instant::now() + PATIENCE;
     let mut hover = None;
     while tokio::time::Instant::now() < deadline {
         // Line 5, on the call to `add`.
@@ -139,7 +149,8 @@ async fn rust_analyzer_answers_hover_and_definition() {
         tokio::time::sleep(Duration::from_millis(300)).await;
     }
 
-    let hover = hover.expect("hover over a call should say something");
+    let hover =
+        hover.expect("hover said nothing within the deadline - was the machine this loaded?");
     assert!(hover.text.contains("add"), "{}", hover.text);
 
     let places = client
@@ -206,8 +217,9 @@ async fn typescript_attaches_and_reports_a_type_error() {
         .await
         .unwrap();
 
-    let found = wait_for_diagnostics(&client, "index.ts", Duration::from_secs(60)).await;
-    let found = found.expect("typescript should publish for an open file");
+    let found = wait_for_diagnostics(&client, "index.ts", PATIENCE)
+        .await
+        .expect("typescript published nothing at all - was the machine this loaded?");
     let error = found
         .iter()
         .find(|d| d.severity == Some(1))
