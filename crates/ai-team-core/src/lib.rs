@@ -39,7 +39,7 @@ pub use analytics::{rollup, By, Row};
 pub use context::{figma_links, parse_url, Source, CLICKUP_READ_TOOLS, FIGMA_READ_TOOLS};
 pub use daemon::{once as tick_once, serve as serve_schedule};
 pub use db::Db;
-pub use diff::{parse as parse_diff, FileDiff, FileStatus, Hunk, Line, LineKind};
+pub use diff::{parse as parse_diff, patch_for, FileDiff, FileStatus, Hunk, Line, LineKind};
 pub use error::{Error, Result};
 pub use eve::{Disposition, Ingested, StreamEvent, StreamMeta, TerminalState};
 pub use gates::{all_passed, discover_gates, evidence, run_gates, Gate, GateKind, GateResult};
@@ -62,8 +62,9 @@ pub use model::{
     ToolEffect, ToolPolicy, Usage,
 };
 pub use neighbours::{
-    file_sql_available, list_tree, safe_join, Entry, FileSql, Hit, Lease, PlanSummary, Planner,
-    PoolEntry, Question, Slice, Worktrees,
+    apply_patch_cached, branches, checkout, commit_staged, current_branch, file_sql_available,
+    list_tree, push, safe_join, stage, staged_diff, unstage, untracked, worktree_diff, Entry,
+    FileSql, Hit, Lease, PlanSummary, Planner, PoolEntry, Question, Slice, Worktrees,
 };
 pub use paths::{data_dir, default_db_path, ensure_data_dir, machine_profile_path, HOME_ENV};
 pub use review::{

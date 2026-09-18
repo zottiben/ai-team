@@ -12,5 +12,9 @@ mod worktree;
 pub use filesql::{
     available as file_sql_available, list as list_tree, safe_join, Entry, FileSql, Hit,
 };
+pub use git::{
+    apply_cached as apply_patch_cached, branches, checkout, commit as commit_staged,
+    current_branch, push, stage, staged_diff, unstage, untracked, worktree_diff,
+};
 pub use planner::{PlanSummary, Planner, Question, Slice};
 pub use worktree::{Lease, PoolEntry, Worktrees};

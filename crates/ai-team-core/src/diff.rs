@@ -11,6 +11,8 @@
 //! header with no count, a file with no trailing newline, a rename with no content
 //! change at all, and content lines that begin with `--` or `+++`.
 
+use std::fmt::Write as _;
+
 use serde::Serialize;
 
 /// What happened to a line.
@@ -247,6 +249,56 @@ fn content(file: &mut FileDiff, raw: &str, at: &mut Position) {
     }
 }
 
+/// Rebuild a patch containing exactly one hunk of one file.
+///
+/// This is what per-hunk staging actually is. `git apply --cached` needs a whole, valid
+/// patch, and the temptation is to reconstruct the file with the hunk applied and stage
+/// that - which would also stage every *other* unstaged edit to the same file, defeating
+/// the entire point.
+///
+/// Three things have to be right or git refuses it, and the refusal is the good case: a
+/// patch it accepts and applies wrongly is much worse.
+///
+/// - The `@@` line's counts must match the lines that follow. A hunk taken from a larger
+///   diff already agrees with itself, so its header is reused verbatim rather than
+///   recomputed from a count that could drift.
+/// - The file headers must name the same path git knows, on both sides.
+/// - It must end with a newline. git rejects a patch whose last line is unterminated,
+///   with a message about corruption that says nothing about the missing byte.
+pub fn patch_for(file: &FileDiff, hunk: &Hunk) -> String {
+    let old = file.old_path.as_deref().unwrap_or(&file.path);
+    let mut out = format!("diff --git a/{old} b/{}\n", file.path);
+
+    match file.status {
+        // A new file's old side is /dev/null, and saying otherwise makes git look for a
+        // blob that was never there.
+        FileStatus::Added => {
+            out.push_str("new file mode 100644\n--- /dev/null\n");
+            let _ = writeln!(out, "+++ b/{}", file.path);
+        }
+        FileStatus::Removed => {
+            let _ = writeln!(out, "deleted file mode 100644\n--- a/{old}");
+            out.push_str("+++ /dev/null\n");
+        }
+        FileStatus::Modified | FileStatus::Renamed => {
+            let _ = writeln!(out, "--- a/{old}\n+++ b/{}", file.path);
+        }
+    }
+
+    out.push_str(&hunk.header);
+    out.push('\n');
+    for line in &hunk.lines {
+        out.push(match line.kind {
+            LineKind::Added => '+',
+            LineKind::Removed => '-',
+            LineKind::Context => ' ',
+        });
+        out.push_str(&line.text);
+        out.push('\n');
+    }
+    out
+}
+
 /// `a/src/lib.rs b/src/lib.rs` -> `src/lib.rs`.
 ///
 /// Only a first guess: `+++ b/...` and `rename to ...` both override it, because this
@@ -467,6 +519,87 @@ mod tests {
         let file =
             only("diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1,1 +1,1 @@ impl Store {\n-a\n+b\n");
         assert!(file.hunks[0].header.ends_with("impl Store {"));
+    }
+
+    #[test]
+    fn a_single_hunk_patch_round_trips_through_the_parser() {
+        // The cheapest proof that what is handed to `git apply` is well formed: parse it
+        // back and check it says the same thing.
+        let file = only(
+            "diff --git a/src/lib.rs b/src/lib.rs\n\
+             --- a/src/lib.rs\n\
+             +++ b/src/lib.rs\n\
+             @@ -10,4 +10,5 @@ impl Store {\n\
+             \x20fn one() {}\n\
+             -fn two() {}\n\
+             +fn two(x: i32) {}\n\
+             +fn three() {}\n\
+             \x20fn four() {}\n\
+             @@ -50,2 +51,2 @@\n\
+             -gone\n\
+             +back\n",
+        );
+
+        let patch = patch_for(&file, &file.hunks[0]);
+        let reparsed = only(&patch);
+        assert_eq!(reparsed.path, "src/lib.rs");
+        // Exactly the one hunk, not both.
+        assert_eq!(reparsed.hunks.len(), 1);
+        assert_eq!(reparsed.hunks[0].header, file.hunks[0].header);
+        assert_eq!((reparsed.additions, reparsed.deletions), (2, 1));
+        assert!(patch.ends_with('\n'), "git rejects an unterminated patch");
+    }
+
+    #[test]
+    fn the_second_hunk_can_be_staged_without_the_first() {
+        // The whole point. Staging hunk two must not carry hunk one along with it.
+        let file = only(
+            "diff --git a/x b/x\n--- a/x\n+++ b/x\n\
+             @@ -1,1 +1,1 @@\n-first\n+FIRST\n\
+             @@ -9,1 +9,1 @@\n-second\n+SECOND\n",
+        );
+        let patch = patch_for(&file, &file.hunks[1]);
+        assert!(patch.contains("SECOND"), "{patch}");
+        assert!(!patch.contains("FIRST"), "{patch}");
+    }
+
+    #[test]
+    fn a_new_files_patch_says_dev_null_on_the_old_side() {
+        // Naming the old path instead makes git look for a blob that was never there.
+        let file = only(
+            "diff --git a/new.rs b/new.rs\n\
+             new file mode 100644\n--- /dev/null\n+++ b/new.rs\n\
+             @@ -0,0 +1,1 @@\n+first\n",
+        );
+        let patch = patch_for(&file, &file.hunks[0]);
+        assert!(patch.contains("--- /dev/null"), "{patch}");
+        assert!(patch.contains("new file mode"), "{patch}");
+    }
+
+    #[test]
+    fn a_renames_patch_names_both_sides() {
+        let file = FileDiff {
+            path: "new.rs".into(),
+            old_path: Some("old.rs".into()),
+            status: FileStatus::Renamed,
+            binary: false,
+            hunks: vec![Hunk {
+                header: "@@ -1 +1 @@".into(),
+                old_start: 1,
+                new_start: 1,
+                lines: vec![Line {
+                    kind: LineKind::Context,
+                    old: Some(1),
+                    new: Some(1),
+                    text: "same".into(),
+                }],
+            }],
+            additions: 0,
+            deletions: 0,
+        };
+        let patch = patch_for(&file, &file.hunks[0]);
+        assert!(patch.contains("--- a/old.rs"), "{patch}");
+        assert!(patch.contains("+++ b/new.rs"), "{patch}");
     }
 
     #[test]

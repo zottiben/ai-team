@@ -46,6 +46,11 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/tree", get(tree))
         .route("/file", get(read_file).post(write_file))
         .route("/search", get(search))
+        .route("/scm", get(scm))
+        .route("/scm/stage", axum::routing::post(scm_stage))
+        .route("/scm/commit", axum::routing::post(scm_commit))
+        .route("/scm/branch", axum::routing::post(scm_branch))
+        .route("/scm/push", axum::routing::post(scm_push))
         .route("/terminals", get(terminals).post(open_terminal))
         .route("/terminals/{id}", get(read_terminal).post(write_terminal))
         .route("/terminals/{id}/close", axum::routing::post(close_terminal))
@@ -177,6 +182,131 @@ async fn write_file(
         )))
     })?;
     Ok(Json(serde_json::json!({ "saved": request.path })))
+}
+
+#[derive(Debug, Serialize)]
+struct Scm {
+    branch: Option<String>,
+    branches: Vec<String>,
+    /// Worktree against index - what pressing stage would add.
+    unstaged: Vec<ai_team_core::FileDiff>,
+    /// Index against HEAD - what pressing commit would record. Kept apart, because their
+    /// sum cannot tell you either one.
+    staged: Vec<ai_team_core::FileDiff>,
+    /// Files git has never seen. They have no diff at all, so a view built only from
+    /// `git diff` leaves an agent's new file out of the commit entirely.
+    untracked: Vec<String>,
+}
+
+async fn scm(State(state): State<AppState>, Query(query): Query<TreeQuery>) -> Result<Json<Scm>> {
+    let worktree = worktree_for(&state, &query.project, query.node)?;
+    Ok(Json(Scm {
+        branch: ai_team_core::current_branch(&worktree).await,
+        branches: ai_team_core::branches(&worktree).await?,
+        unstaged: ai_team_core::parse_diff(&ai_team_core::worktree_diff(&worktree).await?),
+        staged: ai_team_core::parse_diff(&ai_team_core::staged_diff(&worktree).await?),
+        untracked: ai_team_core::untracked(&worktree).await?,
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+struct StageRequest {
+    project: String,
+    #[serde(default)]
+    node: Option<i64>,
+    path: String,
+    /// Which hunk, when staging one. Absent stages the whole file.
+    #[serde(default)]
+    hunk: Option<usize>,
+    /// True to take it back out of the index.
+    #[serde(default)]
+    unstage: bool,
+}
+
+async fn scm_stage(
+    State(state): State<AppState>,
+    JsonBody(request): JsonBody<StageRequest>,
+) -> Result<Json<serde_json::Value>> {
+    let worktree = worktree_for(&state, &request.project, request.node)?;
+
+    if request.unstage {
+        ai_team_core::unstage(&worktree, &request.path).await?;
+        return Ok(Json(serde_json::json!({ "unstaged": request.path })));
+    }
+
+    let Some(index) = request.hunk else {
+        ai_team_core::stage(&worktree, &request.path).await?;
+        return Ok(Json(serde_json::json!({ "staged": request.path })));
+    };
+
+    // Re-read rather than trusting what the window last saw: it polls, so the diff it is
+    // showing may be a second old, and a hunk index means nothing against a stale diff.
+    let files = ai_team_core::parse_diff(&ai_team_core::worktree_diff(&worktree).await?);
+    let file = files
+        .iter()
+        .find(|file| file.path == request.path)
+        .ok_or_else(|| {
+            crate::error::Error::Core(ai_team_core::Error::invalid(
+                "that file has no unstaged changes any more",
+            ))
+        })?;
+    let hunk = file.hunks.get(index).ok_or_else(|| {
+        crate::error::Error::Core(ai_team_core::Error::invalid(
+            "that hunk is gone - the file has changed since the view was drawn",
+        ))
+    })?;
+
+    ai_team_core::apply_patch_cached(&worktree, &ai_team_core::patch_for(file, hunk)).await?;
+    Ok(Json(
+        serde_json::json!({ "staged": request.path, "hunk": index }),
+    ))
+}
+
+#[derive(Debug, Deserialize)]
+struct CommitRequest {
+    project: String,
+    #[serde(default)]
+    node: Option<i64>,
+    message: String,
+}
+
+async fn scm_commit(
+    State(state): State<AppState>,
+    JsonBody(request): JsonBody<CommitRequest>,
+) -> Result<Json<serde_json::Value>> {
+    let worktree = worktree_for(&state, &request.project, request.node)?;
+    let sha = ai_team_core::commit_staged(&worktree, &request.message).await?;
+    Ok(Json(serde_json::json!({ "sha": sha })))
+}
+
+#[derive(Debug, Deserialize)]
+struct BranchRequest {
+    project: String,
+    #[serde(default)]
+    node: Option<i64>,
+    branch: String,
+}
+
+async fn scm_branch(
+    State(state): State<AppState>,
+    JsonBody(request): JsonBody<BranchRequest>,
+) -> Result<Json<serde_json::Value>> {
+    let worktree = worktree_for(&state, &request.project, request.node)?;
+    ai_team_core::checkout(&worktree, &request.branch).await?;
+    Ok(Json(serde_json::json!({ "branch": request.branch })))
+}
+
+/// Push the current branch.
+///
+/// Publishing is not a node's call - `irreversible.ts` refuses it from a generated agent
+/// - but it is squarely the operator's, and this is their surface.
+async fn scm_push(
+    State(state): State<AppState>,
+    JsonBody(query): JsonBody<TreeQuery>,
+) -> Result<Json<serde_json::Value>> {
+    let worktree = worktree_for(&state, &query.project, query.node)?;
+    let output = ai_team_core::push(&worktree).await?;
+    Ok(Json(serde_json::json!({ "pushed": output.trim() })))
 }
 
 #[derive(Debug, Deserialize)]

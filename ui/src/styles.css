@@ -894,3 +894,68 @@ button.card:hover {
   border-radius: var(--radius-md);
   overflow: hidden;
 }
+
+/* --- source control ----------------------------------------------------------- */
+
+.source {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-height: 0;
+}
+
+.source__branch {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+}
+
+.source__branch select,
+.source__commit textarea {
+  font: inherit;
+  color: var(--text-primary-default);
+  background: var(--surface-canvas-default);
+  border: 1px solid var(--border-subtle-default);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2);
+}
+
+.source__file {
+  padding: var(--space-2) 0;
+  border-bottom: 1px solid var(--border-subtle-default);
+}
+
+/* The name is a disclosure control, so it reads as text rather than as a button. */
+.source__name {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  background: none;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  font-size: var(--text-sm);
+  cursor: pointer;
+  text-align: left;
+}
+
+.source__hunk {
+  margin: var(--space-2) 0 var(--space-3);
+  border: 1px solid var(--border-subtle-default);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.source__commit {
+  display: flex;
+  gap: var(--space-2);
+  align-items: flex-start;
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border-subtle-default);
+}
+
+.source__commit textarea {
+  flex: 1;
+  resize: vertical;
+}

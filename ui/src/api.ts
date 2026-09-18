@@ -438,6 +438,37 @@ export function closeTerminal(id: number): Promise<unknown> {
   return post(`/terminals/${id}/close`, {});
 }
 
+export type Scm = {
+  branch: string | null;
+  branches: string[];
+  unstaged: FileDiff[];
+  staged: FileDiff[];
+  untracked: string[];
+};
+
+export function scm(where: Where): Promise<Scm> {
+  return api<Scm>(`/scm?${scope(where)}`);
+}
+
+export function scmStage(
+  where: Where,
+  body: { path: string; hunk?: number; unstage?: boolean },
+): Promise<unknown> {
+  return post("/scm/stage", { ...where, ...body });
+}
+
+export function scmCommit(where: Where, message: string): Promise<{ sha: string }> {
+  return post("/scm/commit", { ...where, message });
+}
+
+export function scmBranch(where: Where, branch: string): Promise<unknown> {
+  return post("/scm/branch", { ...where, branch });
+}
+
+export function scmPush(where: Where): Promise<{ pushed: string }> {
+  return post("/scm/push", where);
+}
+
 export function post<T>(path: string, body: unknown): Promise<T> {
   return request(path, "POST", body);
 }

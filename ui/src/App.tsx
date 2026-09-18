@@ -6,6 +6,7 @@ import { Approvals, Prompt, Seats } from "./Console";
 
 import { Review } from "./Review";
 import { Schedule } from "./Schedule";
+import { Source } from "./Source";
 import { Today } from "./Today";
 import {
   approvals as fetchApprovals,
@@ -50,6 +51,7 @@ const VIEW_NAMES = {
   schedule: "Schedule",
   editor: "Editor",
   terminal: "Terminal",
+  source: "Source",
 } as const;
 
 export default function App() {
@@ -162,7 +164,7 @@ export default function App() {
 
         <nav className="sidebar__section" aria-label="Views">
           <span className="sidebar__label">View</span>
-          {(["today", "console", "board", "review", "analytics", "schedule", "editor", "terminal"] as const).map(
+          {(["today", "console", "board", "review", "analytics", "schedule", "editor", "terminal", "source"] as const).map(
             (option) => (
             <button
               type="button"
@@ -246,6 +248,13 @@ export default function App() {
               node={null}
             />
           </Suspense>
+        )}
+
+        {view === "source" && (
+          <Source
+            project={projects.find((entry) => entry.id === project)?.slug ?? null}
+            node={null}
+          />
         )}
 
         {view === "terminal" && (

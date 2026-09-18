@@ -167,7 +167,7 @@ pub(crate) async fn default_branch(worktree: &Path) -> Option<String> {
 }
 
 /// Which branch this checkout is on, or `None` on a detached head.
-pub(crate) async fn current_branch(worktree: &Path) -> Option<String> {
+pub async fn current_branch(worktree: &Path) -> Option<String> {
     let name = git(worktree, &["rev-parse", "--abbrev-ref", "HEAD"])
         .await
         .ok()?
@@ -207,6 +207,159 @@ pub(crate) async fn diff(worktree: &Path, base: &str, head: &str) -> Result<Stri
         ],
     )
     .await
+}
+
+/// What is changed here, unstaged and staged.
+///
+/// Two diffs rather than one: `git diff` is the worktree against the index and
+/// `git diff --cached` is the index against HEAD. A surface that shows only their sum
+/// cannot tell you what pressing commit would actually record.
+pub async fn worktree_diff(worktree: &Path) -> Result<String> {
+    git(
+        worktree,
+        &["diff", "--no-color", "--find-renames", "--unified=3"],
+    )
+    .await
+}
+
+pub async fn staged_diff(worktree: &Path) -> Result<String> {
+    git(
+        worktree,
+        &[
+            "diff",
+            "--cached",
+            "--no-color",
+            "--find-renames",
+            "--unified=3",
+        ],
+    )
+    .await
+}
+
+/// Files git does not know about yet.
+///
+/// Untracked files have no diff at all, so they would be invisible in a view built only
+/// from `git diff` - which is how a new file an agent wrote gets left out of a commit.
+pub async fn untracked(worktree: &Path) -> Result<Vec<String>> {
+    Ok(
+        git(worktree, &["ls-files", "--others", "--exclude-standard"])
+            .await?
+            .lines()
+            .map(str::to_string)
+            .filter(|line| !line.is_empty())
+            .collect(),
+    )
+}
+
+pub async fn stage(worktree: &Path, path: &str) -> Result<()> {
+    git(worktree, &["add", "--", path]).await.map(|_| ())
+}
+
+pub async fn unstage(worktree: &Path, path: &str) -> Result<()> {
+    // `restore --staged` rather than `reset`, because on a repository with no commits yet
+    // there is no HEAD to reset against and the whole view would fail on a fresh repo.
+    git(worktree, &["restore", "--staged", "--", path])
+        .await
+        .map(|_| ())
+}
+
+/// Stage exactly one hunk by feeding git a patch containing only that hunk.
+///
+/// `git apply --cached` is the only honest way to do this: reconstructing the file and
+/// writing it would stage the human's *other* unstaged edits to the same file along with
+/// the hunk they picked, which is precisely what per-hunk staging exists to avoid.
+///
+/// `--unidiff-zero` is not passed: the patch carries its context lines, and git verifying
+/// that context is what stops a stale hunk applying in the wrong place after the file has
+/// moved on underneath the view.
+pub async fn apply_cached(worktree: &Path, patch: &str) -> Result<()> {
+    let mut child = Command::new("git")
+        .args(["apply", "--cached", "-"])
+        .current_dir(worktree)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|error| Error::invalid(format!("could not run git apply: {error}")))?;
+
+    {
+        use tokio::io::AsyncWriteExt as _;
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| Error::invalid("git apply took no stdin"))?;
+        stdin
+            .write_all(patch.as_bytes())
+            .await
+            .map_err(|error| Error::invalid(format!("writing the patch: {error}")))?;
+        // Dropped here on purpose: git apply reads until EOF, and holding the pipe open
+        // would wait forever for a patch that is already complete.
+    }
+
+    let output = child
+        .wait_with_output()
+        .await
+        .map_err(|error| Error::invalid(format!("git apply: {error}")))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    // Almost always means the index already has it: the window polls, so two clicks on
+    // stage, or one click against a view that has not caught up, both land here. Saying
+    // "the file changed" would be wrong - `--cached` applies to the index, and editing
+    // the worktree afterwards does not invalidate a patch.
+    Err(Error::invalid(format!(
+        "that hunk does not apply - it is probably already staged ({})",
+        String::from_utf8_lossy(&output.stderr).trim()
+    )))
+}
+
+/// Commit what is staged.
+pub async fn commit(worktree: &Path, message: &str) -> Result<String> {
+    if message.trim().is_empty() {
+        return Err(Error::invalid("a commit needs a message"));
+    }
+    // `-F -` would need another pipe; `-m` twice is how git takes a subject and a body,
+    // and splitting on the blank line is what the author already typed.
+    let (subject, body) = message
+        .trim()
+        .split_once("\n\n")
+        .unwrap_or((message.trim(), ""));
+    let mut args = vec!["commit", "-m", subject];
+    if !body.trim().is_empty() {
+        args.push("-m");
+        args.push(body.trim());
+    }
+    git(worktree, &args).await?;
+    rev_parse(worktree, "HEAD").await
+}
+
+/// Every local branch, and which one is checked out.
+pub async fn branches(worktree: &Path) -> Result<Vec<String>> {
+    Ok(git(
+        worktree,
+        &["for-each-ref", "--format=%(refname:short)", "refs/heads"],
+    )
+    .await?
+    .lines()
+    .map(str::to_string)
+    .filter(|line| !line.is_empty())
+    .collect())
+}
+
+pub async fn checkout(worktree: &Path, branch: &str) -> Result<()> {
+    git(worktree, &["checkout", branch]).await.map(|_| ())
+}
+
+/// Push the current branch, setting upstream if it has none.
+///
+/// Publishing is not a *node's* call - `irreversible.ts` refuses this from a generated
+/// agent - but it is squarely the operator's, and this is their surface.
+pub async fn push(worktree: &Path) -> Result<String> {
+    let branch = current_branch(worktree)
+        .await
+        .ok_or_else(|| Error::invalid("a detached head has no branch to push"))?;
+    git(worktree, &["push", "--set-upstream", "origin", &branch]).await
 }
 
 async fn git(worktree: &Path, args: &[&str]) -> Result<String> {
