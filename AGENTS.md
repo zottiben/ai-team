@@ -42,6 +42,10 @@ the login shell is zsh.
 | Build what is ready | `ait run -p <project>` (no prompt; `--replan` plans again) |
 | Drive one agent | `ait run -p <project> --worktree <dir> "…"` |
 | The database | `ait db path`, `ait db open` (TablePlus), `ait db views` |
+| What to work on now | `ait today` (ranked across every project) |
+| Which pairing earns its seat | `ait stats --by agent\|model\|team\|project` |
+| Schedule a run | `ait remind run "nightly" --in 2h`, and `ait daemon` to keep the clock |
+| Update in place | `ait update` (`--check` to look only) |
 | Icons | `cd crates/ai-team-desktop/icons && sh regenerate.sh` |
 
 The root `cargo` commands skip `ai-team-desktop` on purpose — it pulls in Tauri and a
