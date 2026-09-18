@@ -43,7 +43,28 @@ pub enum Submitted {
 /// agent, which is how a review of four lines turns into a review of four hundred.
 pub async fn diff_for(review: &Review, repo: &Path) -> Result<Vec<FileDiff>> {
     let (base, head) = range_for(review, repo).await?;
-    Ok(crate::parse_diff(&git::diff(repo, &base, &head).await?))
+
+    // If this checkout is sitting on the branch under review, diff against what is on
+    // disk rather than against its last commit. A hosted review cannot do this - there is
+    // no working tree on a server - but a local one should: somebody who opens a file in
+    // the editor and fixes it by hand expects to see that, not to be told to commit first
+    // so the tool can notice.
+    //
+    // Only when the review is not pinned to a commit range. A pinned review keeps showing
+    // the same diff on purpose, because that is what a comment on line 42 needs to stay
+    // true.
+    let pinned = review.base_sha.is_some() && review.head_sha.is_some();
+    let on_branch = match (&review.branch, git::current_branch(repo).await) {
+        (Some(branch), Some(here)) => branch == &here,
+        _ => false,
+    };
+
+    let raw = if !pinned && on_branch {
+        git::diff_worktree(repo, &base).await?
+    } else {
+        git::diff(repo, &base, &head).await?
+    };
+    Ok(crate::parse_diff(&raw))
 }
 
 /// Resolve a review's two commits, preferring what was recorded when it was opened.
@@ -59,9 +80,15 @@ async fn range_for(review: &Review, repo: &Path) -> Result<(String, String)> {
         .as_deref()
         .ok_or_else(|| Error::invalid("that review has no branch and no commit range"))?;
     let head = git::rev_parse(repo, branch).await?;
-    // HEAD of the checkout is the base the branch was cut from in every path ai-team
-    // takes, because `awt` leases worktrees of this repo.
-    let base = git::merge_base(repo, "HEAD", branch).await?;
+
+    // Measured from the default branch, not from HEAD. A leased worktree is normally
+    // *sitting on* the branch under review, so `merge-base(HEAD, branch)` is the branch
+    // tip itself and the diff comes back empty - which reads as "the agent changed
+    // nothing" rather than as a bug in the tool.
+    let base_ref = git::default_branch(repo)
+        .await
+        .ok_or_else(|| Error::invalid("this repository has no main branch to measure against"))?;
+    let base = git::merge_base(repo, &base_ref, branch).await?;
     Ok((base, head))
 }
 

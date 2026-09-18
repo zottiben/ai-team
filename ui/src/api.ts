@@ -326,6 +326,46 @@ export function cancelReminder(id: number): Promise<Reminder> {
   return request(`/reminders/${id}`, "DELETE");
 }
 
+export type TreeEntry = { path: string; name: string; dir: boolean };
+
+export type FileBody = { path: string; text: string; editable: boolean };
+
+export type Hit = {
+  path: string;
+  language: string | null;
+  summary: string | null;
+  symbol: string | null;
+  score: number;
+  start_line: number;
+  end_line: number;
+  snippet: string;
+};
+
+/** Every editor call is scoped to a checkout: a project, or a node's leased worktree. */
+export type Where = { project: string; node?: number | null };
+
+function scope(where: Where, extra: Record<string, string> = {}): string {
+  const params = new URLSearchParams({ project: where.project, ...extra });
+  if (where.node !== null && where.node !== undefined) params.set("node", String(where.node));
+  return params.toString();
+}
+
+export function tree(where: Where, path: string): Promise<TreeEntry[]> {
+  return api<TreeEntry[]>(`/tree?${scope(where, { path })}`);
+}
+
+export function readFile(where: Where, path: string): Promise<FileBody> {
+  return api<FileBody>(`/file?${scope(where, { path })}`);
+}
+
+export function saveFile(where: Where, path: string, text: string): Promise<{ saved: string }> {
+  return post("/file", { ...where, path, text });
+}
+
+export function search(where: Where, q: string): Promise<Hit[]> {
+  return api<Hit[]>(`/search?${scope(where, { q })}`);
+}
+
 export function post<T>(path: string, body: unknown): Promise<T> {
   return request(path, "POST", body);
 }

@@ -102,6 +102,18 @@ pub(crate) async fn run() {
         }
     }
 
+    // file-sql has no `--version`-style health check of its own worth calling a check,
+    // and its index is per checkout rather than per machine - so this says whether the
+    // binary is there and leaves "is this repo indexed" to the surface that needs it.
+    if core::file_sql_available().await {
+        println!("  {:<18} installed", "file-sql");
+    } else {
+        println!(
+            "  {:<18} not installed - search in the editor is unavailable",
+            "file-sql"
+        );
+    }
+
     let bundle = ai_team_ui::bundle();
     if bundle.embedded {
         println!("  {:<18} {} files compiled in", "frontend", bundle.files);

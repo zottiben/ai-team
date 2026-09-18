@@ -738,3 +738,137 @@ button.card:hover {
   border-radius: var(--radius-sm);
   padding: var(--space-2);
 }
+
+/* --- editor ------------------------------------------------------------------- */
+
+.editor {
+  display: grid;
+  grid-template-columns: 16rem 1fr;
+  gap: var(--space-3);
+  min-height: 0;
+  height: 100%;
+}
+
+.editor__side {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-height: 0;
+  overflow-y: auto;
+  border-right: 1px solid var(--border-subtle-default);
+  padding-right: var(--space-2);
+}
+
+.editor__main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+  min-height: 0;
+}
+
+.editor__search input {
+  width: 100%;
+  font: inherit;
+  color: var(--text-primary-default);
+  background: var(--surface-canvas-default);
+  border: 1px solid var(--border-subtle-default);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2);
+}
+
+.editor__hit {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  text-align: left;
+  padding: var(--space-2);
+  margin-top: var(--space-1);
+  background: none;
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: inherit;
+  font: inherit;
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+
+.editor__hit:hover {
+  background: var(--surface-panel-hover);
+}
+
+.tree__row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: 2px var(--space-2);
+  background: none;
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: inherit;
+  font: inherit;
+  font-size: var(--text-sm);
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.tree__row:hover {
+  background: var(--surface-panel-hover);
+}
+
+.editor__tabs {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  overflow-x: auto;
+  border-bottom: 1px solid var(--border-subtle-default);
+  padding-bottom: var(--space-2);
+}
+
+.editor__tab {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  background: none;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--text-primary-muted);
+  font: inherit;
+  font-size: var(--text-sm);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.editor__tab[aria-current="true"] {
+  color: var(--text-primary-default);
+  background: var(--surface-panel-selected);
+  border-color: var(--border-subtle-default);
+}
+
+/* A dot, not a word: it has to read at a glance across a row of tabs, and "modified" is
+ * four times the width of the filename it belongs to. */
+.editor__dirty {
+  color: var(--accent-action-default);
+  font-size: 0.6rem;
+}
+
+.editor__close {
+  color: var(--text-primary-faint);
+  cursor: pointer;
+}
+
+.editor__save {
+  margin-left: auto;
+}
+
+.editor__surface {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid var(--border-subtle-default);
+  border-radius: var(--radius-md);
+}

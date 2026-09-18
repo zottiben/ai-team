@@ -43,6 +43,9 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/board", get(board))
         .route("/board/slices/{key}", axum::routing::post(move_slice))
         .route("/today", get(today))
+        .route("/tree", get(tree))
+        .route("/file", get(read_file).post(write_file))
+        .route("/search", get(search))
         .route("/analytics", get(analytics))
         .route("/reminders", get(reminders).post(add_reminder))
         .route("/reminders/{id}", axum::routing::delete(drop_reminder))
@@ -51,6 +54,147 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/reviews/{id}/comments", axum::routing::post(add_comment))
         .route("/reviews/{id}/submit", axum::routing::post(submit))
         .route("/comments/{id}/resolve", axum::routing::post(resolve))
+}
+
+/// Which checkout the editor is looking at.
+///
+/// A worktree when a node has one leased, otherwise the project's own checkout. Editing
+/// the lease is the point - it is where the agent's work actually is, and what Review is
+/// showing a diff of.
+#[derive(Debug, Deserialize)]
+struct TreeQuery {
+    project: String,
+    /// A node's leased worktree, when the editor is following one.
+    #[serde(default)]
+    node: Option<i64>,
+    #[serde(default)]
+    path: String,
+}
+
+/// Resolve which directory on disk a request is about.
+fn worktree_for(state: &AppState, project: &str, node: Option<i64>) -> Result<std::path::PathBuf> {
+    let store = state.store()?;
+    let store = store.lock();
+
+    // A node's lease wins when one is named: that is where the work being reviewed lives,
+    // and the main checkout does not have it.
+    if let Some(node) = node {
+        if let Some(path) = store.node_run(node)?.worktree_path {
+            return Ok(std::path::PathBuf::from(path));
+        }
+    }
+
+    let project = store.find_project(project)?;
+    store
+        .project_repos(project.id)?
+        .into_iter()
+        .find_map(|repo| repo.main_path)
+        .map(std::path::PathBuf::from)
+        .ok_or_else(|| {
+            crate::error::Error::Core(ai_team_core::Error::invalid(
+                "that project has no checkout to open",
+            ))
+        })
+}
+
+async fn tree(
+    State(state): State<AppState>,
+    Query(query): Query<TreeQuery>,
+) -> Result<Json<Vec<ai_team_core::Entry>>> {
+    let worktree = worktree_for(&state, &query.project, query.node)?;
+    Ok(Json(ai_team_core::list_tree(&worktree, &query.path)?))
+}
+
+#[derive(Debug, Serialize)]
+struct FileBody {
+    path: String,
+    text: String,
+    /// False when the bytes are not text. The editor refuses rather than rendering a
+    /// screenful of replacement characters and then offering to save them back.
+    editable: bool,
+}
+
+async fn read_file(
+    State(state): State<AppState>,
+    Query(query): Query<TreeQuery>,
+) -> Result<Json<FileBody>> {
+    let worktree = worktree_for(&state, &query.project, query.node)?;
+    let path = ai_team_core::safe_join(&worktree, &query.path)?;
+    let bytes = std::fs::read(&path).map_err(|error| {
+        crate::error::Error::Core(ai_team_core::Error::invalid(format!(
+            "could not read {}: {error}",
+            query.path
+        )))
+    })?;
+
+    // Decoded strictly, not lossily: a lossy read followed by a save would replace every
+    // undecodable byte with U+FFFD and quietly corrupt the file.
+    match String::from_utf8(bytes) {
+        Ok(text) => Ok(Json(FileBody {
+            path: query.path,
+            text,
+            editable: true,
+        })),
+        Err(_) => Ok(Json(FileBody {
+            path: query.path,
+            text: String::new(),
+            editable: false,
+        })),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct SaveRequest {
+    project: String,
+    #[serde(default)]
+    node: Option<i64>,
+    path: String,
+    text: String,
+}
+
+async fn write_file(
+    State(state): State<AppState>,
+    JsonBody(request): JsonBody<SaveRequest>,
+) -> Result<Json<serde_json::Value>> {
+    let worktree = worktree_for(&state, &request.project, request.node)?;
+    let path = ai_team_core::safe_join(&worktree, &request.path)?;
+    std::fs::write(&path, request.text).map_err(|error| {
+        crate::error::Error::Core(ai_team_core::Error::invalid(format!(
+            "could not save {}: {error}",
+            request.path
+        )))
+    })?;
+    Ok(Json(serde_json::json!({ "saved": request.path })))
+}
+
+#[derive(Debug, Deserialize)]
+struct SearchQuery {
+    project: String,
+    #[serde(default)]
+    node: Option<i64>,
+    q: String,
+    #[serde(default = "ten")]
+    limit: usize,
+}
+
+fn ten() -> usize {
+    10
+}
+
+/// Search, which is file-sql's job and not ai-team's.
+///
+/// A checkout with no index is told to make one rather than handed a substring scan:
+/// ai-team having its own worse search is how the good one stops being used (D4).
+async fn search(
+    State(state): State<AppState>,
+    Query(query): Query<SearchQuery>,
+) -> Result<Json<Vec<ai_team_core::Hit>>> {
+    let worktree = worktree_for(&state, &query.project, query.node)?;
+    Ok(Json(
+        ai_team_core::FileSql::at(worktree)
+            .search(&query.q, query.limit)
+            .await?,
+    ))
 }
 
 #[derive(Debug, Deserialize)]

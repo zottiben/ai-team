@@ -55,7 +55,10 @@ pub use model::{
     ReminderStatus, Review, ReviewComment, ReviewStatus, Run, RunStatus, RunTrigger, Team,
     ToolEffect, ToolPolicy, Usage,
 };
-pub use neighbours::{Lease, PlanSummary, Planner, PoolEntry, Question, Slice, Worktrees};
+pub use neighbours::{
+    file_sql_available, list_tree, safe_join, Entry, FileSql, Hit, Lease, PlanSummary, Planner,
+    PoolEntry, Question, Slice, Worktrees,
+};
 pub use paths::{data_dir, default_db_path, ensure_data_dir, machine_profile_path, HOME_ENV};
 pub use review::{
     amendment, as_instructions, deliver as deliver_review, diff_for, instructions_for,

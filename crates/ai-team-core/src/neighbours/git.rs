@@ -138,6 +138,57 @@ pub(crate) async fn rev_parse(worktree: &Path, rev: &str) -> Result<String> {
     Ok(git(worktree, &["rev-parse", rev]).await?.trim().to_string())
 }
 
+/// The branch work is cut from, as this repository actually names it.
+///
+/// Tried in order rather than assumed: `origin/HEAD` is what the remote says, and the two
+/// fallbacks cover a repo with no remote. Returning `None` is a real answer - a checkout
+/// with none of them has nothing to measure a branch against.
+pub(crate) async fn default_branch(worktree: &Path) -> Option<String> {
+    if let Ok(name) = git(
+        worktree,
+        &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+    )
+    .await
+    {
+        let name = name.trim();
+        if !name.is_empty() {
+            return Some(name.to_string());
+        }
+    }
+    for candidate in ["main", "master"] {
+        if git(worktree, &["rev-parse", "--verify", "--quiet", candidate])
+            .await
+            .is_ok_and(|sha| !sha.trim().is_empty())
+        {
+            return Some(candidate.to_string());
+        }
+    }
+    None
+}
+
+/// Which branch this checkout is on, or `None` on a detached head.
+pub(crate) async fn current_branch(worktree: &Path) -> Option<String> {
+    let name = git(worktree, &["rev-parse", "--abbrev-ref", "HEAD"])
+        .await
+        .ok()?
+        .trim()
+        .to_string();
+    (!name.is_empty() && name != "HEAD").then_some(name)
+}
+
+/// The diff from a commit to what is on disk right now, uncommitted edits included.
+///
+/// A local review can show work in progress, which a hosted one cannot - there is no
+/// working tree on a server. Used when the checkout is sitting on the branch under
+/// review, so a human who edits a file by hand sees the effect without committing first.
+pub(crate) async fn diff_worktree(worktree: &Path, base: &str) -> Result<String> {
+    git(
+        worktree,
+        &["diff", "--no-color", "--find-renames", "--unified=3", base],
+    )
+    .await
+}
+
 /// The unified diff between two commits.
 ///
 /// `--no-color` because a configured `color.ui = always` would otherwise wrap every line

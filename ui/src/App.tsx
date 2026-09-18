@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { Analytics } from "./Analytics";
 import { Board } from "./Board";
 import { Approvals, Prompt, Seats } from "./Console";
+
 import { Review } from "./Review";
 import { Schedule } from "./Schedule";
 import { Today } from "./Today";
@@ -31,6 +32,11 @@ import { apply, followSystem, stored, type Theme } from "./theme";
  * surface - Esc has to know what is on top, and only this level does.
  */
 /** Named once, near the type, rather than in a ternary chain that grows a branch per view. */
+// CodeMirror and its grammars are most of the bundle, and every other view loads without
+// them. Split out so opening the window costs what the window needs rather than what the
+// editor might.
+const Editor = lazy(async () => ({ default: (await import("./Editor")).Editor }));
+
 const VIEW_NAMES = {
   today: "Today",
   console: "Console",
@@ -38,6 +44,7 @@ const VIEW_NAMES = {
   review: "Review",
   analytics: "Analytics",
   schedule: "Schedule",
+  editor: "Editor",
 } as const;
 
 export default function App() {
@@ -150,7 +157,7 @@ export default function App() {
 
         <nav className="sidebar__section" aria-label="Views">
           <span className="sidebar__label">View</span>
-          {(["today", "console", "board", "review", "analytics", "schedule"] as const).map(
+          {(["today", "console", "board", "review", "analytics", "schedule", "editor"] as const).map(
             (option) => (
             <button
               type="button"
@@ -226,6 +233,15 @@ export default function App() {
         )}
 
         {view === "review" && <Review tick={tick} />}
+
+        {view === "editor" && (
+          <Suspense fallback={<p className="empty">Loading the editor…</p>}>
+            <Editor
+              project={projects.find((entry) => entry.id === project)?.slug ?? null}
+              node={null}
+            />
+          </Suspense>
+        )}
 
         {view === "schedule" && (
           <Schedule
