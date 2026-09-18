@@ -43,11 +43,9 @@ async fn stub_eve(behaviour: Agent) -> (u16, Arc<Mutex<Vec<String>>>) {
             };
             let sink = Arc::clone(&sink);
             tokio::spawn(async move {
-                let mut buf = vec![0u8; 16 * 1024];
-                let Ok(read) = socket.read(&mut buf).await else {
+                let Some(request) = read_request(&mut socket).await else {
                     return;
                 };
-                let request = String::from_utf8_lossy(&buf[..read]).into_owned();
 
                 let response = if request.contains("/eve/v1/health") {
                     match behaviour {
@@ -68,6 +66,41 @@ async fn stub_eve(behaviour: Agent) -> (u16, Arc<Mutex<Vec<String>>>) {
     });
 
     (port, seen)
+}
+
+/// Read a whole HTTP request, headers *and* body.
+///
+/// One `read` is not a request. On Linux the kernel usually hands over both in a single
+/// segment and a single read looks correct; on macOS the body routinely arrives second,
+/// so the stub recorded only the headers and the assertion about what was sent failed
+/// there and nowhere else. Read until `Content-Length` bytes of body have arrived.
+async fn read_request(socket: &mut tokio::net::TcpStream) -> Option<String> {
+    let mut raw = Vec::new();
+    let mut buf = vec![0u8; 8 * 1024];
+    loop {
+        let read = socket.read(&mut buf).await.ok()?;
+        if read == 0 {
+            break;
+        }
+        raw.extend_from_slice(&buf[..read]);
+
+        let text = String::from_utf8_lossy(&raw);
+        let Some(head_end) = text.find("\r\n\r\n") else {
+            continue;
+        };
+        let length: usize = text[..head_end]
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim().parse().ok())?
+            })
+            .unwrap_or(0);
+        if raw.len() >= head_end + 4 + length {
+            break;
+        }
+    }
+    Some(String::from_utf8_lossy(&raw).into_owned())
 }
 
 fn body(status: u16, json: &str) -> String {
