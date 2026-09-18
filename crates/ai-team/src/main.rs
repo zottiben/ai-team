@@ -28,6 +28,7 @@ fn run() -> Result<()> {
         // multi-thread reactor to print a few paths would be silly.
         Command::Ui(args) => runtime()?.block_on(cmd::ui::run(args)),
         Command::Init(args) => cmd::init::run(args),
+        Command::Ingest(args) => cmd::ingest::run(args),
         Command::Db(command) => cmd::db::run(command),
         Command::Team(command) => cmd::team::run(command),
         Command::Agents(command) => cmd::agents::run(command),

@@ -23,6 +23,12 @@ claude = false
 openai = false
 zai = false
 local = true
+
+# Read-only context sources (D9). Both reach an account, so both are off until this
+# machine says otherwise - a work laptop can leave them off entirely.
+[context]
+clickup = false
+figma = false
 "#;
 
 /// The allow-list and fallback order for one machine.
@@ -30,6 +36,41 @@ local = true
 pub struct MachineProfile {
     allowed: HashMap<Provider, bool>,
     fallback: Vec<Provider>,
+    context: HashMap<ContextSource, bool>,
+}
+
+/// A read-only source of work and design context (D9).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ContextSource {
+    ClickUp,
+    Figma,
+}
+
+impl ContextSource {
+    pub const ALL: &'static [ContextSource] = &[ContextSource::ClickUp, ContextSource::Figma];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ContextSource::ClickUp => "clickup",
+            ContextSource::Figma => "figma",
+        }
+    }
+
+    /// The MCP endpoint, as the ai-toolbox preset spells it. Both are HTTP, which is why
+    /// they can be eve connections at all while ai-planner and file-sql cannot (D4).
+    pub fn url(self) -> &'static str {
+        match self {
+            ContextSource::ClickUp => "https://mcp.clickup.com/mcp",
+            ContextSource::Figma => "https://mcp.figma.com/mcp",
+        }
+    }
+}
+
+impl std::fmt::Display for ContextSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -38,6 +79,10 @@ struct ProfileFile {
     version: u32,
     fallback: Vec<Provider>,
     providers: HashMap<Provider, bool>,
+    /// Absent on a profile written before context sources existed, which reads as
+    /// "none allowed" - the fail-closed direction.
+    #[serde(default)]
+    context: HashMap<ContextSource, bool>,
 }
 
 impl MachineProfile {
@@ -87,6 +132,7 @@ impl MachineProfile {
         Ok(MachineProfile {
             allowed: raw.providers,
             fallback: raw.fallback,
+            context: raw.context,
         })
     }
 
@@ -116,6 +162,12 @@ impl MachineProfile {
 
     pub fn allowed(&self, provider: Provider) -> bool {
         self.allowed.get(&provider).copied().unwrap_or(false)
+    }
+
+    /// May this machine reach that context source? Unstated means no: a source that
+    /// became available because an older profile did not mention it is fail-open.
+    pub fn context_allowed(&self, source: ContextSource) -> bool {
+        self.context.get(&source).copied().unwrap_or(false)
     }
 
     pub fn fallback(&self) -> &[Provider] {

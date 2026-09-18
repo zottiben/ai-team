@@ -22,6 +22,7 @@ const TOOL_EDIT: &str = include_str!("assets/tools/edit_file.ts");
 const TOOL_PLAN_ADD: &str = include_str!("assets/tools/plan_add_slice.ts");
 const TOOL_PLAN_NOTE: &str = include_str!("assets/tools/plan_note.ts");
 const TOOL_PLAN_READ: &str = include_str!("assets/tools/plan_read.ts");
+const TOOL_DISABLED_WEB: &str = include_str!("assets/tools/disabled_web.ts");
 const CHANNEL_EVE: &str = include_str!("assets/channels/eve.ts");
 const TSCONFIG: &str = include_str!("assets/tsconfig.json");
 const GITIGNORE: &str = include_str!("assets/gitignore");
@@ -43,6 +44,7 @@ pub(crate) fn project(
     root: PathBuf,
     ailocal_base_url: &str,
     resolutions: Vec<crate::ModelResolution>,
+    context: &[crate::ContextSource],
 ) -> Result<GeneratedProject> {
     check_roster(team, agents)?;
 
@@ -82,17 +84,40 @@ pub(crate) fn project(
     ));
     files.push(file("agent/lib/plan.ts", PLAN_LIB.to_string()));
 
+    // Connections are per-seat: eve discovers `connections/` under a subagent as well as
+    // under the root, so Figma reaches the seat that owns the UI and nobody else.
+    for (path, contents) in connection_files("agent", root_agent, context) {
+        files.push(file(&path, contents));
+    }
+    for source in context {
+        required_env.push(match source {
+            crate::ContextSource::ClickUp => "AI_TEAM_CLICKUP_TOKEN",
+            crate::ContextSource::Figma => "AI_TEAM_FIGMA_TOKEN",
+        });
+    }
+
     let root_model = model_expression(root_agent, ailocal_base_url);
     required_env.extend(root_model.env.iter().copied());
     files.push(file(
         "agent/agent.ts",
-        root_agent_ts(root_agent, &root_model, &subagents),
+        root_agent_ts(
+            root_agent,
+            &root_model,
+            &subagents,
+            !connection_files("agent", root_agent, context).is_empty(),
+            context,
+        ),
     ));
     files.push(file(
         "agent/instructions.md",
         instructions(team, root_agent, &subagents),
     ));
-    files.extend(tool_files(Path::new("agent"), root_agent, 1));
+    files.extend(tool_files(
+        Path::new("agent"),
+        root_agent,
+        1,
+        !connection_files("agent", root_agent, context).is_empty(),
+    ));
 
     for agent in &subagents {
         let dir = PathBuf::from("agent/subagents").join(&agent.role);
@@ -101,16 +126,29 @@ pub(crate) fn project(
 
         files.push(file(
             dir.join("agent.ts").to_string_lossy().as_ref(),
-            subagent_ts(agent, &model),
+            subagent_ts(
+                agent,
+                &model,
+                !connection_files(&dir.to_string_lossy(), agent, context).is_empty(),
+                context,
+            ),
         ));
         files.push(file(
             dir.join("instructions.md").to_string_lossy().as_ref(),
             subagent_instructions(agent),
         ));
+        for (path, contents) in connection_files(&dir.to_string_lossy(), agent, context) {
+            files.push(file(&path, contents));
+        }
         // A declared subagent inherits none of its parent's authored slots, so each one
         // gets its own tool files. They are thin re-exports, so this costs bytes rather
         // than duplication.
-        files.extend(tool_files(&dir, agent, 3));
+        files.extend(tool_files(
+            &dir,
+            agent,
+            3,
+            !connection_files(&dir.to_string_lossy(), agent, context).is_empty(),
+        ));
     }
 
     required_env.sort_unstable();
@@ -142,10 +180,10 @@ fn file(path: &str, contents: String) -> GeneratedFile {
 /// removes eve's whole optional default set, and `disableTool()` at a slot with no
 /// framework default underneath it is a build error - which is what makes an absent file
 /// the right way to withhold a tool rather than an explicit disable.
-fn tool_files(dir: &Path, agent: &Agent, depth: usize) -> Vec<GeneratedFile> {
+fn tool_files(dir: &Path, agent: &Agent, depth: usize, has_connection: bool) -> Vec<GeneratedFile> {
     let tools = dir.join("tools");
     let up = "../".repeat(depth);
-    agent_tools(agent)
+    agent_tools(agent, has_connection)
         .into_iter()
         .map(|(name, asset)| GeneratedFile {
             path: tools.join(format!("{name}.ts")),
@@ -158,7 +196,7 @@ fn tool_files(dir: &Path, agent: &Agent, depth: usize) -> Vec<GeneratedFile> {
 /// cannot verify anything. A read-only seat gets no source-editing definitions at all.
 /// Keep this one list for both eve's discovery files and Claude's explicit MCP bridge so
 /// a tool can never exist on one route but not the other.
-fn agent_tools(agent: &Agent) -> Vec<(&'static str, &'static str)> {
+fn agent_tools(agent: &Agent, has_connection: bool) -> Vec<(&'static str, &'static str)> {
     let mut tools = vec![("bash", TOOL_BASH), ("read_file", TOOL_READ)];
     if !agent.read_only {
         tools.extend([("write_file", TOOL_WRITE), ("edit_file", TOOL_EDIT)]);
@@ -172,6 +210,15 @@ fn agent_tools(agent: &Agent) -> Vec<(&'static str, &'static str)> {
     } else {
         // A maker still reads the board it is working from; it just does not shape it.
         tools.push(("plan_read", TOOL_PLAN_READ));
+    }
+    if has_connection {
+        // Only meaningful where the framework defaults are on, which is exactly where a
+        // connection is - and where `disableTool()` has something underneath it to
+        // disable, which is what stops it being a build error.
+        tools.extend([
+            ("web_fetch", TOOL_DISABLED_WEB),
+            ("web_search", TOOL_DISABLED_WEB),
+        ]);
     }
     tools
 }
@@ -218,14 +265,21 @@ fn package_json(team: &Team, includes_claude: bool) -> String {
     )
 }
 
-fn model_setup(agent: &Agent, model: &crate::generate::ModelExpression) -> (String, String) {
+fn model_setup(
+    agent: &Agent,
+    model: &crate::generate::ModelExpression,
+    context: &[crate::ContextSource],
+) -> (String, String) {
     let mut imports = vec!["import { defineAgent } from \"eve\";".to_string()];
     imports.extend(model.imports.iter().cloned());
     if !model.bridge_tools {
         return (imports.join("\n"), String::new());
     }
 
-    let tool_names: Vec<_> = agent_tools(agent)
+    // `false`: the bridge wants the tools this seat actually implements. The disable
+    // sentinels a connection-bearing seat also gets export `disableTool()` rather than a
+    // `bridgedTool`, and importing one would not compile.
+    let tool_names: Vec<_> = agent_tools(agent, false)
         .into_iter()
         .map(|(name, _)| name)
         .collect();
@@ -235,18 +289,60 @@ fn model_setup(agent: &Agent, model: &crate::generate::ModelExpression) -> (Stri
             .map(|name| format!("import {{ bridgedTool as {name} }} from \"./tools/{name}.js\";")),
     );
     let tools = tool_names.join(", ");
-    let allowed = tool_names
+    // A bridged seat reaches an MCP server through the Agent SDK's own `mcpServers`,
+    // not through eve: the bridge only exposes the tools handed to
+    // `createAiSdkMcpServer`, and eve's `connection_search` is a framework tool with no
+    // importable `execute`. So the connection eve registers is invisible here, and the
+    // HTTP endpoint is given to Claude Code directly instead.
+    let sources: Vec<crate::ContextSource> = context
+        .iter()
+        .copied()
+        .filter(|source| match source {
+            crate::ContextSource::ClickUp => plans(agent),
+            crate::ContextSource::Figma => owns_design(agent),
+        })
+        .collect();
+
+    let mut allowed: Vec<String> = tool_names
         .iter()
         .map(|name| format!("  \"mcp__eve__{name}\","))
+        .collect();
+    for source in &sources {
+        let read_tools = match source {
+            crate::ContextSource::ClickUp => crate::CLICKUP_READ_TOOLS,
+            crate::ContextSource::Figma => crate::FIGMA_READ_TOOLS,
+        };
+        for tool in read_tools {
+            allowed.push(format!("  \"mcp__{}__{tool}\",", source.as_str()));
+        }
+    }
+    let allowed = allowed.join("\n");
+
+    let context_servers = sources
+        .iter()
+        .map(|source| {
+            let env = format!("AI_TEAM_{}_TOKEN", source.as_str().to_uppercase());
+            format!(
+                "    {}: {{\n      type: \"http\" as const,\n      url: {:?},\n      \
+                 headers: {{ Authorization: `Bearer ${{process.env.{env} ?? \"\"}}` }},\n    }},",
+                source.as_str(),
+                source.url()
+            )
+        })
         .collect::<Vec<_>>()
         .join("\n");
+    let context_servers = if context_servers.is_empty() {
+        String::new()
+    } else {
+        format!("\n{context_servers}")
+    };
     let setup = format!(
         "// Claude Code owns an inner agent loop, so eve's normal AI SDK tool path does\n\
          // not reach it. Bridge only this seat's authored worktree tools in-process.\n\
          const bridgedTools = {{ {tools} }};\n\
          const allowedClaudeTools = new Set([\n{allowed}\n]);\n\
          const claudeSettings = {{\n  \
-         mcpServers: {{ eve: createAiSdkMcpServer(\"eve\", bridgedTools) }},\n  \
+         mcpServers: {{\n    eve: createAiSdkMcpServer(\"eve\", bridgedTools),{context_servers}\n  }},\n  \
          allowedTools: [...allowedClaudeTools],\n  \
          // Disable Claude Code's host Bash/Read/Write/Edit. The MCP tools above are\n  \
          // the only route to the leased worktree.\n  \
@@ -268,8 +364,10 @@ fn root_agent_ts(
     agent: &Agent,
     model: &crate::generate::ModelExpression,
     subagents: &[&Agent],
+    has_connection: bool,
+    context: &[crate::ContextSource],
 ) -> String {
-    let (imports, model_setup) = model_setup(agent, model);
+    let (imports, model_setup) = model_setup(agent, model, context);
 
     let roster = subagents
         .iter()
@@ -293,10 +391,7 @@ fn root_agent_ts(
          // openai-compatible model has none of - without this it refuses to compile\n  \
          // compaction at all.\n  \
          modelContextWindowTokens: {context},\n  \
-         // eve's optional sandbox defaults are off: this agent acts on a leased\n  \
-         // worktree, not on eve's sandbox (D3). The tools under `tools/` replace the\n  \
-         // ones the model would otherwise expect.\n  \
-         defaultTools: false,\n\
+         {defaults}\n\
          }});\n",
         role = agent.role,
         roster = roster,
@@ -305,11 +400,17 @@ fn root_agent_ts(
         model_expr = model.expression,
         reasoning = reasoning_literal(agent),
         context = context_window(agent),
+        defaults = default_tools_line(has_connection),
     )
 }
 
-fn subagent_ts(agent: &Agent, model: &crate::generate::ModelExpression) -> String {
-    let (imports, model_setup) = model_setup(agent, model);
+fn subagent_ts(
+    agent: &Agent,
+    model: &crate::generate::ModelExpression,
+    has_connection: bool,
+    context: &[crate::ContextSource],
+) -> String {
+    let (imports, model_setup) = model_setup(agent, model, context);
 
     format!(
         "// GENERATED by ai-team. Do not edit: change the team rows and regenerate.\n\n\
@@ -321,10 +422,11 @@ fn subagent_ts(agent: &Agent, model: &crate::generate::ModelExpression) -> Strin
          model: {model_expr},\n  \
          reasoning: {reasoning:?},\n  \
          modelContextWindowTokens: {context},\n  \
-         defaultTools: false,\n\
+         {defaults}\n\
          }});\n",
         imports = imports,
         model_setup = model_setup,
+        defaults = default_tools_line(has_connection),
         description = one_line(&agent.purpose),
         model_expr = model.expression,
         reasoning = reasoning_literal(agent),
@@ -473,6 +575,147 @@ const VERIFIER_INSTRUCTIONS: &str = "\n## What you are checking\n\n\
      rejection - say which gate.\n\n\
      Reject work that is not done. Passing something through because it is close is how \
      a stub reaches the human who trusted this ran.\n";
+
+/// What to say about eve's own tool set.
+///
+/// Off by default: this agent acts on a leased worktree, not eve's sandbox (D3), and the
+/// authored tools replace the ones the model would otherwise expect.
+///
+/// A seat with a connection needs them back, because `connection_search` - the only way
+/// a model can reach a connection at all - is one of them, and the flag is all-or-nothing.
+/// The authored `bash`, `read_file` and `write_file` still win at their own slots, so the
+/// worktree boundary is unchanged; `web_fetch` and `web_search` are disabled separately,
+/// since a page fetched off the internet is untrusted text landing in the context.
+fn default_tools_line(has_connection: bool) -> &'static str {
+    if has_connection {
+        "// On because `connection_search` is a framework default and it is the only\n  \
+         // route to this seat's connections. The authored tools still override the\n  \
+         // sandbox ones at their own slots, and web_fetch/web_search are disabled.\n  \
+         defaultTools: true,"
+    } else {
+        "// eve's optional defaults are off: this agent acts on a leased worktree, not\n  \
+         // on eve's sandbox (D3), and the tools under `tools/` replace the ones the\n  \
+         // model would otherwise expect.\n  \
+         defaultTools: false,"
+    }
+}
+
+/// Which context sources this seat gets, and where their files go.
+///
+/// Scoped by what the seat is for, not handed to everybody. The orchestrator and the
+/// planner read the ticket because they decide what the work is; the seat that owns the
+/// UI reads the designs because it is the one building them. A backend seat needs
+/// neither, and a connection it never calls is prompt it pays for on every turn.
+fn connection_files(
+    dir: &str,
+    agent: &Agent,
+    context: &[crate::ContextSource],
+) -> Vec<(String, String)> {
+    let plans = plans(agent);
+    let designs = owns_design(agent);
+
+    context
+        .iter()
+        .filter(|source| match source {
+            crate::ContextSource::ClickUp => plans,
+            crate::ContextSource::Figma => designs,
+        })
+        .map(|source| {
+            let tools = match source {
+                crate::ContextSource::ClickUp => crate::CLICKUP_READ_TOOLS,
+                crate::ContextSource::Figma => crate::FIGMA_READ_TOOLS,
+            };
+            (
+                format!("{dir}/connections/{}.ts", source.as_str()),
+                connection_ts(*source, tools),
+            )
+        })
+        .collect()
+}
+
+/// Does this seat own the look of the thing?
+///
+/// Read off its zone rather than its role name, because a team is configurable: the seat
+/// that owns `ui/**` is the one that needs the designs, whatever it is called.
+fn owns_design(agent: &Agent) -> bool {
+    const DESIGN_PATHS: &[&str] = &[
+        "ui/",
+        "web/",
+        "frontend/",
+        "app/",
+        "src/components",
+        ".css",
+        ".tsx",
+        ".vue",
+        ".svelte",
+    ];
+    agent.zone.lines().any(|line| {
+        let line = line.trim();
+        !line.is_empty() && DESIGN_PATHS.iter().any(|hint| line.contains(hint))
+    })
+}
+
+/// A read-only MCP connection to a context source (D9).
+///
+/// ClickUp and Figma are the two neighbours that *can* be eve connections:
+/// `defineMcpClientConnection` needs an HTTP url, and unlike `aip serve` and file-sql
+/// both of these are hosted over HTTP.
+///
+/// The allow-list is the whole point. Both servers expose write tools - ClickUp creates
+/// and deletes tasks, and Figma's `use_figma` creates, edits and deletes - so read-only
+/// is enforced by naming what may be called rather than by asking the model nicely. An
+/// allow-list also fails in the safe direction: a name that is wrong loses a capability,
+/// where a block-list that misses one hands over a write.
+fn connection_ts(source: crate::ContextSource, tools: &[&str]) -> String {
+    let allow = tools
+        .iter()
+        .map(|tool| format!("    {tool:?},"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let env = format!("AI_TEAM_{}_TOKEN", source.as_str().to_uppercase());
+
+    format!(
+        "// GENERATED by ai-team. Do not edit: change the team rows and regenerate.\n\
+         //\n\
+         // {name} as a read-only context source (D9). ai-team never writes back: the\n\
+         // human answers on {name}, and an agent acting for them there does it somewhere\n\
+         // they cannot see it happen.\n\n\
+         import {{ defineMcpClientConnection }} from \"eve/connections\";\n\n\
+         // Only these. Every write tool the server offers is absent on purpose, and an\n\
+         // allow-list fails closed if one of these names is wrong.\n\
+         const READ_ONLY = [\n{allow}\n];\n\n\
+         export default defineMcpClientConnection({{\n  \
+         url: {url:?},\n  \
+         description:\n    \
+         \"Read-only {name} access: look up the work this run is for, and the designs it \\\n     \
+         points at. Cannot create, change or delete anything.\",\n  \
+         tools: {{ allow: READ_ONLY }},\n  \
+         auth: {{\n    \
+         // Read per call, not at module scope: `eve build` evaluates every authored\n    \
+         // module, so a throw up here would fail the build on any machine that is not\n    \
+         // running an agent. Missing means no token, which fails closed.\n    \
+         getToken: async () => {{\n      \
+         const token = process.env.{env};\n      \
+         if (!token) {{\n        \
+         throw new Error(\n          \
+         \"{env} is not set. ai-team does not do the {name} OAuth dance itself: \\\n           \
+         authorise {name} in your MCP client and put the resulting token in that \\\n           \
+         variable.\",\n        \
+         );\n      \
+         }}\n      \
+         return {{ token }};\n    \
+         }},\n  \
+         }},\n\
+         }});\n",
+        name = match source {
+            crate::ContextSource::ClickUp => "ClickUp",
+            crate::ContextSource::Figma => "Figma",
+        },
+        url = source.url(),
+        allow = allow,
+        env = env,
+    )
+}
 
 /// A seat's custom prompt, unless it only repeats the purpose printed above it.
 ///

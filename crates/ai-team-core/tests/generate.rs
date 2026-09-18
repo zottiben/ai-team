@@ -252,21 +252,122 @@ fn every_generated_file_says_it_is_generated() {
 }
 
 #[test]
+fn context_sources_reach_only_the_seats_that_need_them() {
+    use ai_team_core::ContextSource;
+
+    let (store, _, team) = seeded();
+    let generated = store
+        .generate_project_with_context(
+            team,
+            "/tmp/unused",
+            &[ContextSource::ClickUp, ContextSource::Figma],
+        )
+        .unwrap();
+
+    // The ticket goes to the seats that decide what the work is.
+    assert!(generated.file("agent/connections/clickup.ts").is_some());
+    assert!(generated
+        .file("agent/subagents/planner/connections/clickup.ts")
+        .is_some());
+
+    // The designs go to the seat that owns the UI, read off its zone rather than its
+    // name - a team is configurable, and `ui/**` is what actually identifies it.
+    assert!(generated
+        .file("agent/subagents/frontend/connections/figma.ts")
+        .is_some());
+    for role in ["backend", "verifier", "reviewer", "planner"] {
+        assert!(
+            generated
+                .file(&format!("agent/subagents/{role}/connections/figma.ts"))
+                .is_none(),
+            "{role} does not own the look of the thing"
+        );
+    }
+    // A maker that is not the frontend has no business reading the ticket board either.
+    assert!(generated
+        .file("agent/subagents/backend/connections/clickup.ts")
+        .is_none());
+
+    assert!(generated.required_env.contains(&"AI_TEAM_CLICKUP_TOKEN"));
+    assert!(generated.required_env.contains(&"AI_TEAM_FIGMA_TOKEN"));
+}
+
+#[test]
+fn a_context_connection_can_only_read() {
+    use ai_team_core::ContextSource;
+
+    // D9 is enforced by naming what may be called. Both servers grew write tools, and
+    // `use_figma` is the one that reads like a read while creating, editing and deleting.
+    let (store, _, team) = seeded();
+    let generated = store
+        .generate_project_with_context(
+            team,
+            "/tmp/unused",
+            &[ContextSource::ClickUp, ContextSource::Figma],
+        )
+        .unwrap();
+
+    let clickup = &generated
+        .file("agent/connections/clickup.ts")
+        .unwrap()
+        .contents;
+    assert!(clickup.contains("tools: { allow: READ_ONLY }"), "{clickup}");
+    assert!(clickup.contains("\"get_task\""));
+    for write in ["create_task", "update_task", "delete_task"] {
+        assert!(!clickup.contains(write), "{write} must not be reachable");
+    }
+
+    let figma = &generated
+        .file("agent/subagents/frontend/connections/figma.ts")
+        .unwrap()
+        .contents;
+    assert!(figma.contains("\"get_design_context\""));
+    for write in [
+        "use_figma",
+        "generate_figma_design",
+        "upload_assets",
+        "weave_",
+    ] {
+        assert!(!figma.contains(write), "{write} must not be reachable");
+    }
+}
+
+#[test]
+fn a_machine_that_allows_no_context_source_generates_no_connection() {
+    // The default: both are off until the machine profile says otherwise (D9), so a
+    // work laptop never reaches an account nobody authorised.
+    let (store, _, team) = seeded();
+    let generated = store.generate_project(team, "/tmp/unused").unwrap();
+    let connections: Vec<_> = generated
+        .files
+        .iter()
+        .filter(|file| file.path.to_string_lossy().contains("/connections/"))
+        .collect();
+    assert!(connections.is_empty(), "{connections:?}");
+}
+
+#[test]
 fn no_connections_are_generated_because_none_can_be() {
     // eve's `defineMcpClientConnection` requires an HTTP url and has no stdio variant,
     // but ai-planner (`aip serve`) and file-sql both speak MCP over stdio. A generated
     // `agent/connections/ai_planner.ts` would be fiction that happens to typecheck.
-    // The route that works is a generated tool shelling out to `aip` (agent/lib/plan.ts).
-    let (store, _, team) = seeded();
-    let generated = store.generate_project(team, "/tmp/unused").unwrap();
+    // The route that works for those two is a generated tool shelling out to `aip`
+    // (agent/lib/plan.ts). ClickUp and Figma are different: both are hosted over HTTP,
+    // so they are real connections - see the tests above.
+    use ai_team_core::ContextSource;
 
-    let connections: Vec<_> = generated
+    let (store, _, team) = seeded();
+    let generated = store
+        .generate_project_with_context(team, "/tmp/unused", &[ContextSource::ClickUp])
+        .unwrap();
+
+    let stdio: Vec<_> = generated
         .files
         .iter()
-        .filter(|f| f.path.starts_with("agent/connections"))
         .map(|f| f.path.display().to_string())
+        .filter(|path| path.contains("ai_planner") || path.contains("file_sql"))
         .collect();
-    assert!(connections.is_empty(), "generated {connections:?}");
+    assert!(stdio.is_empty(), "generated {stdio:?}");
 }
 
 #[test]

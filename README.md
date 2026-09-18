@@ -74,6 +74,22 @@ Both tools are used over their own command line and neither is vendored, so `aip
 `awt` keep working on their own. `ait doctor` says whether they are installed;
 `--plan-only` stops after the plan, and `--worktree <dir>` runs a single turn instead.
 
+### Tickets and designs
+
+ClickUp and Figma come in as **read-only** context (D9), and only where they are useful:
+the ticket reaches the seats that decide what the work is, the designs reach the seat
+whose zone owns the UI.
+
+```sh
+ait ingest https://app.clickup.com/9014/t/86abc123 --brief-file ticket.md
+```
+
+That records the ticket as a project and pulls any Figma links out of the brief. ai-team
+holds no credentials of its own - the seats read the ticket through their own connections.
+Both are off until `~/.config/ai-team/machine.toml` says otherwise, and read-only is
+enforced by an allow-list of tool names rather than by asking: both servers can create and
+delete, and none of those tools is reachable.
+
 ### Machine provider policy
 
 Team rows are portable preferences; `~/.config/ai-team/machine.toml` is the permission

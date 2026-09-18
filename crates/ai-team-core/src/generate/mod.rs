@@ -141,6 +141,33 @@ impl Store {
             root.into(),
             "http://127.0.0.1:8081/v1",
             resolutions,
+            // The plain generator is for tests and `--dry-run`; a machine's context
+            // sources come from its profile, so this path grants none.
+            &[],
+        )
+    }
+
+    /// Generate with a given set of context sources, without consulting a machine.
+    /// Used by tests and by callers that already know what this machine allows.
+    pub fn generate_project_with_context(
+        &self,
+        team_id: i64,
+        root: impl Into<PathBuf>,
+        context: &[crate::ContextSource],
+    ) -> Result<GeneratedProject> {
+        let team = self.team(team_id)?;
+        let agents: Vec<Agent> = self
+            .agents(team_id)?
+            .into_iter()
+            .filter(|agent| agent.enabled)
+            .collect();
+        render::project(
+            &team,
+            &agents,
+            root.into(),
+            "http://127.0.0.1:8081/v1",
+            Vec::new(),
+            context,
         )
     }
 
@@ -167,6 +194,7 @@ impl Store {
             root.into(),
             registry.ailocal_base_url(),
             resolutions,
+            &registry.context_sources(),
         )
     }
 

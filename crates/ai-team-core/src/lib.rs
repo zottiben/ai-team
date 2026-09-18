@@ -9,6 +9,7 @@
 //! ai-planner (D4); this crate only ever references them by their own keys, because a
 //! local copy of a slice's title is a second source of truth that drifts.
 
+mod context;
 mod db;
 mod error;
 mod eve;
@@ -24,6 +25,7 @@ mod store;
 mod supervise;
 mod util;
 
+pub use context::{figma_links, parse_url, Source, CLICKUP_READ_TOOLS, FIGMA_READ_TOOLS};
 pub use db::Db;
 pub use error::{Error, Result};
 pub use eve::{Disposition, Ingested, StreamEvent, StreamMeta, TerminalState};
@@ -31,8 +33,8 @@ pub use gates::{all_passed, discover_gates, evidence, run_gates, Gate, GateKind,
 pub use generate::{GeneratedFile, GeneratedProject, ModelExpression, ROOT_ROLE, VERIFIER_ROLE};
 pub use guardrails::{node_may_continue, run_may_continue, Exceeded, Fallout};
 pub use machine::{
-    ensure_machine_profile, MachineProfile, ModelRegistry, ModelResolution, ProviderState,
-    ProviderStatus, DEFAULT_MACHINE_PROFILE,
+    ensure_machine_profile, ContextSource, MachineProfile, ModelRegistry, ModelResolution,
+    ProviderState, ProviderStatus, DEFAULT_MACHINE_PROFILE,
 };
 pub use model::{
     Agent, CommentStatus, DiffSide, Event, EventKind, Guardrails, NewAgent, NewComment, NewEvent,

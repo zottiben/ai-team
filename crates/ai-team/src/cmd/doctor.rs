@@ -57,7 +57,8 @@ pub(crate) async fn run() {
         }),
     );
 
-    match core::ModelRegistry::load() {
+    let loaded = core::ModelRegistry::load();
+    match &loaded {
         Ok(registry) => {
             for status in registry.statuses() {
                 println!(
@@ -78,6 +79,8 @@ pub(crate) async fn run() {
             }
         }
     }
+
+    report_context(loaded.as_ref().ok());
 
     // The neighbours ai-team borrows rather than absorbs (D4). Absent is not fatal - a
     // single-node `ait run --worktree` needs neither - so each says what it blocks.
@@ -108,6 +111,28 @@ pub(crate) async fn run() {
              available, or run `cd ui && npm ci && npm run build` first.",
             "frontend"
         );
+    }
+}
+
+/// Read-only context sources (D9).
+///
+/// Denied is the default, so a source missing here means this machine has not opted in
+/// rather than something being broken. Allowed but tokenless is worth saying too: the
+/// connection is generated and its seats will fail at the first call.
+fn report_context(registry: Option<&core::ModelRegistry>) {
+    for source in core::ContextSource::ALL {
+        let allowed = registry.is_some_and(|registry| registry.context_sources().contains(source));
+        let env = format!("AI_TEAM_{}_TOKEN", source.as_str().to_uppercase());
+        let state = if allowed {
+            if std::env::var(&env).is_ok_and(|value| !value.trim().is_empty()) {
+                format!("allowed     read-only, {env} is set")
+            } else {
+                format!("allowed     but {env} is not set, so its seats cannot reach it")
+            }
+        } else {
+            "denied      blocked by machine.toml".to_string()
+        };
+        println!("  {:<18} {state}", format!("context {source}"));
     }
 }
 

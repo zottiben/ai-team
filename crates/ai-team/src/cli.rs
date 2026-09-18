@@ -29,6 +29,8 @@ pub(crate) enum Command {
     /// Inspect the database directly.
     #[command(subcommand)]
     Db(DbCommand),
+    /// Bring a ClickUp ticket or epic in as a project.
+    Ingest(IngestArgs),
     /// Configure the team: its seats, their models, zones and tool rules.
     #[command(subcommand)]
     Team(TeamCommand),
@@ -50,6 +52,22 @@ pub(crate) struct InitArgs {
     /// What kind of container this is. Defaults to `repo` inside a checkout.
     #[arg(long, value_parser = parse_kind)]
     pub(crate) kind: Option<ProjectKind>,
+}
+
+#[derive(Debug, clap::Args)]
+pub(crate) struct IngestArgs {
+    /// The ClickUp task or list URL, or a Figma file URL.
+    pub(crate) url: String,
+
+    /// What to call it. Defaults to the id in the URL, until a seat with the connection
+    /// reads the real title.
+    #[arg(long)]
+    pub(crate) name: Option<String>,
+
+    /// The ticket's description, if you have it to hand. Any Figma links in it become
+    /// design context for the seat that owns the UI.
+    #[arg(long)]
+    pub(crate) brief_file: Option<String>,
 }
 
 #[derive(Debug, clap::Args)]

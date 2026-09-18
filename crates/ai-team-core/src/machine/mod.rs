@@ -15,7 +15,7 @@ use ailocal::{non_empty_env, AilocalSettings};
 pub(crate) use probe::provider_default;
 use probe::{implemented, probe};
 pub use probe::{ProviderState, ProviderStatus};
-pub use profile::{ensure_machine_profile, MachineProfile, DEFAULT_MACHINE_PROFILE};
+pub use profile::{ensure_machine_profile, ContextSource, MachineProfile, DEFAULT_MACHINE_PROFILE};
 
 const ZAI_KEY_ENV: &str = "AI_TEAM_ZAI_KEY";
 const AILOCAL_KEY_ENV: &str = "AI_TEAM_AILOCAL_KEY";
@@ -172,6 +172,15 @@ impl ModelRegistry {
                 };
                 Ok(((*key).to_string(), value))
             })
+            .collect()
+    }
+
+    /// Which context sources this machine allows (D9).
+    pub fn context_sources(&self) -> Vec<ContextSource> {
+        ContextSource::ALL
+            .iter()
+            .copied()
+            .filter(|source| self.profile.context_allowed(*source))
             .collect()
     }
 
