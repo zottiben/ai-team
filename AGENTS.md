@@ -38,6 +38,7 @@ the login shell is zsh.
 | Run it | `ait init`, `ait doctor`, `./target/debug/ait ui --port 7788 --no-open` |
 | Configure the team | `ait team show`, `ait agents ls`, `ait agents edit <role> …` |
 | Plan and dispatch | `ait run -p <project> "…"` (add `--plan-only` to stop after planning) |
+| Build what is ready | `ait run -p <project>` (no prompt; `--replan` plans again) |
 | Drive one agent | `ait run -p <project> --worktree <dir> "…"` |
 | The database | `ait db path`, `ait db open` (TablePlus), `ait db views` |
 | Icons | `cd crates/ai-team-desktop/icons && sh regenerate.sh` |

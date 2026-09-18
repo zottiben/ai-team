@@ -25,34 +25,31 @@ pub(crate) async fn run(args: RunArgs) -> Result<()> {
     // The repository is where the plan lives and where the worktree pool is rooted. A
     // project with no repo attached (D6 allows that) has nowhere to lease from, and
     // saying so beats leasing out of whatever directory the shell happened to be in.
-    let repo = store
-        .project_repos(project.id)?
-        .into_iter()
-        .find_map(|repo| repo.main_path)
-        .with_context(|| {
-            format!(
-                "{} has no checkout attached, so there is nothing to lease worktrees from. \
-                 Run `ait init` in the repository, or pass --worktree to run a single turn.",
-                project.slug
-            )
-        })?;
-    let repo = std::path::PathBuf::from(repo)
-        .canonicalize()
-        .with_context(|| "the project's checkout no longer exists")?;
+    let (repo, planner, worktrees) = neighbours(&store, &project, args.plan.as_deref()).await?;
 
-    let planner = match &args.plan {
-        Some(plan) => Planner::at(&repo).for_plan(plan.clone()),
-        None => Planner::at(&repo),
+    // Does the board already have work? A second `ait run` on a plan that is mid-flight
+    // should pick that up rather than plan it again: planning twice gives somebody the
+    // same slice twice, and the duplicate is only noticed once two agents are building
+    // it. `--replan` is how you ask for a new plan anyway.
+    let ready = planner.slices().await.map_or(0, |slices| {
+        slices
+            .into_iter()
+            .filter(ai_team_core::Slice::is_dispatchable)
+            .count()
+    });
+    let planning = args.replan || ready == 0;
+
+    let prompt = match (&args.prompt, planning) {
+        (Some(prompt), _) => prompt.clone(),
+        // Nothing to plan from and nothing ready: there is no work to do either way.
+        (None, true) => anyhow::bail!(
+            "nothing on the plan is ready to build, so there is nothing to pick up. \
+             Give a prompt to plan from."
+        ),
+        (None, false) => format!("build the {ready} ready slice(s)"),
     };
-    let worktrees = Worktrees::at(&repo);
-    if let Err(reason) = planner.check().await {
-        anyhow::bail!("{reason}");
-    }
-    if let Err(reason) = worktrees.check().await {
-        anyhow::bail!("{reason}");
-    }
 
-    let run = store.create_run(project.id, &args.prompt, RunTrigger::Manual)?;
+    let run = store.create_run(project.id, &prompt, RunTrigger::Manual)?;
     println!("run {} on {}", run.id, repo.display());
 
     // Always regenerate: the team rows are the source of truth (D2).
@@ -86,30 +83,25 @@ pub(crate) async fn run(args: RunArgs) -> Result<()> {
 
     let supervisor = orchestrator.builder()?;
     crate::cmd::run::build(&supervisor, &mut store, run.id).await?;
-    store.set_run_status(run.id, RunStatus::Planning)?;
 
     // --- plan -----------------------------------------------------------------------
-    println!("\nplanning");
-    let outcome = orchestrator
-        .plan(&mut store, &args.prompt, |event| {
-            if let core::Disposition::Record(kind, summary) = event.classify() {
-                println!(
-                    "  {:<18} {}",
-                    format!("{kind:?}").to_lowercase(),
-                    truncate(&summary, 90)
-                );
+    if planning {
+        plan(&orchestrator, &mut store, run.id, &prompt).await?;
+    } else {
+        println!(
+            "\n{ready} slice(s) already ready, so planning was skipped.{}",
+            if args.prompt.is_some() {
+                " Your prompt was not planned from - pass --replan for that."
+            } else {
+                ""
             }
-        })
-        .await
-        .context("the orchestrator could not write a plan")?;
-
-    if core::outcome_status(&outcome) != NodeStatus::Done {
-        store.set_run_status(run.id, RunStatus::Failed)?;
-        anyhow::bail!("planning did not finish - see `ait db open`");
+        );
     }
     if args.plan_only {
         store.set_run_status(run.id, RunStatus::Done)?;
-        println!("\nplan written. `aip show` reads it.");
+        if planning {
+            println!("\nplan written. `aip show` reads it.");
+        }
         return Ok(());
     }
 
@@ -130,6 +122,73 @@ pub(crate) async fn run(args: RunArgs) -> Result<()> {
         .await?;
 
     report(&mut store, run.id, &done)
+}
+
+/// Where the work happens, and the two tools that make it possible.
+///
+/// Both are checked before anything is created: a run that cannot lease a worktree has
+/// nothing to do, and finding that out after the plan is written wastes a turn.
+async fn neighbours(
+    store: &Store,
+    project: &ai_team_core::Project,
+    plan: Option<&str>,
+) -> Result<(std::path::PathBuf, Planner, Worktrees)> {
+    let repo = store
+        .project_repos(project.id)?
+        .into_iter()
+        .find_map(|repo| repo.main_path)
+        .with_context(|| {
+            format!(
+                "{} has no checkout attached, so there is nothing to lease worktrees from. \
+                 Run `ait init` in the repository, or pass --worktree to run a single turn.",
+                project.slug
+            )
+        })?;
+    let repo = std::path::PathBuf::from(repo)
+        .canonicalize()
+        .context("the project's checkout no longer exists")?;
+
+    let planner = match plan {
+        Some(plan) => Planner::at(&repo).for_plan(plan.to_string()),
+        None => Planner::at(&repo),
+    };
+    let worktrees = Worktrees::at(&repo);
+    if let Err(reason) = planner.check().await {
+        anyhow::bail!("{reason}");
+    }
+    if let Err(reason) = worktrees.check().await {
+        anyhow::bail!("{reason}");
+    }
+    Ok((repo, planner, worktrees))
+}
+
+/// The planning turn: one prompt in, an ai-planner plan out.
+async fn plan(
+    orchestrator: &core::Orchestrator,
+    store: &mut Store,
+    run_id: i64,
+    prompt: &str,
+) -> Result<()> {
+    store.set_run_status(run_id, RunStatus::Planning)?;
+    println!("\nplanning");
+    let outcome = orchestrator
+        .plan(store, prompt, |event| {
+            if let core::Disposition::Record(kind, summary) = event.classify() {
+                println!(
+                    "  {:<18} {}",
+                    format!("{kind:?}").to_lowercase(),
+                    truncate(&summary, 90)
+                );
+            }
+        })
+        .await
+        .context("the orchestrator could not write a plan")?;
+
+    if core::outcome_status(&outcome) != NodeStatus::Done {
+        store.set_run_status(run_id, RunStatus::Failed)?;
+        anyhow::bail!("planning did not finish - see `ait db open`");
+    }
+    Ok(())
 }
 
 fn report(store: &mut Store, run_id: i64, done: &core::Orchestration) -> Result<()> {

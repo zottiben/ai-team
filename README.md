@@ -66,6 +66,10 @@ owns the paths it touches, and builds as many at once as the team's parallel wid
 Each node's work is committed to an `ai-team/<slice>` branch before its worktree goes back
 to the pool, and the slice moves to `in_review` pointing at that branch.
 
+Run it again and it picks up whatever the board still has ready rather than planning the
+same work twice - `ait run -p widget` with no prompt means exactly that, and `--replan`
+plans again anyway.
+
 Both tools are used over their own command line and neither is vendored, so `aip` and
 `awt` keep working on their own. `ait doctor` says whether they are installed;
 `--plan-only` stops after the plan, and `--worktree <dir>` runs a single turn instead.

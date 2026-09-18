@@ -26,6 +26,12 @@ pub(crate) async fn run(args: RunArgs) -> Result<()> {
 }
 
 async fn single_node(args: RunArgs, worktree: PathBuf) -> Result<()> {
+    // One seat, one turn, one directory: there is no plan to pick work up from, so the
+    // prompt is the whole instruction and it has to be there.
+    let prompt = args
+        .prompt
+        .clone()
+        .context("say what to do: `ait run -p <project> --worktree <dir> \"…\"`")?;
     let db = core::default_db_path()?;
     let mut store = Store::open(&db).with_context(|| format!("opening {}", db.display()))?;
     let registry = core::ModelRegistry::load().context("loading the machine profile")?;
@@ -39,7 +45,7 @@ async fn single_node(args: RunArgs, worktree: PathBuf) -> Result<()> {
         .canonicalize()
         .with_context(|| format!("{} does not exist", worktree.display()))?;
 
-    let run = store.create_run(project.id, &args.prompt, RunTrigger::Manual)?;
+    let run = store.create_run(project.id, &prompt, RunTrigger::Manual)?;
     println!("run {} in {}", run.id, worktree.display());
 
     // Always regenerate: the team rows are the source of truth, and a stale project is
@@ -91,7 +97,7 @@ async fn single_node(args: RunArgs, worktree: PathBuf) -> Result<()> {
     store.attach_worktree(node.id, &worktree.to_string_lossy(), None, None)?;
     store.set_node_status(node.id, NodeStatus::Running)?;
 
-    let (session, outcome) = core::run_turn(&mut store, node.id, &client, &args.prompt, |event| {
+    let (session, outcome) = core::run_turn(&mut store, node.id, &client, &prompt, |event| {
         if let ai_team_core::Disposition::Record(kind, summary) = event.classify() {
             // Only the events that become rows are printed, so the terminal shows what
             // the database will hold rather than the transport underneath it.

@@ -88,8 +88,12 @@ pub(crate) struct RunArgs {
     #[arg(long)]
     pub(crate) plan_only: bool,
 
-    /// What to ask it to do.
-    pub(crate) prompt: String,
+    /// Plan again even though the board already has work ready to build.
+    #[arg(long)]
+    pub(crate) replan: bool,
+
+    /// What to ask it to do. Leave it out to build whatever the plan already has ready.
+    pub(crate) prompt: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]
