@@ -33,3 +33,15 @@ if (typeof Range !== "undefined" && Range.prototype.getClientRects === undefined
   Range.prototype.getBoundingClientRect =
     empty as unknown as typeof Range.prototype.getBoundingClientRect;
 }
+
+// The terminal pane watches its host so it can tell the shell how many columns it has.
+// jsdom has no layout, so it has no ResizeObserver either - and without this the whole
+// effect throws before the pane ever starts reading output, which shows up as a test
+// asserting on a request that was never made.
+if (typeof globalThis.ResizeObserver === "undefined") {
+  globalThis.ResizeObserver = class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  } as unknown as typeof ResizeObserver;
+}

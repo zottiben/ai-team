@@ -46,6 +46,13 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/tree", get(tree))
         .route("/file", get(read_file).post(write_file))
         .route("/search", get(search))
+        .route("/terminals", get(terminals).post(open_terminal))
+        .route("/terminals/{id}", get(read_terminal).post(write_terminal))
+        .route("/terminals/{id}/close", axum::routing::post(close_terminal))
+        .route(
+            "/terminals/{id}/resize",
+            axum::routing::post(resize_terminal),
+        )
         .route("/lsp/diagnostics", axum::routing::post(diagnostics))
         .route("/lsp/hover", axum::routing::post(hover))
         .route("/lsp/definition", axum::routing::post(definition))
@@ -170,6 +177,85 @@ async fn write_file(
         )))
     })?;
     Ok(Json(serde_json::json!({ "saved": request.path })))
+}
+
+#[derive(Debug, Deserialize)]
+struct TerminalQuery {
+    project: String,
+    #[serde(default)]
+    node: Option<i64>,
+}
+
+async fn terminals(
+    State(state): State<AppState>,
+    Query(query): Query<TerminalQuery>,
+) -> Result<Json<Vec<ai_team_core::Listed>>> {
+    let worktree = worktree_for(&state, &query.project, query.node)?;
+    Ok(Json(state.terminals().list(Some(&worktree))))
+}
+
+async fn open_terminal(
+    State(state): State<AppState>,
+    JsonBody(request): JsonBody<TerminalQuery>,
+) -> Result<Json<serde_json::Value>> {
+    let worktree = worktree_for(&state, &request.project, request.node)?;
+    let id = state.terminals().open(&worktree)?;
+    Ok(Json(serde_json::json!({ "id": id })))
+}
+
+/// Where the reader has got to. Absolute, so a reconnecting window asks from a number it
+/// already has rather than starting the output again.
+#[derive(Debug, Deserialize)]
+struct CursorQuery {
+    #[serde(default)]
+    cursor: u64,
+}
+
+async fn read_terminal(
+    State(state): State<AppState>,
+    Path(id): Path<u64>,
+    Query(query): Query<CursorQuery>,
+) -> Result<Json<ai_team_core::Chunk>> {
+    Ok(Json(state.terminals().read(id, query.cursor)?))
+}
+
+#[derive(Debug, Deserialize)]
+struct Keys {
+    text: String,
+}
+
+async fn write_terminal(
+    State(state): State<AppState>,
+    Path(id): Path<u64>,
+    JsonBody(keys): JsonBody<Keys>,
+) -> Result<Json<serde_json::Value>> {
+    state.terminals().write(id, &keys.text)?;
+    Ok(Json(serde_json::json!({ "sent": keys.text.len() })))
+}
+
+#[derive(Debug, Deserialize)]
+struct Size {
+    rows: u16,
+    cols: u16,
+}
+
+/// Not cosmetic: a shell that thinks it has eighty columns wraps at eighty, and the
+/// output arrives already broken in a way no styling undoes.
+async fn resize_terminal(
+    State(state): State<AppState>,
+    Path(id): Path<u64>,
+    JsonBody(size): JsonBody<Size>,
+) -> Result<Json<serde_json::Value>> {
+    state.terminals().resize(id, size.rows, size.cols)?;
+    Ok(Json(serde_json::json!({ "resized": id })))
+}
+
+async fn close_terminal(
+    State(state): State<AppState>,
+    Path(id): Path<u64>,
+) -> Result<Json<serde_json::Value>> {
+    state.terminals().close(id);
+    Ok(Json(serde_json::json!({ "closed": id })))
 }
 
 /// What every language request needs: which checkout, which file, and its current text.

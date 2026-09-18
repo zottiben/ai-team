@@ -30,6 +30,7 @@ mod roles;
 mod schedule;
 mod store;
 mod supervise;
+mod terminal;
 mod today;
 mod util;
 mod workflow;
@@ -78,6 +79,7 @@ pub use supervise::{
     BuildProgress, Dispatched, EveClient, EveEnv, EveProcess, Flow, Orchestration, Orchestrator,
     ProgressLine, Supervisor, TurnOutcome,
 };
+pub use terminal::{Chunk, Listed, Terminals};
 pub use today::{from_question, from_store as today_from_store, rank as rank_today, Item, Urgency};
 pub use util::{normalise_remote, now, rfc3339_in, slugify, zone_matches};
 pub use workflow::{run as run_workflow, Progress, Request};

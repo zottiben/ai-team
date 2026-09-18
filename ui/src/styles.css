@@ -872,3 +872,25 @@ button.card:hover {
   border: 1px solid var(--border-subtle-default);
   border-radius: var(--radius-md);
 }
+
+/* --- terminal ----------------------------------------------------------------- */
+
+.terminal {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-height: 0;
+  height: 100%;
+}
+
+/* The pane fills what is left. xterm measures its host, so a host with no height draws
+ * a single row and silently truncates everything. */
+.terminal__host {
+  flex: 1;
+  min-height: 20rem;
+  padding: var(--space-2);
+  background: var(--surface-canvas-default);
+  border: 1px solid var(--border-subtle-default);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}

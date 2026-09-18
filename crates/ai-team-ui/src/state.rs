@@ -25,6 +25,9 @@ struct Inner {
     /// rust-analyzer takes the better part of a minute to index, so a server started for
     /// one request has to still be there for the next.
     lsp: ai_team_core::Pool,
+    /// The terminals this process has open. A session outlives the window, so it lives
+    /// here rather than in a request.
+    terminals: ai_team_core::Terminals,
 }
 
 impl AppState {
@@ -33,12 +36,17 @@ impl AppState {
         &self.inner.lsp
     }
 
+    pub fn terminals(&self) -> &ai_team_core::Terminals {
+        &self.inner.terminals
+    }
+
     pub fn new(token: impl Into<String>) -> Self {
         Self {
             inner: Arc::new(Inner {
                 token: token.into(),
                 store: None,
                 lsp: ai_team_core::Pool::new(),
+                terminals: ai_team_core::Terminals::new(),
             }),
         }
     }
@@ -50,6 +58,7 @@ impl AppState {
                 token: self.inner.token.clone(),
                 store: Some(Mutex::new(store)),
                 lsp: ai_team_core::Pool::new(),
+                terminals: ai_team_core::Terminals::new(),
             }),
         }
     }

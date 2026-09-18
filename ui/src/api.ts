@@ -410,6 +410,34 @@ export function lspRename(body: LspBody & { new_name: string }): Promise<RenameE
   return post("/lsp/rename", body);
 }
 
+export type TerminalSession = { id: number; worktree: string; done: boolean; status: number | null };
+
+export type TerminalChunk = { text: string; cursor: number; done: boolean; status: number | null };
+
+export function terminals(where: Where): Promise<TerminalSession[]> {
+  return api<TerminalSession[]>(`/terminals?${scope(where)}`);
+}
+
+export function openTerminal(where: Where): Promise<{ id: number }> {
+  return post("/terminals", where);
+}
+
+export function readTerminal(id: number, cursor: number): Promise<TerminalChunk> {
+  return api<TerminalChunk>(`/terminals/${id}?cursor=${cursor}`);
+}
+
+export function writeTerminal(id: number, text: string): Promise<{ sent: number }> {
+  return post(`/terminals/${id}`, { text });
+}
+
+export function resizeTerminal(id: number, rows: number, cols: number): Promise<unknown> {
+  return post(`/terminals/${id}/resize`, { rows, cols });
+}
+
+export function closeTerminal(id: number): Promise<unknown> {
+  return post(`/terminals/${id}/close`, {});
+}
+
 export function post<T>(path: string, body: unknown): Promise<T> {
   return request(path, "POST", body);
 }

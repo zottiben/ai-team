@@ -36,6 +36,10 @@ import { apply, followSystem, stored, type Theme } from "./theme";
 // them. Split out so opening the window costs what the window needs rather than what the
 // editor might.
 const Editor = lazy(async () => ({ default: (await import("./Editor")).Editor }));
+// xterm is another quarter of a megabyte nothing else needs.
+const TerminalPane = lazy(async () => ({
+  default: (await import("./Terminal")).TerminalPane,
+}));
 
 const VIEW_NAMES = {
   today: "Today",
@@ -45,6 +49,7 @@ const VIEW_NAMES = {
   analytics: "Analytics",
   schedule: "Schedule",
   editor: "Editor",
+  terminal: "Terminal",
 } as const;
 
 export default function App() {
@@ -157,7 +162,7 @@ export default function App() {
 
         <nav className="sidebar__section" aria-label="Views">
           <span className="sidebar__label">View</span>
-          {(["today", "console", "board", "review", "analytics", "schedule", "editor"] as const).map(
+          {(["today", "console", "board", "review", "analytics", "schedule", "editor", "terminal"] as const).map(
             (option) => (
             <button
               type="button"
@@ -237,6 +242,15 @@ export default function App() {
         {view === "editor" && (
           <Suspense fallback={<p className="empty">Loading the editor…</p>}>
             <Editor
+              project={projects.find((entry) => entry.id === project)?.slug ?? null}
+              node={null}
+            />
+          </Suspense>
+        )}
+
+        {view === "terminal" && (
+          <Suspense fallback={<p className="empty">Loading the terminal…</p>}>
+            <TerminalPane
               project={projects.find((entry) => entry.id === project)?.slug ?? null}
               node={null}
             />
