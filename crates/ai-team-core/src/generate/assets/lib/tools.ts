@@ -10,6 +10,7 @@ import { spawn } from "node:child_process";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { dirname, relative } from "node:path";
 
+import { judge } from "./irreversible.js";
 import { resolveInside, worktreeRoot } from "./worktree.js";
 
 /** Output beyond this is truncated; a runaway build log must not become the context. */
@@ -29,6 +30,14 @@ export type BashInput = { command: string; timeoutMs?: number };
 
 export async function runBash({ command, timeoutMs }: BashInput) {
   const cwd = worktreeRoot();
+
+  // The draft-commit gate (M2-S10). A node's work is a draft on a branch; publishing it
+  // is the human's call. Refused before spawning, and reported as a normal failed
+  // command so the model reads the reason rather than an unexplained error.
+  const verdict = judge(command);
+  if (!verdict.allowed) {
+    return { stdout: "", stderr: verdict.reason, exitCode: 126, timedOut: false, cwd };
+  }
   const limit = Math.min(Math.max(timeoutMs ?? DEFAULT_TIMEOUT_MS, 1_000), 600_000);
 
   return await new Promise<{

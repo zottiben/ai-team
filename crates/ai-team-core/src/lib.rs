@@ -14,6 +14,7 @@ mod error;
 mod eve;
 mod gates;
 mod generate;
+mod guardrails;
 mod machine;
 mod model;
 mod neighbours;
@@ -28,6 +29,7 @@ pub use error::{Error, Result};
 pub use eve::{Disposition, Ingested, StreamEvent, StreamMeta, TerminalState};
 pub use gates::{all_passed, discover_gates, evidence, run_gates, Gate, GateKind, GateResult};
 pub use generate::{GeneratedFile, GeneratedProject, ModelExpression, ROOT_ROLE, VERIFIER_ROLE};
+pub use guardrails::{node_may_continue, run_may_continue, Exceeded, Fallout};
 pub use machine::{
     ensure_machine_profile, MachineProfile, ModelRegistry, ModelResolution, ProviderState,
     ProviderStatus, DEFAULT_MACHINE_PROFILE,

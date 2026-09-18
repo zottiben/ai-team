@@ -61,7 +61,7 @@ isn't covered, ask and record it with `aip decision add`.
 
 ## Hard rules
 
-Fourteen decisions are recorded in the plan (`aip decision ls`). These nine are the ones
+Fourteen decisions are recorded in the plan (`aip decision ls`). These ten are the ones
 an agent will otherwise get wrong, so they are repeated here.
 
 ### 1. Subscription-backed models only (D8)
@@ -208,7 +208,30 @@ table - ai-team's own dispatch notices live in that column and parsed as a verdi
 repair is a **retry**, so every attempt dispatches its own `node_run` row: reusing one
 loses the earlier evidence and hands the next turn a finished session's cursor.
 
-### 9. Ingest eve's stream exactly once
+### 9. Guardrails are the run's, not the team's (M2-S10)
+Every budget, cap and failure policy is **snapshotted onto `run` at creation** and read
+back from there. A team edit must not loosen a run already going. `guardrails.rs` is the
+only place that decides whether work may continue, checked *before* spending rather than
+after - a limit noticed afterwards is an audit trail.
+
+A run-wide budget stops the whole run; a node's own cap stops only that node. All three
+`on_failure` policies leave the siblings alone - `escalate` parks the work and keeps its
+claim, `abort_branch` releases it - and a blocked slice goes back to `blocked` with its
+reason, never to `ready`, which would offer the next run the same slice with no memory of
+why it failed.
+
+**The gates run inside the lease and leave build output there.** ai-team writes `target/`,
+`node_modules/`, `dist/`, `.output/` and `.eve/` into `.git/info/exclude` for that lease,
+and commits only the paths captured *before* the gates ran. Two traps: `git status
+--porcelain` writes `XY path`, so trimming the front eats an unstaged file's leading space
+and every path starts a character late; and the gates are repo-wide, so a violation
+anywhere rejects a node whose zone does not contain it.
+
+Publishing is not a node's call. `generate/assets/lib/irreversible.ts` refuses `git push`,
+`npm/cargo publish`, `gh pr merge`, releases and tags from the generated `bash`, and is
+`node --test`ed on **both** CI legs alongside the worktree guard.
+
+### 10. Ingest eve's stream exactly once
 `event.eve_event_id` is eve's `meta.id` under a partial unique index, and ingest uses
 `INSERT OR IGNORE` — so a reconnect or a full rewind is free. Three traps that real turns
 exposed and fixtures did not: token and turn **counters** must only accumulate for rows

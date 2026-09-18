@@ -13,6 +13,7 @@ use crate::model::{Agent, Team};
 
 const WORKTREE_LIB: &str = include_str!("assets/lib/worktree.ts");
 const TOOLS_LIB: &str = include_str!("assets/lib/tools.ts");
+const IRREVERSIBLE_LIB: &str = include_str!("assets/lib/irreversible.ts");
 const PLAN_LIB: &str = include_str!("assets/lib/plan.ts");
 const TOOL_BASH: &str = include_str!("assets/tools/bash.ts");
 const TOOL_READ: &str = include_str!("assets/tools/read_file.ts");
@@ -75,6 +76,10 @@ pub(crate) fn project(
     files.push(file("agent/channels/eve.ts", CHANNEL_EVE.to_string()));
     files.push(file("agent/lib/worktree.ts", WORKTREE_LIB.to_string()));
     files.push(file("agent/lib/tools.ts", TOOLS_LIB.to_string()));
+    files.push(file(
+        "agent/lib/irreversible.ts",
+        IRREVERSIBLE_LIB.to_string(),
+    ));
     files.push(file("agent/lib/plan.ts", PLAN_LIB.to_string()));
 
     let root_model = model_expression(root_agent, ailocal_base_url);

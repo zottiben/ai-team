@@ -55,12 +55,14 @@ jobs:
       - name: frontend - committed bundle is current
         run: git diff --exit-code -- ui/dist
 
-      # The worktree guard is the D3 boundary and it is TypeScript, so it is the one
-      # piece whose macOS behaviour the author cannot check by hand (D12). Node runs the
-      # .ts directly with native type stripping, so this needs no install and no
-      # dependencies - and it runs on both legs, which is the entire point.
-      - name: worktree guard (both platforms)
-        run: node --test crates/ai-team-core/src/generate/assets/lib/worktree.test.ts
+      # The worktree guard is D3's boundary and the draft-commit gate is M2-S10's; both
+      # are TypeScript, so they are the pieces whose macOS behaviour the author cannot
+      # check by hand (D12). Node runs .ts directly with type stripping, so this needs no
+      # install - and it runs on both legs, which is the entire point.
+      - name: authored guards (both platforms)
+        run: |
+          node --test crates/ai-team-core/src/generate/assets/lib/worktree.test.ts
+          node --test crates/ai-team-core/src/generate/assets/lib/irreversible.test.ts
 
       - name: format
         run: cargo fmt --all --check

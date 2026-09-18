@@ -205,6 +205,9 @@ impl Orchestrator {
             .lease(&format!("ai-team:{}", slice.key))
             .await?;
         let worktree = lease.path().to_path_buf();
+        // Before anything runs in it: the gates write build output into this worktree,
+        // and a repo that does not already ignore it would get it committed.
+        git::ignore_build_output(&worktree).await?;
 
         // Claim through ai-planner, in the leased worktree, so the board shows where the
         // work is actually happening and a second run is told the slice is taken.
@@ -350,6 +353,8 @@ async fn run_one(task: NodeTask) -> Result<Dispatched> {
         attempt,
         node_run_id,
         role,
+        exhausted,
+        changed,
     } = match attempt_until_accepted(AttemptArgs {
         store: &mut store,
         project_dir: &project_dir,
@@ -378,43 +383,42 @@ async fn run_one(task: NodeTask) -> Result<Dispatched> {
             return Err(error);
         }
     };
-    let mut status = outcome_status(&outcome);
-    if let Some(reason) = &rejection {
-        // The budget ran out with the work still rejected. Recording it as done would
-        // put a branch on the board that nothing checked.
-        status = NodeStatus::Failed;
-        store.block_node(
-            node_run_id,
-            &format!("rejected after {attempt} repair(s): {reason}"),
-        )?;
-    }
+    let (mut status, fallout) = settle_status(
+        &mut store,
+        run_id,
+        node_run_id,
+        &role,
+        &slice_key,
+        &outcome,
+        rejection.as_deref(),
+        attempt,
+        exhausted,
+    )?;
 
     let branch = land(
         &mut store,
         &planner,
-        &worktree,
-        node_run_id,
-        &slice_key,
-        &title,
+        Landing {
+            worktree: &worktree,
+            node_run_id,
+            slice_key: &slice_key,
+            title: &title,
+            changed: &changed,
+        },
         &mut status,
     )
     .await?;
     store.set_node_status(node_run_id, status)?;
 
-    // The board follows what actually happened. A parked node is still somebody's, so
-    // its claim stays; a finished one goes to review for a human to look at.
-    match status {
-        NodeStatus::Done => {
-            let _ = planner
-                .set_status(&slice_key, "in_review", Some("built by ai-team"))
-                .await;
-            let _ = planner.release(&slice_key, &worktree).await;
-        }
-        NodeStatus::Parked => {}
-        _ => {
-            let _ = planner.release(&slice_key, &worktree).await;
-        }
-    }
+    update_board(
+        &planner,
+        &slice_key,
+        &worktree,
+        status,
+        fallout,
+        rejection.as_deref(),
+    )
+    .await;
 
     let dispatched = Dispatched {
         slice_key,
@@ -477,17 +481,28 @@ fn route(store: &Store, team_id: i64, slices: Vec<Slice>) -> Result<Routing> {
 async fn land(
     store: &mut Store,
     planner: &Planner,
-    worktree: &Path,
-    node_run_id: i64,
-    slice_key: &str,
-    title: &str,
+    work: Landing<'_>,
     status: &mut NodeStatus,
 ) -> Result<Option<String>> {
+    let Landing {
+        worktree,
+        node_run_id,
+        slice_key,
+        title,
+        changed,
+    } = work;
     if *status != NodeStatus::Done {
         return Ok(None);
     }
     let name = format!("ai-team/{}", slice_key.to_lowercase());
-    match git::commit_all(worktree, &name, &format!("{slice_key}: {}", title.trim())).await {
+    match git::commit_paths(
+        worktree,
+        &name,
+        &format!("{slice_key}: {}", title.trim()),
+        changed,
+    )
+    .await
+    {
         Ok(Some(sha)) => {
             store.attach_worktree(node_run_id, &worktree.to_string_lossy(), Some(&name), None)?;
             let _ = planner.set_branch(slice_key, &name).await;
@@ -523,6 +538,50 @@ struct Attempted {
     /// The row for the attempt that actually produced this outcome.
     node_run_id: i64,
     role: String,
+    /// True when it stopped because it ran out of budget or repairs rather than
+    /// because it finished. Decides whether the team's failure policy applies.
+    exhausted: bool,
+    /// What the turns actually touched, captured before the gates ran.
+    changed: Vec<String>,
+}
+
+impl Attempted {
+    /// Accepted, or parked on a question - either way, nobody is waiting on a repair.
+    fn settled(
+        outcome: TurnOutcome,
+        node: &crate::model::NodeRun,
+        attempt: i64,
+        changed: Vec<String>,
+    ) -> Attempted {
+        Attempted {
+            outcome,
+            rejection: None,
+            attempt,
+            node_run_id: node.id,
+            role: node.role.clone(),
+            exhausted: false,
+            changed,
+        }
+    }
+
+    /// Stopped without being accepted: out of repairs, or out of budget.
+    fn stopped(
+        outcome: TurnOutcome,
+        node: &crate::model::NodeRun,
+        attempt: i64,
+        changed: Vec<String>,
+        reason: String,
+    ) -> Attempted {
+        Attempted {
+            outcome,
+            rejection: Some(reason),
+            attempt,
+            node_run_id: node.id,
+            role: node.role.clone(),
+            exhausted: true,
+            changed,
+        }
+    }
 }
 
 /// Everything the build-check-repair loop needs. A struct because the alternative is
@@ -567,28 +626,23 @@ async fn attempt_until_accepted(args: AttemptArgs<'_>) -> Result<Attempted> {
 
     let mut attempt = 0;
     let mut instruction = first;
+    let mut changed: Vec<String> = Vec::new();
 
     loop {
-        // A fresh row per attempt, never an edit (D2). The first attempt's evidence is
-        // what analytics is made of, and reusing one row would also hand the next turn
-        // the previous session id and stream cursor - which is exactly how a repaired
-        // turn ends up reading a stream that has already finished.
-        let node = store.dispatch(run_id, agent_id, Some(slice_key), registry)?;
-        store.attach_worktree(node.id, &worktree.to_string_lossy(), None, None)?;
-        store.set_node_status(node.id, NodeStatus::Running)?;
+        let node = open_attempt(store, run_id, agent_id, slice_key, registry, worktree)?;
         let node_run_id = node.id;
-
-        let mut supervisor = Supervisor::new(project_dir, env.clone());
-        let turn = async {
-            let client = supervisor.start().await?;
-            let (_, outcome) = run_turn(store, node_run_id, &client, &instruction, |_| {}).await?;
-            Ok::<_, Error>(outcome)
+        if let Some(exceeded) = crate::guardrails::run_may_continue(store, run_id)? {
+            return Ok(Attempted::stopped(
+                TurnOutcome::default(),
+                &node,
+                attempt,
+                changed,
+                exceeded.reason,
+            ));
         }
-        .await;
-        // Stop before anything else can fail: the lease is returned on drop, an eve
-        // server holding a port is not.
-        let _ = supervisor.stop().await;
-        let turn = match turn {
+        store.set_node_status(node_run_id, NodeStatus::Running)?;
+
+        let turn = match take_turn(store, project_dir, env, node_run_id, &instruction).await {
             Ok(turn) => turn,
             Err(error) => {
                 store.set_node_status(node_run_id, NodeStatus::Failed)?;
@@ -596,58 +650,216 @@ async fn attempt_until_accepted(args: AttemptArgs<'_>) -> Result<Attempted> {
             }
         };
 
+        // Captured here, before `check` runs the gates: running them writes build output
+        // into the worktree, and that is ai-team's mess rather than the agent's work.
+        for path in crate::neighbours::git::changed_paths(worktree).await? {
+            if !changed.contains(&path) {
+                changed.push(path);
+            }
+        }
+
         // A parked turn is waiting on a person, and checking an unfinished thing would
         // reject it for not being finished. Leave it parked with its question intact.
         if outcome_status(&turn) != NodeStatus::Done {
-            return Ok(Attempted {
-                outcome: turn,
-                rejection: None,
-                attempt,
-                node_run_id,
-                role: node.role,
-            });
+            return Ok(Attempted::settled(turn, &node, attempt, changed));
         }
 
         let reason = match check(store, node_run_id, worktree, project_dir, env, verifier).await? {
-            Verdict::Accepted => {
-                return Ok(Attempted {
-                    outcome: turn,
-                    rejection: None,
-                    attempt,
-                    node_run_id,
-                    role: node.role,
-                })
-            }
+            Verdict::Accepted => return Ok(Attempted::settled(turn, &node, attempt, changed)),
             Verdict::Rejected(reason) => reason,
         };
 
-        store.append_event(
+        record_rejection(
+            store,
             run_id,
-            NewEvent::new(
-                EventKind::Note,
-                format!("{slice_key} rejected on attempt {}", attempt + 1),
-            )
-            .on_node(node_run_id)
-            .by(&node.role)
-            .with(serde_json::json!({ "reason": reason })),
+            node_run_id,
+            slice_key,
+            &node.role,
+            attempt,
+            &reason,
         )?;
-        // Each rejected attempt keeps its own verdict, rather than the last one
-        // overwriting what the earlier ones found.
-        store.block_node(node_run_id, &truncate_reason(&reason))?;
-        store.set_node_status(node_run_id, NodeStatus::Failed)?;
 
-        if attempt >= max_repairs {
-            return Ok(Attempted {
-                outcome: turn,
-                rejection: Some(reason),
+        // A cap reached mid-repair stops the repairing. Otherwise a node in a retry
+        // loop spends the whole run's budget proving it cannot do the slice.
+        if let Some(exceeded) = crate::guardrails::node_may_continue(store, node_run_id)? {
+            return Ok(Attempted::stopped(
+                turn,
+                &node,
                 attempt,
-                node_run_id,
-                role: node.role,
-            });
+                changed,
+                format!("{}; last rejection: {reason}", exceeded.reason),
+            ));
+        }
+        if attempt >= max_repairs {
+            return Ok(Attempted::stopped(turn, &node, attempt, changed, reason));
         }
         attempt += 1;
         instruction = repair_prompt(slice_key, &reason);
     }
+}
+
+/// One turn against one node row, with the process always stopped afterwards.
+async fn take_turn(
+    store: &mut Store,
+    project_dir: &Path,
+    env: &EveEnv,
+    node_run_id: i64,
+    instruction: &str,
+) -> Result<TurnOutcome> {
+    let mut supervisor = Supervisor::new(project_dir, env.clone());
+    let turn = async {
+        let client = supervisor.start().await?;
+        let (_, outcome) = run_turn(store, node_run_id, &client, instruction, |_| {}).await?;
+        Ok::<_, Error>(outcome)
+    }
+    .await;
+    // Stopped before the result is unwrapped: the lease is returned on drop, an eve
+    // server holding a port is not.
+    let _ = supervisor.stop().await;
+    turn
+}
+
+/// The work one node produced, and where it lives.
+struct Landing<'a> {
+    worktree: &'a Path,
+    node_run_id: i64,
+    slice_key: &'a str,
+    title: &'a str,
+    changed: &'a [String],
+}
+
+/// Move the slice to where this node left it.
+///
+/// Best-effort throughout: the work is already committed by the time this runs, and a
+/// board that could not be updated must not turn a finished node into a failed one.
+async fn update_board(
+    planner: &Planner,
+    slice_key: &str,
+    worktree: &Path,
+    status: NodeStatus,
+    fallout: Option<crate::Fallout>,
+    rejection: Option<&str>,
+) {
+    match status {
+        NodeStatus::Done => {
+            let _ = planner
+                .set_status(slice_key, "in_review", Some("built by ai-team"))
+                .await;
+            let _ = planner.release(slice_key, worktree).await;
+        }
+        // Escalated work is still somebody's, so the claim stays and the board says why
+        // it is waiting rather than quietly offering it to the next run.
+        NodeStatus::Parked => {
+            if fallout == Some(crate::Fallout::Escalate) {
+                let _ = planner.set_status(slice_key, "blocked", rejection).await;
+            }
+        }
+        // A failed slice goes back to `blocked` carrying its reason rather than staying
+        // `ready`: ready would hand the next run the same slice with no memory of why it
+        // did not work, and it must not look buildable when it is not.
+        _ => {
+            let _ = planner.set_status(slice_key, "blocked", rejection).await;
+            let _ = planner.release(slice_key, worktree).await;
+        }
+    }
+}
+
+/// Turn a stopped attempt into a node status, applying the team's failure policy.
+///
+/// All three policies leave the siblings alone - that is the property this slice exists
+/// to guarantee. They differ only in what happens to *this* branch.
+#[allow(clippy::too_many_arguments)]
+fn settle_status(
+    store: &mut Store,
+    run_id: i64,
+    node_run_id: i64,
+    role: &str,
+    slice_key: &str,
+    outcome: &TurnOutcome,
+    rejection: Option<&str>,
+    attempt: i64,
+    exhausted: bool,
+) -> Result<(NodeStatus, Option<crate::Fallout>)> {
+    let status = outcome_status(outcome);
+    let Some(reason) = rejection else {
+        return Ok((status, None));
+    };
+
+    // It stopped without being accepted. Recording it as done would put a branch on the
+    // board that nothing checked.
+    let policy = crate::Fallout::of(store.run(run_id)?.on_failure);
+    let status = match policy {
+        // Escalate parks it: somebody asked to be asked, so the work stays claimed and
+        // its branch is still written for them to look at.
+        crate::Fallout::Escalate => NodeStatus::Parked,
+        crate::Fallout::AbortBranch => NodeStatus::Failed,
+    };
+    let detail = if exhausted {
+        format!("stopped after {attempt} repair(s): {reason}")
+    } else {
+        reason.to_string()
+    };
+    store.block_node(node_run_id, &detail)?;
+    store.append_event(
+        run_id,
+        NewEvent::new(
+            EventKind::Note,
+            format!("{slice_key}: {} - {detail}", policy.as_str()),
+        )
+        .on_node(node_run_id)
+        .by(role),
+    )?;
+    Ok((status, Some(policy)))
+}
+
+/// Open a row for one attempt.
+///
+/// A fresh row per attempt, never an edit (D2). The first attempt's evidence is what
+/// analytics is made of, and reusing one row would also hand the next turn the previous
+/// session id and stream cursor - which is exactly how a repaired turn ends up reading a
+/// stream that has already finished.
+///
+/// The row is opened before the budget is checked, so a refusal has somewhere to be
+/// recorded; it is only marked running once the budget allows it.
+fn open_attempt(
+    store: &mut Store,
+    run_id: i64,
+    agent_id: i64,
+    slice_key: &str,
+    registry: &ModelRegistry,
+    worktree: &Path,
+) -> Result<crate::model::NodeRun> {
+    let node = store.dispatch(run_id, agent_id, Some(slice_key), registry)?;
+    store.attach_worktree(node.id, &worktree.to_string_lossy(), None, None)?;
+    Ok(node)
+}
+
+/// Keep what this attempt was told, on this attempt's own row.
+///
+/// Each rejected attempt carries its own verdict rather than the last one overwriting
+/// what the earlier ones found.
+fn record_rejection(
+    store: &mut Store,
+    run_id: i64,
+    node_run_id: i64,
+    slice_key: &str,
+    role: &str,
+    attempt: i64,
+    reason: &str,
+) -> Result<()> {
+    store.append_event(
+        run_id,
+        NewEvent::new(
+            EventKind::Note,
+            format!("{slice_key} rejected on attempt {}", attempt + 1),
+        )
+        .on_node(node_run_id)
+        .by(role)
+        .with(serde_json::json!({ "reason": reason })),
+    )?;
+    store.block_node(node_run_id, &truncate_reason(reason))?;
+    store.set_node_status(node_run_id, NodeStatus::Failed)?;
+    Ok(())
 }
 
 /// A rejection can be a whole build log; `blocked_reason` is a column somebody reads in

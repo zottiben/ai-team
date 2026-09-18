@@ -20,19 +20,32 @@ use crate::error::{Error, Result};
 ///
 /// `None` means there was nothing to commit, which is a real outcome worth reporting:
 /// a node that finished without changing a file did not build its slice.
-pub(crate) async fn commit_all(
+pub(crate) async fn commit_paths(
     worktree: &Path,
     branch: &str,
     message: &str,
+    paths: &[String],
 ) -> Result<Option<String>> {
-    if porcelain(worktree).await?.is_empty() {
+    if paths.is_empty() {
         return Ok(None);
     }
 
     // A fresh branch per slice, from wherever the lease was handed over. `-B` rather
     // than `-b` so a retry of the same slice reuses the name instead of failing on it.
     git(worktree, &["checkout", "-B", branch]).await?;
-    git(worktree, &["add", "-A"]).await?;
+    let mut add = vec!["add", "--"];
+    add.extend(paths.iter().map(String::as_str));
+    git(worktree, &add).await?;
+
+    // A path the agent deleted and the gates rebuilt, or one already matching HEAD, can
+    // leave nothing staged. That is the same "nothing to commit" outcome.
+    if git(worktree, &["diff", "--cached", "--name-only"])
+        .await?
+        .trim()
+        .is_empty()
+    {
+        return Ok(None);
+    }
     // The committer is ai-team, not whoever's name is in the repo's config: a human
     // reading `git log` should be able to tell which commits they did not write.
     git(
@@ -53,12 +66,61 @@ pub(crate) async fn commit_all(
     Ok(Some(sha.trim().to_string()))
 }
 
+/// The paths a turn changed.
+///
+/// Taken immediately after a turn and before the gates run, because running the gates
+/// changes the worktree too: `cargo test` writes `target/` and `npm test` writes wherever
+/// it likes. A repo without a `.gitignore` covering them would otherwise get a review
+/// branch carrying a hundred files of build output. What ai-team commits is what the
+/// agent did, not what checking it produced.
+pub(crate) async fn changed_paths(worktree: &Path) -> Result<Vec<String>> {
+    Ok(porcelain(worktree)
+        .await?
+        .lines()
+        .filter_map(|line| {
+            // `XY path`, and for a rename `XY old -> new`; the new name is what to add.
+            let path = line.get(3..)?.trim();
+            let path = path.rsplit(" -> ").next().unwrap_or(path);
+            let path = path.trim_matches('"');
+            (!path.is_empty()).then(|| path.to_string())
+        })
+        .collect())
+}
+
 /// What changed, in `git status --porcelain` form. Empty means a clean tree.
+///
+/// Only the trailing newline is trimmed. A porcelain line is `XY path`, and an unstaged
+/// modification's X is a space - so trimming the front eats it, and every path then
+/// starts one character late.
 pub(crate) async fn porcelain(worktree: &Path) -> Result<String> {
     Ok(git(worktree, &["status", "--porcelain"])
         .await?
-        .trim()
+        .trim_end()
         .to_string())
+}
+
+/// Keep the gates' own output out of git's view, for this lease only.
+///
+/// `.git/info/exclude` is git's per-checkout ignore file: it is not tracked, so this
+/// does not edit the repository, and the worktree is returned to the pool afterwards
+/// anyway. A repo whose own .gitignore already covers these loses nothing.
+pub(crate) async fn ignore_build_output(worktree: &Path) -> Result<()> {
+    let info = git(worktree, &["rev-parse", "--git-path", "info/exclude"]).await?;
+    let path = worktree.join(info.trim());
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    if existing.contains("# ai-team") {
+        return Ok(());
+    }
+    let added = format!(
+        "{existing}\n# ai-team: what running this project's checks leaves behind.\n\
+         target/\nnode_modules/\ndist/\n.output/\n.eve/\n"
+    );
+    std::fs::write(&path, added)
+        .map_err(|error| Error::invalid(format!("could not write {}: {error}", path.display())))?;
+    Ok(())
 }
 
 async fn git(worktree: &Path, args: &[&str]) -> Result<String> {
@@ -105,7 +167,9 @@ mod tests {
         let dir = repo().await;
         std::fs::write(dir.path().join("new.txt"), "work\n").unwrap();
 
-        let sha = commit_all(dir.path(), "ai-team/PR1", "PR1: do the thing")
+        let paths = changed_paths(dir.path()).await.unwrap();
+        assert_eq!(paths, ["new.txt"]);
+        let sha = commit_paths(dir.path(), "ai-team/PR1", "PR1: do the thing", &paths)
             .await
             .unwrap()
             .expect("something changed, so something was committed");
@@ -131,7 +195,7 @@ mod tests {
         // An empty commit would put a green branch on the board for work nobody did.
         let dir = repo().await;
         assert_eq!(
-            commit_all(dir.path(), "ai-team/PR2", "PR2: nothing")
+            commit_paths(dir.path(), "ai-team/PR2", "PR2: nothing", &[])
                 .await
                 .unwrap(),
             None
@@ -139,15 +203,104 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_unstaged_modification_keeps_the_first_letter_of_its_path() {
+        // `git status --porcelain` writes ` M path` for an unstaged edit. Trimming the
+        // whole output eats that leading space, and every path then starts one character
+        // late - which reaches git as `add -- rates/widget/src/lib.rs`.
+        let dir = repo().await;
+        std::fs::create_dir_all(dir.path().join("crates/widget/src")).unwrap();
+        std::fs::write(dir.path().join("crates/widget/src/lib.rs"), "one\n").unwrap();
+        git(dir.path(), &["add", "-A"]).await.unwrap();
+        git(dir.path(), &["commit", "-qm", "add lib"])
+            .await
+            .unwrap();
+
+        std::fs::write(dir.path().join("crates/widget/src/lib.rs"), "two\n").unwrap();
+        assert_eq!(
+            changed_paths(dir.path()).await.unwrap(),
+            ["crates/widget/src/lib.rs"]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_renamed_file_is_added_under_the_name_it_now_has() {
+        let dir = repo().await;
+        std::fs::write(dir.path().join("old.txt"), "content\n").unwrap();
+        git(dir.path(), &["add", "-A"]).await.unwrap();
+        git(dir.path(), &["commit", "-qm", "add old"])
+            .await
+            .unwrap();
+        git(dir.path(), &["mv", "old.txt", "new.txt"])
+            .await
+            .unwrap();
+
+        let paths = changed_paths(dir.path()).await.unwrap();
+        assert!(paths.contains(&"new.txt".to_string()), "{paths:?}");
+    }
+
+    #[tokio::test]
+    async fn the_gates_own_output_is_excluded_for_this_lease_only() {
+        let dir = repo().await;
+        ignore_build_output(dir.path()).await.unwrap();
+        std::fs::create_dir_all(dir.path().join("target/debug")).unwrap();
+        std::fs::write(dir.path().join("target/debug/out.bin"), "junk").unwrap();
+        std::fs::write(dir.path().join("real.rs"), "work\n").unwrap();
+
+        assert_eq!(changed_paths(dir.path()).await.unwrap(), ["real.rs"]);
+        // Written to .git/info/exclude, so the repository's own files are untouched.
+        assert!(!dir.path().join(".gitignore").exists());
+
+        // Running it twice must not keep appending.
+        ignore_build_output(dir.path()).await.unwrap();
+        let exclude =
+            std::fs::read_to_string(dir.path().join(".git/info/exclude")).unwrap_or_default();
+        assert_eq!(exclude.matches("# ai-team").count(), 1);
+    }
+
+    #[tokio::test]
+    async fn build_output_from_checking_the_work_is_not_committed_with_it() {
+        // The gates run in the worktree, so `cargo test` leaves `target/` behind. A repo
+        // whose .gitignore does not cover it would otherwise get a review branch with a
+        // hundred files of build output on it, which is ai-team's mess, not the agent's.
+        let dir = repo().await;
+        std::fs::write(dir.path().join("src.rs"), "the agent's work\n").unwrap();
+
+        // Captured after the turn, before the gates run.
+        let paths = changed_paths(dir.path()).await.unwrap();
+
+        std::fs::create_dir_all(dir.path().join("target/debug")).unwrap();
+        std::fs::write(dir.path().join("target/debug/out.bin"), "junk").unwrap();
+
+        commit_paths(dir.path(), "ai-team/PR4", "PR4: work", &paths)
+            .await
+            .unwrap()
+            .unwrap();
+
+        let files = git(
+            dir.path(),
+            &["show", "--name-only", "--pretty=", "ai-team/PR4"],
+        )
+        .await
+        .unwrap();
+        assert!(files.contains("src.rs"), "{files}");
+        assert!(
+            !files.contains("target/"),
+            "build output leaked in: {files}"
+        );
+    }
+
+    #[tokio::test]
     async fn re_running_a_slice_reuses_its_branch_instead_of_failing_on_it() {
         let dir = repo().await;
         std::fs::write(dir.path().join("a.txt"), "one\n").unwrap();
-        commit_all(dir.path(), "ai-team/PR3", "first")
+        let paths = changed_paths(dir.path()).await.unwrap();
+        commit_paths(dir.path(), "ai-team/PR3", "first", &paths)
             .await
             .unwrap();
 
         std::fs::write(dir.path().join("b.txt"), "two\n").unwrap();
-        let second = commit_all(dir.path(), "ai-team/PR3", "second")
+        let paths = changed_paths(dir.path()).await.unwrap();
+        let second = commit_paths(dir.path(), "ai-team/PR3", "second", &paths)
             .await
             .unwrap();
         assert!(second.is_some(), "a retry must not fail on its own branch");

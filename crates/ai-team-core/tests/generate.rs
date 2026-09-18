@@ -92,6 +92,33 @@ fn the_authored_tools_replace_eves_sandbox_defaults_at_the_same_slots() {
 }
 
 #[test]
+fn every_seat_gets_the_draft_commit_gate() {
+    // The gate lives in one module that `bash` calls, so no seat can be generated with
+    // a shell that publishes. Every seat has `bash`, including the read-only ones.
+    let (store, _, team) = seeded();
+    let generated = store.generate_project(team, "/tmp/unused").unwrap();
+
+    assert!(generated.file("agent/lib/irreversible.ts").is_some());
+    let tools = &generated.file("agent/lib/tools.ts").unwrap().contents;
+    assert!(
+        tools.contains("judge(command)"),
+        "bash must ask before running"
+    );
+    assert!(tools.contains("irreversible.js"), "{tools}");
+
+    for dir in [
+        "agent",
+        "agent/subagents/backend",
+        "agent/subagents/verifier",
+    ] {
+        let bash = generated
+            .file(&format!("{dir}/tools/bash.ts"))
+            .unwrap_or_else(|| panic!("{dir} has a shell"));
+        assert!(bash.contents.contains("lib/tools.js"), "{dir}");
+    }
+}
+
+#[test]
 fn only_the_seats_that_plan_can_shape_the_plan() {
     // A maker that can add slices can give itself work, and the board a human reads
     // stops being a plan. Everyone reads it; two seats write it.
