@@ -46,6 +46,73 @@ afterEach(() => {
 
 const HEALTH = { version: "0.1.0", bundle_embedded: true, bundle_files: 3 };
 
+/** The window opens on Today, so a test about the Console has to go there first. */
+async function openConsole(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(await screen.findByText("Console"));
+}
+
+it("opens on Today, because that is the question you have when you open the window", async () => {
+  stubApi({
+    "/health": HEALTH,
+    "/projects": [],
+    "/runs": [],
+    "/today": [
+      {
+        urgency: "blocking",
+        kind: "approval",
+        title: "may I commit?",
+        detail: "run #7 is waiting on you",
+        project: "widget",
+        run_id: 7,
+        since: "2026-09-18T08:00:00Z",
+      },
+    ],
+  });
+  render(<App />);
+  expect(await screen.findByText("Do this first")).toBeDefined();
+  expect(await screen.findByText("may I commit?")).toBeDefined();
+});
+
+it("following an item from Today opens that run in the Console", async () => {
+  // Today answers "what now"; the run itself is the Console's job. A third surface that
+  // renders runs slightly differently is how two views start disagreeing.
+  const user = userEvent.setup();
+  stubApi({
+    "/health": HEALTH,
+    "/projects": [],
+    "/runs": [],
+    "/today": [
+      {
+        urgency: "failed",
+        kind: "node",
+        title: "backend failed on S1",
+        detail: null,
+        project: "widget",
+        run_id: 7,
+        since: null,
+      },
+    ],
+    "/runs/7": {
+      id: 7,
+      project_id: 1,
+      prompt: "add subtract",
+      status: "failed",
+      trigger: "manual",
+      created_at: "",
+      started_at: null,
+      ended_at: null,
+      nodes: [],
+      usage: { tokens_in: 0, tokens_out: 0, cache_read: 0, cache_write: 0 },
+    },
+    "/runs/7/events": [],
+    "/runs/7/approvals": [],
+  });
+
+  render(<App />);
+  await user.click(await screen.findByText("backend failed on S1"));
+  expect(await screen.findByText("Run #7")).toBeDefined();
+});
+
 it("shows the runs the database has, and what each one is doing", async () => {
   stubApi({
     "/health": HEALTH,
@@ -53,7 +120,9 @@ it("shows the runs the database has, and what each one is doing", async () => {
     "/runs": [{ id: 7, project_id: 1, prompt: "add subtract", status: "running", trigger: "manual", created_at: "", started_at: null, ended_at: null }],
   });
 
+  const user = userEvent.setup();
   render(<App />);
+  await openConsole(user);
 
   expect(await screen.findByText("Widget")).toBeDefined();
   expect(await screen.findByText("add subtract")).toBeDefined();
@@ -63,8 +132,10 @@ it("shows the runs the database has, and what each one is doing", async () => {
 });
 
 it("says what to do when there are no runs yet", async () => {
+  const user = userEvent.setup();
   stubApi({ "/health": HEALTH, "/projects": [], "/runs": [] });
   render(<App />);
+  await openConsole(user);
   expect(await screen.findByText(/No runs yet/)).toBeDefined();
   expect(await screen.findByText(/ait run/)).toBeDefined();
 });
@@ -92,6 +163,7 @@ it("opens a run in the dock and closes it with Escape", async () => {
   });
 
   render(<App />);
+  await openConsole(user);
   await user.click(await screen.findByText("add subtract"));
 
   expect(await screen.findByText("Run #7")).toBeDefined();
@@ -135,7 +207,9 @@ it("re-reads when the server says something changed", async () => {
     "/projects": [],
     "/runs": [{ id: 7, project_id: 1, prompt: "first", status: "running", trigger: "manual", created_at: "", started_at: null, ended_at: null }],
   });
+  const user = userEvent.setup();
   render(<App />);
+  await openConsole(user);
   await screen.findByText("first");
 
   // A run started from the CLI, in another process entirely.

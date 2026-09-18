@@ -165,6 +165,20 @@ export function moveSlice(
   return post(`/board/slices/${encodeURIComponent(key)}`, body);
 }
 
+export type TodayItem = {
+  urgency: "blocking" | "overdue" | "failed" | "review" | "question" | "due" | "in_flight";
+  kind: string;
+  title: string;
+  detail: string | null;
+  project: string | null;
+  run_id: number | null;
+  since: string | null;
+};
+
+export function today(): Promise<TodayItem[]> {
+  return api<TodayItem[]>("/today");
+}
+
 export async function post<T>(path: string, body: unknown): Promise<T> {
   const current = token();
   const response = await fetch(`/api${path}`, {

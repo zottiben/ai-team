@@ -42,6 +42,53 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/runs/{id}/approvals", axum::routing::post(answer))
         .route("/board", get(board))
         .route("/board/slices/{key}", axum::routing::post(move_slice))
+        .route("/today", get(today))
+}
+
+/// What to work on now, across every project.
+///
+/// The ranking lives in core and is tested there; this gathers the two halves - what
+/// ai-team's own database knows, and the questions ai-planner is holding - and hands
+/// them over in one order.
+async fn today(State(state): State<AppState>) -> Result<Json<Vec<ai_team_core::Item>>> {
+    // Two passes over the store, with the lock released in between, because reading the
+    // questions means running `aip` once per checkout and no request should hold a
+    // database connection across that.
+    let (mut items, checkouts) = {
+        let store = state.store()?;
+        let store = store.lock();
+        let items = ai_team_core::today_from_store(&store)?;
+        let checkouts: Vec<(String, String)> = store
+            .projects()?
+            .into_iter()
+            .filter_map(|project| {
+                let repo = store
+                    .project_repos(project.id)
+                    .ok()?
+                    .into_iter()
+                    .find_map(|repo| repo.main_path)?;
+                Some((project.slug, repo))
+            })
+            .collect();
+        (items, checkouts)
+    };
+
+    for (slug, repo) in checkouts {
+        // Best effort per project: a checkout that has been deleted, or one with no plan
+        // yet, must not empty the whole list for every other project.
+        let Ok(questions) = ai_team_core::Planner::at(repo).open_questions().await else {
+            continue;
+        };
+        for question in questions {
+            items.push(ai_team_core::from_question(
+                &slug,
+                &question.body,
+                question.asked_at,
+            ));
+        }
+    }
+
+    Ok(Json(ai_team_core::rank_today(items)))
 }
 
 /// A slice, plus the one thing ai-team knows about it that ai-planner does not: which

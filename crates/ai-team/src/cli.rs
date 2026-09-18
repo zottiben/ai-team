@@ -39,6 +39,8 @@ pub(crate) enum Command {
     Agents(AgentsCommand),
     /// Run one prompt through a supervised agent.
     Run(RunArgs),
+    /// What to work on now, across every project. Ranked, not just listed.
+    Today,
     /// Check the install: paths, the machine profile, and the embedded bundle.
     Doctor,
 }

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { Board } from "./Board";
 import { Approvals, Prompt, Seats } from "./Console";
+import { Today } from "./Today";
 import {
   approvals as fetchApprovals,
   health,
@@ -26,6 +27,9 @@ import { apply, followSystem, stored, type Theme } from "./theme";
  * topmost thing. That last rule is why the key handler lives here rather than in each
  * surface - Esc has to know what is on top, and only this level does.
  */
+/** Named once, near the type, rather than in a ternary chain that grows a branch per view. */
+const VIEW_NAMES = { today: "Today", console: "Console", board: "Board" } as const;
+
 export default function App() {
   const [theme, setTheme] = useState<Theme>(stored);
   const [projects, setProjects] = useState<Project[]>([]);
@@ -35,7 +39,7 @@ export default function App() {
   const [detail, setDetail] = useState<RunDetail | null>(null);
   const [events, setEvents] = useState<RunEvent[]>([]);
   const [pending, setPending] = useState<Approval[]>([]);
-  const [view, setView] = useState<"console" | "board">("console");
+  const [view, setView] = useState<"today" | "console" | "board">("today");
   const [overlay, setOverlay] = useState<null | "about">(null);
   // Bumped on every server tick, so the board re-reads without owning a subscription.
   const [tick, setTick] = useState(0);
@@ -136,7 +140,7 @@ export default function App() {
 
         <nav className="sidebar__section" aria-label="Views">
           <span className="sidebar__label">View</span>
-          {(["console", "board"] as const).map((option) => (
+          {(["today", "console", "board"] as const).map((option) => (
             <button
               type="button"
               key={option}
@@ -144,7 +148,7 @@ export default function App() {
               aria-current={view === option}
               onClick={() => setView(option)}
             >
-              <span>{option === "console" ? "Console" : "Board"}</span>
+              <span>{VIEW_NAMES[option]}</span>
             </button>
           ))}
         </nav>
@@ -196,6 +200,19 @@ export default function App() {
       </aside>
 
       <main className="main">
+        {view === "today" && (
+          <Today
+            tick={tick}
+            onOpenRun={(id) => {
+              // Today answers "what now"; the run itself is the Console's job, so
+              // following an item takes you there rather than growing a third surface
+              // that renders runs slightly differently.
+              setView("console");
+              setSelected(id);
+            }}
+          />
+        )}
+
         {view === "board" && (
           <Board
             project={projects.find((entry) => entry.id === project)?.slug ?? null}

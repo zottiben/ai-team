@@ -491,3 +491,28 @@ button.card:hover {
   border-radius: var(--radius-sm);
   padding: var(--space-1);
 }
+
+/* --- today -------------------------------------------------------------------- */
+
+.today {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-height: 0;
+}
+
+/* The top item is set apart deliberately. A ranked list whose first row looks like every
+ * other row is a list people read top to bottom anyway. */
+.today__first {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-4);
+  background: var(--surface-panel-raised);
+  border: 1px solid var(--border-strong-default);
+  border-radius: var(--radius-md);
+}
+
+.today__first .card {
+  background: var(--surface-canvas-default);
+}

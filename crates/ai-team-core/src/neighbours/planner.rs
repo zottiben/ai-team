@@ -77,6 +77,19 @@ pub struct PlanSummary {
     pub slice: Option<String>,
 }
 
+/// A question ai-planner is holding for a human.
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
+pub struct Question {
+    pub body: String,
+    pub status: String,
+    #[serde(default)]
+    pub answer: Option<String>,
+    #[serde(default)]
+    pub asked_at: Option<String>,
+    #[serde(default)]
+    pub slice_key: Option<String>,
+}
+
 /// The `aip` CLI, rooted at one checkout.
 ///
 /// `-C` rather than the process's own working directory, because ai-team drives several
@@ -120,6 +133,17 @@ impl Planner {
         serde_json::from_str(&json).map_err(|error| {
             Error::invalid(format!("could not read `aip current --json`: {error}"))
         })
+    }
+
+    /// The questions the plan is holding, unanswered.
+    pub async fn open_questions(&self) -> Result<Vec<Question>> {
+        let json = self.output(&["question", "ls", "--json"]).await?;
+        let all: Vec<Question> = serde_json::from_str(&json).map_err(|error| {
+            Error::invalid(format!("could not read `aip question ls --json`: {error}"))
+        })?;
+        // ai-planner's own word for it, rather than inferring from a missing answer:
+        // a question can be closed without one.
+        Ok(all.into_iter().filter(|q| q.status == "open").collect())
     }
 
     pub async fn slices(&self) -> Result<Vec<Slice>> {

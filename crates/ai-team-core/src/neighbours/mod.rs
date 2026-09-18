@@ -8,5 +8,5 @@ pub(crate) mod git;
 mod planner;
 mod worktree;
 
-pub use planner::{PlanSummary, Planner, Slice};
+pub use planner::{PlanSummary, Planner, Question, Slice};
 pub use worktree::{Lease, PoolEntry, Worktrees};
