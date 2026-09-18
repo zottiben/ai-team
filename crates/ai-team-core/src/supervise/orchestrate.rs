@@ -238,7 +238,9 @@ impl Orchestrator {
             registry: self.registry.clone(),
             slice_key: slice.key.clone(),
             title: slice.title.clone(),
-            prompt: slice_prompt(slice),
+            // Read from the lease, not the main checkout: a branch that changes the
+            // house rules should be judged by the rules it is proposing.
+            prompt: slice_prompt(slice, &crate::house::read(&worktree)),
             worktree,
             lease,
             planner: self.planner.clone(),
@@ -1061,7 +1063,7 @@ fn repair_prompt(slice_key: &str, reason: &str) -> String {
 }
 
 /// What a seat is actually asked to do with a slice.
-fn slice_prompt(slice: &Slice) -> String {
+fn slice_prompt(slice: &Slice, house: &[crate::house::Rules]) -> String {
     use std::fmt::Write as _;
 
     let mut prompt = format!("Build this slice: {} - {}\n", slice.key, slice.title);
@@ -1076,6 +1078,9 @@ fn slice_prompt(slice: &Slice) -> String {
          the project's own checks before you call it done, and say so plainly if they \
          do not pass.\n",
     );
+    // Last, and after the worktree rules, so the closest thing to the model's final
+    // attention is the standard its work will be judged against.
+    prompt.push_str(&crate::house::section(house));
     prompt
 }
 
@@ -1216,10 +1221,30 @@ mod tests {
 
     #[test]
     fn the_prompt_carries_the_scope_and_the_demo() {
-        let prompt = slice_prompt(&slice("PR1", "Add the export.\n\nTouches: crates/**"));
+        let prompt = slice_prompt(&slice("PR1", "Add the export.\n\nTouches: crates/**"), &[]);
         assert!(prompt.contains("PR1 - a slice"));
         assert!(prompt.contains("Add the export."));
         assert!(prompt.contains("it runs"), "the demo is what done means");
         assert!(prompt.contains("leased for this slice alone"));
+
+        // A repo with no house rules gets no section at all: most have none, and an
+        // empty heading spends context telling a model nothing.
+        assert!(!prompt.contains("house rules"));
+
+        let with_house = slice_prompt(
+            &slice("PR1", "Add the export.\n\nTouches: crates/**"),
+            &[crate::house::Rules {
+                path: "AGENTS.md".into(),
+                body: "Never use an em dash.".into(),
+                truncated: false,
+            }],
+        );
+        assert!(with_house.contains("Never use an em dash"), "{with_house}");
+        // After the worktree rules, so the last thing read is the standard the work is
+        // judged against.
+        assert!(
+            with_house.find("leased for this slice").unwrap()
+                < with_house.find("Never use an em dash").unwrap()
+        );
     }
 }
