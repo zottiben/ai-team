@@ -12,6 +12,16 @@
 
 use crate::model::{NewAgent, Provider, Reasoning};
 
+/// The seat that plans. Every other seat builds or checks.
+///
+/// Named rather than inferred: "the one that is read-only and first" was true of the
+/// eve roster by accident and would stop being true the moment somebody reordered it.
+pub const ROOT_ROLE: &str = "orchestrator";
+
+/// The seat that checks the makers' work (M2-S9). Named rather than inferred from
+/// `read_only`, because the reviewer is read-only too and is asked a different question.
+pub const VERIFIER_ROLE: &str = "verifier";
+
 #[derive(Debug)]
 pub struct RolePreset {
     pub role: &'static str,

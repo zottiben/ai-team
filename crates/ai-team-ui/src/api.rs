@@ -39,7 +39,6 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/events", get(stream))
         .route("/runs", axum::routing::post(start))
         .route("/runs/{id}/approvals", get(approvals))
-        .route("/runs/{id}/approvals", axum::routing::post(answer))
         .route("/board", get(board))
         .route("/board/slices/{key}", axum::routing::post(move_slice))
         .route("/today", get(today))
@@ -1350,7 +1349,7 @@ async fn review(State(state): State<AppState>, Path(id): Path<i64>) -> Result<Js
     };
 
     let files = ai_team_core::diff_for(&review, std::path::Path::new(&repo)).await?;
-    let steerable = ai_team_core::steerable(node).await;
+    let steerable = ai_team_core::steerable(node);
 
     Ok(Json(ReviewDetail {
         review,
@@ -1445,6 +1444,7 @@ async fn submit(
 
     // Both paths write to ai-planner through its own CLI (D4).
     let for_plan = repo.clone();
+    let queue_state = state.clone();
     let outcome = ai_team_core::deliver_review(
         &pending,
         node,
@@ -1467,6 +1467,16 @@ async fn submit(
             ai_team_core::Planner::at(repo)
                 .amend_scope(&key, &addition)
                 .await
+        },
+        // The lock is taken and dropped inside the callback, so it is never held across
+        // one of the awaits above.
+        |agent_id, message| {
+            let store = queue_state
+                .store()
+                .map_err(|_| ai_team_core::Error::invalid("the database is not open"))?;
+            let mut store = store.lock();
+            store.queue_message(agent_id, message)?;
+            Ok(())
         },
     )
     .await?;
@@ -1719,55 +1729,6 @@ async fn approvals(State(state): State<AppState>, Path(id): Path<i64>) -> Result
     let store = state.store()?;
     let store = store.lock();
     Ok(Json(store.pending_approvals(id)?))
-}
-
-#[derive(Debug, Deserialize)]
-struct AnswerRequest {
-    /// Which node asked. The question belongs to a turn, not to the run as a whole.
-    node: i64,
-    request: String,
-    /// The option the human picked, by the id eve offered it under.
-    chose: String,
-}
-
-/// Answer a question an agent asked.
-///
-/// The node records where its eve is listening and the secret it checks, so this reaches
-/// the agent over loopback whichever process started it - the window can answer what the
-/// terminal's run is parked on.
-async fn answer(
-    State(state): State<AppState>,
-    Path(id): Path<i64>,
-    JsonBody(request): JsonBody<AnswerRequest>,
-) -> Result<Json<serde_json::Value>> {
-    let (port, token, session) = {
-        let store = state.store()?;
-        let store = store.lock();
-        let node = store.node_run(request.node)?;
-        if node.run_id != id {
-            return Err(crate::error::Error::Core(ai_team_core::Error::invalid(
-                "that node belongs to a different run",
-            )));
-        }
-        (
-            node.eve_port,
-            node.eve_token.clone(),
-            node.session_id.clone(),
-        )
-    };
-
-    let (Some(port), Some(token), Some(session)) = (port, token, session) else {
-        return Err(crate::error::Error::Core(ai_team_core::Error::invalid(
-            "that node has no agent listening - it has already finished or its process \
-             has gone",
-        )));
-    };
-
-    let client = ai_team_core::EveClient::new(u16::try_from(port).unwrap_or(0), &token);
-    client
-        .respond(&session, &request.request, &request.chose)
-        .await?;
-    Ok(Json(serde_json::json!({ "answered": true })))
 }
 
 #[derive(Debug, Serialize)]

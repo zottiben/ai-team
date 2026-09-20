@@ -1,6 +1,6 @@
 //! The clock.
 //!
-//! eve has schedules, but they are root-only and static - declared in the project it
+//! A runtime may have schedules of its own, but they are static - declared in a project it
 //! builds, which ai-team generates per team. A reminder somebody adds at four in the
 //! afternoon has to work without regenerating and rebuilding anything, so the clock is
 //! ours and it lives in Rust.

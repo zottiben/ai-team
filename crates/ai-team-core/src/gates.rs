@@ -20,7 +20,7 @@ use tokio::process::Command;
 use crate::error::Result;
 
 /// A gate runs for at most this long. A hung test suite must not hold a worktree and an
-/// eve process open indefinitely.
+/// turn open indefinitely.
 const GATE_TIMEOUT: Duration = Duration::from_mins(15);
 
 /// What a gate is for. Ordered cheap to expensive, which is also the order to run them:

@@ -5,9 +5,6 @@
 //! step into a line, and report what came back in the terms a human thinks in - slices,
 //! seats and branches.
 
-use std::io::{IsTerminal, Write};
-use std::time::Instant;
-
 use anyhow::{Context, Result};
 
 use ai_team_core as core;
@@ -25,17 +22,9 @@ pub(crate) async fn run(args: RunArgs) -> Result<()> {
         plan_only: args.plan_only,
     };
 
-    // A carriage return only redraws on a terminal. Piped to a file or a CI log it runs
-    // every line together into one unreadable smear, so the fallback is periodic.
-    let redraw = std::io::stdout().is_terminal();
-    let started = Instant::now();
-    let mut build_lines = 0usize;
-
-    let done = core::run_workflow(&request, |progress| {
-        report(progress, redraw, started, &mut build_lines);
-    })
-    .await
-    .context("running the workflow")?;
+    let done = core::run_workflow(&request, report)
+        .await
+        .context("running the workflow")?;
 
     if args.plan_only {
         println!("\nplan written. `aip show` reads it.");
@@ -47,43 +36,19 @@ pub(crate) async fn run(args: RunArgs) -> Result<()> {
     summarise(&mut store, &done)
 }
 
-fn report(progress: core::Progress, redraw: bool, started: Instant, lines: &mut usize) {
+fn report(progress: core::Progress) {
     match progress {
         core::Progress::Started { run_id, repo } => {
             println!("run {run_id} on {}", repo.display());
         }
-        core::Progress::Generated { files, fallbacks } => {
-            println!("generated {files} files");
+        core::Progress::Planning => {
+            println!("\nplanning");
+        }
+        core::Progress::Seated { fallbacks } => {
             for notice in fallbacks {
                 println!("  fallback           {notice}");
             }
         }
-        core::Progress::Building(build) => {
-            *lines += 1;
-            if redraw {
-                print!(
-                    "\r  {} {:>5} lines  {:.0}s  {:<50}",
-                    build.phase.as_str(),
-                    lines,
-                    started.elapsed().as_secs_f32(),
-                    truncate(&build.line, 50)
-                );
-                let _ = std::io::stdout().flush();
-            } else if lines.is_multiple_of(25) {
-                println!("  {} {lines} lines", build.phase.as_str());
-            }
-        }
-        core::Progress::Built { lines: total } => {
-            if redraw {
-                print!("\r");
-            }
-            println!(
-                "  built in {:.0}s ({total} lines){:30}",
-                started.elapsed().as_secs_f32(),
-                ""
-            );
-        }
-        core::Progress::Planning => println!("\nplanning"),
         core::Progress::PlanSkipped { ready } => {
             println!("\n{ready} slice(s) already ready, so planning was skipped.");
         }

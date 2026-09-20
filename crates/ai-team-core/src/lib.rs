@@ -16,9 +16,7 @@ mod daemon;
 mod db;
 mod diff;
 mod error;
-mod eve;
 mod gates;
-mod generate;
 mod guardrails;
 mod house;
 mod lsp;
@@ -48,12 +46,10 @@ pub use daemon::{once as tick_once, serve as serve_schedule};
 pub use db::{latest_schema, Db};
 pub use diff::{parse as parse_diff, patch_for, FileDiff, FileStatus, Hunk, Line, LineKind};
 pub use error::{Error, Result};
-pub use eve::{Disposition, Ingested, StreamEvent, StreamMeta, TerminalState};
 pub use gates::{all_passed, discover_gates, evidence, run_gates, Gate, GateKind, GateResult};
-pub use generate::{GeneratedFile, GeneratedProject, ModelExpression, ROOT_ROLE, VERIFIER_ROLE};
 pub use guardrails::{node_may_continue, run_may_continue, Exceeded, Fallout};
-// The Pi runtime (D20). Named rather than glob-exported so the eve types it will replace
-// stay distinguishable while both exist - `Disposition` is a name they share.
+pub use model::TerminalState;
+// The Pi runtime (D20): the only runtime there is.
 pub use house::{
     read as read_house_rules, read_for as read_house_rules_for, section as house_section, Rules,
 };
@@ -93,18 +89,15 @@ pub use review::{
     instructions_for, pending as pending_review, responsible, steerable, Audience, Pending,
     Submitted,
 };
-pub use roles::{preset, RolePreset, DEFAULT_LOCAL_MODEL, DEFAULT_ROSTER};
+pub use roles::{
+    preset, RolePreset, DEFAULT_LOCAL_MODEL, DEFAULT_ROSTER, ROOT_ROLE, VERIFIER_ROLE,
+};
 pub use schedule::{act, announcement, claim_due, notify, runnable, tick, Fired, TICK};
 pub use speak::{
     queue as queue_message, start_turn, target as speak_target, Reached, Target, Would,
 };
 pub use store::Store;
-pub use supervise::{
-    approvals_in, drive_turn, free_port, mint_token, outcome_status, reattach,
-    record_build_progress, run_turn, AgentInfo, Approval, ApprovalOption, BuildPhase,
-    BuildProgress, Dispatched, EveClient, EveEnv, EveProcess, Flow, Orchestration, Orchestrator,
-    ProgressLine, Supervisor, TurnOutcome,
-};
+pub use supervise::{outcome_status, Dispatched, Orchestration, Orchestrator, Rig, TurnOutcome};
 pub use terminal::{Chunk, Listed, Terminals};
 pub use today::{
     from_question, from_slice, from_store as today_from_store, rank as rank_today, Item, Urgency,
@@ -113,7 +106,7 @@ pub use update::{
     apply as apply_update, check as check_update, current_version, is_newer,
     method as install_method, Available, Method, Step,
 };
-pub use util::{normalise_remote, now, rfc3339_in, slugify, zone_matches};
+pub use util::{mint_token, normalise_remote, now, rfc3339_in, slugify, zone_matches};
 pub use workflow::{run as run_workflow, Progress, Request};
 
 /// The workspace version, compiled in.

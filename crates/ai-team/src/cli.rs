@@ -34,7 +34,7 @@ pub(crate) enum Command {
     /// Configure the team: its seats, their models, zones and tool rules.
     #[command(subcommand)]
     Team(TeamCommand),
-    /// Generate the eve project from the team rows.
+    /// Configure the seats on a team.
     #[command(subcommand)]
     Agents(AgentsCommand),
     /// Run one prompt through a supervised agent.
@@ -270,16 +270,8 @@ pub(crate) struct TeamEditArgs {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum AgentsCommand {
-    /// Rewrite the generated eve project from the current team rows.
-    Generate {
-        /// Which project. Slug, id, or part of the name.
-        #[arg(long, short)]
-        project: String,
-        /// List what would be written without touching the filesystem.
-        #[arg(long)]
-        dry_run: bool,
-    },
-    /// Print where a project's generated eve project lives.
+    /// Print where a project's Pi support files live: the guard, and one MCP config
+    /// per seat.
     Path {
         #[arg(long, short)]
         project: String,
@@ -337,7 +329,7 @@ pub(crate) enum AgentsCommand {
         /// The model name the provider knows it by.
         #[arg(long)]
         model: String,
-        /// Its context window in tokens. eve refuses to compile compaction without one.
+        /// Its context window in tokens, when the model needs it stated.
         #[arg(long)]
         context_window: Option<i64>,
     },

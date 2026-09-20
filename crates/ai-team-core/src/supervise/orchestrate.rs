@@ -16,8 +16,8 @@ use crate::machine::ModelRegistry;
 use crate::model::{EventKind, NewEvent, NodeStatus};
 use crate::neighbours::{git, Planner, Slice, Worktrees};
 use crate::store::Store;
-use crate::supervise::process::EveEnv;
-use crate::supervise::supervisor::{outcome_status, Supervisor, TurnOutcome};
+
+use crate::supervise::outcome::{outcome_status, TurnOutcome};
 use crate::ROOT_ROLE;
 
 /// What one dispatched slice did.
@@ -96,14 +96,13 @@ impl Rig {
 #[derive(Debug)]
 pub struct Orchestrator {
     pub db_path: PathBuf,
-    /// The generated eve project. Shared: built once, started once per lease.
+    /// Where the guard and the per-seat MCP configs live. Never a lease.
     pub project_dir: PathBuf,
     /// The checkout the plan and the worktree pool belong to.
     pub repo: PathBuf,
     pub run_id: i64,
     pub team_id: i64,
     pub registry: ModelRegistry,
-    pub required_env: Vec<&'static str>,
     pub parallel_width: usize,
     pub planner: Planner,
     pub worktrees: Worktrees,
@@ -118,15 +117,6 @@ impl Orchestrator {
             sources: self.registry.context_sources(),
             registry: self.registry.clone(),
         }
-    }
-
-    /// A supervisor for the one-off install and build, before any node starts.
-    ///
-    /// Bound to the repository rather than a lease: `eve build` evaluates every authored
-    /// module, so it needs a valid environment, but it is not doing a node's work and
-    /// must not hold a worktree while it runs.
-    pub fn builder(&self) -> Result<Supervisor> {
-        Ok(Supervisor::new(&self.project_dir, self.env(&self.repo)?))
     }
 
     /// Phase one: the orchestrator node reads the prompt and writes the plan.
@@ -360,16 +350,6 @@ impl Orchestrator {
                 agent_id: agent.id,
                 registry: self.registry.clone(),
             }))
-    }
-
-    fn env(&self, worktree: &Path) -> Result<EveEnv> {
-        Ok(EveEnv {
-            worktree: worktree.to_path_buf(),
-            token: crate::supervise::process::mint_token(),
-            provider_keys: self.registry.provider_environment(&self.required_env)?,
-            plan_root: Some(self.repo.clone()),
-            plan_slug: self.planner.plan_slug().map(ToString::to_string),
-        })
     }
 }
 

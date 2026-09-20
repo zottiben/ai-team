@@ -1,17 +1,15 @@
-//! `ait run` - one prompt, through a supervised eve process, into the database.
+//! `ait run` - one prompt, through a supervised Pi process, into the database.
 //!
 //! This is the single-node path: generate if needed, install, build, start, drive one
 //! turn, and report what it spent. It is what `--worktree` selects; without it, `run`
 //! hands over to `orchestrate`, which plans and then dispatches a node per slice.
 
-use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
-use std::time::Instant;
 
 use anyhow::{Context, Result};
 
 use ai_team_core as core;
-use ai_team_core::{EveEnv, EventKind, NodeStatus, RunStatus, RunTrigger, Store, Supervisor};
+use ai_team_core::{EventKind, NodeStatus, RunStatus, RunTrigger, Store};
 
 use crate::cli::RunArgs;
 
@@ -48,51 +46,27 @@ async fn single_node(args: RunArgs, worktree: PathBuf) -> Result<()> {
     let run = store.create_run(project.id, &prompt, RunTrigger::Manual)?;
     println!("run {} in {}", run.id, worktree.display());
 
-    // Always regenerate: the team rows are the source of truth, and a stale project is
-    // how an agent ends up running the model you changed an hour ago (D2).
-    let project_dir = store.agents_dir(&project.slug)?;
-    let generated = store.generate_project_for_machine(team_id, &project_dir, &registry)?;
-    generated.write()?;
-    println!("generated {} files", generated.files.len());
-    for resolution in &generated.resolutions {
-        if let Some(notice) = resolution.notice() {
-            println!("  fallback           {notice}");
-        }
-    }
+    // Nothing to generate and nothing to build (D20). The seat is a set of flags, and
+    // the only thing written is the guard and this seat's MCP config - outside the lease,
+    // because a guard a node can edit is not a guard.
+    let support = store.support_dir(&project.slug)?;
 
-    let env = EveEnv {
-        worktree: worktree.clone(),
-        token: core::mint_token(),
-        provider_keys: registry.provider_environment(&generated.required_env)?,
-        // A single-node run is not working a plan, so the plan tools stay unconfigured
-        // and fail closed rather than writing to whichever plan the cwd resolves to.
-        plan_root: None,
-        plan_slug: None,
-    };
-    let supervisor = Supervisor::new(&project_dir, env);
-
-    build(&supervisor, &mut store, run.id).await?;
-
-    // --- start ----------------------------------------------------------------------
-    let mut supervisor = supervisor;
-    let client = supervisor.start().await.context("starting the agent")?;
-    let port = supervisor.port().unwrap_or(0);
-    println!("  serving on 127.0.0.1:{port}");
-
-    let info = client.info().await?;
-    if info.discovery_errors > 0 {
-        anyhow::bail!("eve reported {} discovery error(s)", info.discovery_errors);
-    }
-    println!("  tools {:?}", info.tools);
-    println!("  subagents {:?}", info.subagents);
-
-    // --- drive ----------------------------------------------------------------------
     store.set_run_status(run.id, RunStatus::Running)?;
     let orchestrator = store
         .agents(team_id)?
         .into_iter()
         .find(|a| a.role == core::ROOT_ROLE)
         .context("the team has no orchestrator")?;
+    let team = store.team(team_id)?;
+    let roster = store.agents(team_id)?;
+    let (effective, resolutions) = registry.resolve_agents(std::slice::from_ref(&orchestrator))?;
+    for resolution in &resolutions {
+        if let Some(notice) = resolution.notice() {
+            println!("  fallback           {notice}");
+        }
+    }
+    let resolved = effective.first().unwrap_or(&orchestrator);
+
     let node = store.dispatch(run.id, orchestrator.id, None, &registry)?;
     store.attach_worktree(node.id, &worktree.to_string_lossy(), None, None)?;
     store.set_node_status(node.id, NodeStatus::Running)?;
@@ -104,8 +78,23 @@ async fn single_node(args: RunArgs, worktree: PathBuf) -> Result<()> {
     let house = core::read_house_rules_for(&worktree, &[]);
     let prompt = format!("{prompt}{}", core::house_section(&house));
 
-    let (session, outcome) = core::run_turn(&mut store, node.id, &client, &prompt, |event| {
-        if let ai_team_core::Disposition::Record(kind, summary) = event.classify() {
+    let turn = core::PiSeat {
+        agent: &orchestrator,
+        provider: resolved.provider,
+        model: &resolved.model,
+        worktree: &worktree,
+        support: &support,
+        sources: &registry.context_sources(),
+        // No plan behind a single-node run, so the planning tools stay absent rather than
+        // pointing at whichever plan the working directory resolves to.
+        plan: None,
+        team: &team,
+        roster: &roster,
+    }
+    .turn(prompt)?;
+
+    let (session, outcome) = core::run_pi_turn(&mut store, node.id, &turn, |event| {
+        if let ai_team_core::PiDisposition::Record(kind, summary) = event.classify() {
             // Only the events that become rows are printed, so the terminal shows what
             // the database will hold rather than the transport underneath it.
             println!(
@@ -119,8 +108,6 @@ async fn single_node(args: RunArgs, worktree: PathBuf) -> Result<()> {
     .context("driving the turn")?;
 
     settle(&mut store, run.id, node.id, &session, &outcome)?;
-
-    supervisor.stop().await?;
     Ok(())
 }
 
@@ -161,17 +148,6 @@ fn settle(
         node.usage.billable()
     );
 
-    if !outcome.approvals.is_empty() {
-        println!("\nparked, waiting on you:");
-        for approval in &outcome.approvals {
-            let options: Vec<&str> = approval.options.iter().map(|o| o.id.as_str()).collect();
-            println!(
-                "  [{}] {} {options:?}",
-                approval.request_id, approval.prompt
-            );
-        }
-    }
-
     let failures = store
         .node_events(node_run_id, 500)?
         .into_iter()
@@ -179,54 +155,6 @@ fn settle(
         .count();
     if failures > 0 {
         println!("\n{failures} failure event(s) - see `ait db open`");
-    }
-    Ok(())
-}
-
-/// Install, build, and report every line as it happens.
-///
-/// The bar is a spinner with a line count rather than a percentage: neither npm nor eve
-/// offers a total, and inventing one would be a progress bar that lies.
-pub(crate) async fn build(supervisor: &Supervisor, store: &mut Store, run_id: i64) -> Result<()> {
-    let started = Instant::now();
-    let mut lines = 0usize;
-    let mut build_events = Vec::new();
-    // A carriage return only redraws on a terminal. Piped to a file or a CI log it runs
-    // every line together into one unreadable smear, so the fallback is periodic.
-    let redraw = std::io::stdout().is_terminal();
-
-    supervisor
-        .install_and_build(|progress| {
-            lines += 1;
-            build_events.push(progress.clone());
-            if redraw {
-                print!(
-                    "\r  {} {:>5} lines  {:.0}s  {:<50}",
-                    progress.phase.as_str(),
-                    lines,
-                    started.elapsed().as_secs_f32(),
-                    truncate(&progress.line, 50)
-                );
-                let _ = std::io::stdout().flush();
-            } else if lines.is_multiple_of(25) {
-                println!("  {} {lines} lines", progress.phase.as_str());
-            }
-        })
-        .await
-        .context("building the agent project")?;
-    if redraw {
-        print!("\r");
-    }
-    println!(
-        "  built in {:.0}s ({lines} lines){:30}",
-        started.elapsed().as_secs_f32(),
-        ""
-    );
-
-    // Recorded after the fact rather than inside the callback: the callback cannot hold
-    // the store, and a build is not interesting enough to interleave transactions with.
-    for progress in &build_events {
-        core::record_build_progress(store, run_id, progress)?;
     }
     Ok(())
 }

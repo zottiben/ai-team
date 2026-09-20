@@ -15,7 +15,7 @@ use crate::machine::ModelRegistry;
 use crate::model::{NodeStatus, RunStatus, RunTrigger};
 use crate::neighbours::{Planner, Worktrees};
 use crate::store::Store;
-use crate::supervise::{BuildProgress, Orchestration, Orchestrator};
+use crate::supervise::{Orchestration, Orchestrator};
 
 /// What was asked for.
 #[derive(Debug, Clone, Default)]
@@ -39,13 +39,13 @@ pub enum Progress {
         run_id: i64,
         repo: PathBuf,
     },
-    Generated {
-        files: usize,
+    /// Which seats resolved to which provider, before any work starts.
+    ///
+    /// There is nothing generated any more (D20), but a denied preference falling back
+    /// to another provider (D13) is still something the operator should see before the
+    /// work begins rather than discover in the analytics afterwards.
+    Seated {
         fallbacks: Vec<String>,
-    },
-    Building(BuildProgress),
-    Built {
-        lines: usize,
     },
     /// The board already had work, so the prompt was not planned from.
     PlanSkipped {
@@ -267,15 +267,14 @@ where
     // The resolutions are still reported: a denied preference falling back to another
     // provider (D13) is something the operator should see before the work starts, not
     // discover in the analytics afterwards.
-    let project_dir = store.agents_dir(&project_slug)?;
+    let project_dir = store.support_dir(&project_slug)?;
     let agents: Vec<crate::Agent> = store
         .agents(team_id)?
         .into_iter()
         .filter(|agent| agent.enabled)
         .collect();
     let (_, resolutions) = registry.resolve_agents(&agents)?;
-    on_progress(Progress::Generated {
-        files: 0,
+    on_progress(Progress::Seated {
         fallbacks: resolutions
             .iter()
             .filter_map(crate::ModelResolution::notice)
@@ -289,7 +288,6 @@ where
         run_id: run.id,
         team_id,
         registry,
-        required_env: Vec::new(),
         parallel_width: width,
         planner,
         worktrees,

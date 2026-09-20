@@ -59,10 +59,8 @@ jobs:
       # are TypeScript, so they are the pieces whose macOS behaviour the author cannot
       # check by hand (D12). Node runs .ts directly with type stripping, so this needs no
       # install - and it runs on both legs, which is the entire point.
-      - name: authored guards (both platforms)
+      - name: the ai-team guard (both platforms)
         run: |
-          node --test crates/ai-team-core/src/generate/assets/lib/worktree.test.ts
-          node --test crates/ai-team-core/src/generate/assets/lib/irreversible.test.ts
           node --test crates/ai-team-core/src/pi/assets/worktree.test.ts
           node --test crates/ai-team-core/src/pi/assets/irreversible.test.ts
           node --test crates/ai-team-core/src/pi/assets/guard.test.ts

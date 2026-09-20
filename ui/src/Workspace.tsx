@@ -2,17 +2,15 @@ import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react"
 
 import { Board } from "./Board";
 import { Crew } from "./Crew";
-import { Approvals, Prompt, Seats } from "./Console";
+import { Prompt, Seats } from "./Console";
 import { Review } from "./Review";
 import { Roster } from "./Roster";
 import { Source } from "./Source";
 import { Talk } from "./Talk";
 import {
-  approvals as fetchApprovals,
   run as fetchRun,
   runEvents as fetchRunEvents,
   runs as fetchRuns,
-  type Approval,
   type Member,
   type Project,
   type Run,
@@ -77,7 +75,6 @@ export function Workspace({
   const [selected, setSelected] = useState<number | null>(null);
   const [detail, setDetail] = useState<RunDetail | null>(null);
   const [events, setEvents] = useState<RunEvent[]>([]);
-  const [pending, setPending] = useState<Approval[]>([]);
   const [expanded, setExpanded] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   // Talking to a seat and reading a run are both docks, and only one can be open: two
@@ -99,7 +96,6 @@ export function Workspace({
     if (selected === null) {
       setDetail(null);
       setEvents([]);
-      setPending([]);
       return;
     }
     try {
@@ -108,7 +104,6 @@ export function Workspace({
       setEvents(log);
       // Supplementary: a bad approvals response must not blank a dock that could render
       // everything else (M3-S12).
-      setPending(await fetchApprovals(selected).catch(() => []));
     } catch (error: unknown) {
       setProblem(error instanceof Error ? error.message : String(error));
     }
@@ -246,7 +241,6 @@ export function Workspace({
           </span>
           <p className="muted">{detail.prompt}</p>
 
-          <Approvals run={detail} pending={pending} onAnswered={() => void refreshSelected()} />
 
           <span className="dock__title">Team</span>
           <Seats nodes={detail.nodes} />

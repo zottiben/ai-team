@@ -126,7 +126,7 @@ where
     // batches marked the turn terminal. Recording it as failed here is what stops a
     // truncated turn being read as a clean one.
     if outcome.failed || !outcome.settled {
-        summary.terminal = Some(crate::eve::TerminalState::Failed);
+        summary.terminal = Some(crate::model::TerminalState::Failed);
     }
     Ok((session, summary))
 }

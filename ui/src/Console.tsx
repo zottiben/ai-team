@@ -1,6 +1,6 @@
 import { useState } from "react";
 
-import { answer, startRun, type Approval, type NodeRun, type RunDetail } from "./api";
+import { startRun, type NodeRun } from "./api";
 
 /**
  * The prompt that starts a workflow, and the run beside it.
@@ -109,66 +109,6 @@ export function Seats({ nodes }: { nodes: NodeRun[] }) {
           {node.blocked_reason !== null && <span className="error">{node.blocked_reason}</span>}
         </div>
       ))}
-    </div>
-  );
-}
-
-/**
- * What a parked node asked, and the buttons that answer it.
- *
- * Inline rather than behind a notification: a run that is waiting is doing nothing, and
- * the cost of not noticing is the whole run sitting idle.
- */
-export function Approvals({
-  run,
-  pending,
-  onAnswered,
-}: {
-  run: RunDetail;
-  pending: Approval[];
-  onAnswered: () => void;
-}) {
-  const [problem, setProblem] = useState<string | null>(null);
-
-  if (pending.length === 0) return null;
-
-  const respond = async (approval: Approval, choice: string) => {
-    setProblem(null);
-    try {
-      await answer(run.id, {
-        // Fall back to the run's first node: an approval recorded without one still has
-        // to be answerable, and a run with a single node is the common case.
-        node: approval.node_run_id ?? run.nodes[0]?.id ?? 0,
-        request: approval.payload?.request_id ?? "",
-        chose: choice,
-      });
-      onAnswered();
-    } catch (error: unknown) {
-      setProblem(error instanceof Error ? error.message : String(error));
-    }
-  };
-
-  return (
-    <div className="approvals">
-      <span className="dock__title">Waiting on you</span>
-      {pending.map((approval) => (
-        <div key={approval.id} className="card">
-          <span>{approval.summary}</span>
-          <div className="card__row">
-            {(approval.payload?.options ?? [{ id: "approve", label: "Approve" }]).map((option) => (
-              <button
-                key={option.id}
-                type="button"
-                className="button button--primary"
-                onClick={() => void respond(approval, option.id)}
-              >
-                {option.label}
-              </button>
-            ))}
-          </div>
-        </div>
-      ))}
-      {problem !== null && <span className="error">{problem}</span>}
     </div>
   );
 }

@@ -9,7 +9,7 @@
 //! This has to be explicit because a seat's own settings layer does not cover it. A
 //! Claude-bridged seat reads the repository's `project` settings and its CLAUDE.md files
 //! (D19), but AGENTS.md is not a Claude convention and is not among them - and a local,
-//! GLM or ChatGPT seat is a plain eve node with no settings layer at all. House rules are
+//! GLM or ChatGPT seat has no settings layer at all. House rules are
 //! the one channel every seat has, whatever it runs on.
 //!
 //! Read from the leased worktree rather than the main checkout, so a branch that changes

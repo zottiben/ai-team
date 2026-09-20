@@ -675,3 +675,14 @@ mod tests {
         assert_eq!(usage.billable(), 4_186);
     }
 }
+
+/// How a turn ended.
+///
+/// A fact about the turn rather than about the runtime that took it, which is why it
+/// outlived the module it was born in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TerminalState {
+    Completed,
+    Failed,
+    Cancelled,
+}

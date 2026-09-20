@@ -36,8 +36,8 @@ ait ui        # open the window in a browser
 ### The team
 
 `ait init` seeds six seats - an orchestrator, a planner, two makers and two checkers.
-The team is rows in the database, and the eve project under `.ai-team/agents/` is
-generated from them, so this is where a team is actually changed:
+The team is rows in the database - a seat is a set of flags on a Pi invocation, so
+changing one takes effect on the next turn and this is where it is done:
 
 ```sh
 ait team show                                  # guardrails and every seat
@@ -114,13 +114,13 @@ change routing: a transient outage must not silently send work to another accoun
 
 The four allowed paths are deliberately specific:
 
-- `claude` — the OAuthed Claude Code CLI, bridged into eve with only the seat's authored tools.
-- `openai` — eve's `chatgpt()` subscription broker, never its metered `openai()` helper.
+- `claude` — the OAuthed Claude Code CLI, through Pi's `claude-subscription` provider.
+- `openai` — the ChatGPT subscription, through Pi's `openai-codex` provider, never a metered key.
 - `zai` — a GLM Coding Plan token in `AI_TEAM_ZAI_KEY`, sent only to the coding-plan URL.
 - `local` — host, port, and gateway key read from ai-local's own config.
 
 The supervisor removes inherited metered model keys and Claude cloud-routing switches
-before npm/eve starts; an exported shell variable cannot silently change one of these paths.
+before Pi starts; an exported shell variable cannot silently change one of these paths.
 
 `ait doctor` reports each as `allowed`, `denied`, or `unreachable`. The profile is checked
 again when every node is dispatched, including scheduled runs; hiding a denied provider

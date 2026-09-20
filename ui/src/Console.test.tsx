@@ -2,8 +2,8 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, it, vi } from "vitest";
 
-import { Approvals, Prompt, Seats } from "./Console";
-import type { Approval, NodeRun, RunDetail } from "./api";
+import { Prompt, Seats } from "./Console";
+import type { NodeRun } from "./api";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -84,36 +84,4 @@ it("the org graph says who is working and on what", async () => {
 it("says plainly when nothing has been dispatched", () => {
   render(<Seats nodes={[]} />);
   expect(screen.getByText(/No seat has been dispatched/)).toBeDefined();
-});
-
-it("answering a parked node sends the option it offered", async () => {
-  const user = userEvent.setup();
-  const calls = stubPost();
-  const onAnswered = vi.fn();
-
-  const run = { id: 7, nodes: [NODE] } as unknown as RunDetail;
-  const pending: Approval[] = [
-    {
-      id: 11,
-      node_run_id: 3,
-      summary: "may I commit this?",
-      payload: { request_id: "req_1", options: [{ id: "yes", label: "Approve" }] },
-    },
-  ];
-
-  render(<Approvals run={run} pending={pending} onAnswered={onAnswered} />);
-  expect(screen.getByText("may I commit this?")).toBeDefined();
-
-  await user.click(screen.getByText("Approve"));
-  await waitFor(() => expect(onAnswered).toHaveBeenCalled());
-
-  expect(calls[0]?.url).toBe("/api/runs/7/approvals");
-  // The node, not just the run: the question belongs to one turn.
-  expect(calls[0]?.body).toEqual({ node: 3, request: "req_1", chose: "yes" });
-});
-
-it("shows nothing at all when nobody is waiting", () => {
-  const run = { id: 7, nodes: [] } as unknown as RunDetail;
-  const { container } = render(<Approvals run={run} pending={[]} onAnswered={vi.fn()} />);
-  expect(container.firstChild).toBeNull();
 });

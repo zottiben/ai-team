@@ -144,3 +144,13 @@ impl Store {
         })
     }
 }
+
+impl Store {
+    /// Where a project's Pi support files live: the guard, and one MCP config per seat.
+    ///
+    /// Deliberately outside every lease. A guard or an allow-list a node can edit is not
+    /// one, and a lease is precisely the directory a node may write to.
+    pub fn support_dir(&self, project_slug: &str) -> Result<std::path::PathBuf> {
+        Ok(crate::data_dir()?.join("seats").join(project_slug))
+    }
+}

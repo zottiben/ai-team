@@ -1,21 +1,12 @@
-//! Running eve, and driving it.
+//! Driving a run: what to dispatch, to whom, and what to make of the result.
 //!
-//! Layered on purpose: `http` knows about sockets and framing, `client` knows about
-//! `/eve/v1`, `process` knows about children and ports, and `supervisor` knows the
-//! order they go in. Only the top layer touches the store.
+//! Everything about *how* a turn is taken lives in `pi` (D20). What is left here is the
+//! part that was never about a runtime - routing a slice to the seat whose zone owns it,
+//! leasing a worktree for it, running the project's own gates, asking the verifier, and
+//! deciding what the answer makes of the node.
 
-mod client;
-mod http;
 mod orchestrate;
-mod process;
-mod supervisor;
+mod outcome;
 
-pub use client::{approvals_in, AgentInfo, Approval, ApprovalOption, EveClient};
-pub use orchestrate::{Dispatched, Orchestration, Orchestrator};
-pub use process::{free_port, mint_token, EveEnv, EveProcess, ProgressLine};
-pub use supervisor::{
-    drive_turn, outcome_status, reattach, record_build_progress, run_turn, BuildPhase,
-    BuildProgress, Supervisor, TurnOutcome,
-};
-
-pub use http::Flow;
+pub use orchestrate::{Dispatched, Orchestration, Orchestrator, Rig};
+pub use outcome::{outcome_status, TurnOutcome};

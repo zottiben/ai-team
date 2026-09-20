@@ -6,7 +6,7 @@ on their own machine.
 
 **Stack:** Rust 1.98.1 (pinned), edition 2021, workspace shaped like `ai-planner`.
 React 19 + Vite 8 + TypeScript, built to static assets and embedded in the binary.
-Agents run as Vercel **eve** nodes (Node 24+).
+Agents run as **Pi** processes (`pi`, with the operator's own extensions).
 
 **Platforms — macOS is the target, Linux is the dev machine (D12).** ai-team is used daily
 on macOS; it is built on Linux. Both must work, and where they disagree macOS wins. The
@@ -67,7 +67,7 @@ isn't covered, ask and record it with `aip decision add`.
 
 ## Hard rules
 
-Nineteen decisions are recorded in the plan (`aip decision ls`). These thirteen are the ones
+Twenty-one decisions are recorded in the plan (`aip decision ls`). These thirteen are the ones
 an agent will otherwise get wrong, so they are repeated here.
 
 ### 1. Subscription-backed models only (D8)
@@ -77,7 +77,7 @@ forbids some providers outright. Never introduce a metered API key path.
 | Provider | Auth |
 | --- | --- |
 | Claude | Claude subscription, via the OAuthed Claude Code CLI |
-| OpenAI | ChatGPT subscription, via eve's `chatgpt()` helper and `/login` |
+| OpenAI | ChatGPT subscription, via Pi's `openai-codex` provider |
 | z.ai GLM | GLM Coding Plan (flat), openai-compatible at `https://api.z.ai/api/coding/paas/v4` |
 | local | free, openai-compatible at the ailocal gateway on `127.0.0.1:8081` |
 
@@ -86,44 +86,41 @@ enforced **at dispatch**, not only in the UI picker — a scheduled unattended r
 able to reach a denied provider. `ait init` creates the local-only default. Its `fallback`
 array is a total ranking; a denied preference uses the first allowed, implemented provider
 and records a Note event. Do not fall back on a transient health failure: that would silently
-send work to a different account. Generated npm/eve processes must also remove inherited
-metered credentials and cloud-Claude routing flags; not emitting `ANTHROPIC_API_KEY` is
+send work to a different account. Every child process must also remove inherited metered
+credentials and cloud-Claude routing flags; not emitting `ANTHROPIC_API_KEY` is
 insufficient if the operator's shell already exported it.
 
-### 2. One runtime: eve (D7)
-Every agent is an eve node. There is no second executor and no Pi. A Claude-subscription
-agent is an eve node whose model is bridged:
+### 2. One runtime: Pi (D20)
+Every agent is a `pi --mode json --print` child process, one per leased worktree. There
+is no project to generate, no npm install, no build, no port and no token: stdout is the
+stream, and a turn ends when the process does.
 
-```ts
-model: claudeCode('sonnet', {
-  mcpServers: { eve: createAiSdkMcpServer('eve', tools) },
-  allowedTools: ['mcp__eve__bash', 'mcp__eve__read_file'],
-  cwd: process.env.AI_TEAM_WORKTREE,  // everything below resolves relative to this
-  settingSources: ['project'],        // the repo's config, never 'user' or 'local' (D19)
-  skills: 'all',
-  tools: ['Skill'],                   // NOT [] — that disables Skill along with the rest
-})
+```rust
+PiTurn { worktree, prompt, provider, model, thinking, exclude_tools, mcp_config,
+         session_id, guard, instructions }
 ```
 
-This only works because we generate the eve project, so the generated `agent.ts` can import
-the very tool modules it bridges. eve's *built-in* tools have no importable `execute` and
-cannot be bridged — disable them on these nodes.
+A seat is that struct. Changing its model is an argument, not a regeneration - which is
+most of what D20 bought. Four things cost a build each to learn:
 
-**The repository's own tooling reaches the seat, the human's does not (D19).** Its
-`.mcp.json` servers, its skills, its hooks and its CLAUDE.md files all apply, because they
-are checked in and already govern that code. `settingSources` is `['project']` and must
-never gain `'user'` or `'local'` — that is the home config D7 excluded, and the line
-between the two is the whole decision. Two traps, both silent: nothing resolves without
-`cwd` on the lease, and `tools: []` disables `Skill` along with the filesystem tools, so a
-repo full of skills produces an agent that reports having none. `canUseTool` admits
-project-declared tools but excludes namespaces that govern themselves — the bridge, and
-every context source, whose read-only allow-list a blanket `mcp__*` rule would undo (D15).
+- **`claude-subscription` and `anthropic` sit side by side in Pi's catalogue** and only
+  the first is the flat-rate subscription D8 protects. The mapping is a match on the
+  `Provider` enum, never a string.
+- **Instructions ride in the prompt, not `--append-system-prompt`.** That flag never
+  reaches the model on `claude-subscription` - the Claude Code CLI owns its system
+  prompt. A seat with no instructions is a coding assistant with a `bash` tool, and the
+  orchestrator will cheerfully write the code instead of the plan.
+- **A turn ends at `agent_settled`, not `agent_end`** - the latter carries `willRetry`,
+  so stopping there records a retry's first attempt as the whole turn.
+- **Pi echoes the prompt back as a `role: "user"` message.** Reading assistant text
+  without checking the role lets a prompt containing `VERDICT: pass` verify itself.
 
-None of this reaches a local, GLM or ChatGPT seat: a plain eve node has no settings layer,
-and eve cannot run stdio MCP servers (D4). Those seats get house rules and nothing else.
+Sessions resume by id, which is how a repair attempt keeps the conversation that produced
+the work it is repairing.
 
-### 3. The database is the team; the eve project is generated (D2)
-Never hand-edit anything under `.ai-team/agents/`. Change the team rows and regenerate.
+### 3. The database is the team (D2)
+A seat is rows, resolved into flags at dispatch. `~/.ai-team/seats/<project>/` holds only
+the guard and one MCP config per seat, and is written from those rows - never edited.
 
 `ait team` and `ait agents` are that edit surface; `--project` is optional because
 `Store::project_at` resolves the checkout you are standing in. Two traps the schema sets:
@@ -145,59 +142,63 @@ Also: a retry is a **new `node_run` row** (attempt + 1), never an edit. The firs
 evidence is what analytics is made of. And `run.plan_slug` / `node_run.slice_key` are
 *references* into ai-planner — never copy a plan or slice into this database (D4).
 
-### 4. Agents edit leased worktrees, not eve's sandbox (D3)
-Authored `bash`/`read_file`/`write_file`/`edit_file` tools act on a worktree leased with
-`awt get --lease`. eve's sandbox is for genuinely untrusted execution only.
+### 4. The guard is what holds a seat to its lease (D3, D20)
+Pi arrives with `bash`, `read`, `write` and `edit` already built, and they answer to
+nobody. `pi/assets/guard.ts` is loaded with `--extension` and refuses, through
+`pi.on("tool_call")`, anything that resolves outside `$AI_TEAM_WORKTREE` or that
+publishes - `git push`, `npm`/`cargo publish`, `gh pr merge`, releases, tags.
 
-**One eve process per leased worktree (D10).** eve has no way for a client to attach
-per-session metadata that reaches a tool, so the worktree is bound at the process level
-via `$AI_TEAM_WORKTREE`. Isolation is an OS fact, not a check.
+**One Pi process per leased worktree (D10),** with `cwd` on the lease and the root named
+explicitly in the environment: a rule keyed on the working directory is a rule a `cd`
+changes. The guard is installed *outside* the lease, because a guard a node can edit is
+not a guard.
 
-The guard lives in exactly one file, `generate/assets/lib/worktree.ts`, and it is
-`node --test`ed on **both** CI legs because its macOS behaviour is what the author cannot
-see (D12). `read_only` seats simply don't get the write tools generated — but they do get
-`bash`, so the guarantee is "cannot edit source through its tools", not "cannot write a
-byte".
+It is not a security boundary and the file says so. A model with `bash` can spell
+anything. What contains a node is that the worktree is disposable, the branch is a draft,
+and nothing in the process is authenticated to publish.
 
-Four things about eve that cost a build each to learn:
-- `defaultTools: false` removes the whole optional default set. `disableTool()` at a slot
-  with no framework default **underneath** it is a build error — to withhold a tool, omit
-  the file.
-- `eve build` **evaluates** every authored module, so a module-scope `throw` for a missing
-  env var fails the build on any machine that isn't running an agent. Check at request time.
-- eve refuses to compile compaction for a model it cannot size, and it can only size AI
-  Gateway IDs — which D8 guarantees we never use. Every agent needs
-  `modelContextWindowTokens` (`agent.context_window`, falling back to 32k).
-- `eve build` succeeding does **not** mean it typechecks. Run `npx tsc --noEmit` too.
+`read_only` seats pass `--exclude-tools write,edit` and keep `bash`, so the guarantee is
+"cannot edit source through its tools", not "cannot write a byte" - the verifier has to
+be able to run the project's checks.
+
+The guard is `node --test`ed on **both** CI legs, because its macOS behaviour is what the
+author cannot see (D12): `/tmp` is a symlink, APFS folds case, and a path that does not
+exist yet is still a path `write` is about to create.
 
 ### 5. Never vendor the neighbours (D4)
 `ai-planner` (MCP + HTTP), `ai-worktree` (`awt` CLI), `file-sql` (MCP), ClickUp and Figma
 (MCP, **read-only**) are used over their own interfaces. A change that makes any of them
 impossible to run standalone is the wrong change.
 
-`aip serve` and file-sql speak MCP over **stdio**, and `defineMcpClientConnection` requires
-an HTTP url — so those two are reached by a **generated tool that shells out to the
-neighbour's own CLI**: `agent/lib/plan.ts` drives `aip`, and Rust drives `awt` and `git`
-from `neighbours/`. Adding a neighbour means adding a wrapper, never a dependency.
+Pi runs **stdio** MCP servers, so a neighbour that publishes one is reached through it
+rather than through a wrapper: `aip serve --root <checkout>` is the planning seats' MCP
+server, with `--root` deliberately the checkout and not the lease - a plan written inside
+a copy is a plan nobody finds again. `awt` and `git` are still driven from `neighbours/`,
+because they publish a CLI and not a server.
 
-ClickUp and Figma are different (D15): both presets are **HTTP** MCP endpoints, so they
-*are* real connections. See rule 10.
+Which ai-planner tools a seat gets is an allow-list, the same mechanism as rule 10: a
+maker reads the board and records notes, a planning seat shapes it, nobody gets
+`delete_plan`. A maker that can add slices can give itself work.
 
-### 6. Supervision talks HTTP by hand
-`supervise/http.rs` is a small HTTP/1.1 client, not a dependency. Everything it talks to
-is a process ai-team started on `127.0.0.1`, so a TLS stack and a connection pool would
-be cost with no benefit — but **chunked framing has to be right**: eve streams NDJSON and
-a chunk boundary lands mid-line constantly, so only whole lines are handed on.
+### 6. Supervision is a pipe, not a protocol
+A turn is a child process and its stdout is NDJSON, so there is no HTTP client, no
+framing and no readiness wait. Two things carried over from the eve supervisor because
+both were learned rather than designed:
 
-One eve process per leased worktree means one `EveProcess`. `npx` is only a wrapper, so
-`kill_on_drop` on its direct child is insufficient — start it in its own Unix process group
-and signal the **group**, or the Node server survives. Read both child pipes concurrently:
-draining stdout first deadlocks the moment npm fills stderr.
+- **Read both pipes concurrently.** Draining stdout first deadlocks the moment the child
+  fills the stderr buffer, which on a failing turn is exactly when it happens.
+- **Signal the process group.** Pi starts MCP servers and tool subprocesses; killing the
+  direct child leaves them running.
+
+Ingest is batched small and written as the turn runs, because `ait ui` and `ait run` are
+separate processes and the window learns anything happened by watching `MAX(event.id)`
+move. A turn that records nothing until it ends is a crew panel that says "starting" for
+four minutes.
 
 ### 7. The orchestrator plans; Rust leases and dispatches (D14)
 `ait run` without `--worktree` runs the orchestrator seat to write an ai-planner plan,
 then **Rust** reads the ready slices back, leases a worktree each with `awt`, and starts
-one eve process per lease. An agent shelling out to `awt` and spawning sibling agents
+one Pi process per lease. An agent shelling out to `awt` and spawning sibling agents
 would be the supervisor's job done with no budget or failure isolation around it.
 
 ai-planner has **no dependency edges** — only `ord`, `status`, and a claim scoped to a
@@ -226,7 +227,7 @@ substantive, wired** - and answers `VERDICT: pass|reject`. Reading it **fails cl
 anything that is not an explicit pass is a rejection.
 
 Two rules the loop broke once each. A model's answer is captured from the **stream**
-(`StreamEvent::assistant_message`), never by filtering `Note` rows back out of the event
+(`PiEvent::assistant_message`), never by filtering `Note` rows back out of the event
 table - ai-team's own dispatch notices live in that column and parsed as a verdict. And a
 repair is a **retry**, so every attempt dispatches its own `node_run` row: reusing one
 loses the earlier evidence and hands the next turn a finished session's cursor.
@@ -244,36 +245,32 @@ reason, never to `ready`, which would offer the next run the same slice with no 
 why it failed.
 
 **The gates run inside the lease and leave build output there.** ai-team writes `target/`,
-`node_modules/`, `dist/`, `.output/` and `.eve/` into `.git/info/exclude` for that lease,
+`node_modules/`, `dist/` and `.output/` into `.git/info/exclude` for that lease,
 and commits only the paths captured *before* the gates ran. Two traps: `git status
 --porcelain` writes `XY path`, so trimming the front eats an unstaged file's leading space
 and every path starts a character late; and the gates are repo-wide, so a violation
 anywhere rejects a node whose zone does not contain it.
 
-Publishing is not a node's call. `generate/assets/lib/irreversible.ts` refuses `git push`,
-`npm/cargo publish`, `gh pr merge`, releases and tags from the generated `bash`, and is
-`node --test`ed on **both** CI legs alongside the worktree guard.
+Publishing is not a node's call - see rule 4. The guard refuses it, on both CI legs.
 
 ### 10. Context sources are read-only, by allow-list (D9, D15)
-ClickUp and Figma come in as eve connections, scoped per seat — the ticket reaches the
-seats that decide what the work is, the designs reach the seat whose zone owns the UI, and
-nobody else pays the prompt for them. `~/.config/ai-team/machine.toml` has a `[context]`
-block that is **fail-closed**: unstated means denied.
+ClickUp and Figma reach a seat through its generated MCP config, scoped per seat — the
+ticket reaches the seats that decide what the work is, the designs reach the seat whose
+zone owns the UI, and nobody else pays the prompt for them.
+`~/.config/ai-team/machine.toml` has a `[context]` block that is **fail-closed**:
+unstated means denied.
 
 Read-only is **enforced, not asked for**. Both servers expose writes — ClickUp
 create/update/delete task, and Figma's `use_figma`, which creates, edits and deletes
-despite reading like a read — so the connection carries an `allow` list. Never a `block`
-list: a wrong name on an allow-list costs a capability, a missed name on a block-list
-hands over a write.
+despite reading like a read — so each server carries an `includeTools` list. Never
+`excludeTools`: a wrong name on an allow-list costs a capability, a missed name on a
+block-list hands over a write. It filters discovery as well as calls, which is the
+property that matters — a tool the model can see is one it keeps trying.
 
-Two things that cost a build each:
-- A connection is only reachable through `connection_search`, a **framework default**. So
-  a seat with a connection needs `defaultTools: true`; the authored tools still win at
-  their own slots, and `web_fetch`/`web_search` are disabled there because a fetched page
-  is untrusted text entering the context.
-- A **Claude-bridged seat cannot use eve connections at all** — the bridge only exposes
-  what is handed to `createAiSdkMcpServer`. Those seats get the same HTTP endpoints
-  through the Agent SDK's own `mcpServers`, with the same allow-list.
+The repository's own `.mcp.json` reaches every seat for free, because Pi's adapter merges
+what it discovers from the lease with what ai-team supplies rather than replacing one
+with the other (D19). Checked, not assumed: the other way round would have silently cost
+a repo its own servers.
 
 Ingested ticket text is **data, not instructions**. It is somebody else's writing arriving
 in a prompt, and it is exactly the shape prompt injection takes.
@@ -293,14 +290,15 @@ only in `ui/src/tokens.css`. A raw colour in a component is a component that sta
 when the window goes light — enforced by a test, because there is no browser on the
 machine this is built on and nobody can simply look.
 
-### 12. Ingest eve's stream exactly once
-`event.eve_event_id` is eve's `meta.id` under a partial unique index, and ingest uses
-`INSERT OR IGNORE` — so a reconnect or a full rewind is free. Three traps that real turns
-exposed and fixtures did not: token and turn **counters** must only accumulate for rows
-that were genuinely new; `node_run.stream_cursor` is `from_index + batch.len()`, never
-`cursor + batch.len()` (that is right for a resume and silently wrong for a rewind); and AI
-SDK v7's `inputTokens` is a total whose `cacheReadTokens` / `cacheWriteTokens` are subsets,
-so subtract those subsets before storing the uncached input column.
+### 12. Ingest the stream exactly once
+Pi does not label its events, so `event.eve_event_id` holds `<session>:<index>` under a
+partial unique index and ingest uses `INSERT OR IGNORE` — so a replayed session start is
+free, and a retry's evidence survives because a second session's event 0 is not the
+first's. Three traps that real turns exposed and fixtures did not: token and turn
+**counters** must only accumulate for rows that were genuinely new; `node_run.stream_cursor`
+is `from_index + batch.len()`, never `cursor + batch.len()`; and `input` is a total whose
+`cacheRead` / `cacheWrite` are subsets, so subtract them before storing the uncached
+input column.
 
 ### 13. House rules are how every seat hears the repo (M3-S25, M8-S36)
 `house.rs` reads what a checkout already carries — `AGENTS.md`, `CLAUDE.md`,

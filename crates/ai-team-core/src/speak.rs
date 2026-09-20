@@ -2,14 +2,15 @@
 //!
 //! Two quite different acts, and the whole design is about not letting them look like one.
 //!
-//! A seat **mid-turn** already has an eve process and a session, so a message lands in the
-//! middle of what it is doing - the same machinery a submitted review uses to steer the
-//! node that wrote the code (M3-S15). That is immediate, and it is an interruption.
+//! A seat **mid-turn** is a process reading one prompt, so a message has nowhere to land
+//! inside what it is doing. It is kept and given to that seat next, on the same session,
+//! so it arrives with the conversation behind it (D21) - the same machinery a submitted
+//! review uses to steer the node that wrote the code (M3-S15). That is not immediate, and
+//! nothing is lost.
 //!
-//! A seat that is **idle** has no process. Reaching it means starting a turn: generating
-//! the project, leasing a worktree, and driving one turn - which is `ait run --worktree`
-//! for one agent rather than for the orchestrator. That takes minutes and it is *starting
-//! work*, not interrupting it.
+//! A seat that is **idle** has no turn to wait for. Reaching it means leasing a worktree
+//! and driving one - which is `ait run --worktree` for one agent rather than for the
+//! orchestrator. That takes minutes and it is *starting work*, not a remark.
 //!
 //! A single box that silently did either would be a surprise waiting to happen, so which
 //! one is about to happen is answerable before anybody presses send.
@@ -187,7 +188,7 @@ pub async fn start_turn(agent_id: i64, message: String) -> Result<i64> {
 
     // Where the guard and this seat's MCP config live. Never the lease: a guard a node can
     // edit is not a guard.
-    let support = store.agents_dir(&project_slug)?;
+    let support = store.support_dir(&project_slug)?;
 
     // One Pi process per leased worktree (D10). A lease is borrowed - `awt return` cleans
     // it - so nothing here expects the directory to survive.

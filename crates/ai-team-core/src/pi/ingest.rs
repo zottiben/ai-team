@@ -14,7 +14,7 @@ use rusqlite::params;
 
 use super::event::{Disposition, PiEvent};
 use crate::error::Result;
-use crate::eve::TerminalState;
+use crate::model::TerminalState;
 use crate::model::Usage;
 use crate::store::Store;
 use crate::util::now;

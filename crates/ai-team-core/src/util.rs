@@ -164,6 +164,26 @@ fn matches_from(p: &[char], mut pi: usize, t: &[char], mut ti: usize) -> bool {
     ti == t.len()
 }
 
+/// A fresh secret for a loopback surface.
+///
+/// Minted per process and never written down: the only thing it protects is a server on
+/// 127.0.0.1 that lives as long as that process, and a secret on disk is a secret that
+/// outlives what it protects.
+pub fn mint_token() -> String {
+    // Two sources, so neither being weak on its own matters: the OS clock at nanosecond
+    // resolution, and the address of a fresh heap allocation.
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or_default();
+    let boxed = Box::new(0u8);
+    let addr = std::ptr::from_ref::<u8>(&*boxed) as usize;
+    let pid = u128::from(std::process::id());
+    let mixed = nanos ^ (addr as u128).rotate_left(64) ^ pid.rotate_left(32);
+    format!("{mixed:032x}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::zone_specificity;

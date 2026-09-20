@@ -13,8 +13,8 @@
 
 use std::fmt::Write as _;
 
-use crate::generate::ROOT_ROLE;
 use crate::model::{Agent, Team};
+use crate::roles::ROOT_ROLE;
 
 /// The system prompt for one seat.
 ///
@@ -86,10 +86,16 @@ fn planning_section(out: &mut String, roster: &[Agent]) {
          first with `get_plan` and `list_slices`: it is a board that outlives this \
          conversation, so add only what is genuinely missing. A slice that repeats one \
          already there gives somebody the same work twice.\n\n\
-         Add work with `add_slice`. **Every slice must name the paths it touches.** That \
-         is what routes it: a slice naming no path this team owns cannot be given to \
-         anybody and is reported back to the human undone. Keep each slice small enough \
-         to demo on its own.\n\n",
+         Add work with `add_slice`. **The last line of every slice's scope must be a \
+         `Touches:` line naming the paths it touches**, comma-separated, like this:\n\n\
+         ```\n\
+         Touches: src/lib.rs, crates/**\n\
+         ```\n\n\
+         That exact line is what routes the slice - ai-team reads it, finds the seat \
+         whose zone owns those paths, and gives it the work. Describing the paths in \
+         prose instead does not route anything: the slice is reported back to the human \
+         undone, which is the single most common way a plan produces no work. Keep each \
+         slice small enough to demo on its own.\n\n",
     );
 
     if roster.is_empty() {
@@ -210,7 +216,11 @@ mod tests {
             "{prompt}"
         );
         assert!(prompt.contains("add_slice"), "{prompt}");
-        assert!(prompt.contains("name the paths it touches"), "{prompt}");
+        // Mechanical, not a vague ask: the MCP `add_slice` tool has no touches
+        // parameter, so the trailer has to be written into the scope text - and a model
+        // told only to "name the paths" writes them in prose, which routes nothing.
+        assert!(prompt.contains("`Touches:` line"), "{prompt}");
+        assert!(prompt.contains("Touches: src/lib.rs"), "{prompt}");
     }
 
     #[test]

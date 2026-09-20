@@ -1,7 +1,7 @@
 //! `ait team` - the roster itself.
 //!
 //! The team is the database (D2), so this is where a team is actually changed. Every
-//! command here leaves the generated eve project stale on purpose: regenerating is
+//! command here changes rows, which the next turn reads: a seat is resolved at dispatch,
 //! `ait agents generate`, and `ait run` does it before a turn, so an edit never silently
 //! half-applies to a project that is mid-run.
 
@@ -125,7 +125,7 @@ fn clone(
         }
     }
     println!(
-        "`ait agents generate -p {}` writes its eve project.",
+        "The next `ait run -p {}` picks this up - a seat is resolved at dispatch.",
         destination.slug
     );
     Ok(())

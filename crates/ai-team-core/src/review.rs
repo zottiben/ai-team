@@ -21,7 +21,6 @@ use crate::error::{Error, Result};
 use crate::model::{CommentStatus, Review, ReviewComment};
 use crate::neighbours::git;
 use crate::store::Store;
-use crate::supervise::EveClient;
 use crate::FileDiff;
 
 /// What submitting a review did, so the surface can say so rather than guess.
@@ -255,17 +254,22 @@ pub fn pending(store: &Store, review_id: i64) -> Result<Pending> {
     })
 }
 
-/// The agent that wrote this code, if it is still listening.
+/// The seat that wrote this code, if it is still at work.
 ///
-/// Three recorded columns and a round trip. The columns alone only say a process *was*
-/// started, and the ordinary case for a review is that it finished hours ago.
-async fn listening(node: Option<crate::model::NodeRun>) -> Option<(EveClient, String)> {
+/// No round trip any more, and none needed. On eve this had to ask a live process, because
+/// a message that missed one vanished. A correction is queued now (D21), so the question
+/// is only whether that seat has a next turn to be given it - and a finished node has
+/// none, which is when a review becomes a slice instead.
+fn still_working(node: Option<crate::model::NodeRun>) -> Option<(i64, i64)> {
     let node = node?;
-    let port = u16::try_from(node.eve_port?).ok()?;
-    let token = node.eve_token?;
-    let session = node.session_id?;
-    let client = EveClient::new(port, &token);
-    client.healthy().await.then_some((client, session))
+    if !matches!(
+        node.status,
+        crate::model::NodeStatus::Running | crate::model::NodeStatus::Parked
+    ) {
+        return None;
+    }
+    node.session_id.as_ref()?;
+    Some((node.id, node.agent_id?))
 }
 
 /// The node a review would steer, read in one synchronous window.
@@ -292,8 +296,8 @@ pub fn conductor(store: &Store, review: &Review) -> Option<crate::model::NodeRun
 /// Worth asking before the human decides what to say, because the two are different
 /// kinds of feedback: one lands in a worktree that already exists, the other is a note
 /// for somebody starting fresh.
-pub async fn steerable(node: Option<crate::model::NodeRun>) -> bool {
-    listening(node).await.is_some()
+pub fn steerable(node: Option<crate::model::NodeRun>) -> bool {
+    still_working(node).is_some()
 }
 
 /// Deliver a submitted review.
@@ -305,7 +309,7 @@ pub async fn steerable(node: Option<crate::model::NodeRun>) -> bool {
 /// Getting the quiet direction wrong is the bad failure - a review delivered into a dead
 /// process disappears while the human believes it landed - so the liveness check is a
 /// real request, and anything short of a healthy answer falls through to the plan.
-pub async fn deliver<F, Fut, A, AFut>(
+pub async fn deliver<F, Fut, A, AFut, Q>(
     pending: &Pending,
     node: Option<crate::model::NodeRun>,
     // The orchestrator's current node, when it has one. A correction reaches it too: it
@@ -314,12 +318,17 @@ pub async fn deliver<F, Fut, A, AFut>(
     orchestrator: Option<crate::model::NodeRun>,
     plan_slice: F,
     amend_slice: A,
+    // Queueing a message for a seat, as a callback for the same reason the other two are:
+    // this function awaits, and a `rusqlite::Connection` is not `Sync`, so a caller that
+    // handed over its store would be holding a lock across an await.
+    mut queue: Q,
 ) -> Result<Submitted>
 where
     F: FnOnce(String, String) -> Fut,
     Fut: std::future::Future<Output = Result<String>>,
     A: FnOnce(String, String) -> AFut,
     AFut: std::future::Future<Output = Result<()>>,
+    Q: FnMut(i64, &str) -> Result<()>,
 {
     // Approving with nothing outstanding is the one case with nobody to tell.
     if pending.open.is_empty() {
@@ -328,7 +337,7 @@ where
 
     let node_run_id = node.as_ref().map(|node| node.id);
     let slice_key = node.as_ref().and_then(|node| node.slice_key.clone());
-    if let Some((client, session)) = listening(node).await {
+    if let Some((node_id, agent_id)) = still_working(node) {
         // The slice first. A review is a change to *what the work is*, and the verifier
         // checks the commit against the slice spec - so feedback that only reaches the
         // agent produces work that is correct and then rejected for not matching a spec
@@ -338,22 +347,23 @@ where
         if let Some(key) = slice_key {
             amend_slice(key, amendment(&pending.open)).await?;
         }
-        client.follow_up(&session, &pending.message).await?;
+        queue(agent_id, &pending.message)?;
 
-        // And the orchestrator, when it is mid-turn. Best effort on purpose: it always
-        // learns through the amended slice, so failing to reach it costs immediacy rather
-        // than the correction, and an unreachable orchestrator must not make a delivered
-        // review look failed.
-        let told_orchestrator = match listening(orchestrator).await {
-            Some((orchestrator, session)) => orchestrator
-                .follow_up(&session, &for_orchestrator(&pending.open, &pending.review))
-                .await
-                .is_ok(),
+        // And the orchestrator, when it is still working. Best effort on purpose: it
+        // always learns through the amended slice, so failing to reach it costs immediacy
+        // rather than the correction, and an unreachable orchestrator must not make a
+        // delivered review look failed.
+        let told_orchestrator = match still_working(orchestrator) {
+            Some((_, orchestrator_agent)) => queue(
+                orchestrator_agent,
+                &for_orchestrator(&pending.open, &pending.review),
+            )
+            .is_ok(),
             None => false,
         };
 
         return Ok(Submitted::Steered {
-            node_run_id: node_run_id.unwrap_or_default(),
+            node_run_id: node_run_id.unwrap_or(node_id),
             comments: pending.open.len(),
             told_orchestrator,
         });
