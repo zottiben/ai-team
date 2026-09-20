@@ -80,8 +80,9 @@ pub use neighbours::{
 pub use onboard::{attach as attach_repo_at, register as register_project, Registered};
 pub use paths::{data_dir, default_db_path, ensure_data_dir, machine_profile_path, HOME_ENV};
 pub use pi::{
-    install_guard, install_guard_at, provider_name as pi_provider, thinking as pi_thinking,
-    PiDisposition, PiEvent, PiIngested, PiOutcome, PiProcess, PiSeat, PiTurn,
+    install_guard, install_guard_at, provider_name as pi_provider, run_pi_turn,
+    thinking as pi_thinking, PiDisposition, PiEvent, PiIngested, PiOutcome, PiProcess, PiSeat,
+    PiTurn,
 };
 pub use readiness::{
     apply as apply_fix, apply_at as apply_fix_at, report as readiness_report,

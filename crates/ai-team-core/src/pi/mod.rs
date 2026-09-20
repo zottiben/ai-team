@@ -12,8 +12,10 @@
 mod event;
 mod guard;
 mod ingest;
+mod instructions;
 mod process;
 mod seat;
+mod turn;
 
 pub use event::Disposition as PiDisposition;
 pub use event::PiEvent;
@@ -21,3 +23,4 @@ pub use guard::{install as install_guard, install_at as install_guard_at};
 pub use ingest::PiIngested;
 pub use process::{PiProcess, PiTurn, TurnOutcome as PiOutcome};
 pub use seat::{provider_name, thinking, Seat as PiSeat};
+pub use turn::run as run_pi_turn;

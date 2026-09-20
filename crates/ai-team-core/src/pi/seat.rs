@@ -64,6 +64,75 @@ pub(super) fn withheld(agent: &Agent) -> Vec<String> {
     }
 }
 
+/// The ai-planner tools a seat that only reads the board may call.
+///
+/// A maker reads the slice it is building and records what happened; it does not shape
+/// the plan. A maker that can add slices can give itself work, and the board a human
+/// reads stops being a plan and becomes a log of whatever the agents felt like doing.
+pub(super) const PLAN_READ_TOOLS: &[&str] = &[
+    "get_plan",
+    "get_slice",
+    "get_resume",
+    "list_slices",
+    "list_plans",
+    "list_questions",
+    "search_plans",
+    "locate",
+    "append_log",
+];
+
+/// The ai-planner tools the orchestrator and the planner may call.
+///
+/// Still an allow-list rather than "everything": `delete_plan` is on the server and is
+/// not something a turn should reach for, and neither is `import_markdown`.
+pub(super) const PLAN_WRITE_TOOLS: &[&str] = &[
+    "get_plan",
+    "get_slice",
+    "get_resume",
+    "list_slices",
+    "list_plans",
+    "list_questions",
+    "search_plans",
+    "locate",
+    "append_log",
+    "create_plan",
+    "add_slice",
+    "update_slice",
+    "set_slice_status",
+    "claim_slice",
+    "release_slice",
+    "add_decision",
+    "add_gotcha",
+    "open_question",
+    "update_section",
+];
+
+/// How a seat reaches ai-planner.
+///
+/// D4 said the neighbours are used over their own interfaces and never vendored, and on
+/// eve that meant a generated tool shelling out to `aip`, because eve could not run a
+/// stdio MCP server. Pi can, so the neighbour is reached through the interface it
+/// actually publishes - `aip serve` - and the generated wrapper is gone.
+///
+/// `--root` is the checkout, deliberately not the lease. A lease is a copy, and a plan
+/// written inside one is a plan nobody finds again.
+fn planner_server(plan_root: &Path, may_write: bool) -> Value {
+    json!({
+        "command": "aip",
+        "args": ["serve", "--root", plan_root.to_string_lossy()],
+        "transport": "stdio",
+        // Connected up front and registered as real tools rather than reached through
+        // the adapter's proxy. Both matter and the first run proved it: lazily-proxied
+        // tools are not in the model's tool list, so a seat told to call `add_slice`
+        // sees no such tool, decides the board is unavailable, and writes the code
+        // itself. The plan is this seat's entire job - it should not have to go
+        // looking for the way to do it.
+        "lifecycle": "eager",
+        "directTools": true,
+        "includeTools": if may_write { PLAN_WRITE_TOOLS } else { PLAN_READ_TOOLS },
+    })
+}
+
 /// The MCP config for one seat, or `None` when it has no context sources.
 ///
 /// Returning `None` rather than an empty config matters: `--mcp-config` pointing at a
@@ -71,11 +140,14 @@ pub(super) fn withheld(agent: &Agent) -> Vec<String> {
 /// own `.mcp.json` is discovered either way - Pi's adapter merges what it finds with what
 /// it is given rather than replacing one with the other, which is what makes D19 free
 /// here.
-pub(super) fn mcp_config(sources: &[ContextSource]) -> Option<Value> {
-    if sources.is_empty() {
+pub(super) fn mcp_config(sources: &[ContextSource], plan: Option<(&Path, bool)>) -> Option<Value> {
+    if sources.is_empty() && plan.is_none() {
         return None;
     }
     let mut servers = Map::new();
+    if let Some((root, may_write)) = plan {
+        servers.insert("ai-planner".to_string(), planner_server(root, may_write));
+    }
     for source in sources {
         let (allow, env) = match source {
             ContextSource::ClickUp => (CLICKUP_READ_TOOLS, "AI_TEAM_CLICKUP_TOKEN"),
@@ -104,8 +176,9 @@ pub(super) fn write_mcp_config(
     dir: &Path,
     role: &str,
     sources: &[ContextSource],
+    plan: Option<(&Path, bool)>,
 ) -> Result<Option<PathBuf>> {
-    let Some(config) = mcp_config(sources) else {
+    let Some(config) = mcp_config(sources, plan) else {
         return Ok(None);
     };
     std::fs::create_dir_all(dir).map_err(|e| Error::UnusablePath {
@@ -134,6 +207,17 @@ pub struct Seat<'a> {
     /// Where the guard and any MCP config live. Never the lease.
     pub support: &'a Path,
     pub sources: &'a [ContextSource],
+    /// The checkout whose plan this seat works from, and whether it may shape it.
+    ///
+    /// `None` for a turn with no plan behind it - a single-node run, or somebody talking
+    /// to a seat - where the planning tools stay absent rather than pointing at whichever
+    /// plan the working directory happens to resolve to.
+    pub plan: Option<(&'a Path, bool)>,
+    /// The team this seat sits on, and who else is on it. A planning seat is told the
+    /// roster because routing is by zone; a maker is not, because it is not deciding who
+    /// does what.
+    pub team: &'a crate::model::Team,
+    pub roster: &'a [Agent],
 }
 
 impl Seat<'_> {
@@ -145,7 +229,13 @@ impl Seat<'_> {
         turn.thinking = Some(thinking(self.agent.reasoning).to_string());
         turn.exclude_tools = withheld(self.agent);
         turn.guard = Some(super::guard::install_at(self.support)?);
-        turn.mcp_config = write_mcp_config(self.support, &self.agent.role, self.sources)?;
+        turn.mcp_config =
+            write_mcp_config(self.support, &self.agent.role, self.sources, self.plan)?;
+        turn.instructions = Some(super::instructions::for_seat(
+            self.agent,
+            self.team,
+            self.roster,
+        ));
         Ok(turn)
     }
 }
@@ -155,6 +245,19 @@ mod tests {
     use super::*;
     use crate::model::NewProject;
     use crate::store::Store;
+
+    fn team_of() -> (crate::model::Team, Vec<Agent>) {
+        let mut store = Store::memory().unwrap();
+        let project = store
+            .create_project(NewProject {
+                name: "Widget".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        let team = store.seed_default_team(project.id).unwrap();
+        let agents = store.agents(team.id).unwrap();
+        (team, agents)
+    }
 
     fn seat_of(role: &str) -> Agent {
         let mut store = Store::memory().unwrap();
@@ -207,17 +310,17 @@ mod tests {
         // An empty config is a flag that looks deliberate and does nothing. The repo's
         // own `.mcp.json` is discovered regardless.
         let dir = tempfile::tempdir().unwrap();
-        assert!(write_mcp_config(dir.path(), "backend", &[])
+        assert!(write_mcp_config(dir.path(), "backend", &[], None)
             .unwrap()
             .is_none());
-        assert!(mcp_config(&[]).is_none());
+        assert!(mcp_config(&[], None).is_none());
     }
 
     #[test]
     fn a_context_source_is_read_only_by_allow_list() {
         // D15. Every write ClickUp exposes must be absent, and absent because it was
         // never named rather than because it was listed as forbidden.
-        let config = mcp_config(&[ContextSource::ClickUp]).expect("a config");
+        let config = mcp_config(&[ContextSource::ClickUp], None).expect("a config");
         let text = serde_json::to_string(&config).unwrap();
 
         assert!(text.contains("includeTools"), "{text}");
@@ -235,7 +338,7 @@ mod tests {
     fn figma_s_write_that_reads_like_a_read_is_absent() {
         // `use_figma` creates, edits and deletes despite its name, which is why the rule
         // is an allow-list and not a judgement call about what sounds safe.
-        let config = mcp_config(&[ContextSource::Figma]).expect("a config");
+        let config = mcp_config(&[ContextSource::Figma], None).expect("a config");
         let text = serde_json::to_string(&config).unwrap();
         assert!(text.contains("get_design_context"), "{text}");
         assert!(!text.contains("use_figma"), "{text}");
@@ -245,7 +348,7 @@ mod tests {
     fn a_seat_s_config_is_written_outside_the_lease() {
         // A config a node can edit is a node that can widen its own allow-list.
         let support = tempfile::tempdir().unwrap();
-        let path = write_mcp_config(support.path(), "planner", &[ContextSource::ClickUp])
+        let path = write_mcp_config(support.path(), "planner", &[ContextSource::ClickUp], None)
             .unwrap()
             .expect("a path");
         assert!(path.starts_with(support.path()));
@@ -257,10 +360,10 @@ mod tests {
         // Scoping is the point of D15: the ticket reaches the seats that decide what the
         // work is, and one shared file would give it to everybody.
         let support = tempfile::tempdir().unwrap();
-        let planner = write_mcp_config(support.path(), "planner", &[ContextSource::ClickUp])
+        let planner = write_mcp_config(support.path(), "planner", &[ContextSource::ClickUp], None)
             .unwrap()
             .unwrap();
-        let frontend = write_mcp_config(support.path(), "frontend", &[ContextSource::Figma])
+        let frontend = write_mcp_config(support.path(), "frontend", &[ContextSource::Figma], None)
             .unwrap()
             .unwrap();
         assert_ne!(planner, frontend);
@@ -273,7 +376,12 @@ mod tests {
     fn a_seat_becomes_a_complete_invocation() {
         let support = tempfile::tempdir().unwrap();
         let lease = tempfile::tempdir().unwrap();
-        let agent = seat_of("verifier");
+        let (team, roster) = team_of();
+        let agent = roster
+            .iter()
+            .find(|a| a.role == "verifier")
+            .unwrap()
+            .clone();
         let seat = Seat {
             agent: &agent,
             provider: Provider::Claude,
@@ -281,6 +389,9 @@ mod tests {
             worktree: lease.path(),
             support: support.path(),
             sources: &[],
+            plan: None,
+            team: &team,
+            roster: &roster,
         };
 
         let turn = seat.turn("check it").unwrap();
@@ -295,12 +406,61 @@ mod tests {
     }
 
     #[test]
+    fn a_maker_reads_the_board_and_cannot_shape_it() {
+        // A maker that can add slices can give itself work, and the board a human reads
+        // stops being a plan and becomes a log of whatever the agents felt like doing.
+        let root = tempfile::tempdir().unwrap();
+        let config = mcp_config(&[], Some((root.path(), false))).expect("a config");
+        let text = serde_json::to_string(&config).unwrap();
+
+        assert!(text.contains("get_slice"), "{text}");
+        assert!(text.contains("append_log"), "a maker records what happened");
+        for write in ["add_slice", "set_slice_status", "delete_plan"] {
+            assert!(!text.contains(write), "{write} is reachable: {text}");
+        }
+    }
+
+    #[test]
+    fn a_planning_seat_may_shape_the_board_but_not_destroy_it() {
+        let root = tempfile::tempdir().unwrap();
+        let config = mcp_config(&[], Some((root.path(), true))).expect("a config");
+        let text = serde_json::to_string(&config).unwrap();
+
+        assert!(text.contains("add_slice"), "{text}");
+        assert!(text.contains("set_slice_status"), "{text}");
+        // Still an allow-list rather than everything the server happens to expose.
+        assert!(!text.contains("delete_plan"), "{text}");
+        assert!(!text.contains("import_markdown"), "{text}");
+    }
+
+    #[test]
+    fn the_planner_resolves_from_the_checkout_not_the_lease() {
+        // A lease is a copy. A plan written inside one is a plan nobody finds again.
+        let root = tempfile::tempdir().unwrap();
+        let config = mcp_config(&[], Some((root.path(), true))).expect("a config");
+        let text = serde_json::to_string(&config).unwrap();
+        assert!(text.contains("--root"), "{text}");
+        assert!(
+            text.contains(&root.path().to_string_lossy().to_string()),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_turn_with_no_plan_gets_no_planning_tools() {
+        // A single-node run or a person talking to a seat has no plan behind it, and
+        // tools pointing at whichever plan the cwd resolves to are worse than none.
+        assert!(mcp_config(&[], None).is_none());
+    }
+
+    #[test]
     fn the_model_comes_from_the_resolution_not_the_row() {
         // A denied preference falls back (D13), and what a run actually used is a fact
         // about that run rather than about the team as it stands now.
         let support = tempfile::tempdir().unwrap();
         let lease = tempfile::tempdir().unwrap();
-        let agent = seat_of("backend");
+        let (team, roster) = team_of();
+        let agent = roster.iter().find(|a| a.role == "backend").unwrap().clone();
         let seat = Seat {
             agent: &agent,
             provider: Provider::Local,
@@ -308,6 +468,9 @@ mod tests {
             worktree: lease.path(),
             support: support.path(),
             sources: &[],
+            plan: None,
+            team: &team,
+            roster: &roster,
         };
 
         let turn = seat.turn("build it").unwrap();

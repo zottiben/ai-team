@@ -66,6 +66,19 @@ pub struct PiTurn {
     /// The ai-team guard extension (D20). Pi's own `bash`, `read`, `write` and `edit`
     /// answer to nobody; this is what holds them to the lease and refuses to publish.
     pub guard: Option<PathBuf>,
+    /// What this seat is.
+    ///
+    /// Carried at the top of the prompt rather than through `--append-system-prompt`,
+    /// which looks like the right place and silently is not: on `claude-subscription`
+    /// the Claude Code CLI owns the system prompt and Pi's additions never reach the
+    /// model. A fact placed there could not be read back out; the same fact in the
+    /// prompt arrives every time. One mechanism, working on every provider, is worth
+    /// more than the right-looking one that works on some.
+    ///
+    /// Not optional in practice: a seat with no instructions is a general-purpose coding
+    /// assistant holding a `bash` tool, which is how the first Pi run had the
+    /// orchestrator write the code instead of the plan.
+    pub instructions: Option<String>,
 }
 
 impl PiTurn {
@@ -81,6 +94,7 @@ impl PiTurn {
             mcp_config: None,
             session_id: None,
             guard: None,
+            instructions: None,
         }
     }
 
@@ -115,10 +129,14 @@ impl PiTurn {
             args.push("--extension".into());
             args.push(guard.to_string_lossy().into_owned());
         }
+
         // `--` ends option parsing, so a prompt that happens to begin with a dash is a
         // prompt rather than an unknown flag.
         args.push("--".into());
-        args.push(self.prompt.clone());
+        args.push(match &self.instructions {
+            Some(instructions) => format!("{instructions}\n\n---\n\n{}", self.prompt),
+            None => self.prompt.clone(),
+        });
         args
     }
 }
@@ -335,6 +353,25 @@ mod tests {
         assert!(!args.contains("--model"), "{args}");
         assert!(!args.contains("--session-id"), "{args}");
         assert!(!args.contains("--mcp-config"), "{args}");
+    }
+
+    #[test]
+    fn a_seat_s_instructions_ride_in_the_prompt() {
+        // `--append-system-prompt` is the right-looking place and silently does nothing
+        // on `claude-subscription`: the Claude Code CLI owns the system prompt. A fact
+        // put there could not be read back out of the model; the same fact in the prompt
+        // arrives every time.
+        let mut turn = PiTurn::new("/tmp", "Add a subtract function.");
+        turn.instructions = Some("You are the orchestrator. Do not write code.".into());
+        let args = turn.args();
+
+        assert!(
+            !args.iter().any(|a| a == "--append-system-prompt"),
+            "{args:?}"
+        );
+        let prompt = args.last().expect("a prompt");
+        assert!(prompt.starts_with("You are the orchestrator."), "{prompt}");
+        assert!(prompt.contains("Add a subtract function."), "{prompt}");
     }
 
     #[test]

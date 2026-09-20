@@ -127,6 +127,21 @@ impl Planner {
         }
     }
 
+    /// Make sure there is a database and this checkout is registered in it.
+    ///
+    /// `aip init` creates the file if it is missing and is a no-op when it is not, so
+    /// this is safe to run before every workflow. It has to run before anything else:
+    /// `aip serve` refuses to start without a database, and a planning seat whose MCP
+    /// server did not start has no planning tools - so it decides the board is
+    /// unavailable and writes the code itself, which is how the first Pi run went.
+    ///
+    /// Not a violation of D17. ai-team may create its own state and may never install
+    /// software; this creates a file with a command the neighbour publishes for exactly
+    /// that purpose.
+    pub async fn ensure(&self) -> Result<()> {
+        self.output(&["init"]).await.map(|_| ())
+    }
+
     /// Which plan this checkout resolves to, and what it is called.
     pub async fn current(&self) -> Result<PlanSummary> {
         let json = self.output(&["current", "--json"]).await?;

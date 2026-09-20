@@ -201,12 +201,8 @@ async fn the_guard_refuses_a_write_outside_the_lease() {
         "the control did not escape, so the guarded case proves nothing"
     );
 
-    let (escaped, said) = tried_to_escape(true).await;
+    let (escaped, _) = tried_to_escape(true).await;
     assert!(!escaped, "the guard let a turn write outside its lease");
-    assert!(
-        said.to_lowercase().contains("refus") || said.to_lowercase().contains("outside"),
-        "the turn did not report being refused: {said}"
-    );
 }
 
 #[tokio::test]
@@ -230,15 +226,24 @@ async fn the_guard_refuses_to_publish() {
     turn.model = Some("claude-sonnet-5".into());
     turn.guard = Some(guard);
 
+    // Asserted from the stream rather than from the model's prose. What the guard did is
+    // a fact; how a model chooses to describe it is a sentence that changes between runs,
+    // and a test that reads one is a test that fails for no reason.
     let mut process = PiProcess::start(&turn).expect("pi starts");
-    let outcome = process.drive(|_| {}).await.expect("driven");
+    let mut refusals = 0usize;
+    let outcome = process
+        .drive(|event| {
+            if event.kind == "tool_execution_end" {
+                let text = serde_json::to_string(&event.data).unwrap_or_default();
+                if text.contains("Refused:") {
+                    refusals += 1;
+                }
+            }
+        })
+        .await
+        .expect("driven");
     assert!(outcome.settled, "stderr: {}", outcome.stderr);
-
-    let said = outcome.said.unwrap_or_default();
-    assert!(
-        said.to_lowercase().contains("refus") || said.to_lowercase().contains("block"),
-        "the turn did not report being refused: {said}"
-    );
+    assert!(refusals > 0, "the guard never refused the push");
 }
 
 #[tokio::test]
@@ -331,20 +336,50 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     turn.model = Some("claude-sonnet-5".into());
     turn.mcp_config = Some(config);
 
+    // Read out of the adapter's own listing rather than the model's prose. The listing
+    // is the thing D15 is about: a tool the model can see is a tool it keeps trying, so
+    // "absent from discovery" is the property, and "refused when called" is the backstop.
+    let mut offered: Vec<String> = Vec::new();
+    let mut refused_by_name = false;
+
     let mut process = PiProcess::start(&turn).expect("pi starts");
-    let outcome = process.drive(|_| {}).await.expect("driven");
+    let outcome = process
+        .drive(|event| {
+            if event.kind != "tool_execution_end" {
+                return;
+            }
+            let Some(details) = event.data.pointer("/result/details") else {
+                return;
+            };
+            match details.get("mode").and_then(|m| m.as_str()) {
+                Some("list") => {
+                    if let Some(tools) = details.get("tools").and_then(|t| t.as_array()) {
+                        offered.extend(tools.iter().filter_map(|t| t.as_str()).map(str::to_string));
+                    }
+                }
+                Some("call")
+                    if details.get("error").and_then(|e| e.as_str()) == Some("tool_not_found") =>
+                {
+                    refused_by_name = true;
+                }
+                _ => {}
+            }
+        })
+        .await
+        .expect("driven");
     assert!(outcome.settled, "stderr: {}", outcome.stderr);
 
-    let said = outcome.said.unwrap_or_default();
     assert!(
-        said.contains("get_task"),
-        "the allowed tool was not reachable: {said}"
+        !offered.is_empty(),
+        "the server was never listed, so nothing was proven"
     );
     assert!(
-        said.to_lowercase().contains("not found")
-            || said.to_lowercase().contains("no tools")
-            || said.to_lowercase().contains("not available")
-            || said.to_lowercase().contains("unavailable"),
-        "the withheld tool did not read as absent: {said}"
+        offered.iter().any(|t| t.contains("get_task")),
+        "the allowed tool was not offered: {offered:?}"
     );
+    assert!(
+        !offered.iter().any(|t| t.contains("delete_task")),
+        "the withheld tool was offered: {offered:?}"
+    );
+    assert!(refused_by_name, "calling it was not refused either");
 }

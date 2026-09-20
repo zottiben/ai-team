@@ -17,7 +17,7 @@ use crate::model::{EventKind, NewEvent, NodeStatus};
 use crate::neighbours::{git, Planner, Slice, Worktrees};
 use crate::store::Store;
 use crate::supervise::process::EveEnv;
-use crate::supervise::supervisor::{outcome_status, run_turn, Supervisor, TurnOutcome};
+use crate::supervise::supervisor::{outcome_status, Supervisor, TurnOutcome};
 use crate::ROOT_ROLE;
 
 /// What one dispatched slice did.
@@ -41,6 +41,57 @@ pub struct Orchestration {
     pub dispatched: Vec<Dispatched>,
 }
 
+/// What a Pi turn needs that is the same for every seat in a run (D20).
+///
+/// The eve equivalent was a generated project directory plus an `EveEnv`; this is the
+/// whole of what replaced them. `support` holds the guard and the per-seat MCP configs
+/// and is deliberately never a lease - a guard or an allow-list a node can edit is not
+/// one.
+#[derive(Debug, Clone)]
+pub struct Rig {
+    pub support: PathBuf,
+    /// The checkout whose plan this run works from. Never a lease: a plan written inside
+    /// a copy is a plan nobody finds again.
+    pub plan_root: PathBuf,
+    pub sources: Vec<crate::ContextSource>,
+    pub registry: ModelRegistry,
+}
+
+impl Rig {
+    /// The turn one seat would take.
+    ///
+    /// The model comes from the registry rather than the row, because a denied preference
+    /// falls back (D13) and what a run actually used is a fact about that run.
+    fn seat(
+        &self,
+        store: &Store,
+        agent_id: i64,
+        worktree: &Path,
+        prompt: &str,
+    ) -> Result<crate::PiTurn> {
+        let agent = store.agent(agent_id)?;
+        let team = store.team(agent.team_id)?;
+        let roster = store.agents(agent.team_id)?;
+        let (effective, _) = self.registry.resolve_agents(std::slice::from_ref(&agent))?;
+        let resolved = effective.first().unwrap_or(&agent);
+        // Only the seats that may shape the plan get the tools that shape it. A maker
+        // that can add slices can give itself work.
+        let may_plan = agent.role == ROOT_ROLE || agent.role == "planner";
+        crate::PiSeat {
+            agent: &agent,
+            provider: resolved.provider,
+            model: &resolved.model,
+            worktree,
+            support: &self.support,
+            sources: &self.sources,
+            plan: Some((self.plan_root.as_path(), may_plan)),
+            team: &team,
+            roster: &roster,
+        }
+        .turn(prompt)
+    }
+}
+
 /// Everything a run needs that does not change between its nodes.
 #[derive(Debug)]
 pub struct Orchestrator {
@@ -59,6 +110,16 @@ pub struct Orchestrator {
 }
 
 impl Orchestrator {
+    /// What every Pi turn in this run shares.
+    pub fn rig(&self) -> Rig {
+        Rig {
+            support: self.project_dir.clone(),
+            plan_root: self.repo.clone(),
+            sources: self.registry.context_sources(),
+            registry: self.registry.clone(),
+        }
+    }
+
     /// A supervisor for the one-off install and build, before any node starts.
     ///
     /// Bound to the repository rather than a lease: `eve build` evaluates every authored
@@ -75,7 +136,7 @@ impl Orchestrator {
     /// is planning against.
     pub async fn plan<F>(&self, store: &mut Store, prompt: &str, on_event: F) -> Result<TurnOutcome>
     where
-        F: FnMut(&crate::eve::StreamEvent),
+        F: FnMut(&crate::PiEvent) + Send,
     {
         let orchestrator = store
             .agents(self.team_id)?
@@ -87,24 +148,16 @@ impl Orchestrator {
         store.attach_worktree(node.id, &self.repo.to_string_lossy(), None, None)?;
         store.set_node_status(node.id, NodeStatus::Running)?;
 
-        let env = self.env(&self.repo)?;
-        let mut supervisor = Supervisor::new(&self.project_dir, env.clone());
-        let client = supervisor.start().await?;
-        if let Some(port) = supervisor.port() {
-            store.attach_eve(node.id, port, &env.token)?;
-        }
-
-        let outcome = match run_turn(store, node.id, &client, prompt, on_event).await {
+        let turn = self
+            .rig()
+            .seat(store, orchestrator.id, &self.repo, prompt)?;
+        let outcome = match crate::run_pi_turn(store, node.id, &turn, on_event).await {
             Ok((_, outcome)) => outcome,
             Err(error) => {
-                // Stop the process before surfacing the failure: `?` here would leave a
-                // Node server holding a port for the rest of the run.
-                let _ = supervisor.stop().await;
                 store.set_node_status(node.id, NodeStatus::Failed)?;
                 return Err(error);
             }
         };
-        supervisor.stop().await?;
         store.set_node_status(node.id, outcome_status(&outcome))?;
         Ok(outcome)
     }
@@ -232,8 +285,7 @@ impl Orchestrator {
 
         Ok(NodeTask {
             db_path: self.db_path.clone(),
-            project_dir: self.project_dir.clone(),
-            env: self.env(&worktree)?,
+            rig: self.rig(),
             agent_id,
             registry: self.registry.clone(),
             slice_key: slice.key.clone(),
@@ -324,8 +376,7 @@ impl Orchestrator {
 /// Everything one parallel node needs, owned outright so it can move to its own task.
 struct NodeTask {
     db_path: PathBuf,
-    project_dir: PathBuf,
-    env: EveEnv,
+    rig: Rig,
     agent_id: i64,
     registry: ModelRegistry,
     slice_key: String,
@@ -346,8 +397,7 @@ struct NodeTask {
 async fn run_one(task: NodeTask) -> Result<Dispatched> {
     let NodeTask {
         db_path,
-        project_dir,
-        env,
+        rig,
         agent_id,
         registry,
         slice_key,
@@ -373,8 +423,7 @@ async fn run_one(task: NodeTask) -> Result<Dispatched> {
         changed,
     } = match attempt_until_accepted(AttemptArgs {
         store: &mut store,
-        project_dir: &project_dir,
-        env: &env,
+        rig: &rig,
         agent_id,
         registry: &registry,
         run_id,
@@ -631,8 +680,7 @@ impl Attempted {
 /// eleven positional arguments, where swapping two `&str`s compiles.
 struct AttemptArgs<'a> {
     store: &'a mut Store,
-    project_dir: &'a Path,
-    env: &'a EveEnv,
+    rig: &'a Rig,
     agent_id: i64,
     registry: &'a ModelRegistry,
     run_id: i64,
@@ -655,8 +703,7 @@ struct AttemptArgs<'a> {
 async fn attempt_until_accepted(args: AttemptArgs<'_>) -> Result<Attempted> {
     let AttemptArgs {
         store,
-        project_dir,
-        env,
+        rig,
         agent_id,
         registry,
         run_id,
@@ -685,7 +732,8 @@ async fn attempt_until_accepted(args: AttemptArgs<'_>) -> Result<Attempted> {
         }
         store.set_node_status(node_run_id, NodeStatus::Running)?;
 
-        let turn = match take_turn(store, project_dir, env, node_run_id, &instruction).await {
+        let turn = match take_turn(store, rig, agent_id, node_run_id, worktree, &instruction).await
+        {
             Ok(turn) => turn,
             Err(error) => {
                 store.set_node_status(node_run_id, NodeStatus::Failed)?;
@@ -707,7 +755,7 @@ async fn attempt_until_accepted(args: AttemptArgs<'_>) -> Result<Attempted> {
             return Ok(Attempted::settled(turn, &node, attempt, changed));
         }
 
-        let reason = match check(store, node_run_id, worktree, project_dir, env, verifier).await? {
+        let reason = match check(store, node_run_id, worktree, rig, verifier).await? {
             Verdict::Accepted => return Ok(Attempted::settled(turn, &node, attempt, changed)),
             Verdict::Rejected(reason) => reason,
         };
@@ -742,29 +790,22 @@ async fn attempt_until_accepted(args: AttemptArgs<'_>) -> Result<Attempted> {
 }
 
 /// One turn against one node row, with the process always stopped afterwards.
+/// One turn by one seat, in its lease.
+///
+/// There is nothing to start and nothing to stop: a Pi turn is a child process that
+/// exits when it is done, and the process group goes with it (D20). The eve version of
+/// this function existed largely to make sure a server was not left holding a port.
 async fn take_turn(
     store: &mut Store,
-    project_dir: &Path,
-    env: &EveEnv,
+    rig: &Rig,
+    agent_id: i64,
     node_run_id: i64,
+    worktree: &Path,
     instruction: &str,
 ) -> Result<TurnOutcome> {
-    let mut supervisor = Supervisor::new(project_dir, env.clone());
-    let turn = async {
-        let client = supervisor.start().await?;
-        // Recorded as soon as it serves: a window opened mid-run needs this to reach an
-        // agent this process started, including to answer what it is parked on.
-        if let Some(port) = supervisor.port() {
-            store.attach_eve(node_run_id, port, &env.token)?;
-        }
-        let (_, outcome) = run_turn(store, node_run_id, &client, instruction, |_| {}).await?;
-        Ok::<_, Error>(outcome)
-    }
-    .await;
-    // Stopped before the result is unwrapped: the lease is returned on drop, an eve
-    // server holding a port is not.
-    let _ = supervisor.stop().await;
-    turn
+    let turn = rig.seat(store, agent_id, worktree, instruction)?;
+    let (_, outcome) = crate::run_pi_turn(store, node_run_id, &turn, |_| {}).await?;
+    Ok(outcome)
 }
 
 /// The work one node produced, and where it lives.
@@ -944,8 +985,7 @@ async fn check(
     store: &mut Store,
     node_run_id: i64,
     worktree: &Path,
-    project_dir: &Path,
-    env: &EveEnv,
+    rig: &Rig,
     verifier: Option<&VerifierSeat>,
 ) -> Result<Verdict> {
     let gates = crate::gates::discover_gates(worktree);
@@ -1013,30 +1053,22 @@ async fn check(
     // Note events also carry ai-team's own bookkeeping - the model-fallback notice, for
     // one - and parsing that as the verifier's answer rejects work it never looked at.
     let mut said = String::new();
-    let mut supervisor = Supervisor::new(project_dir, env.clone());
     let verdict = async {
-        let client = supervisor.start().await?;
-        // The verifier can park on a question too, and an unanswerable one stalls the
-        // whole slice. Recorded for the same reason every other node's is.
-        if let Some(port) = supervisor.port() {
-            store.attach_eve(node.id, port, &env.token)?;
-        }
-        let (_, outcome) = run_turn(
+        let turn = rig.seat(
             store,
-            node.id,
-            &client,
+            verifier.agent_id,
+            worktree,
             &verify_prompt(&evidence),
-            |event| {
-                if let Some(message) = event.assistant_message() {
-                    said = message.to_string();
-                }
-            },
-        )
+        )?;
+        let (_, outcome) = crate::run_pi_turn(store, node.id, &turn, |event| {
+            if let Some(message) = event.assistant_message() {
+                said = message;
+            }
+        })
         .await?;
         Ok::<_, Error>(outcome)
     }
     .await;
-    let _ = supervisor.stop().await;
 
     let outcome = match verdict {
         Ok(outcome) => outcome,

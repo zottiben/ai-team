@@ -622,10 +622,18 @@ mod tests {
         let target = dir.path().join("runner");
         std::fs::copy("/bin/sh", &target).unwrap();
 
+        // Two commands, not one. A shell given a single command usually `exec`s it,
+        // replacing its own image - so the copy stops being the running binary and
+        // ETXTBSY no longer applies. The trailing `:` keeps the shell resident, which is
+        // the whole premise of the assertion below.
         let mut child = std::process::Command::new(&target)
-            .args(["-c", "sleep 5"])
+            .args(["-c", "sleep 5; :"])
             .spawn()
             .expect("the copy should be runnable");
+        // `spawn` returns once the fork is under way, which is not the same moment the
+        // kernel has the text segment locked. Without this the assertion races the exec
+        // and fails under load rather than on merit.
+        std::thread::sleep(std::time::Duration::from_millis(250));
 
         // Linux refuses to write over an executing file - ETXTBSY - and macOS does not:
         // the text-segment protection is a Linux one. Which means a naive updater that

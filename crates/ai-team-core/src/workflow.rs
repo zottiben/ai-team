@@ -85,7 +85,7 @@ where
     on_progress(Progress::Planning);
     let outcome = orchestrator
         .plan(store, prompt, |event| {
-            if let crate::Disposition::Record(kind, summary) = event.classify() {
+            if let crate::PiDisposition::Record(kind, summary) = event.classify() {
                 on_progress(Progress::Note(format!(
                     "{:<18} {summary}",
                     format!("{kind:?}").to_lowercase()
@@ -97,35 +97,6 @@ where
         store.set_run_status(run_id, RunStatus::Failed)?;
         return Err(Error::invalid("planning did not finish"));
     }
-    Ok(())
-}
-
-/// Install and build the generated project, once, before any node starts.
-async fn build_once<F>(
-    orchestrator: &Orchestrator,
-    store: &mut Store,
-    run_id: i64,
-    on_progress: &mut F,
-) -> Result<()>
-where
-    F: FnMut(Progress) + Send,
-{
-    let supervisor = orchestrator.builder()?;
-    let mut lines = 0usize;
-    let mut build_events = Vec::new();
-    supervisor
-        .install_and_build(|progress| {
-            lines += 1;
-            build_events.push(progress.clone());
-            on_progress(Progress::Building(progress));
-        })
-        .await?;
-    // Recorded after the fact: the callback cannot hold the store, and a build is not
-    // interesting enough to interleave transactions with.
-    for progress in &build_events {
-        crate::record_build_progress(store, run_id, progress)?;
-    }
-    on_progress(Progress::Built { lines });
     Ok(())
 }
 
@@ -221,6 +192,9 @@ async fn prepare(resolved: Resolved, request: &Request) -> Result<Prepared> {
     // nothing to do, and finding that out after the plan is written wastes a turn.
     planner.check().await.map_err(Error::invalid)?;
     worktrees.check().await.map_err(Error::invalid)?;
+    // Before anything is created: a planning seat reaches ai-planner through its MCP
+    // server, and that server will not start without a database.
+    planner.ensure().await?;
 
     // Does the board already have work? A second run on a plan that is mid-flight picks
     // that up rather than planning it again - planning twice gives somebody the same
@@ -285,14 +259,24 @@ where
         repo: repo.clone(),
     });
 
-    // Always regenerate: the team rows are the source of truth (D2).
+    // There is no project to generate any more (D20). A seat is a Pi invocation, so the
+    // only thing written for a run is the guard and the per-seat MCP configs - which is
+    // also why the install and build phases below are gone, and with them the twenty
+    // seconds every run used to spend before a model saw the prompt.
+    //
+    // The resolutions are still reported: a denied preference falling back to another
+    // provider (D13) is something the operator should see before the work starts, not
+    // discover in the analytics afterwards.
     let project_dir = store.agents_dir(&project_slug)?;
-    let generated = store.generate_project_for_machine(team_id, &project_dir, &registry)?;
-    generated.write()?;
+    let agents: Vec<crate::Agent> = store
+        .agents(team_id)?
+        .into_iter()
+        .filter(|agent| agent.enabled)
+        .collect();
+    let (_, resolutions) = registry.resolve_agents(&agents)?;
     on_progress(Progress::Generated {
-        files: generated.files.len(),
-        fallbacks: generated
-            .resolutions
+        files: 0,
+        fallbacks: resolutions
             .iter()
             .filter_map(crate::ModelResolution::notice)
             .collect(),
@@ -305,13 +289,11 @@ where
         run_id: run.id,
         team_id,
         registry,
-        required_env: generated.required_env.clone(),
+        required_env: Vec::new(),
         parallel_width: width,
         planner,
         worktrees,
     };
-
-    build_once(&orchestrator, &mut store, run.id, &mut on_progress).await?;
 
     if planning {
         plan_it(&orchestrator, &mut store, run.id, &prompt, &mut on_progress).await?;
