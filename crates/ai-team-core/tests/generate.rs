@@ -832,3 +832,130 @@ fn tool_policy_rows_do_not_silently_widen_a_read_only_seat() {
         "read_only is stronger than a tool policy"
     );
 }
+
+/// A checkout carrying one skill, attached to the project so generation can find it.
+fn seeded_with_a_skill() -> (Store, tempfile::TempDir, i64) {
+    use ai_team_core::NewRepo;
+
+    let (mut store, project_id, team) = seeded();
+    let repo = tempfile::tempdir().unwrap();
+    let skill = repo.path().join(".agents/skills/house-style");
+    std::fs::create_dir_all(&skill).unwrap();
+    std::fs::write(
+        skill.join("SKILL.md"),
+        "---\nname: house-style\ndescription: How this repo names things.\n---\nFull words only.",
+    )
+    .unwrap();
+    store
+        .attach_repo(
+            project_id,
+            NewRepo {
+                main_path: Some(repo.path().to_string_lossy().into_owned()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    (store, repo, team)
+}
+
+#[test]
+fn a_repo_skill_is_generated_for_every_seat() {
+    // Not scoped by zone the way a connection is: a skill is the repository telling
+    // whoever edits it how to do so, and which seat needs it is not knowable from the
+    // roster. eve shows the model only the name and description until one is loaded.
+    let (store, _repo, team) = seeded_with_a_skill();
+    let generated = store.generate_project(team, "/tmp/unused").unwrap();
+
+    assert!(generated
+        .file("agent/skills/house-style/SKILL.md")
+        .is_some());
+    for role in ["backend", "frontend", "planner", "reviewer", "verifier"] {
+        assert!(
+            generated
+                .file(&format!(
+                    "agent/subagents/{role}/skills/house-style/SKILL.md"
+                ))
+                .is_some(),
+            "{role} has no skills"
+        );
+    }
+}
+
+#[test]
+fn a_generated_skill_keeps_its_frontmatter_and_says_where_the_real_one_is() {
+    // eve reads the name and description out of the frontmatter, so the file passes
+    // through unchanged - and the note is needed because the skill's own scripts and
+    // references were deliberately left in the repository.
+    let (store, _repo, team) = seeded_with_a_skill();
+    let generated = store.generate_project(team, "/tmp/unused").unwrap();
+    let skill = &generated
+        .file("agent/skills/house-style/SKILL.md")
+        .unwrap()
+        .contents;
+
+    assert!(skill.contains("description: How this repo names things."));
+    assert!(skill.contains("Full words only."));
+    assert!(skill.contains(".agents/skills/house-style"));
+}
+
+#[test]
+fn a_repo_with_skills_turns_the_framework_defaults_on() {
+    // `load_skill` is a framework default, so `defaultTools: false` leaves a seat shown
+    // a list of skills it has no way to open. That was the whole bug.
+    let (store, _repo, team) = seeded_with_a_skill();
+    let generated = store.generate_project(team, "/tmp/unused").unwrap();
+
+    let root = &generated.file("agent/agent.ts").unwrap().contents;
+    assert!(root.contains("defaultTools: true"), "{root}");
+    assert!(root.contains("load_skill"), "{root}");
+
+    let backend = &generated
+        .file("agent/subagents/backend/agent.ts")
+        .unwrap()
+        .contents;
+    assert!(backend.contains("defaultTools: true"), "{backend}");
+}
+
+#[test]
+fn a_read_only_seat_does_not_get_eve_s_write_file_back() {
+    // Turning the defaults on restores eve's own `write_file`. It writes to the sandbox
+    // rather than the worktree, so it cannot edit source - but a read-only seat holding
+    // a tool by that name will use it and report work that never landed.
+    let (store, _repo, team) = seeded_with_a_skill();
+    let generated = store.generate_project(team, "/tmp/unused").unwrap();
+
+    let disabled = &generated
+        .file("agent/subagents/verifier/tools/write_file.ts")
+        .unwrap()
+        .contents;
+    assert!(disabled.contains("disableTool()"), "{disabled}");
+
+    // A seat that writes still gets the real one.
+    let backend = &generated
+        .file("agent/subagents/backend/tools/write_file.ts")
+        .unwrap()
+        .contents;
+    assert!(!backend.contains("disableTool()"), "{backend}");
+}
+
+#[test]
+fn the_sandbox_backend_is_installed_only_when_there_are_skills() {
+    // eve initialises its sandbox templates as soon as a node has a skill and refuses to
+    // serve when that fails, and only `just-bash` needs neither Docker nor Vercel. A repo
+    // without skills should not pay 22MB for a sandbox ai-team never uses (D3).
+    let (store, _repo, team) = seeded_with_a_skill();
+    let with = store.generate_project(team, "/tmp/unused").unwrap();
+    assert!(with
+        .file("package.json")
+        .unwrap()
+        .contents
+        .contains("just-bash"));
+
+    let (plain, _, plain_team) = seeded();
+    let without = plain.generate_project(plain_team, "/tmp/unused").unwrap();
+    assert!(!without
+        .file("package.json")
+        .unwrap()
+        .contents
+        .contains("just-bash"));
+}

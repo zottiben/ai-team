@@ -111,7 +111,13 @@ impl Supervisor {
             )));
         }
 
-        if !self.project_dir.join("node_modules").exists() {
+        // Installed once is not installed *correctly*: the dependency list is generated
+        // from the team rows, so moving a seat to Claude adds the bridge package and a
+        // repository gaining its first skill adds eve's sandbox backend. Both changes
+        // used to be skipped here because `node_modules` already existed, and the build
+        // then failed on a package nothing had installed. Compare what the project asks
+        // for against what was last installed for it.
+        if !self.project_dir.join("node_modules").exists() || self.dependencies_moved()? {
             // `npm ci` needs a lockfile, and a freshly generated project has none - it
             // is written by the install itself. Trying it anyway "works", because the
             // fallback catches it, but it first dumps ~100 lines of npm's usage text
@@ -125,6 +131,7 @@ impl Supervisor {
                 on_progress(progress(BuildPhase::Install, line));
             })
             .await?;
+            self.record_installed()?;
         }
 
         // The environment is passed to the build because `eve build` evaluates every
@@ -138,6 +145,52 @@ impl Supervisor {
             |line| on_progress(progress(BuildPhase::Build, line)),
         )
         .await
+    }
+
+    /// Where the dependency list that was last installed is remembered.
+    ///
+    /// Inside `node_modules` on purpose: the two belong together, so deleting the
+    /// directory to force a clean install also forgets the marker.
+    fn installed_marker(&self) -> PathBuf {
+        self.project_dir
+            .join("node_modules")
+            .join(".ai-team-installed")
+    }
+
+    /// Whether the project now asks for different packages than were last installed.
+    ///
+    /// The whole `dependencies` block is compared rather than a version count, because a
+    /// pinned version moving is as much a reinstall as a package appearing. A missing
+    /// marker means an older install that predates this check, which is treated as moved
+    /// so the first run after an upgrade repairs itself.
+    fn dependencies_moved(&self) -> Result<bool> {
+        let manifest =
+            std::fs::read_to_string(self.project_dir.join("package.json")).map_err(|e| {
+                Error::UnusablePath {
+                    path: self.project_dir.join("package.json"),
+                    reason: e.to_string(),
+                }
+            })?;
+        let wanted = dependency_block(&manifest);
+        match std::fs::read_to_string(self.installed_marker()) {
+            Ok(installed) => Ok(installed.trim() != wanted.trim()),
+            Err(_) => Ok(true),
+        }
+    }
+
+    /// Remember what this install covered.
+    fn record_installed(&self) -> Result<()> {
+        let manifest =
+            std::fs::read_to_string(self.project_dir.join("package.json")).map_err(|e| {
+                Error::UnusablePath {
+                    path: self.project_dir.join("package.json"),
+                    reason: e.to_string(),
+                }
+            })?;
+        // Best effort: a marker that cannot be written costs a redundant install next
+        // time, which is slow rather than wrong.
+        let _ = std::fs::write(self.installed_marker(), dependency_block(&manifest));
+        Ok(())
     }
 
     /// Start the built output and wait for it to serve.
@@ -334,6 +387,22 @@ pub async fn reattach(
     Ok(store.node_run(node_run_id)?.session_id)
 }
 
+/// The `"dependencies"` object as written, or the whole manifest if it has none.
+///
+/// Textual on purpose. The generated manifest is written by one function in a stable
+/// order, so a diff here means the rows changed - and parsing JSON to compare a map this
+/// project itself generated would be ceremony around a string equality.
+fn dependency_block(manifest: &str) -> String {
+    let Some(start) = manifest.find("\"dependencies\"") else {
+        return manifest.to_string();
+    };
+    let tail = &manifest[start..];
+    match tail.find('}') {
+        Some(end) => tail[..=end].to_string(),
+        None => tail.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -481,5 +550,47 @@ mod tests {
     fn a_phase_names_itself_for_the_event_log() {
         assert_eq!(BuildPhase::Install.as_str(), "install");
         assert_eq!(BuildPhase::Build.as_str(), "build");
+    }
+}
+
+#[cfg(test)]
+mod install_tests {
+    use super::*;
+
+    #[test]
+    fn a_manifest_with_the_same_packages_reads_the_same() {
+        let a = "{\n  \"name\": \"x\",\n  \"dependencies\": {\n    \"eve\": \"0.58.1\"\n  },\n  \"devDependencies\": {}\n}";
+        let b = "{\n  \"name\": \"y\",\n  \"dependencies\": {\n    \"eve\": \"0.58.1\"\n  },\n  \"devDependencies\": {}\n}";
+        assert_eq!(dependency_block(a), dependency_block(b));
+    }
+
+    #[test]
+    fn adding_a_package_moves_the_dependencies() {
+        // Moving a seat to Claude adds the bridge; a repo's first skill adds the sandbox
+        // backend. Both have to be noticed, or the build fails on a missing package.
+        let before = "{\n  \"dependencies\": {\n    \"eve\": \"0.58.1\"\n  }\n}";
+        let after =
+            "{\n  \"dependencies\": {\n    \"just-bash\": \"^3.4.2\",\n    \"eve\": \"0.58.1\"\n  }\n}";
+        assert_ne!(dependency_block(before), dependency_block(after));
+    }
+
+    #[test]
+    fn a_pinned_version_moving_is_a_reinstall() {
+        // The versions are pinned deliberately, so one changing is a deliberate commit -
+        // and an install that does not follow it leaves the old package in place.
+        let before = "{\n  \"dependencies\": {\n    \"eve\": \"0.58.1\"\n  }\n}";
+        let after = "{\n  \"dependencies\": {\n    \"eve\": \"0.59.0\"\n  }\n}";
+        assert_ne!(dependency_block(before), dependency_block(after));
+    }
+
+    #[test]
+    fn a_change_outside_the_dependencies_is_not_a_reinstall() {
+        // Regenerating rewrites the whole manifest, so comparing the file would reinstall
+        // on every run - minutes of npm for a description that changed.
+        let before =
+            "{\n  \"description\": \"a\",\n  \"dependencies\": {\n    \"eve\": \"0.58.1\"\n  }\n}";
+        let after =
+            "{\n  \"description\": \"b\",\n  \"dependencies\": {\n    \"eve\": \"0.58.1\"\n  }\n}";
+        assert_eq!(dependency_block(before), dependency_block(after));
     }
 }

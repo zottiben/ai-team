@@ -23,6 +23,7 @@ const TOOL_PLAN_ADD: &str = include_str!("assets/tools/plan_add_slice.ts");
 const TOOL_PLAN_NOTE: &str = include_str!("assets/tools/plan_note.ts");
 const TOOL_PLAN_READ: &str = include_str!("assets/tools/plan_read.ts");
 const TOOL_DISABLED_WEB: &str = include_str!("assets/tools/disabled_web.ts");
+const TOOL_DISABLED_WRITE: &str = include_str!("assets/tools/disabled_write.ts");
 const CHANNEL_EVE: &str = include_str!("assets/channels/eve.ts");
 const TSCONFIG: &str = include_str!("assets/tsconfig.json");
 const GITIGNORE: &str = include_str!("assets/gitignore");
@@ -37,7 +38,12 @@ const OPENAI_COMPATIBLE_VERSION: &str = "^2.0.0";
 // Exact because this package owns the Claude Agent SDK version and its permission
 // semantics. A silent minor bump here can change what `tools: []` or canUseTool means.
 const CLAUDE_CODE_VERSION: &str = "4.3.1";
+// eve's own local sandbox backend, added only when a repository ships skills. Caret
+// because it is eve's peer rather than ours - a patch that keeps eve booting is one we
+// want, and nothing ai-team does depends on its behaviour.
+const JUST_BASH_VERSION: &str = "^3.4.2";
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn project(
     team: &Team,
     agents: &[Agent],
@@ -45,6 +51,7 @@ pub(crate) fn project(
     ailocal_base_url: &str,
     resolutions: Vec<crate::ModelResolution>,
     context: &[crate::ContextSource],
+    repo_skills: &[super::skills::Skill],
 ) -> Result<GeneratedProject> {
     check_roster(team, agents)?;
 
@@ -67,6 +74,7 @@ pub(crate) fn project(
             agents
                 .iter()
                 .any(|agent| agent.provider == crate::Provider::Claude),
+            !repo_skills.is_empty(),
         ),
     ));
     files.push(file("tsconfig.json", TSCONFIG.to_string()));
@@ -96,42 +104,36 @@ pub(crate) fn project(
         });
     }
 
+    // Skills are a repository fact, not a seat one, so every seat needs the defaults on
+    // when the repo ships any - `load_skill` is a framework default and is the only way
+    // to open one.
+    let repo_has_skills = !repo_skills.is_empty();
+
+    let root_defaults =
+        !connection_files("agent", root_agent, context).is_empty() || repo_has_skills;
     let root_model = model_expression(root_agent, ailocal_base_url);
     required_env.extend(root_model.env.iter().copied());
     files.push(file(
         "agent/agent.ts",
-        root_agent_ts(
-            root_agent,
-            &root_model,
-            &subagents,
-            !connection_files("agent", root_agent, context).is_empty(),
-            context,
-        ),
+        root_agent_ts(root_agent, &root_model, &subagents, root_defaults, context),
     ));
     files.push(file(
         "agent/instructions.md",
         instructions(team, root_agent, &subagents),
     ));
-    files.extend(tool_files(
-        Path::new("agent"),
-        root_agent,
-        1,
-        !connection_files("agent", root_agent, context).is_empty(),
-    ));
+    files.extend(tool_files(Path::new("agent"), root_agent, 1, root_defaults));
+    files.extend(skill_files("agent", repo_skills));
 
     for agent in &subagents {
         let dir = PathBuf::from("agent/subagents").join(&agent.role);
         let model = model_expression(agent, ailocal_base_url);
         required_env.extend(model.env.iter().copied());
+        let defaults_on =
+            !connection_files(&dir.to_string_lossy(), agent, context).is_empty() || repo_has_skills;
 
         files.push(file(
             dir.join("agent.ts").to_string_lossy().as_ref(),
-            subagent_ts(
-                agent,
-                &model,
-                !connection_files(&dir.to_string_lossy(), agent, context).is_empty(),
-                context,
-            ),
+            subagent_ts(agent, &model, defaults_on, context),
         ));
         files.push(file(
             dir.join("instructions.md").to_string_lossy().as_ref(),
@@ -147,8 +149,9 @@ pub(crate) fn project(
             &dir,
             agent,
             3,
-            !connection_files(&dir.to_string_lossy(), agent, context).is_empty(),
+            !connection_files(&dir.to_string_lossy(), agent, context).is_empty() || repo_has_skills,
         ));
+        files.extend(skill_files(&dir.to_string_lossy(), repo_skills));
     }
 
     required_env.sort_unstable();
@@ -180,10 +183,30 @@ fn file(path: &str, contents: String) -> GeneratedFile {
 /// removes eve's whole optional default set, and `disableTool()` at a slot with no
 /// framework default underneath it is a build error - which is what makes an absent file
 /// the right way to withhold a tool rather than an explicit disable.
-fn tool_files(dir: &Path, agent: &Agent, depth: usize, has_connection: bool) -> Vec<GeneratedFile> {
+/// The repository's skills, written into one seat's `skills/` directory.
+///
+/// Every seat gets all of them. Skills are not scoped by zone the way connections are
+/// (D15): a connection reaches an account and costs the prompt a description whether it
+/// is used or not, but a skill is the repository telling whoever edits it how to do so,
+/// and the seat that needs it is not knowable from the roster. eve only puts each skill's
+/// name and description in front of the model until one is loaded, so the cost of
+/// offering them all is a line each.
+fn skill_files(dir: &str, skills: &[super::skills::Skill]) -> Vec<GeneratedFile> {
+    skills
+        .iter()
+        .map(|skill| {
+            file(
+                &format!("{dir}/skills/{}/SKILL.md", skill.name),
+                super::skills::skill_md(skill),
+            )
+        })
+        .collect()
+}
+
+fn tool_files(dir: &Path, agent: &Agent, depth: usize, defaults_on: bool) -> Vec<GeneratedFile> {
     let tools = dir.join("tools");
     let up = "../".repeat(depth);
-    agent_tools(agent, has_connection)
+    agent_tools(agent, defaults_on)
         .into_iter()
         .map(|(name, asset)| GeneratedFile {
             path: tools.join(format!("{name}.ts")),
@@ -196,7 +219,7 @@ fn tool_files(dir: &Path, agent: &Agent, depth: usize, has_connection: bool) -> 
 /// cannot verify anything. A read-only seat gets no source-editing definitions at all.
 /// Keep this one list for both eve's discovery files and Claude's explicit MCP bridge so
 /// a tool can never exist on one route but not the other.
-fn agent_tools(agent: &Agent, has_connection: bool) -> Vec<(&'static str, &'static str)> {
+fn agent_tools(agent: &Agent, defaults_on: bool) -> Vec<(&'static str, &'static str)> {
     let mut tools = vec![("bash", TOOL_BASH), ("read_file", TOOL_READ)];
     if !agent.read_only {
         tools.extend([("write_file", TOOL_WRITE), ("edit_file", TOOL_EDIT)]);
@@ -211,14 +234,20 @@ fn agent_tools(agent: &Agent, has_connection: bool) -> Vec<(&'static str, &'stat
         // A maker still reads the board it is working from; it just does not shape it.
         tools.push(("plan_read", TOOL_PLAN_READ));
     }
-    if has_connection {
-        // Only meaningful where the framework defaults are on, which is exactly where a
-        // connection is - and where `disableTool()` has something underneath it to
-        // disable, which is what stops it being a build error.
+    if defaults_on {
+        // Only meaningful where the framework defaults are on - a seat with a connection
+        // or with the repository's skills - and where `disableTool()` has something
+        // underneath it to disable, which is what stops it being a build error.
         tools.extend([
             ("web_fetch", TOOL_DISABLED_WEB),
             ("web_search", TOOL_DISABLED_WEB),
         ]);
+        if agent.read_only {
+            // The defaults being on means eve's own `write_file` is back. A read-only
+            // seat offered a tool by that name will use it and then report work that
+            // never reached the worktree.
+            tools.push(("write_file", TOOL_DISABLED_WRITE));
+        }
     }
     tools
 }
@@ -232,9 +261,20 @@ fn plans(agent: &Agent) -> bool {
     agent.role == ROOT_ROLE || agent.role == "planner"
 }
 
-fn package_json(team: &Team, includes_claude: bool) -> String {
+fn package_json(team: &Team, includes_claude: bool, has_skills: bool) -> String {
     let claude = if includes_claude {
         format!("    \"ai-sdk-provider-claude-code\": \"{CLAUDE_CODE_VERSION}\",\n    ")
+    } else {
+        String::new()
+    };
+    // Only when the repository actually ships skills. eve initialises its sandbox
+    // templates as soon as a node has one - a skill may carry `scripts/`, so the runtime
+    // insists on somewhere to run them - and it refuses to serve when that fails. Of its
+    // backends only `just-bash` needs no Docker and no Vercel, so it is the one that
+    // works on any machine. ai-team never uses the sandbox (D3): this is the cost of
+    // eve booting at all with skills present, which is why a repo without them pays it.
+    let sandbox = if has_skills {
+        format!("    \"just-bash\": \"{JUST_BASH_VERSION}\",\n    ")
     } else {
         String::new()
     };
@@ -252,7 +292,7 @@ fn package_json(team: &Team, includes_claude: bool) -> String {
          }},\n  \
          \"dependencies\": {{\n    \
          \"@ai-sdk/openai-compatible\": \"{OPENAI_COMPATIBLE_VERSION}\",\n    \
-         {claude}\"ai\": \"{AI_SDK_VERSION}\",\n    \
+         {claude}{sandbox}\"ai\": \"{AI_SDK_VERSION}\",\n    \
          \"eve\": \"{EVE_VERSION}\",\n    \
          \"zod\": \"{ZOD_VERSION}\"\n  \
          }},\n  \
@@ -414,7 +454,7 @@ fn root_agent_ts(
     agent: &Agent,
     model: &crate::generate::ModelExpression,
     subagents: &[&Agent],
-    has_connection: bool,
+    defaults_on: bool,
     context: &[crate::ContextSource],
 ) -> String {
     let (imports, model_setup) = model_setup(agent, model, context);
@@ -450,14 +490,14 @@ fn root_agent_ts(
         model_expr = model.expression,
         reasoning = reasoning_literal(agent),
         context = context_window(agent),
-        defaults = default_tools_line(has_connection),
+        defaults = default_tools_line(defaults_on),
     )
 }
 
 fn subagent_ts(
     agent: &Agent,
     model: &crate::generate::ModelExpression,
-    has_connection: bool,
+    defaults_on: bool,
     context: &[crate::ContextSource],
 ) -> String {
     let (imports, model_setup) = model_setup(agent, model, context);
@@ -476,7 +516,7 @@ fn subagent_ts(
          }});\n",
         imports = imports,
         model_setup = model_setup,
-        defaults = default_tools_line(has_connection),
+        defaults = default_tools_line(defaults_on),
         description = one_line(&agent.purpose),
         model_expr = model.expression,
         reasoning = reasoning_literal(agent),
@@ -636,10 +676,12 @@ const VERIFIER_INSTRUCTIONS: &str = "\n## What you are checking\n\n\
 /// The authored `bash`, `read_file` and `write_file` still win at their own slots, so the
 /// worktree boundary is unchanged; `web_fetch` and `web_search` are disabled separately,
 /// since a page fetched off the internet is untrusted text landing in the context.
-fn default_tools_line(has_connection: bool) -> &'static str {
-    if has_connection {
-        "// On because `connection_search` is a framework default and it is the only\n  \
-         // route to this seat's connections. The authored tools still override the\n  \
+fn default_tools_line(defaults_on: bool) -> &'static str {
+    if defaults_on {
+        "// On because the tools this seat needs are framework defaults:\n  \
+         // `connection_search` is the only route to a connection, and `load_skill` is\n  \
+         // the only way to read a skill this repository ships - without it the model is\n  \
+         // shown a list of skills it cannot open. The authored tools still override the\n  \
          // sandbox ones at their own slots, and web_fetch/web_search are disabled.\n  \
          defaultTools: true,"
     } else {

@@ -11,6 +11,7 @@
 
 mod model;
 mod render;
+mod skills;
 
 use std::path::{Path, PathBuf};
 
@@ -144,6 +145,7 @@ impl Store {
             // The plain generator is for tests and `--dry-run`; a machine's context
             // sources come from its profile, so this path grants none.
             &[],
+            &self.repo_skills(&team),
         )
     }
 
@@ -168,6 +170,7 @@ impl Store {
             "http://127.0.0.1:8081/v1",
             Vec::new(),
             context,
+            &self.repo_skills(&team),
         )
     }
 
@@ -195,7 +198,28 @@ impl Store {
             registry.ailocal_base_url(),
             resolutions,
             &registry.context_sources(),
+            &self.repo_skills(&team),
         )
+    }
+
+    /// The skills the team's own checkout carries.
+    ///
+    /// Resolved from the team rather than passed in, because every caller already holds a
+    /// team and none of them should have to know that skills are a generation input.
+    /// A team with no project, or a project with no repo, simply has none - that is a
+    /// `--dry-run` or a test fixture, not a problem to report.
+    fn repo_skills(&self, team: &Team) -> Vec<skills::Skill> {
+        let Some(project_id) = team.project_id else {
+            return Vec::new();
+        };
+        let Ok(repos) = self.project_repos(project_id) else {
+            return Vec::new();
+        };
+        repos
+            .iter()
+            .filter_map(|repo| repo.main_path.as_deref())
+            .flat_map(|path| skills::read(Path::new(path)))
+            .collect()
     }
 
     /// The conventional location for a project's generated eve project.
