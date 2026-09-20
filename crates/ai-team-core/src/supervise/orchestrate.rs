@@ -240,7 +240,9 @@ impl Orchestrator {
             title: slice.title.clone(),
             // Read from the lease, not the main checkout: a branch that changes the
             // house rules should be judged by the rules it is proposing.
-            prompt: slice_prompt(slice, &crate::house::read(&worktree)),
+            // Narrowed to the paths this slice touches, so a nested AGENTS.md governing
+            // the directory being edited is included and the rest of a monorepo is not.
+            prompt: slice_prompt(slice, &crate::house::read_for(&worktree, &slice.touches())),
             worktree,
             lease,
             planner: self.planner.clone(),

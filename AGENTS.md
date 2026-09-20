@@ -67,7 +67,7 @@ isn't covered, ask and record it with `aip decision add`.
 
 ## Hard rules
 
-Sixteen decisions are recorded in the plan (`aip decision ls`). These twelve are the ones
+Nineteen decisions are recorded in the plan (`aip decision ls`). These thirteen are the ones
 an agent will otherwise get wrong, so they are repeated here.
 
 ### 1. Subscription-backed models only (D8)
@@ -98,14 +98,29 @@ agent is an eve node whose model is bridged:
 model: claudeCode('sonnet', {
   mcpServers: { eve: createAiSdkMcpServer('eve', tools) },
   allowedTools: ['mcp__eve__bash', 'mcp__eve__read_file'],
-  tools: [],              // disable Claude Code's own host tools
-  settingSources: [],     // NOT undefined — undefined inherits the human's Claude config
+  cwd: process.env.AI_TEAM_WORKTREE,  // everything below resolves relative to this
+  settingSources: ['project'],        // the repo's config, never 'user' or 'local' (D19)
+  skills: 'all',
+  tools: ['Skill'],                   // NOT [] — that disables Skill along with the rest
 })
 ```
 
 This only works because we generate the eve project, so the generated `agent.ts` can import
 the very tool modules it bridges. eve's *built-in* tools have no importable `execute` and
 cannot be bridged — disable them on these nodes.
+
+**The repository's own tooling reaches the seat, the human's does not (D19).** Its
+`.mcp.json` servers, its skills, its hooks and its CLAUDE.md files all apply, because they
+are checked in and already govern that code. `settingSources` is `['project']` and must
+never gain `'user'` or `'local'` — that is the home config D7 excluded, and the line
+between the two is the whole decision. Two traps, both silent: nothing resolves without
+`cwd` on the lease, and `tools: []` disables `Skill` along with the filesystem tools, so a
+repo full of skills produces an agent that reports having none. `canUseTool` admits
+project-declared tools but excludes namespaces that govern themselves — the bridge, and
+every context source, whose read-only allow-list a blanket `mcp__*` rule would undo (D15).
+
+None of this reaches a local, GLM or ChatGPT seat: a plain eve node has no settings layer,
+and eve cannot run stdio MCP servers (D4). Those seats get house rules and nothing else.
 
 ### 3. The database is the team; the eve project is generated (D2)
 Never hand-edit anything under `.ai-team/agents/`. Change the team rows and regenerate.
@@ -286,3 +301,22 @@ that were genuinely new; `node_run.stream_cursor` is `from_index + batch.len()`,
 `cursor + batch.len()` (that is right for a resume and silently wrong for a rewind); and AI
 SDK v7's `inputTokens` is a total whose `cacheReadTokens` / `cacheWriteTokens` are subsets,
 so subtract those subsets before storing the uncached input column.
+
+### 13. House rules are how every seat hears the repo (M3-S25, M8-S36)
+`house.rs` reads what a checkout already carries — `AGENTS.md`, `CLAUDE.md`,
+`CONVENTIONS.md`, `.cursor/rules`, `.github/copilot-instructions.md` — from the **lease**,
+so a branch that changes the rules is judged by the rules it proposes. It is the only
+channel a local, GLM or ChatGPT seat has, and the only one that carries `AGENTS.md` at all:
+`settingSources: ['project']` loads a Claude seat's CLAUDE.md files, and AGENTS.md is not a
+Claude convention.
+
+Nested files are found too, because a repository puts its rules next to the code they
+govern. They are **selected by what the slice touches** — `ui/AGENTS.md` for a slice
+touching `ui/src/App.tsx` — matching a glob on its literal prefix, since `plan_add_slice`
+writes `Touches: crates/**`. Sending every AGENTS.md in a monorepo is not context, it is
+noise that crowds out the slice. Deepest-first under the 16k budget so the most specific
+survives a cut; shallowest-first in the prompt so it reads as qualifying what came above.
+A turn with no slice behind it gets all of them, because nothing narrows what it may edit.
+
+ai-team never writes these files and never learns them (Q16). Read what is there, say
+nothing when there is nothing.

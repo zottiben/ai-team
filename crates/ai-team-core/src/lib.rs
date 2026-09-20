@@ -51,7 +51,9 @@ pub use eve::{Disposition, Ingested, StreamEvent, StreamMeta, TerminalState};
 pub use gates::{all_passed, discover_gates, evidence, run_gates, Gate, GateKind, GateResult};
 pub use generate::{GeneratedFile, GeneratedProject, ModelExpression, ROOT_ROLE, VERIFIER_ROLE};
 pub use guardrails::{node_may_continue, run_may_continue, Exceeded, Fallout};
-pub use house::{read as read_house_rules, section as house_section, Rules};
+pub use house::{
+    read as read_house_rules, read_for as read_house_rules_for, section as house_section, Rules,
+};
 pub use lsp::{
     language_for, language_id, workspace_root, Client, Diagnostic, Hover, Language, Location, Pool,
     Position, Range,

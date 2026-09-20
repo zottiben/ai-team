@@ -97,6 +97,13 @@ async fn single_node(args: RunArgs, worktree: PathBuf) -> Result<()> {
     store.attach_worktree(node.id, &worktree.to_string_lossy(), None, None)?;
     store.set_node_status(node.id, NodeStatus::Running)?;
 
+    // The repository's own rules reach this turn too. A direct turn has no slice, so
+    // nothing narrows which directory it might edit and every nested file applies -
+    // and it is the one path where a seat is doing exactly what a person just asked,
+    // which is when being held to the repo's standards matters most.
+    let house = core::read_house_rules_for(&worktree, &[]);
+    let prompt = format!("{prompt}{}", core::house_section(&house));
+
     let (session, outcome) = core::run_turn(&mut store, node.id, &client, &prompt, |event| {
         if let ai_team_core::Disposition::Record(kind, summary) = event.classify() {
             // Only the events that become rows are printed, so the terminal shows what

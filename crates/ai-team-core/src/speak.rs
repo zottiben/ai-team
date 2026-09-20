@@ -310,15 +310,16 @@ async fn record_work(
 ///
 /// So it says three things: this came from a person, there is no plan here, and the work is
 /// the message.
-fn as_instruction(said: &str) -> String {
+fn as_instruction(said: &str, house: &[crate::house::Rules]) -> String {
     format!(
         "A person is asking you directly. Do this:\n\n{}\n\nYou are in a worktree leased \
          for you alone - work only inside it. This turn is not part of a plan, so the \
          planning tools are unavailable on purpose; do not look for a plan or a slice, and \
          do not try to record one. Run the project's own checks before you call it done, and \
          say plainly if they do not pass. Your work is kept for you when the turn ends, so \
-         do not commit.",
-        said.trim()
+         do not commit.{}",
+        said.trim(),
+        crate::house::section(house)
     )
 }
 
@@ -365,7 +366,7 @@ async fn drive(
         store,
         node_run_id,
         &client,
-        &as_instruction(message),
+        &as_instruction(message, &crate::house::read_for(&env.worktree, &[])),
         |_| {},
     )
     .await;
@@ -561,7 +562,7 @@ mod tests {
     fn a_plan_less_turn_is_told_that_it_has_no_plan() {
         // The first agent asked went looking for a plan, got "AI_TEAM_PLAN_ROOT is not set"
         // from tools that are unconfigured on purpose, and stopped without touching a file.
-        let framed = as_instruction("Add a subtract function.");
+        let framed = as_instruction("Add a subtract function.", &[]);
 
         assert!(framed.contains("Add a subtract function."));
         assert!(framed.contains("not part of a plan"), "{framed}");
