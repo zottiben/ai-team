@@ -185,6 +185,8 @@ where
 mod tests {
     use super::*;
     use crate::model::{NewProject, NewReminder, Recur, ReminderStatus};
+    use time::format_description::well_known::Rfc3339;
+    use time::OffsetDateTime;
 
     fn store_with(reminder: NewReminder) -> (Store, Reminder) {
         let mut store = Store::memory().unwrap();
@@ -196,6 +198,43 @@ mod tests {
             .unwrap();
         let reminder = store.add_reminder(reminder).unwrap();
         (store, reminder)
+    }
+
+    #[test]
+    fn a_missed_daily_fires_once_not_once_per_missed_day() {
+        // Three days of downtime, then the clock comes back up. A person expects one
+        // run, not one per day they were away.
+        // Whole seconds, because `now()` stores whole seconds and these timestamps are
+        // compared as strings - a fixture carrying nanoseconds sorts before the very
+        // second it names.
+        let due_three_days_ago = (OffsetDateTime::now_utc() - time::Duration::days(3))
+            .replace_nanosecond(0)
+            .unwrap();
+        let (mut store, _) = store_with(NewReminder {
+            project_id: Some(1),
+            kind: Some(ReminderKind::ScheduledRun),
+            title: "nightly sweep".into(),
+            prompt: Some("tidy the imports".into()),
+            due_at: Some(due_three_days_ago.format(&Rfc3339).unwrap()),
+            recur: Some(Recur::Daily),
+            ..Default::default()
+        });
+
+        // Tick until the clock settles, exactly as the daemon does every 20 seconds.
+        let mut fired = 0;
+        for _ in 0..10 {
+            let claimed = claim_due(&mut store, &now()).unwrap();
+            if claimed.is_empty() {
+                break;
+            }
+            fired += claimed.len();
+        }
+
+        assert_eq!(
+            fired, 1,
+            "a daily reminder missed for 3 days fired {fired} times - each one \
+             notifies and starts an unattended agent"
+        );
     }
 
     fn due_now(kind: ReminderKind) -> NewReminder {

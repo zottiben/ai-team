@@ -31,19 +31,29 @@ fn installed(command: &str) -> bool {
 /// is busy gets muted.
 const PATIENCE: Duration = Duration::from_secs(180);
 
-/// Wait for a server to publish diagnostics for a file.
+/// Wait for a server to publish an *error* for a file.
 ///
 /// Polled rather than awaited once: rust-analyzer builds its index before it says
 /// anything, and asking immediately gets "nothing published yet" every time.
-async fn wait_for_diagnostics(
+///
+/// Waiting for an error rather than for the first non-empty batch is what makes this
+/// deterministic. A server publishes more than once and not in a fixed order -
+/// rust-analyzer's own analysis and flycheck's `cargo check` are separate providers on
+/// the same connection, and which one lands first depends on whether the check cache is
+/// warm. Returning the first batch made these tests pass from a cold target directory
+/// and fail from a warm one, which is the kind of failure that gets a test muted rather
+/// than read.
+async fn wait_for_error(
     client: &Client,
     path: &str,
     timeout: Duration,
 ) -> Option<Vec<ai_team_core::Diagnostic>> {
+    let has_error =
+        |found: &[ai_team_core::Diagnostic]| found.iter().any(|d| d.severity == Some(1));
     let deadline = tokio::time::Instant::now() + timeout;
     while tokio::time::Instant::now() < deadline {
         if let Some(found) = client.diagnostics(path).await {
-            if !found.is_empty() {
+            if has_error(&found) {
                 return Some(found);
             }
         }
@@ -87,9 +97,9 @@ async fn rust_analyzer_attaches_and_reports_a_type_error() {
         .await
         .unwrap();
 
-    let found = wait_for_diagnostics(&client, "src/lib.rs", PATIENCE)
+    let found = wait_for_error(&client, "src/lib.rs", PATIENCE)
         .await
-        .expect("rust-analyzer published nothing at all - was the machine this loaded?");
+        .expect("rust-analyzer published no error at all - was the machine this loaded?");
 
     // Asserted on what is stable rather than on rustc's phrasing: the wording here is
     // "expected i32, found &'static str", not "mismatched types", and pinning a test to a
@@ -98,7 +108,15 @@ async fn rust_analyzer_attaches_and_reports_a_type_error() {
         .iter()
         .find(|d| d.severity == Some(1))
         .unwrap_or_else(|| panic!("expected an error among {found:#?}"));
-    assert_eq!(error.source.as_deref(), Some("rust-analyzer"));
+    // Which provider noticed is deliberately not pinned. Native type inference and
+    // flycheck's `cargo check` both publish on this connection, they disagree about
+    // `source`, and rust-analyzer's own type-mismatch diagnostics are off by default -
+    // so requiring "rust-analyzer" here asserted a configuration, not a behaviour. That
+    // it arrived through the client is the thing under test.
+    assert!(
+        matches!(error.source.as_deref(), Some("rust-analyzer" | "rustc")),
+        "{error:#?}"
+    );
     assert!(error.message.contains("i32"), "{error:#?}");
 
     // And it points at the offending line, which is what makes a gutter marker useful
@@ -217,9 +235,9 @@ async fn typescript_attaches_and_reports_a_type_error() {
         .await
         .unwrap();
 
-    let found = wait_for_diagnostics(&client, "index.ts", PATIENCE)
+    let found = wait_for_error(&client, "index.ts", PATIENCE)
         .await
-        .expect("typescript published nothing at all - was the machine this loaded?");
+        .expect("typescript published no error at all - was the machine this loaded?");
     let error = found
         .iter()
         .find(|d| d.severity == Some(1))

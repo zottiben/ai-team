@@ -1,165 +1,70 @@
 //! `ait doctor` - what this install actually is.
 //!
-//! Every line here answers a question that has otherwise cost someone an afternoon:
-//! which database am I looking at, is there a machine profile, and did this binary get
-//! a real frontend bundle or the apology page.
-
-use std::path::Path;
+//! A view of the readiness report, not a second opinion. It used to look at the machine
+//! for itself, which meant the terminal and the window could disagree about whether a
+//! machine was set up - and they did. Everything here is formatting.
 
 use ai_team_core as core;
+use core::{Fix, Severity};
 
 /// Infallible on purpose: every line reports what it found, including "unavailable", so
 /// there is nothing left for a caller to handle. A doctor that can itself fail is a
 /// doctor you cannot run when things are broken.
 pub(crate) async fn run() {
-    println!("ai-team {}", core::VERSION);
+    // Opened rather than required: the whole point of running this is often that there is
+    // no database yet.
+    let known = core::default_db_path()
+        .ok()
+        .and_then(|path| core::Store::open(&path).ok())
+        .map(|store| core::Known::of(&store));
+    let report = core::readiness_report(known.as_ref()).await;
 
-    line(
-        "data directory",
-        core::data_dir().as_deref().map(|p| (p, "")),
-    );
-
-    line(
-        "database",
-        core::default_db_path()
-            .as_deref()
-            .map(|p| (p, exists(p, "present", "not created yet - run `ait init`"))),
-    );
-
-    // Reported separately from the file's existence: a database that is there but a
-    // migration behind is the case that produces a confusing error later.
-    if let Ok(path) = core::default_db_path() {
-        if path.exists() {
-            match core::Store::open(&path) {
-                Ok(store) => println!(
-                    "  {:<18} v{} · {} project(s) · {} view(s)",
-                    "schema",
-                    store.schema_version().unwrap_or(0),
-                    store.projects().map_or(0, |p| p.len()),
-                    store.views().map_or(0, |v| v.len()),
-                ),
-                Err(e) => println!("  {:<18} unreadable: {e}", "schema"),
-            }
-        }
-    }
-
-    line(
-        "machine profile",
-        core::machine_profile_path().as_deref().map(|p| {
-            (
-                p,
-                exists(
-                    p,
-                    "present",
-                    "absent - every provider is denied until it exists",
-                ),
-            )
-        }),
-    );
-
-    let loaded = core::ModelRegistry::load();
-    match &loaded {
-        Ok(registry) => {
-            for status in registry.statuses() {
-                println!(
-                    "  {:<18} {:<11} {}",
-                    format!("provider {}", status.provider),
-                    status.state.as_str(),
-                    status.detail
-                );
-            }
-        }
-        Err(error) => {
-            for provider in core::Provider::ALL {
-                println!(
-                    "  {:<18} {:<11} {error}",
-                    format!("provider {provider}"),
-                    "denied"
-                );
-            }
-        }
-    }
-
-    report_context(loaded.as_ref().ok());
-
-    // The neighbours ai-team borrows rather than absorbs (D4). Absent is not fatal - a
-    // single-node `ait run --worktree` needs neither - so each says what it blocks.
-    for (label, outcome, blocks) in [
-        (
-            "ai-planner",
-            core::Planner::at(".").check().await,
-            "planning and dispatch",
-        ),
-        (
-            "ai-worktree",
-            core::Worktrees::at(".").check().await,
-            "leasing a worktree per slice",
-        ),
-    ] {
-        match outcome {
-            Ok(version) => println!("  {label:<18} {version}"),
-            Err(_) => println!("  {label:<18} not installed - {blocks} is unavailable"),
-        }
-    }
-
-    // file-sql has no `--version`-style health check of its own worth calling a check,
-    // and its index is per checkout rather than per machine - so this says whether the
-    // binary is there and leaves "is this repo indexed" to the surface that needs it.
-    if core::file_sql_available().await {
-        println!("  {:<18} installed", "file-sql");
-    } else {
+    println!("ai-team {}", report.version);
+    for check in &report.checks {
         println!(
-            "  {:<18} not installed - search in the editor is unavailable",
-            "file-sql"
+            "  {:<20} {:<9} {}",
+            check.label,
+            mark(check.severity),
+            check.detail
         );
     }
 
-    let bundle = ai_team_ui::bundle();
-    if bundle.embedded {
-        println!("  {:<18} {} files compiled in", "frontend", bundle.files);
-    } else {
-        println!(
-            "  {:<18} missing - `ait ui` will serve a placeholder. Rebuild with node \
-             available, or run `cd ui && npm ci && npm run build` first.",
-            "frontend"
-        );
+    let problems = report.problems();
+    if problems.is_empty() {
+        println!("\nEverything is set up.");
+        return;
     }
-}
 
-/// Read-only context sources (D9).
-///
-/// Denied is the default, so a source missing here means this machine has not opted in
-/// rather than something being broken. Allowed but tokenless is worth saying too: the
-/// connection is generated and its seats will fail at the first call.
-fn report_context(registry: Option<&core::ModelRegistry>) {
-    for source in core::ContextSource::ALL {
-        let allowed = registry.is_some_and(|registry| registry.context_sources().contains(source));
-        let env = format!("AI_TEAM_{}_TOKEN", source.as_str().to_uppercase());
-        let state = if allowed {
-            if std::env::var(&env).is_ok_and(|value| !value.trim().is_empty()) {
-                format!("allowed     read-only, {env} is set")
-            } else {
-                format!("allowed     but {env} is not set, so its seats cannot reach it")
+    // The fixes are listed after the findings rather than beside them, because a command
+    // buried in a column is a command nobody can copy.
+    println!("\nWhat to do:");
+    for check in problems {
+        match &check.fix {
+            Fix::Itself { describe, .. } => {
+                // Named as something ai-team will do, and `ait init` is how to ask for it
+                // from here - the window has a button.
+                println!("  {}: {describe}", check.label);
+                println!("    run `ait init`");
             }
-        } else {
-            "denied      blocked by machine.toml".to_string()
-        };
-        println!("  {:<18} {state}", format!("context {source}"));
+            Fix::Command { run, why } => {
+                println!("  {}: {why}", check.label);
+                println!("    {run}");
+            }
+            Fix::Human { what } => println!("  {}: {what}", check.label),
+            Fix::None => {}
+        }
+    }
+
+    if !report.can_run {
+        println!("\nNothing can run yet.");
     }
 }
 
-fn line(label: &str, value: Result<(&Path, &str), &core::Error>) {
-    match value {
-        Ok((path, "")) => println!("  {label:<18} {}", path.display()),
-        Ok((path, note)) => println!("  {label:<18} {} ({note})", path.display()),
-        Err(e) => println!("  {label:<18} unavailable: {e}"),
-    }
-}
-
-fn exists<'a>(path: &Path, yes: &'a str, no: &'a str) -> &'a str {
-    if path.exists() {
-        yes
-    } else {
-        no
+/// A word, not a colour: this is read over ssh and piped into files.
+fn mark(severity: Severity) -> &'static str {
+    match severity {
+        Severity::Blocking => "blocking",
+        Severity::Degraded => "degraded",
+        Severity::Fine => "ok",
     }
 }

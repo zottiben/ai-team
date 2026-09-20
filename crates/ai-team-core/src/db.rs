@@ -12,6 +12,15 @@ use rusqlite::{Connection, Transaction, TransactionBehavior};
 use crate::error::{Error, Result};
 use crate::util::now;
 
+/// The schema version this build carries.
+///
+/// Derived from [`MIGRATIONS`] rather than written down, because a constant somebody has
+/// to remember to bump is a constant that goes stale the one time it matters - when a
+/// database is a migration behind and nothing says so.
+pub(crate) fn latest_schema() -> i64 {
+    MIGRATIONS.last().map_or(0, |(version, _, _)| *version)
+}
+
 const MIGRATIONS: &[(i64, &str, &str)] = &[
     (1, "core", include_str!("migrations/001_core.sql")),
     (2, "eve", include_str!("migrations/002_eve.sql")),

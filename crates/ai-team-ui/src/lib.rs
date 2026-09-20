@@ -52,6 +52,12 @@ pub struct ServeOptions {
     /// The database to read. Without one the window serves, reports its health, and says
     /// there is nothing to show - which is a better answer than refusing to start.
     pub store: Option<ai_team_core::Store>,
+    /// Where to look for a database that does not exist yet.
+    ///
+    /// Named rather than resolved on demand so the server knows which database it serves.
+    /// `None` means the machine's own, which is what `ait ui` passes; a test passes its
+    /// own, because a test that reaches for the real one writes to the developer's home.
+    pub db_path: Option<std::path::PathBuf>,
 }
 
 /// Bound, but not yet serving.
@@ -73,7 +79,12 @@ impl Server {
             Some(t) if !t.trim().is_empty() => t,
             _ => auth::mint_token()?,
         };
-        let mut state = AppState::new(token.as_str());
+        let mut state = AppState::new(token.as_str()).watching(
+            options
+                .db_path
+                .clone()
+                .or_else(|| ai_team_core::default_db_path().ok()),
+        );
         if let Some(store) = options.store {
             state = state.with_store(store);
         }

@@ -12,13 +12,21 @@ pub(crate) async fn run(args: UiArgs) -> Result<()> {
     let db = ai_team_core::default_db_path()?;
     let store = ai_team_core::Store::open(&db).ok();
     if store.is_none() {
-        println!("No database at {} yet - run `ait init`.", db.display());
+        // Not an instruction any more: the window's own setup page can create it, and it
+        // will be picked up without a restart.
+        println!(
+            "No database at {} yet - the window will offer to set one up.",
+            db.display()
+        );
     }
 
     let server = Server::bind(ServeOptions {
         port: args.port,
         token: None,
         store,
+        // Named so the window can pick up a database created after it started - from its
+        // own setup page, or by `ait init` in another terminal.
+        db_path: Some(db),
     })
     .await
     .context("starting the local server")?;

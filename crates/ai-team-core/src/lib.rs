@@ -25,6 +25,7 @@ mod machine;
 mod model;
 mod neighbours;
 mod paths;
+mod readiness;
 mod review;
 mod roles;
 mod schedule;
@@ -68,6 +69,10 @@ pub use neighbours::{
     FileSql, Hit, Lease, PlanSummary, Planner, PoolEntry, Question, Slice, Worktrees,
 };
 pub use paths::{data_dir, default_db_path, ensure_data_dir, machine_profile_path, HOME_ENV};
+pub use readiness::{
+    apply as apply_fix, apply_at as apply_fix_at, report as readiness_report,
+    report_at as readiness_report_at, Action, Check, Fix, Known, Paths, Report, Severity,
+};
 pub use review::{
     amendment, as_instructions, deliver as deliver_review, diff_for, instructions_for,
     pending as pending_review, responsible, steerable, Audience, Pending, Submitted,

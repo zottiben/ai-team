@@ -138,7 +138,7 @@ impl Store {
                 reminder
                     .due_at
                     .as_deref()
-                    .map(|due| next_occurrence(due, r))
+                    .map(|due| next_occurrence(due, r, &at))
             })
             .transpose()?;
 
@@ -178,7 +178,7 @@ impl Store {
                 reminder
                     .due_at
                     .as_deref()
-                    .map(|due| next_occurrence(due, r))
+                    .map(|due| next_occurrence(due, r, &at))
             })
             .transpose()?;
 
@@ -219,32 +219,47 @@ impl Store {
     }
 }
 
-/// The next occurrence after `due`, in the same ISO-8601 shape.
+/// The next occurrence after `due` that has not already passed, in the same ISO-8601 shape.
 ///
 /// Time-of-day is preserved deliberately: a 09:00 reminder stays a 09:00 reminder, which
 /// is the whole point of "daily".
-fn next_occurrence(due: &str, recur: Recur) -> Result<String> {
+///
+/// Stepping past `not_before` rather than stopping at the first step is what keeps a
+/// machine that was off for a week from replaying the week. Rolling forward by one
+/// interval leaves a missed reminder still due, so the next tick fires it again twenty
+/// seconds later, and again, until the arithmetic catches up with the calendar - a
+/// notification and an unattended agent per day away. A person who missed six nightly
+/// runs wants tonight's run, not six of them at once.
+fn next_occurrence(due: &str, recur: Recur, not_before: &str) -> Result<String> {
     use time::format_description::well_known::Rfc3339;
     use time::{Duration, OffsetDateTime, Weekday};
 
     let start = OffsetDateTime::parse(due, &Rfc3339)
         .map_err(|e| Error::invalid(format!("{due:?} is not a usable due time: {e}")))?;
+    let floor = OffsetDateTime::parse(not_before, &Rfc3339)
+        .map_err(|e| Error::invalid(format!("{not_before:?} is not a usable time: {e}")))?;
 
-    let next = match recur {
-        Recur::Daily => start + Duration::days(1),
+    let step = |from: OffsetDateTime| match recur {
+        Recur::Daily => from + Duration::days(1),
         Recur::Weekdays => {
-            let mut candidate = start + Duration::days(1);
+            let mut candidate = from + Duration::days(1);
             while matches!(candidate.weekday(), Weekday::Saturday | Weekday::Sunday) {
                 candidate += Duration::days(1);
             }
             candidate
         }
-        Recur::Weekly => start + Duration::weeks(1),
+        Recur::Weekly => from + Duration::weeks(1),
         // Calendar months vary, so this steps by 4 weeks rather than pretending
         // otherwise. Named `monthly` because that is what a person means by it; if the
         // drift ever matters, this is the one function to fix.
-        Recur::Monthly => start + Duration::weeks(4),
+        Recur::Monthly => from + Duration::weeks(4),
     };
+
+    // Always step at least once: the occurrence being fired is behind us by definition.
+    let mut next = step(start);
+    while next <= floor {
+        next = step(next);
+    }
 
     next.format(&Rfc3339)
         .map_err(|e| Error::invalid(format!("could not format the next occurrence: {e}")))
@@ -401,24 +416,61 @@ mod tests {
         let fired = s.fire_reminder(r.id).unwrap();
         assert_eq!(fired.status, ReminderStatus::Pending, "it recurs");
         // 09:00 stays 09:00. Rolling forward from `now` instead would make it drift
-        // later every day it fired late.
-        assert_eq!(fired.due_at.as_deref(), Some("2026-09-19T09:00:00Z"));
+        // later every day it fired late. Asserting the shape rather than one literal
+        // date because the due time above is in the past, so how many days it skips
+        // depends on when the suite runs - the invariants are the time of day and that
+        // it landed in the future.
+        let due = fired.due_at.expect("it recurs, so it has a next due time");
+        assert!(due.ends_with("T09:00:00Z"), "kept its time of day: {due}");
+        assert!(due > now(), "landed in the future: {due}");
     }
 
     #[test]
     fn weekdays_skips_the_weekend() {
+        // A floor equal to the occurrence itself takes exactly one step, which is what
+        // these cases are about; skipping past a floor is covered separately.
         // 2026-09-18 is a Friday.
         assert_eq!(
-            next_occurrence("2026-09-18T09:00:00Z", Recur::Weekdays).unwrap(),
+            next_occurrence(
+                "2026-09-18T09:00:00Z",
+                Recur::Weekdays,
+                "2026-09-18T09:00:00Z"
+            )
+            .unwrap(),
             "2026-09-21T09:00:00Z"
         );
         assert_eq!(
-            next_occurrence("2026-09-17T09:00:00Z", Recur::Weekdays).unwrap(),
+            next_occurrence(
+                "2026-09-17T09:00:00Z",
+                Recur::Weekdays,
+                "2026-09-17T09:00:00Z"
+            )
+            .unwrap(),
             "2026-09-18T09:00:00Z"
         );
         assert_eq!(
-            next_occurrence("2026-09-18T09:00:00Z", Recur::Weekly).unwrap(),
+            next_occurrence(
+                "2026-09-18T09:00:00Z",
+                Recur::Weekly,
+                "2026-09-18T09:00:00Z"
+            )
+            .unwrap(),
             "2026-09-25T09:00:00Z"
+        );
+    }
+
+    #[test]
+    fn a_recurrence_skips_the_occurrences_it_slept_through() {
+        // Off for a week, back on the Monday. The next run is the next one due, not the
+        // seven that were missed.
+        assert_eq!(
+            next_occurrence("2026-09-14T09:00:00Z", Recur::Daily, "2026-09-21T06:00:00Z").unwrap(),
+            "2026-09-21T09:00:00Z"
+        );
+        // Already past that morning's run, so the next one is tomorrow's.
+        assert_eq!(
+            next_occurrence("2026-09-14T09:00:00Z", Recur::Daily, "2026-09-21T12:00:00Z").unwrap(),
+            "2026-09-22T09:00:00Z"
         );
     }
 

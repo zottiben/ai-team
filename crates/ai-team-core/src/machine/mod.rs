@@ -15,6 +15,7 @@ use ailocal::{non_empty_env, AilocalSettings};
 pub(crate) use probe::provider_default;
 use probe::{implemented, probe};
 pub use probe::{ProviderState, ProviderStatus};
+pub(crate) use profile::ensure_machine_profile_at;
 pub use profile::{ensure_machine_profile, ContextSource, MachineProfile, DEFAULT_MACHINE_PROFILE};
 
 const ZAI_KEY_ENV: &str = "AI_TEAM_ZAI_KEY";

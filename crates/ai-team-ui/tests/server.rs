@@ -59,15 +59,28 @@ impl Harness {
         )
     }
 
+    /// A server with no database, watching a path one may appear at.
+    fn watching(db_path: &std::path::Path) -> Harness {
+        Harness::bound(ServeOptions {
+            port: 0,
+            token: None,
+            store: None,
+            db_path: Some(db_path.to_path_buf()),
+        })
+    }
+
     fn start() -> Harness {
+        Harness::bound(ServeOptions::default())
+    }
+
+    /// Bind, spawn, and hand back the address and token.
+    fn bound(options: ServeOptions) -> Harness {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
             .unwrap();
 
-        let server = runtime
-            .block_on(Server::bind(ServeOptions::default()))
-            .unwrap();
+        let server = runtime.block_on(Server::bind(options)).unwrap();
         let addr = server.addr();
         let token = server.token().to_string();
         runtime.spawn(async move {
@@ -79,6 +92,22 @@ impl Harness {
             token,
             _runtime: runtime,
         }
+    }
+
+    /// POST with a JSON body, for the routes that change something.
+    fn post(&self, path: &str, body: &str) -> Response {
+        let mut stream = TcpStream::connect(self.addr).unwrap();
+        write!(
+            stream,
+            "POST {path} HTTP/1.1\r\nHost: {}\r\n{TOKEN_HEADER}: {}\r\n\
+             content-type: application/json\r\ncontent-length: {}\r\n\
+             Connection: close\r\n\r\n{body}",
+            self.addr,
+            self.token,
+            body.len()
+        )
+        .unwrap();
+        read_response(stream)
     }
 
     fn get(&self, path: &str) -> Response {
@@ -102,8 +131,17 @@ impl Harness {
         )
         .unwrap();
 
-        let mut raw = String::new();
+        read_response(stream)
+    }
+}
+
+/// Parse one HTTP/1.1 response off a socket.
+fn read_response(mut stream: TcpStream) -> Response {
+    let mut raw = String::new();
+    {
         stream.read_to_string(&mut raw).unwrap();
+    }
+    {
         let (head, body) = raw.split_once("\r\n\r\n").expect("a complete response");
         let status = head
             .lines()
@@ -196,6 +234,7 @@ fn the_url_carries_the_token() {
             port: 0,
             token: Some("fixed-token".into()),
             store: None,
+            db_path: None,
         }))
         .unwrap();
 
@@ -257,5 +296,85 @@ fn the_event_stream_needs_a_token_like_everything_else() {
         app.get_anonymous(&format!("/api/events?{TOKEN_QUERY}=wrong"))
             .status,
         401
+    );
+}
+
+#[test]
+fn the_health_report_is_served_without_a_database() {
+    // The one route that must work on a machine nobody has set up, because that is the
+    // machine somebody most needs a report about. Every other route answers 503 and says
+    // `ait init`, which is right for them and exactly wrong here.
+    let harness = Harness::start();
+
+    assert_eq!(harness.get("/api/projects").status, 503);
+
+    let response = harness.get("/api/doctor");
+    assert_eq!(response.status, 200, "{}", response.body);
+    let report = response.json();
+    assert_eq!(report["needs_setup"], true);
+    assert_eq!(report["can_run"], false);
+    assert_eq!(report["severity"], "blocking");
+    assert!(
+        report["checks"]
+            .as_array()
+            .is_some_and(|checks| !checks.is_empty()),
+        "{}",
+        response.body
+    );
+}
+
+#[test]
+fn a_report_of_a_set_up_machine_still_wants_a_provider() {
+    // A database and a project are not enough to run: something has to be allowed to
+    // think. Worth asserting, because "set up" is easy to define as "has a database".
+    let (harness, _dir) = Harness::with_store();
+    let report = harness.get("/api/doctor").json();
+
+    let database = report["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|check| check["id"] == "database")
+        .unwrap()
+        .clone();
+    assert_eq!(database["severity"], "fine", "{database}");
+}
+
+#[test]
+fn a_fix_ai_team_does_not_own_cannot_even_be_asked_for() {
+    // D17: the set of things this route can cause is the set of `Action` variants. An
+    // install is not one of them, so it is rejected at deserialisation rather than by a
+    // check at the end of a function that looked like it might do it.
+    let (harness, _dir) = Harness::with_store();
+
+    let refused = harness.post("/api/doctor/fix", r#"{"action":"install_ai_planner"}"#);
+    assert_eq!(refused.status, 422, "{}", refused.body);
+
+    let nonsense = harness.post("/api/doctor/fix", r#"{"action":"rm -rf /"}"#);
+    assert_eq!(nonsense.status, 422, "{}", nonsense.body);
+}
+
+#[test]
+fn the_window_picks_up_a_database_created_after_it_started() {
+    // The bug this replaced: the server decided at startup whether a database existed and
+    // never looked again, so creating one from the setup page left every route answering
+    // "run `ait init`" until the process was restarted - a confusing way to be told that
+    // setup had worked.
+    //
+    // Pointed at its own path rather than the machine's: a test that reaches for
+    // `default_db_path` writes into the developer's home, which this one did once.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("team.db");
+    let harness = Harness::watching(&path);
+
+    assert_eq!(harness.get("/api/projects").status, 503);
+
+    // Created the way the setup page creates it.
+    ai_team_core::Store::init(&path).unwrap();
+
+    assert_eq!(
+        harness.get("/api/projects").status,
+        200,
+        "the same process should find it"
     );
 }

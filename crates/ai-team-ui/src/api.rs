@@ -46,6 +46,8 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/tree", get(tree))
         .route("/file", get(read_file).post(write_file))
         .route("/search", get(search))
+        .route("/doctor", get(doctor))
+        .route("/doctor/fix", axum::routing::post(doctor_fix))
         .route("/update", get(update_check).post(update_apply))
         .route("/scm", get(scm))
         .route("/scm/stage", axum::routing::post(scm_stage))
@@ -183,6 +185,43 @@ async fn write_file(
         )))
     })?;
     Ok(Json(serde_json::json!({ "saved": request.path })))
+}
+
+/// What this machine is, structured.
+///
+/// One of the two routes that works *without* a database, along with `/update`. Every
+/// other route 503s and says `ait init`, which is right for them and exactly wrong here:
+/// a report about a machine with no database is the report somebody most needs.
+async fn doctor(State(state): State<AppState>) -> Json<ai_team_core::Report> {
+    // Read in one synchronous window and the lock dropped before the awaits inside the
+    // report: a `rusqlite::Connection` is `Send` but not `Sync`, so a future holding one
+    // cannot be a handler.
+    let known = state
+        .store()
+        .ok()
+        .map(|store| ai_team_core::Known::of(&store.lock()));
+    Json(ai_team_core::readiness_report(known.as_ref()).await)
+}
+
+#[derive(Debug, Deserialize)]
+struct FixRequest {
+    /// Exactly one repair, named. There is deliberately no "fix everything": that is a
+    /// button somebody presses without reading.
+    action: ai_team_core::Action,
+}
+
+/// Apply one of the repairs ai-team owns (D17).
+///
+/// The set of things this can cause is the set of `Action` variants and nothing else -
+/// anything needing a command or a person is not representable here, rather than being
+/// refused at the end of a function that looked like it might do it.
+async fn doctor_fix(
+    State(state): State<AppState>,
+    JsonBody(request): JsonBody<FixRequest>,
+) -> Result<Json<serde_json::Value>> {
+    let _ = &state;
+    let outcome = ai_team_core::apply_fix(request.action)?;
+    Ok(Json(serde_json::json!({ "done": outcome })))
 }
 
 async fn update_check() -> Result<Json<ai_team_core::Available>> {

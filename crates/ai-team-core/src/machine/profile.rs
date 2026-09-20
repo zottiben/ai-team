@@ -178,7 +178,16 @@ impl MachineProfile {
 /// Create the local-only profile if this machine has never had one. Existing policy is
 /// never rewritten by init.
 pub fn ensure_machine_profile() -> Result<(PathBuf, bool)> {
-    let path = machine_profile_path()?;
+    ensure_machine_profile_at(&machine_profile_path()?)
+}
+
+/// The same, at a path the caller chose.
+///
+/// Split out so readiness can repair a machine it was handed rather than the one the
+/// process happens to be running on - which is also what makes the repair testable
+/// without mutating the environment.
+pub(crate) fn ensure_machine_profile_at(path: &Path) -> Result<(PathBuf, bool)> {
+    let path = path.to_path_buf();
     if path.exists() {
         return Ok((path, false));
     }
