@@ -90,12 +90,20 @@ impl RolePreset {
     /// The agent this preset would create. `ord` follows roster order so the generated
     /// eve project and the UI list agents in the same sequence every time.
     pub fn to_new_agent(&self, ord: i64) -> NewAgent {
+        self.to_new_agent_on(Provider::Local, DEFAULT_LOCAL_MODEL, ord)
+    }
+
+    /// The same, on a provider the caller chose.
+    ///
+    /// Used when seeding a team, so a machine that has allowed one account gets a roster
+    /// pointing at it rather than at a local gateway it does not run.
+    pub fn to_new_agent_on(&self, provider: Provider, model: &str, ord: i64) -> NewAgent {
         NewAgent {
             role: self.role.to_string(),
             name: self.name.to_string(),
             purpose: self.purpose.to_string(),
-            provider: Provider::Local,
-            model: DEFAULT_LOCAL_MODEL.to_string(),
+            provider,
+            model: model.to_string(),
             reasoning: self.reasoning,
             zone: self.zone.to_string(),
             prompt_preset: Some(self.role.to_string()),

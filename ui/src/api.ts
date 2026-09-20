@@ -487,6 +487,74 @@ export function updateApply(): Promise<{ version: string; restart_required: bool
   return post("/update", {});
 }
 
+export type Check = {
+  id: string;
+  label: string;
+  severity: "blocking" | "degraded" | "fine";
+  detail: string;
+  fix:
+    | { by: "itself"; action: string; describe: string }
+    | { by: "command"; run: string; why: string }
+    | { by: "human"; what: string }
+    | { by: "none" };
+};
+
+export type DoctorReport = {
+  version: string;
+  checks: Check[];
+  severity: "blocking" | "degraded" | "fine";
+  can_run: boolean;
+  needs_setup: boolean;
+};
+
+export function doctor(): Promise<DoctorReport> {
+  return api<DoctorReport>("/doctor");
+}
+
+/** Only the repairs ai-team owns are expressible here (D17). */
+export function doctorFix(action: string): Promise<{ done: string }> {
+  return post("/doctor/fix", { action });
+}
+
+export type ProviderSetting = {
+  provider: string;
+  label: string;
+  allowed: boolean;
+  reachable: boolean;
+  detail: string;
+  how: string;
+};
+
+export type ContextSetting = {
+  source: string;
+  allowed: boolean;
+  token_set: boolean;
+  token_env: string;
+};
+
+export type Settings = {
+  profile_path: string;
+  providers: ProviderSetting[];
+  fallback: string[];
+  context: ContextSetting[];
+};
+
+export function settings(): Promise<Settings> {
+  return api<Settings>("/settings");
+}
+
+export function setProvider(provider: string, allowed: boolean): Promise<unknown> {
+  return post("/settings/provider", { provider, allowed });
+}
+
+export function setContext(source: string, allowed: boolean): Promise<unknown> {
+  return post("/settings/context", { source, allowed });
+}
+
+export function setFallback(order: string[]): Promise<unknown> {
+  return post("/settings/fallback", { order });
+}
+
 export function post<T>(path: string, body: unknown): Promise<T> {
   return request(path, "POST", body);
 }

@@ -46,6 +46,10 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/tree", get(tree))
         .route("/file", get(read_file).post(write_file))
         .route("/search", get(search))
+        .route("/settings", get(settings))
+        .route("/settings/provider", axum::routing::post(set_provider))
+        .route("/settings/context", axum::routing::post(set_context))
+        .route("/settings/fallback", axum::routing::post(set_fallback))
         .route("/doctor", get(doctor))
         .route("/doctor/fix", axum::routing::post(doctor_fix))
         .route("/update", get(update_check).post(update_apply))
@@ -185,6 +189,178 @@ async fn write_file(
         )))
     })?;
     Ok(Json(serde_json::json!({ "saved": request.path })))
+}
+
+/// One provider, as the settings page needs it.
+#[derive(Debug, Serialize)]
+struct ProviderSetting {
+    provider: String,
+    label: String,
+    /// What the machine profile says.
+    allowed: bool,
+    /// Whether it actually answers. Kept apart from `allowed`, because a provider that is
+    /// ticked and not signed into fails at dispatch - minutes later and somewhere else -
+    /// and a page that shows one boolean cannot warn about that.
+    reachable: bool,
+    detail: String,
+    /// How this provider is authenticated, so the page can say what to do about it rather
+    /// than leaving somebody to guess which account it means.
+    how: String,
+}
+
+#[derive(Debug, Serialize)]
+struct Settings {
+    profile_path: String,
+    providers: Vec<ProviderSetting>,
+    /// A total ranking. A denied preference resolves to the first allowed one (D13).
+    fallback: Vec<String>,
+    context: Vec<ContextSetting>,
+}
+
+#[derive(Debug, Serialize)]
+struct ContextSetting {
+    source: String,
+    allowed: bool,
+    /// Enabled without a token is worth saying: the connection is generated and its seats
+    /// fail at their first call.
+    token_set: bool,
+    token_env: String,
+}
+
+fn how_authenticated(provider: ai_team_core::Provider) -> &'static str {
+    match provider {
+        ai_team_core::Provider::Claude => {
+            "your Claude subscription, through the Claude Code CLI - run `claude` once to sign in"
+        }
+        ai_team_core::Provider::OpenAi => {
+            "your ChatGPT subscription, through eve - run `npx eve login` once"
+        }
+        ai_team_core::Provider::ZAi => "a GLM Coding Plan - flat rate, no metering",
+        ai_team_core::Provider::Local => {
+            "the ailocal gateway on 127.0.0.1:8081 - free, and never leaves the machine"
+        }
+    }
+}
+
+async fn settings() -> Result<Json<Settings>> {
+    let path = ai_team_core::machine_profile_path()?;
+    let registry = ai_team_core::ModelRegistry::load();
+
+    let providers = match &registry {
+        Ok(registry) => registry
+            .statuses()
+            .into_iter()
+            .map(|status| ProviderSetting {
+                provider: status.provider.as_str().to_string(),
+                label: status.provider.to_string(),
+                allowed: status.state != ai_team_core::ProviderState::Denied,
+                reachable: status.state == ai_team_core::ProviderState::Allowed,
+                detail: status.detail,
+                how: how_authenticated(status.provider).into(),
+            })
+            .collect(),
+        // No profile yet: every provider is denied, which is the truth rather than an
+        // error, and the page can still show what each one would be.
+        Err(_) => ai_team_core::Provider::ALL
+            .iter()
+            .map(|provider| ProviderSetting {
+                provider: provider.as_str().to_string(),
+                label: provider.to_string(),
+                allowed: false,
+                reachable: false,
+                detail: "no machine profile yet".into(),
+                how: how_authenticated(*provider).into(),
+            })
+            .collect(),
+    };
+
+    let fallback = registry.as_ref().map_or_else(
+        |_| {
+            ai_team_core::Provider::ALL
+                .iter()
+                .map(|provider| provider.as_str().to_string())
+                .collect()
+        },
+        |registry| {
+            registry
+                .profile()
+                .fallback()
+                .iter()
+                .map(|provider| provider.as_str().to_string())
+                .collect()
+        },
+    );
+
+    let context = ai_team_core::ContextSource::ALL
+        .iter()
+        .map(|source| {
+            let env = format!("AI_TEAM_{}_TOKEN", source.as_str().to_uppercase());
+            ContextSetting {
+                source: source.as_str().to_string(),
+                allowed: registry
+                    .as_ref()
+                    .is_ok_and(|registry| registry.context_sources().contains(source)),
+                token_set: std::env::var(&env).is_ok_and(|value| !value.trim().is_empty()),
+                token_env: env,
+            }
+        })
+        .collect();
+
+    Ok(Json(Settings {
+        profile_path: path.display().to_string(),
+        providers,
+        fallback,
+        context,
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+struct ProviderChange {
+    provider: ai_team_core::Provider,
+    allowed: bool,
+}
+
+/// Allow or deny a provider, by editing the file rather than replacing it.
+///
+/// The profile is created first if it is absent, so ticking a provider on a fresh machine
+/// does the obvious thing instead of failing with "no such file".
+async fn set_provider(
+    JsonBody(change): JsonBody<ProviderChange>,
+) -> Result<Json<serde_json::Value>> {
+    let (path, _) = ai_team_core::ensure_machine_profile()?;
+    ai_team_core::set_provider(&path, change.provider, change.allowed)?;
+    Ok(Json(serde_json::json!({
+        "provider": change.provider.as_str(),
+        "allowed": change.allowed,
+    })))
+}
+
+#[derive(Debug, Deserialize)]
+struct ContextChange {
+    source: ai_team_core::ContextSource,
+    allowed: bool,
+}
+
+async fn set_context(JsonBody(change): JsonBody<ContextChange>) -> Result<Json<serde_json::Value>> {
+    let (path, _) = ai_team_core::ensure_machine_profile()?;
+    ai_team_core::set_context(&path, change.source, change.allowed)?;
+    Ok(Json(serde_json::json!({
+        "source": change.source.as_str(),
+        "allowed": change.allowed,
+    })))
+}
+
+#[derive(Debug, Deserialize)]
+struct FallbackChange {
+    order: Vec<ai_team_core::Provider>,
+}
+
+async fn set_fallback(
+    JsonBody(change): JsonBody<FallbackChange>,
+) -> Result<Json<serde_json::Value>> {
+    let (path, _) = ai_team_core::ensure_machine_profile()?;
+    ai_team_core::set_fallback(&path, &change.order)?;
+    Ok(Json(serde_json::json!({ "order": change.order.len() })))
 }
 
 /// What this machine is, structured.

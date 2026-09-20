@@ -75,8 +75,15 @@ impl Store {
         )?;
         // Counted as i64 from the start rather than casting an index: `ord` is a column
         // type, and the cast is the kind of thing that is correct until it is not.
+        // Seeded on whatever this machine can actually reach. A roster of six seats
+        // pointing at a provider the machine denies is a team that cannot work, and
+        // nothing says so until a run fails - which is a long way from here.
+        let (provider, model) = crate::machine::ModelRegistry::load().map_or_else(
+            |_| (crate::model::Provider::Local, "auto".to_string()),
+            |registry| registry.preferred_seat(),
+        );
         for (ord, preset) in (0i64..).zip(DEFAULT_ROSTER) {
-            self.add_agent(team.id, preset.to_new_agent(ord))?;
+            self.add_agent(team.id, preset.to_new_agent_on(provider, &model, ord))?;
         }
         self.set_project_team(project_id, Some(team.id))?;
         self.team(team.id)

@@ -998,3 +998,68 @@ button.card:hover {
   from { transform: translateX(-100%); }
   to   { transform: translateX(250%); }
 }
+
+/* --- settings ----------------------------------------------------------------- */
+
+.settings {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-height: 0;
+  max-width: 52rem;
+}
+
+.settings__group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding-bottom: var(--space-4);
+  border-bottom: 1px solid var(--border-subtle-default);
+}
+
+.settings__group h3 {
+  margin: 0;
+  font-size: var(--text-md);
+  font-weight: 500;
+}
+
+.settings__row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  font-size: var(--text-sm);
+}
+
+.settings__toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  /* Fixed, so the state badges line up down the column rather than stepping in and out
+   * with the length of each provider's name. */
+  min-width: 9rem;
+  cursor: pointer;
+}
+
+/* Wraps rather than truncating: these explain what to do about a provider, and half a
+ * sentence is worse than a second line. */
+.settings__detail {
+  flex: 1;
+  min-width: 0;
+}
+
+.settings__order {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.settings__rank {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  background: var(--surface-panel-default);
+  border: 1px solid var(--border-subtle-default);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+}

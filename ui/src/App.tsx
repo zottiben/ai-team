@@ -6,6 +6,7 @@ import { Approvals, Prompt, Seats } from "./Console";
 
 import { Review } from "./Review";
 import { Schedule } from "./Schedule";
+import { Settings } from "./Settings";
 import { Source } from "./Source";
 import { Today } from "./Today";
 import { UpdateBanner } from "./Update";
@@ -53,6 +54,7 @@ const VIEW_NAMES = {
   editor: "Editor",
   terminal: "Terminal",
   source: "Source",
+  settings: "Settings",
 } as const;
 
 export default function App() {
@@ -165,7 +167,7 @@ export default function App() {
 
         <nav className="sidebar__section" aria-label="Views">
           <span className="sidebar__label">View</span>
-          {(["today", "console", "board", "review", "analytics", "schedule", "editor", "terminal", "source"] as const).map(
+          {(["today", "console", "board", "review", "analytics", "schedule", "editor", "terminal", "source", "settings"] as const).map(
             (option) => (
             <button
               type="button"
@@ -250,6 +252,10 @@ export default function App() {
               node={null}
             />
           </Suspense>
+        )}
+
+        {view === "settings" && (
+          <Settings theme={theme} onTheme={setTheme} onChanged={() => setTick((n) => n + 1)} />
         )}
 
         {view === "source" && (

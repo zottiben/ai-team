@@ -15,6 +15,9 @@ use ailocal::{non_empty_env, AilocalSettings};
 pub(crate) use probe::provider_default;
 use probe::{implemented, probe};
 pub use probe::{ProviderState, ProviderStatus};
+mod edit;
+
+pub use edit::{set_context, set_fallback, set_provider};
 pub(crate) use profile::ensure_machine_profile_at;
 pub use profile::{ensure_machine_profile, ContextSource, MachineProfile, DEFAULT_MACHINE_PROFILE};
 
@@ -86,6 +89,46 @@ impl ModelRegistry {
 
     /// Resolve at the policy boundary. Reachability is deliberately not part of this
     /// choice: a transient outage must not silently send work to another account.
+    /// The provider a brand-new team should prefer, and its default model.
+    ///
+    /// A creation-time choice, not a dispatch-time one - which is the distinction D13
+    /// rests on. Seeding every team with `local` meant a machine that had just allowed
+    /// Claude in the window still had six seats pointing at a gateway it does not run, and
+    /// nothing said so until a run failed. Picking the first provider in the ranking that
+    /// is both allowed and actually answering is the default being sensible; it is written
+    /// into the roster, visible in `ait agents ls`, and editable.
+    ///
+    /// Falls back to `local` when nothing answers, because a team has to be seeded with
+    /// something and that is the one provider that needs no account.
+    pub fn preferred_seat(&self) -> (Provider, String) {
+        self.statuses()
+            .into_iter()
+            .filter(|status| status.state == ProviderState::Allowed)
+            .filter(|status| implemented(status.provider))
+            // The ranking decides, not the order they were probed in.
+            .min_by_key(|status| {
+                self.profile
+                    .fallback()
+                    .iter()
+                    .position(|ranked| *ranked == status.provider)
+                    .unwrap_or(usize::MAX)
+            })
+            .map_or_else(
+                || {
+                    (
+                        Provider::Local,
+                        provider_default(Provider::Local).0.to_string(),
+                    )
+                },
+                |status| {
+                    (
+                        status.provider,
+                        provider_default(status.provider).0.to_string(),
+                    )
+                },
+            )
+    }
+
     pub fn resolve(&self, agent: &Agent) -> Result<ModelResolution> {
         if self.profile.allowed(agent.provider) {
             return Ok(ModelResolution {
@@ -206,6 +249,67 @@ impl ModelRegistry {
 
 #[cfg(test)]
 mod tests {
+    /// A registry over a profile the test wrote, so "what this machine allows" is
+    /// describable without touching the environment.
+    fn registry_allowing(allowed: &[Provider], order: &[Provider]) -> ModelRegistry {
+        let names: Vec<String> = order
+            .iter()
+            .map(|provider| format!("\"{}\"", provider.as_str()))
+            .collect();
+        let mut source = format!(
+            "version = 1\nfallback = [{}]\n\n[providers]\n",
+            names.join(", ")
+        );
+        for provider in Provider::ALL {
+            use std::fmt::Write as _;
+            let _ = writeln!(
+                source,
+                "{} = {}",
+                provider.as_str(),
+                allowed.contains(provider)
+            );
+        }
+        ModelRegistry::new(MachineProfile::parse(&source).unwrap())
+    }
+
+    #[test]
+    fn a_new_team_is_seeded_on_a_provider_the_machine_can_reach() {
+        // The confusion this removes: allowing Claude in the window left six seats
+        // pointing at a local gateway the machine does not run, and nothing said so until
+        // a run failed. This is a creation-time choice, so D13's "never reroute on a
+        // health failure" is untouched - it is written into the roster and editable.
+        //
+        // Only `local` needs no account, so it is the one this can assert on a machine
+        // with no credentials at all.
+        let local_only = registry_allowing(&[Provider::Local], Provider::ALL);
+        let (provider, model) = local_only.preferred_seat();
+        assert_eq!(provider, Provider::Local);
+        assert_eq!(model, "auto");
+    }
+
+    #[test]
+    fn nothing_allowed_still_seeds_a_team() {
+        // A team has to be seeded with something, and local is the only provider that
+        // needs no account - so it is the floor rather than an error.
+        let nothing = registry_allowing(&[], Provider::ALL);
+        assert_eq!(nothing.preferred_seat().0, Provider::Local);
+    }
+
+    #[test]
+    fn the_fallback_ranking_decides_which_provider_a_team_prefers() {
+        // Not the order they happened to be probed in. With the ranking reversed, the same
+        // set of allowed providers has to produce a different preference.
+        let reversed = registry_allowing(
+            &[Provider::Local],
+            &[
+                Provider::Local,
+                Provider::ZAi,
+                Provider::OpenAi,
+                Provider::Claude,
+            ],
+        );
+        assert_eq!(reversed.preferred_seat().0, Provider::Local);
+    }
     use super::*;
     use crate::model::Reasoning;
     use crate::roles::preset;
