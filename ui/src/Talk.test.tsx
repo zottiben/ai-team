@@ -49,7 +49,7 @@ function stub(reached: unknown) {
   return calls;
 }
 
-it("says it will interrupt, before anything is typed", async () => {
+it("says the message will wait, before anything is typed", async () => {
   // These are different acts: one lands in the middle of a turn, the other starts minutes
   // of work. A box that silently did either would be a surprise waiting to happen.
   render(
@@ -59,8 +59,8 @@ it("says it will interrupt, before anything is typed", async () => {
       onSent={() => {}}
     />,
   );
-  expect(screen.getByText(/lands in the middle of what it is doing/)).toBeDefined();
-  expect(screen.getByText("Interrupt")).toBeDefined();
+  expect(screen.getByText(/waits, and is the first thing it is given next/)).toBeDefined();
+  expect(screen.getByText("Send")).toBeDefined();
 });
 
 it("says it will start a turn when the seat is idle", async () => {
@@ -78,20 +78,20 @@ it("a switched-off seat cannot be sent anything", async () => {
   expect(screen.getByText("Start a turn").closest("button")?.disabled).toBe(true);
 });
 
-it("reports that a live seat took it, mid-turn", async () => {
+it("reports that a busy seat will get it next", async () => {
   const user = userEvent.setup();
-  const calls = stub({ reached: "interrupted", node_run_id: 5 });
+  const calls = stub({ reached: "queued", node_run_id: 5, waiting: 1 });
   render(
     <Talk member={member({ doing: "working", reachable: true })} onClose={() => {}} onSent={() => {}} />,
   );
 
   await user.type(screen.getByLabelText("message for backend"), "use the new helper");
-  await user.click(screen.getByText("Interrupt"));
+  await user.click(screen.getByText("Send"));
 
   await waitFor(() => expect(calls.length).toBeGreaterThan(0));
   expect(calls[0]?.url).toBe("/crew/3/say");
   expect(calls[0]?.body).toEqual({ message: "use the new helper" });
-  expect(await screen.findByText(/has it, mid-turn/)).toBeDefined();
+  expect(await screen.findByText(/gets this next/)).toBeDefined();
 });
 
 it("reports that a turn is starting, and where it will show up", async () => {
@@ -136,7 +136,7 @@ it("a process that has gone since the panel opened says what to do", async () =>
   );
 
   await user.type(screen.getByLabelText("message for backend"), "hello");
-  await user.click(screen.getByText("Interrupt"));
+  await user.click(screen.getByText("Send"));
   expect(await screen.findByText(/say it again to start a fresh turn/)).toBeDefined();
 });
 

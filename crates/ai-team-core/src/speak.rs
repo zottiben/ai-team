@@ -21,14 +21,19 @@ use serde::Serialize;
 use crate::error::{Error, Result};
 use crate::model::{Agent, NodeStatus, RunStatus, RunTrigger};
 use crate::store::Store;
-use crate::supervise::{EveClient, EveEnv, Supervisor};
 
 /// What saying something to this seat would do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Would {
-    /// Land in the middle of a turn already going.
-    Interrupt,
+    /// Wait for the turn already going, then be the next thing that seat is given.
+    ///
+    /// eve could land a message inside a running turn, because there was an HTTP session
+    /// to post to. A Pi turn is a child process reading one prompt, so there is nowhere
+    /// for a message to land mid-turn - and pretending otherwise would be a box that
+    /// swallows what somebody typed. It is kept and delivered next, on the same session,
+    /// so it arrives with the conversation behind it.
+    Queue,
     /// Start a turn. Minutes, and a worktree.
     StartWork,
     /// Nothing: the seat is switched off, so it would never be given the message.
@@ -46,8 +51,8 @@ pub struct Target {
     pub project_slug: String,
     /// The repository to lease from, when a turn has to be started.
     pub repo: Option<String>,
-    /// A live session, when there is one: node run, port, token, session.
-    pub live: Option<(i64, u16, String, String)>,
+    /// A turn in progress, when there is one: the node run and its Pi session.
+    pub live: Option<(i64, String)>,
 }
 
 impl Target {
@@ -55,7 +60,7 @@ impl Target {
         if !self.agent.enabled {
             Would::Nothing
         } else if self.live.is_some() {
-            Would::Interrupt
+            Would::Queue
         } else {
             Would::StartWork
         }
@@ -92,14 +97,11 @@ pub fn target(store: &Store, agent_id: i64) -> Result<Target> {
             if !matches!(node.status, NodeStatus::Running | NodeStatus::Parked) {
                 break 'outer;
             }
-            if let (Some(port), Some(token), Some(session)) = (
-                node.eve_port,
-                node.eve_token.clone(),
-                node.session_id.clone(),
-            ) {
-                if let Ok(port) = u16::try_from(port) {
-                    live = Some((node.id, port, token, session));
-                }
+            // A session is all it takes now: there is no port to reach and no token to
+            // present. A node that is running without one has not streamed its first
+            // line yet, which is a turn too young to say anything to.
+            if let Some(session) = node.session_id.clone() {
+                live = Some((node.id, session));
             }
             break 'outer;
         }
@@ -115,11 +117,14 @@ pub fn target(store: &Store, agent_id: i64) -> Result<Target> {
 }
 
 /// What happened.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "reached", rename_all = "snake_case")]
 pub enum Reached {
-    /// It was mid-turn and took the message.
-    Interrupted { node_run_id: i64 },
+    /// It was mid-turn, so the message is waiting for it.
+    ///
+    /// `waiting` is everything queued for that seat, not just this message: somebody who
+    /// says three things to a busy agent should be told three are waiting.
+    Queued { node_run_id: i64, waiting: usize },
     /// A turn was started for it.
     ///
     /// Deliberately carries no run id. The caller spawns the turn and returns before the
@@ -130,25 +135,20 @@ pub enum Reached {
     Refused { because: String },
 }
 
-/// Deliver a message to a live seat.
+/// Keep a message for a seat that is mid-turn.
 ///
-/// Takes no `Store` for the usual reason. The liveness claim in [`Target`] is "worth
-/// trying" rather than proven - a process can have gone since the row was read - so the
-/// failure here is normal and has to say something useful.
-pub async fn interrupt(target: &Target, message: &str) -> Result<Reached> {
-    let Some((node_run_id, port, token, session)) = target.live.clone() else {
+/// Synchronous, and that is the point: there is nothing to reach out to. The message goes
+/// in the queue and the seat's next turn is given it, on the same session, so it arrives
+/// with the conversation behind it rather than as an instruction from nowhere.
+pub fn queue(store: &mut Store, target: &Target, message: &str) -> Result<Reached> {
+    let Some((node_run_id, _)) = target.live.clone() else {
         return Err(Error::invalid("that seat has no turn in progress"));
     };
-    let client = EveClient::new(port, &token);
-    if !client.healthy().await {
-        return Err(Error::invalid(format!(
-            "{} was working a moment ago but its process has gone - say it again to start a \
-             fresh turn",
-            target.agent.role
-        )));
-    }
-    client.follow_up(&session, message).await?;
-    Ok(Reached::Interrupted { node_run_id })
+    let waiting = store.queue_message(target.agent.id, message)?;
+    Ok(Reached::Queued {
+        node_run_id,
+        waiting,
+    })
 }
 
 /// Start a turn for one seat, and drive it.
@@ -161,9 +161,8 @@ pub async fn start_turn(agent_id: i64, message: String) -> Result<i64> {
     // a connection is not `Sync`), so a task may hold one across awaits - which is how
     // `workflow::run` does the same job.
     let mut store = Store::open(&db)?;
-    let registry = crate::machine::ModelRegistry::load()?;
 
-    let (agent, team_id, project_id, project_slug, repo) = {
+    let (agent, project_id, project_slug, repo) = {
         let found = target(&store, agent_id)?;
         if !found.agent.enabled {
             return Err(Error::invalid(format!(
@@ -176,7 +175,6 @@ pub async fn start_turn(agent_id: i64, message: String) -> Result<i64> {
         })?;
         (
             found.agent.clone(),
-            found.agent.team_id,
             found.project_id,
             found.project_slug.clone(),
             repo,
@@ -187,30 +185,18 @@ pub async fn start_turn(agent_id: i64, message: String) -> Result<i64> {
     // What was said is the prompt, because that is what it is.
     let run = store.create_run(project_id, &message, RunTrigger::Manual)?;
 
-    // Always regenerated: the team rows are the source of truth, and a stale project is how
-    // a seat ends up running the model you changed an hour ago (D2).
-    let project_dir = store.agents_dir(&project_slug)?;
-    let generated = store.generate_project_for_machine(team_id, &project_dir, &registry)?;
-    generated.write()?;
+    // Where the guard and this seat's MCP config live. Never the lease: a guard a node can
+    // edit is not a guard.
+    let support = store.agents_dir(&project_slug)?;
 
-    // One eve process per leased worktree (D10). A lease is borrowed - `awt return` cleans
+    // One Pi process per leased worktree (D10). A lease is borrowed - `awt return` cleans
     // it - so nothing here expects the directory to survive.
     let lease = crate::Worktrees::at(&repo)
         .lease(&format!("ai-team:{}", agent.role))
         .await
         .map_err(|error| Error::invalid(format!("could not lease a worktree: {error}")))?;
 
-    let env = EveEnv {
-        worktree: lease.path().to_path_buf(),
-        token: crate::mint_token(),
-        provider_keys: registry.provider_environment(&generated.required_env)?,
-        // Not working a plan, so the plan tools stay unconfigured and fail closed rather
-        // than writing to whichever plan the cwd resolves to.
-        plan_root: None,
-        plan_slug: None,
-    };
-
-    let outcome = drive(&mut store, &project_dir, &env, run.id, &agent, &message).await;
+    let outcome = drive(&mut store, &support, lease.path(), run.id, &agent, &message).await;
 
     if outcome.is_ok() {
         record_work(
@@ -333,43 +319,62 @@ async fn keep(worktree: &Path, branch: &str, subject: &str) -> Result<Option<Str
     crate::neighbours::git::commit_paths(worktree, branch, &subject, &changed).await
 }
 
-/// Build, start and take one turn.
+/// Take one turn for a seat somebody spoke to.
 async fn drive(
     store: &mut Store,
-    project_dir: &Path,
-    env: &EveEnv,
+    support: &Path,
+    worktree: &Path,
     run_id: i64,
     agent: &Agent,
     message: &str,
 ) -> Result<()> {
-    let mut supervisor = Supervisor::new(project_dir, env.clone());
-    supervisor.install_and_build(|_| {}).await?;
-
     store.set_run_status(run_id, RunStatus::Running)?;
     let registry = crate::machine::ModelRegistry::load()?;
     let node_run_id = store.dispatch(run_id, agent.id, None, &registry)?.id;
 
-    let client = supervisor.start().await?;
-    if let Some(port) = supervisor.port() {
-        // Recorded as soon as it serves, so the window can reach this turn - including to
-        // say something else to it while it runs (M3-S12).
-        store.attach_eve(node_run_id, port, &env.token)?;
-    }
-
     // Running, not queued. The first version left it queued for the whole turn, which meant
     // the crew panel called it working (queued is about to work) while `target` refused to
-    // treat it as live - so interrupting a seat you could watch working started a second
+    // treat it as live - so speaking to a seat you could watch working started a second
     // turn instead. One state, read the same way by both.
     store.set_node_status(node_run_id, NodeStatus::Running)?;
 
-    let result = crate::supervise::run_turn(
-        store,
-        node_run_id,
-        &client,
-        &as_instruction(message, &crate::house::read_for(&env.worktree, &[])),
-        |_| {},
-    )
-    .await;
+    // Anything said while this seat was busy goes in front of what was just said, in the
+    // order it was said. Taken in the same transaction it is marked delivered in, so two
+    // turns starting together cannot both act on "stop adding tests".
+    let mut said = store.take_pending(agent.id)?;
+    said.push(message.to_string());
+    let message = said.join("\n\n");
+
+    let team = store.team(agent.team_id)?;
+    let roster = store.agents(agent.team_id)?;
+    let (effective, _) = registry.resolve_agents(std::slice::from_ref(agent))?;
+    let resolved = effective.first().unwrap_or(agent);
+
+    let mut turn = crate::PiSeat {
+        agent,
+        provider: resolved.provider,
+        model: &resolved.model,
+        worktree,
+        support,
+        sources: &registry.context_sources(),
+        // No plan behind this turn, so the planning tools stay absent rather than pointing
+        // at whichever plan the working directory resolves to.
+        plan: None,
+        team: &team,
+        roster: &roster,
+    }
+    .turn(as_instruction(
+        &message,
+        &crate::house::read_for(worktree, &[]),
+    ))?;
+
+    // Resume the seat's own conversation when it has one, so a second thing said to it
+    // arrives with the first behind it rather than as an instruction from nowhere.
+    if let Some(session) = store.node_run(node_run_id)?.session_id {
+        turn.session_id = Some(session);
+    }
+
+    let result = crate::run_pi_turn(store, node_run_id, &turn, |_| {}).await;
 
     match result {
         Ok((_, outcome)) => {
@@ -432,7 +437,7 @@ mod tests {
     }
 
     #[test]
-    fn a_seat_mid_turn_would_be_interrupted() {
+    fn a_seat_mid_turn_would_have_the_message_queued() {
         let (mut store, project, team) = seeded();
         let run = store
             .create_run(project, "ship it", RunTrigger::Manual)
@@ -441,12 +446,11 @@ mod tests {
         let node = store
             .dispatch(run.id, backend, Some("S1"), &ModelRegistry::local_only())
             .unwrap();
-        store.attach_eve(node.id, 4321, "tok").unwrap();
         store.set_node_session(node.id, "sess-1").unwrap();
         store.set_node_status(node.id, NodeStatus::Running).unwrap();
 
         let target = target(&store, backend).unwrap();
-        assert_eq!(target.would(), Would::Interrupt);
+        assert_eq!(target.would(), Would::Queue);
         assert_eq!(target.live.as_ref().map(|live| live.0), Some(node.id));
     }
 
@@ -460,11 +464,10 @@ mod tests {
         let node = store
             .dispatch(run.id, backend, Some("S1"), &ModelRegistry::local_only())
             .unwrap();
-        store.attach_eve(node.id, 4321, "tok").unwrap();
         store.set_node_session(node.id, "sess-1").unwrap();
         store.set_node_status(node.id, NodeStatus::Parked).unwrap();
 
-        assert_eq!(target(&store, backend).unwrap().would(), Would::Interrupt);
+        assert_eq!(target(&store, backend).unwrap().would(), Would::Queue);
     }
 
     #[test]
@@ -479,7 +482,6 @@ mod tests {
         let node = store
             .dispatch(run.id, backend, Some("S1"), &ModelRegistry::local_only())
             .unwrap();
-        store.attach_eve(node.id, 4321, "tok").unwrap();
         store.set_node_session(node.id, "sess-1").unwrap();
         store.set_node_status(node.id, NodeStatus::Done).unwrap();
 
@@ -515,7 +517,6 @@ mod tests {
         let first = store
             .dispatch(run.id, backend, Some("S1"), &ModelRegistry::local_only())
             .unwrap();
-        store.attach_eve(first.id, 1111, "tok").unwrap();
         store.set_node_session(first.id, "old").unwrap();
         store
             .set_node_status(first.id, NodeStatus::Running)
@@ -524,7 +525,6 @@ mod tests {
         let second = store
             .dispatch(run.id, backend, Some("S1"), &ModelRegistry::local_only())
             .unwrap();
-        store.attach_eve(second.id, 2222, "tok").unwrap();
         store.set_node_session(second.id, "new").unwrap();
         store
             .set_node_status(second.id, NodeStatus::Running)
@@ -532,7 +532,7 @@ mod tests {
 
         let live = target(&store, backend).unwrap().live.unwrap();
         assert_eq!(live.0, second.id);
-        assert_eq!(live.3, "new");
+        assert_eq!(live.1, "new");
     }
 
     #[test]
@@ -552,7 +552,6 @@ mod tests {
         assert!(target(&store, backend).unwrap().live.is_none());
 
         // And once it is actually running, with a session, it is.
-        store.attach_eve(node.id, 4321, "tok").unwrap();
         store.set_node_session(node.id, "sess-1").unwrap();
         store.set_node_status(node.id, NodeStatus::Running).unwrap();
         assert!(target(&store, backend).unwrap().live.is_some());
@@ -573,17 +572,18 @@ mod tests {
         assert!(framed.contains("do not commit"), "{framed}");
     }
 
-    #[tokio::test]
-    async fn interrupting_a_seat_that_is_not_live_says_so_rather_than_pretending() {
-        let (store, _, team) = seeded();
+    #[test]
+    fn queueing_for_a_seat_that_is_not_live_says_so_rather_than_pretending() {
+        let (mut store, _, team) = seeded();
         let target = target(&store, seat(&store, team, "backend")).unwrap();
-        let error = interrupt(&target, "hello").await.unwrap_err().to_string();
+        let error = queue(&mut store, &target, "hello").unwrap_err().to_string();
         assert!(error.contains("no turn in progress"), "{error}");
     }
 
-    #[tokio::test]
-    async fn a_process_that_has_gone_since_the_row_was_read_says_what_to_do() {
-        // The liveness claim is "worth trying", not proven, so this failure is normal.
+    #[test]
+    fn a_message_to_a_busy_seat_waits_and_says_how_many_are_waiting() {
+        // Somebody who says three things to a working agent should be told three are
+        // waiting, not told three times that one is.
         let (mut store, project, team) = seeded();
         let run = store
             .create_run(project, "ship it", RunTrigger::Manual)
@@ -592,14 +592,81 @@ mod tests {
         let node = store
             .dispatch(run.id, backend, Some("S1"), &ModelRegistry::local_only())
             .unwrap();
-        // A port nothing is listening on.
-        store.attach_eve(node.id, 1, "tok").unwrap();
         store.set_node_session(node.id, "sess-1").unwrap();
         store.set_node_status(node.id, NodeStatus::Running).unwrap();
 
         let target = target(&store, backend).unwrap();
-        let error = interrupt(&target, "hello").await.unwrap_err().to_string();
-        assert!(error.contains("its process has gone"), "{error}");
-        assert!(error.contains("start a fresh turn"), "{error}");
+        let first = queue(&mut store, &target, "use i64").unwrap();
+        assert_eq!(
+            first,
+            Reached::Queued {
+                node_run_id: node.id,
+                waiting: 1
+            }
+        );
+        let second = queue(&mut store, &target, "and stop adding tests").unwrap();
+        assert_eq!(
+            second,
+            Reached::Queued {
+                node_run_id: node.id,
+                waiting: 2
+            }
+        );
+    }
+
+    #[test]
+    fn a_waiting_message_is_delivered_once_and_in_order() {
+        // Delivered in the same transaction it is read in: two turns starting together
+        // must not both act on "stop adding tests".
+        let (mut store, _, team) = seeded();
+        let backend = seat(&store, team, "backend");
+
+        store.queue_message(backend, "first").unwrap();
+        store.queue_message(backend, "second").unwrap();
+        assert_eq!(store.waiting_for(backend).unwrap(), 2);
+
+        let taken = store.take_pending(backend).unwrap();
+        assert_eq!(taken, ["first", "second"]);
+        assert_eq!(store.waiting_for(backend).unwrap(), 0);
+        assert!(store.take_pending(backend).unwrap().is_empty());
+    }
+
+    #[test]
+    fn one_seat_s_messages_do_not_reach_another() {
+        let (mut store, _, team) = seeded();
+        let backend = seat(&store, team, "backend");
+        let frontend = seat(&store, team, "frontend");
+
+        store.queue_message(backend, "for the backend").unwrap();
+        assert!(store.take_pending(frontend).unwrap().is_empty());
+        assert_eq!(store.take_pending(backend).unwrap(), ["for the backend"]);
+    }
+
+    #[test]
+    fn a_message_survives_the_process_it_was_aimed_at() {
+        // On eve this was a failure case: the message went to a live HTTP session, so a
+        // process that had gone since the row was read meant the message had nowhere to
+        // land and the caller was told to say it again.
+        //
+        // Queueing removes the failure rather than handling it. The message is for the
+        // seat's next turn, not for this process, so whether that process is still up is
+        // not a question worth asking - and nothing anybody typed is lost to a race.
+        let (mut store, project, team) = seeded();
+        let run = store
+            .create_run(project, "ship it", RunTrigger::Manual)
+            .unwrap();
+        let backend = seat(&store, team, "backend");
+        let node = store
+            .dispatch(run.id, backend, Some("S1"), &ModelRegistry::local_only())
+            .unwrap();
+        store.set_node_session(node.id, "sess-1").unwrap();
+        store.set_node_status(node.id, NodeStatus::Running).unwrap();
+
+        let target = target(&store, backend).unwrap();
+        queue(&mut store, &target, "use i64").unwrap();
+
+        // The turn ends, successfully or not. The message is still there for the next one.
+        store.set_node_status(node.id, NodeStatus::Failed).unwrap();
+        assert_eq!(store.take_pending(backend).unwrap(), ["use i64"]);
     }
 }

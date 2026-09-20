@@ -17,7 +17,7 @@ use crate::util::now;
 /// Derived from [`MIGRATIONS`] rather than written down, because a constant somebody has
 /// to remember to bump is a constant that goes stale the one time it matters - when a
 /// database is a migration behind and nothing says so.
-pub(crate) fn latest_schema() -> i64 {
+pub fn latest_schema() -> i64 {
     MIGRATIONS.last().map_or(0, |(version, _, _)| *version)
 }
 
@@ -32,6 +32,7 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
     ),
     (5, "console", include_str!("migrations/005_console.sql")),
     (6, "schedule", include_str!("migrations/006_schedule.sql")),
+    (7, "speak", include_str!("migrations/007_speak.sql")),
 ];
 
 /// The number of `v_` views the schema ships. Asserted in tests, because a view silently
@@ -183,14 +184,18 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("team.db");
 
+        // Derived from the list rather than written down twice: a constant here is one
+        // somebody has to remember to bump, and forgetting reads as a failed migration.
+        let latest = MIGRATIONS.last().expect("at least one migration").0;
+
         let db = Db::open_or_create(&path).unwrap();
-        assert_eq!(db.schema_version().unwrap(), 6);
+        assert_eq!(db.schema_version().unwrap(), latest);
         assert_eq!(db.pending_migrations().unwrap(), 0);
         drop(db);
 
         // Re-opening must not re-apply anything.
         let db = Db::open(&path).unwrap();
-        assert_eq!(db.schema_version().unwrap(), 6);
+        assert_eq!(db.schema_version().unwrap(), latest);
 
         let views: i64 = db
             .conn()

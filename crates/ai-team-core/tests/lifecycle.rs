@@ -334,7 +334,12 @@ fn the_database_survives_being_closed_and_reopened() {
     drop(store);
 
     let reopened = Store::open(&path).unwrap();
-    assert_eq!(reopened.schema_version().unwrap(), 6);
+    // Derived, not written down twice: a number here is one somebody has to remember to
+    // bump, and forgetting reads as a failed migration rather than a stale test.
+    assert_eq!(
+        reopened.schema_version().unwrap(),
+        ai_team_core::latest_schema()
+    );
     assert_eq!(reopened.projects().unwrap().len(), 1);
     assert_eq!(reopened.run(run.id).unwrap().prompt, "ship it");
     assert_eq!(

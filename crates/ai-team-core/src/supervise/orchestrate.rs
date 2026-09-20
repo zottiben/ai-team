@@ -803,7 +803,29 @@ async fn take_turn(
     worktree: &Path,
     instruction: &str,
 ) -> Result<TurnOutcome> {
-    let turn = rig.seat(store, agent_id, worktree, instruction)?;
+    // Anything said to this seat while it was busy goes in front of the instruction, in
+    // the order it was said (M9-S42). A correction is only worth anything before the work
+    // it corrects, so it leads rather than trails.
+    let waiting = store.take_pending(agent_id)?;
+    let instruction = if waiting.is_empty() {
+        instruction.to_string()
+    } else {
+        store.append_event(
+            store.node_run(node_run_id)?.run_id,
+            crate::model::NewEvent::new(
+                crate::model::EventKind::Note,
+                format!(
+                    "{} message(s) said while this seat was busy were delivered with this turn",
+                    waiting.len()
+                ),
+            ),
+        )?;
+        format!(
+            "Someone said this to you while you were working. Take it into account:\n\n{}\n\n---\n\n{instruction}",
+            waiting.join("\n\n")
+        )
+    };
+    let turn = rig.seat(store, agent_id, worktree, &instruction)?;
     let (_, outcome) = crate::run_pi_turn(store, node_run_id, &turn, |_| {}).await?;
     Ok(outcome)
 }

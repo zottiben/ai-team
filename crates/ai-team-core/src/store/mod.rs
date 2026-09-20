@@ -84,3 +84,63 @@ impl Store {
 pub(crate) fn non_empty(value: Option<String>) -> Option<String> {
     value.filter(|v| !v.trim().is_empty())
 }
+
+/// Something said to a seat that was busy at the time (M9-S42).
+impl Store {
+    /// Keep a message for a seat's next turn.
+    ///
+    /// Returns how many are now waiting, so the caller can say "it will get this after
+    /// what it is doing" rather than pretending it has already landed.
+    pub fn queue_message(&mut self, agent_id: i64, body: &str) -> Result<usize> {
+        let at = crate::util::now();
+        self.db_mut().write(|tx| {
+            tx.execute(
+                "INSERT INTO pending_message (agent_id, body, created_at) VALUES (?1, ?2, ?3)",
+                rusqlite::params![agent_id, body, at],
+            )?;
+            Ok(())
+        })?;
+        self.waiting_for(agent_id)
+    }
+
+    /// How many messages this seat has not been given yet.
+    pub fn waiting_for(&self, agent_id: i64) -> Result<usize> {
+        let count: i64 = self.db().conn().query_row(
+            "SELECT COUNT(*) FROM pending_message
+              WHERE agent_id = ?1 AND delivered_at IS NULL",
+            rusqlite::params![agent_id],
+            |row| row.get(0),
+        )?;
+        Ok(usize::try_from(count).unwrap_or(0))
+    }
+
+    /// Take everything waiting for a seat, oldest first, and mark it delivered.
+    ///
+    /// Marked in the same transaction as the read. Two turns starting at once would
+    /// otherwise both take the same message and act on it twice, which for an instruction
+    /// like "stop adding tests" is worse than not delivering it at all.
+    pub fn take_pending(&mut self, agent_id: i64) -> Result<Vec<String>> {
+        let at = crate::util::now();
+        self.db_mut().write(|tx| {
+            let mut read = tx.prepare(
+                "SELECT id, body FROM pending_message
+                  WHERE agent_id = ?1 AND delivered_at IS NULL
+                  ORDER BY id",
+            )?;
+            let rows: Vec<(i64, String)> = read
+                .query_map(rusqlite::params![agent_id], |row| {
+                    Ok((row.get(0)?, row.get(1)?))
+                })?
+                .collect::<std::result::Result<_, _>>()?;
+            drop(read);
+
+            for (id, _) in &rows {
+                tx.execute(
+                    "UPDATE pending_message SET delivered_at = ?2 WHERE id = ?1",
+                    rusqlite::params![id, at],
+                )?;
+            }
+            Ok(rows.into_iter().map(|(_, body)| body).collect())
+        })
+    }
+}

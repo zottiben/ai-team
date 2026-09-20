@@ -239,9 +239,17 @@ async fn say(
                 target.agent.role
             ),
         })),
-        ai_team_core::Would::Interrupt => Ok(Json(
-            ai_team_core::interrupt(&target, &request.message).await?,
-        )),
+        ai_team_core::Would::Queue => {
+            // Synchronous: there is nothing to reach out to, so this is a row written and
+            // the answer is known before the response is built.
+            let store = state.store()?;
+            let mut store = store.lock();
+            Ok(Json(ai_team_core::queue_message(
+                &mut store,
+                &target,
+                &request.message,
+            )?))
+        }
         ai_team_core::Would::StartWork => {
             // Detached: a turn takes minutes and the run records itself in the database the
             // window is already watching.

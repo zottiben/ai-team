@@ -653,7 +653,7 @@ export function crew(project: string): Promise<Member[]> {
 }
 
 export type Reached =
-  | { reached: "interrupted"; node_run_id: number }
+  | { reached: "queued"; node_run_id: number; waiting: number }
   | { reached: "started" }
   | { reached: "refused"; because: string };
 

@@ -6,9 +6,10 @@ import { sayTo, type Member } from "./api";
  * Saying something to one seat.
  *
  * The two acts this can perform are genuinely different, and which one is about to happen
- * is said before anybody presses send. A seat mid-turn takes the message into what it is
- * already doing - an interruption. An idle seat has no process, so reaching it means
- * starting a turn in a leased worktree: minutes of work rather than a remark.
+ * is said before anybody presses send. A seat mid-turn cannot be reached inside the turn -
+ * a Pi turn is a process reading one prompt - so the message waits and is the first thing
+ * that seat is given next. An idle seat has no turn to wait for, so reaching it means
+ * starting one in a leased worktree: minutes of work rather than a remark.
  *
  * A single box that silently did either would be a surprise waiting to happen, which is the
  * whole reason this says which.
@@ -27,7 +28,7 @@ export function Talk({ member, onClose, onSent }: {
   // process may have gone since - so the *attempt* reports the truth and this only sets
   // expectations.
   const act =
-    member.doing === "disabled" ? "nothing" : member.reachable ? "interrupt" : "start";
+    member.doing === "disabled" ? "nothing" : member.reachable ? "queue" : "start";
 
   const send = async () => {
     if (message.trim() === "") return;
@@ -36,8 +37,10 @@ export function Talk({ member, onClose, onSent }: {
       const reached = await sayTo(member.agent_id, message);
       setProblem(null);
       setOutcome(
-        reached.reached === "interrupted"
-          ? `${member.name} has it, mid-turn.`
+        reached.reached === "queued"
+          ? reached.waiting === 1
+            ? `${member.name} is working. It gets this next.`
+            : `${member.name} is working. It gets this and ${reached.waiting - 1} other message(s) next.`
           : reached.reached === "started"
             ? `Starting a turn for ${member.name}. It will appear in the runs below.`
             : reached.because,
@@ -68,9 +71,9 @@ export function Talk({ member, onClose, onSent }: {
       </div>
 
       {/* Said before, not after. These are different acts. */}
-      <p className={act === "interrupt" ? "notice" : "faint"}>
-        {act === "interrupt"
-          ? "It is mid-turn, so this lands in the middle of what it is doing."
+      <p className={act === "queue" ? "notice" : "faint"}>
+        {act === "queue"
+          ? "It is mid-turn. This waits, and is the first thing it is given next."
           : act === "start"
             ? "It is idle, so this starts a turn for it in its own worktree. That takes a few minutes."
             : "It is switched off, so it would never be given this."}
@@ -89,7 +92,7 @@ export function Talk({ member, onClose, onSent }: {
         <textarea
           aria-label={`message for ${member.role}`}
           placeholder={
-            act === "interrupt"
+            act === "queue"
               ? "Stop using the old helper - use the new one."
               : "Have a look at the failing test in src/lib.rs and fix it."
           }
@@ -110,7 +113,7 @@ export function Talk({ member, onClose, onSent }: {
           className="button button--primary"
           disabled={busy || message.trim() === "" || act === "nothing"}
         >
-          {busy ? "Sending…" : act === "interrupt" ? "Interrupt" : "Start a turn"}
+          {busy ? "Sending…" : act === "queue" ? "Send" : "Start a turn"}
         </button>
       </form>
     </aside>

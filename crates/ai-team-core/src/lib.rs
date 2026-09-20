@@ -45,7 +45,7 @@ pub use analytics::{rollup, By, Row};
 pub use context::{figma_links, parse_url, Source, CLICKUP_READ_TOOLS, FIGMA_READ_TOOLS};
 pub use crew::{of_project as crew_of, Doing, Member};
 pub use daemon::{once as tick_once, serve as serve_schedule};
-pub use db::Db;
+pub use db::{latest_schema, Db};
 pub use diff::{parse as parse_diff, patch_for, FileDiff, FileStatus, Hunk, Line, LineKind};
 pub use error::{Error, Result};
 pub use eve::{Disposition, Ingested, StreamEvent, StreamMeta, TerminalState};
@@ -95,7 +95,9 @@ pub use review::{
 };
 pub use roles::{preset, RolePreset, DEFAULT_LOCAL_MODEL, DEFAULT_ROSTER};
 pub use schedule::{act, announcement, claim_due, notify, runnable, tick, Fired, TICK};
-pub use speak::{interrupt, start_turn, target as speak_target, Reached, Target, Would};
+pub use speak::{
+    queue as queue_message, start_turn, target as speak_target, Reached, Target, Would,
+};
 pub use store::Store;
 pub use supervise::{
     approvals_in, drive_turn, free_port, mint_token, outcome_status, reattach,
