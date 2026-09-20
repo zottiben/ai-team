@@ -24,6 +24,7 @@ mod lsp;
 mod machine;
 mod model;
 mod neighbours;
+mod onboard;
 mod paths;
 mod readiness;
 mod review;
@@ -68,6 +69,7 @@ pub use neighbours::{
     list_tree, push, safe_join, stage, staged_diff, unstage, untracked, worktree_diff, Entry,
     FileSql, Hit, Lease, PlanSummary, Planner, PoolEntry, Question, Slice, Worktrees,
 };
+pub use onboard::{attach as attach_repo_at, register as register_project, Registered};
 pub use paths::{data_dir, default_db_path, ensure_data_dir, machine_profile_path, HOME_ENV};
 pub use readiness::{
     apply as apply_fix, apply_at as apply_fix_at, report as readiness_report,

@@ -32,7 +32,7 @@ const POLL: Duration = Duration::from_millis(400);
 pub(crate) fn routes() -> Router<AppState> {
     Router::new()
         .route("/health", get(crate::health::health))
-        .route("/projects", get(projects))
+        .route("/projects", get(projects).post(register_project))
         .route("/runs", get(runs))
         .route("/runs/{id}", get(run))
         .route("/runs/{id}/events", get(run_events))
@@ -46,6 +46,7 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/tree", get(tree))
         .route("/file", get(read_file).post(write_file))
         .route("/search", get(search))
+        .route("/projects/{id}/repos", axum::routing::post(attach_repo))
         .route("/settings", get(settings))
         .route("/settings/provider", axum::routing::post(set_provider))
         .route("/settings/context", axum::routing::post(set_context))
@@ -192,6 +193,56 @@ async fn write_file(
 }
 
 /// One provider, as the settings page needs it.
+#[derive(Debug, Deserialize)]
+struct RegisterRequest {
+    /// A directory on this machine. Absolute, because a relative path would be relative to
+    /// wherever the server happens to have been started - which is not where the person
+    /// clicking is looking.
+    path: String,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    kind: Option<ai_team_core::ProjectKind>,
+}
+
+/// Register a directory as a project - what `ait init` does, from the window.
+///
+/// The database is created first if it is absent, so this works as the first thing
+/// somebody does rather than failing with "no database" on a machine that has just been
+/// installed.
+async fn register_project(
+    State(state): State<AppState>,
+    JsonBody(request): JsonBody<RegisterRequest>,
+) -> Result<Json<ai_team_core::Registered>> {
+    if state.store().is_err() {
+        ai_team_core::apply_fix(ai_team_core::Action::CreateDatabase)?;
+    }
+    let store = state.store()?;
+    let mut store = store.lock();
+    Ok(Json(ai_team_core::register_project(
+        &mut store,
+        std::path::Path::new(&request.path),
+        request.name.as_deref(),
+        request.kind,
+    )?))
+}
+
+#[derive(Debug, Deserialize)]
+struct AttachRequest {
+    path: String,
+}
+
+async fn attach_repo(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    JsonBody(request): JsonBody<AttachRequest>,
+) -> Result<Json<serde_json::Value>> {
+    let store = state.store()?;
+    let mut store = store.lock();
+    let path = ai_team_core::attach_repo_at(&mut store, id, std::path::Path::new(&request.path))?;
+    Ok(Json(serde_json::json!({ "attached": path })))
+}
+
 #[derive(Debug, Serialize)]
 struct ProviderSetting {
     provider: String,

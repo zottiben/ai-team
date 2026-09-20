@@ -555,6 +555,26 @@ export function setFallback(order: string[]): Promise<unknown> {
   return post("/settings/fallback", { order });
 }
 
+export type Registered = {
+  project: { id: number; slug: string; name: string; kind: string };
+  repo_path: string | null;
+  created: boolean;
+  seeded_team: boolean;
+  roster: [string, string, string][];
+};
+
+export function registerProject(body: {
+  path: string;
+  name?: string;
+  kind?: string;
+}): Promise<Registered> {
+  return post("/projects", body);
+}
+
+export function attachRepo(id: number, path: string): Promise<{ attached: string }> {
+  return post(`/projects/${id}/repos`, { path });
+}
+
 export function post<T>(path: string, body: unknown): Promise<T> {
   return request(path, "POST", body);
 }

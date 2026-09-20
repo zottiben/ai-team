@@ -93,10 +93,26 @@ pub fn normalise_remote(url: &str) -> String {
 /// whole vocabulary zone ownership needs. A full glob crate would buy edge cases nobody
 /// is going to write and a dependency to audit.
 pub fn zone_matches(zone: &str, path: &str) -> bool {
+    zone_specificity(zone, path).is_some()
+}
+
+/// How specifically a zone claims a path, or `None` if it does not.
+///
+/// Higher is more specific. This exists so two seats whose zones overlap resolve by *what
+/// they said* rather than by which was created first - `ui/**` beats `**` for `ui/App.tsx`
+/// whichever order the roster is in. Without it a catch-all zone silently starves every
+/// other seat, which is the ambiguity D14 warns about arriving through the back door.
+///
+/// Measured as the number of literal characters in the matching pattern: `ui/**` has two,
+/// `crates/core/**` has eleven, `**` has none. Crude, and right for the thing it decides -
+/// a longer pattern is a more deliberate claim.
+pub(crate) fn zone_specificity(zone: &str, path: &str) -> Option<usize> {
     zone.lines()
         .map(str::trim)
         .filter(|line| !line.is_empty() && !line.starts_with('#'))
-        .any(|pattern| glob_matches(pattern, path))
+        .filter(|pattern| glob_matches(pattern, path))
+        .map(|pattern| pattern.chars().filter(|c| *c != '*').count())
+        .max()
 }
 
 fn glob_matches(pattern: &str, path: &str) -> bool {
@@ -150,6 +166,40 @@ fn matches_from(p: &[char], mut pi: usize, t: &[char], mut ti: usize) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use super::zone_specificity;
+
+    #[test]
+    fn a_more_specific_zone_outranks_a_catch_all() {
+        // Two seats whose zones overlap have to resolve by what they said rather than by
+        // which was created first, or a catch-all starves everything else.
+        let specific = zone_specificity("ui/**", "ui/src/App.tsx").unwrap();
+        let catch_all = zone_specificity("**", "ui/src/App.tsx").unwrap();
+        assert!(specific > catch_all, "{specific} vs {catch_all}");
+    }
+
+    #[test]
+    fn a_deeper_zone_outranks_a_shallower_one() {
+        let deep = zone_specificity("crates/core/**", "crates/core/src/lib.rs").unwrap();
+        let shallow = zone_specificity("crates/**", "crates/core/src/lib.rs").unwrap();
+        assert!(deep > shallow);
+    }
+
+    #[test]
+    fn a_zone_that_does_not_match_has_no_specificity() {
+        assert!(zone_specificity("ui/**", "crates/core/src/lib.rs").is_none());
+        assert!(zone_specificity("", "anything").is_none());
+    }
+
+    #[test]
+    fn the_best_line_in_a_multi_line_zone_decides() {
+        // A seat listing both a catch-all and something specific claims the specific thing
+        // specifically.
+        let zone = "**\nui/**";
+        assert_eq!(
+            zone_specificity(zone, "ui/App.tsx"),
+            zone_specificity("ui/**", "ui/App.tsx")
+        );
+    }
     use super::*;
 
     #[test]

@@ -521,11 +521,20 @@ impl Store {
     /// Which seat owns this path? The orchestrator's dispatch question (M2-S8).
     ///
     /// Disabled seats and read-only seats are skipped: neither can take the work.
+    /// The seat whose zone claims a path most specifically.
+    ///
+    /// Most specific rather than first: a seat with a catch-all zone would otherwise
+    /// starve every other seat purely by having a lower `ord`, and which agent edits a
+    /// file would depend on the order the roster was created in. `ord` remains the
+    /// tie-break, so two equally specific claims still resolve the same way every time.
     pub fn agent_for_path(&self, team_id: i64, path: &str) -> Result<Option<Agent>> {
         Ok(self
             .agents(team_id)?
             .into_iter()
-            .find(|a| a.enabled && !a.read_only && zone_matches(&a.zone, path)))
+            .filter(|a| a.enabled && !a.read_only)
+            .filter_map(|a| crate::util::zone_specificity(&a.zone, path).map(|rank| (rank, a)))
+            .max_by_key(|(rank, a)| (*rank, -a.ord))
+            .map(|(_, a)| a))
     }
 
     /// Copy a team, its seats and their tool policies onto another project (M2-S7).

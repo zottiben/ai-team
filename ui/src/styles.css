@@ -1063,3 +1063,36 @@ button.card:hover {
   border-radius: var(--radius-sm);
   font-size: var(--text-sm);
 }
+
+/* --- projects ----------------------------------------------------------------- */
+
+.projects {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-height: 0;
+  max-width: 52rem;
+}
+
+.projects__add {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+/* The path takes the room: it is long, and a truncated one cannot be checked by eye. */
+.projects__add input[aria-label="path"],
+.projects__add input:first-child {
+  flex: 1;
+  min-width: 14rem;
+}
+
+.projects__add input {
+  font: inherit;
+  color: var(--text-primary-default);
+  background: var(--surface-canvas-default);
+  border: 1px solid var(--border-subtle-default);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2);
+}
