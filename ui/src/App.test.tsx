@@ -51,6 +51,54 @@ async function openConsole(user: ReturnType<typeof userEvent.setup>) {
   await user.click(await screen.findByText("Console"));
 }
 
+it("opens on setup when this machine has not been set up", async () => {
+  // The confusing first impression this replaces: a fresh install opened on an empty Today
+  // with no indication that nothing could run or what to do about it.
+  stubApi({
+    "/health": HEALTH,
+    "/projects": [],
+    "/runs": [],
+    "/today": [],
+    "/doctor": {
+      version: "0.1.0",
+      checks: [
+        {
+          id: "database",
+          label: "Database",
+          severity: "blocking",
+          detail: "not created yet",
+          fix: { by: "itself", action: "create_database", describe: "Create it" },
+        },
+      ],
+      severity: "blocking",
+      can_run: false,
+      needs_setup: true,
+    },
+    "/settings": { profile_path: "/x", providers: [], fallback: [], context: [] },
+  });
+  render(<App />);
+  expect(await screen.findByText(/Let's get you set up/)).toBeDefined();
+});
+
+it("opens on Today when the machine is ready", async () => {
+  stubApi({
+    "/health": HEALTH,
+    "/projects": [],
+    "/runs": [],
+    "/today": [],
+    "/doctor": {
+      version: "0.1.0",
+      checks: [],
+      severity: "fine",
+      can_run: true,
+      needs_setup: false,
+    },
+  });
+  render(<App />);
+  expect(await screen.findByText(/Nothing is waiting on you/)).toBeDefined();
+  expect(screen.queryByText(/Let's get you set up/)).toBeNull();
+});
+
 it("opens on Today, because that is the question you have when you open the window", async () => {
   stubApi({
     "/health": HEALTH,

@@ -9,10 +9,12 @@ import { Schedule } from "./Schedule";
 import { Projects } from "./Projects";
 import { Roster } from "./Roster";
 import { Settings } from "./Settings";
+import { HealthBanner, Setup } from "./Setup";
 import { Source } from "./Source";
 import { Today } from "./Today";
 import { UpdateBanner } from "./Update";
 import {
+  doctor as doctorReport,
   approvals as fetchApprovals,
   health,
   projects as fetchProjects,
@@ -59,6 +61,7 @@ const VIEW_NAMES = {
   projects: "Projects",
   roster: "Team",
   settings: "Settings",
+  setup: "Setup",
 } as const;
 
 export default function App() {
@@ -71,6 +74,9 @@ export default function App() {
   const [events, setEvents] = useState<RunEvent[]>([]);
   const [pending, setPending] = useState<Approval[]>([]);
   const [view, setView] = useState<keyof typeof VIEW_NAMES>("today");
+  // Undecided until the report answers. Opening on Today and then jumping would flash the
+  // wrong page at somebody whose machine is not set up.
+  const [firstRun, setFirstRun] = useState<boolean | null>(null);
   const [overlay, setOverlay] = useState<null | "about">(null);
   // Bumped on every server tick, so the board re-reads without owning a subscription.
   const [tick, setTick] = useState(0);
@@ -82,6 +88,17 @@ export default function App() {
     apply(theme);
     return followSystem(() => theme);
   }, [theme]);
+
+  // Asked once, on mount. A machine that needs setting up opens on setup rather than on an
+  // empty Today, which is the confusing first impression this replaces.
+  useEffect(() => {
+    void doctorReport()
+      .then((report) => {
+        setFirstRun(report.needs_setup);
+        if (report.needs_setup) setView("setup");
+      })
+      .catch(() => setFirstRun(false));
+  }, []);
 
   useEffect(() => {
     health().then(setInfo).catch(() => setInfo(null));
@@ -225,6 +242,14 @@ export default function App() {
               <span>{option}</span>
             </button>
           ))}
+          {/* Visible from every page, because a machine that cannot run anything is worth
+              interrupting whatever somebody is looking at. */}
+          <HealthBanner tick={tick} onOpen={() => setView("setup")} />
+          {firstRun === true && view !== "setup" && (
+            <button type="button" className="nav-item" onClick={() => setView("setup")}>
+              <span>Finish setting up</span>
+            </button>
+          )}
           <UpdateBanner />
           <button type="button" className="nav-item" onClick={() => setOverlay("about")}>
             <span>About</span>
@@ -268,6 +293,17 @@ export default function App() {
         )}
 
         {view === "roster" && <Roster onChanged={() => setTick((n) => n + 1)} />}
+
+        {view === "setup" && (
+          <Setup
+            onReady={() => {
+              setFirstRun(false);
+              setView("today");
+              void refresh();
+              setTick((n) => n + 1);
+            }}
+          />
+        )}
 
         {view === "settings" && (
           <Settings theme={theme} onTheme={setTheme} onChanged={() => setTick((n) => n + 1)} />

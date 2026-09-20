@@ -1115,3 +1115,54 @@ button.card:hover {
   border-radius: var(--radius-sm);
   padding: var(--space-1) var(--space-2);
 }
+
+/* --- setup -------------------------------------------------------------------- */
+
+.setup {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-height: 0;
+  max-width: 48rem;
+}
+
+.setup__command {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  background: var(--surface-panel-default);
+  border: 1px solid var(--border-subtle-default);
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+}
+
+/* Selectable and wrapping: it is meant to be copied, and a truncated install command that
+ * looks complete is worse than one that is obviously long. */
+.setup__run {
+  flex: 1;
+  min-width: 0;
+  padding: var(--space-2);
+  background: var(--surface-canvas-default);
+  border-radius: var(--radius-sm);
+  word-break: break-all;
+  user-select: all;
+}
+
+/* In the sidebar, so a machine that cannot run anything says so from every page. */
+.health {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  width: 100%;
+  text-align: left;
+  padding: var(--space-3);
+  margin-bottom: var(--space-2);
+  background: var(--surface-panel-raised);
+  border: 1px solid var(--status-failed-default);
+  border-radius: var(--radius-md);
+  color: inherit;
+  font: inherit;
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
