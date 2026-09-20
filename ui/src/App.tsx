@@ -1,88 +1,88 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import { Analytics } from "./Analytics";
-import { Board } from "./Board";
-import { Approvals, Prompt, Seats } from "./Console";
-
-import { Review } from "./Review";
-import { Schedule } from "./Schedule";
 import { Projects } from "./Projects";
 import { Roster } from "./Roster";
+import { Schedule } from "./Schedule";
 import { Settings } from "./Settings";
 import { HealthBanner, Setup } from "./Setup";
-import { Source } from "./Source";
 import { Today } from "./Today";
 import { UpdateBanner } from "./Update";
 import {
+  Workspace,
+  WORKSPACE_VIEWS,
+  workspaceViewName,
+  type WorkspaceView,
+} from "./Workspace";
+import {
   doctor as doctorReport,
-  approvals as fetchApprovals,
   health,
   projects as fetchProjects,
-  run as fetchRun,
-  runEvents as fetchRunEvents,
-  runs as fetchRuns,
   subscribe,
-  type Approval,
   type Health,
   type Project,
-  type Run,
-  type RunDetail,
-  type RunEvent,
 } from "./api";
 import { apply, followSystem, stored, type Theme } from "./theme";
 
 /**
- * The shell: sidebar, main, right dock.
+ * The shell, and the two levels the window has (D18).
  *
- * One surface at a time in the dock, one overlay at a time, and Esc always dismisses the
- * topmost thing. That last rule is why the key handler lives here rather than in each
- * surface - Esc has to know what is on top, and only this level does.
+ * The views named here answer questions *across* projects, and none of them takes one -
+ * "what should I do now" and "which pairing earns its seat" are not questions about a
+ * repository. Selecting a project hands over to [`Workspace`], which owns everything about
+ * that one.
+ *
+ * It used to be a flat list of twelve views each taking a project as a filter, which made
+ * every one answer a slightly different question depending on a selection elsewhere, and
+ * made the thing somebody actually does - sit in one repository and run a team - no more
+ * prominent than the schedule.
  */
-/** Named once, near the type, rather than in a ternary chain that grows a branch per view. */
-// CodeMirror and its grammars are most of the bundle, and every other view loads without
-// them. Split out so opening the window costs what the window needs rather than what the
-// editor might.
-const Editor = lazy(async () => ({ default: (await import("./Editor")).Editor }));
-// xterm is another quarter of a megabyte nothing else needs.
-const TerminalPane = lazy(async () => ({
-  default: (await import("./Terminal")).TerminalPane,
-}));
-
-const VIEW_NAMES = {
+const GLOBAL_VIEWS = {
   today: "Today",
-  console: "Console",
-  board: "Board",
-  review: "Review",
   analytics: "Analytics",
   schedule: "Schedule",
-  editor: "Editor",
-  terminal: "Terminal",
-  source: "Source",
   projects: "Projects",
-  roster: "Team",
+  team: "Default team",
   settings: "Settings",
-  setup: "Setup",
 } as const;
 
+type GlobalView = keyof typeof GLOBAL_VIEWS;
+
+/** Where you are: across everything, or inside one project. */
+type Place =
+  | { level: "global"; view: GlobalView }
+  | { level: "project"; slug: string; view: WorkspaceView };
+
 export default function App() {
-  const [theme, setTheme] = useState<Theme>(stored);
-  const [projects, setProjects] = useState<Project[]>([]);
-  const [runs, setRuns] = useState<Run[]>([]);
-  const [project, setProject] = useState<number | null>(null);
-  const [selected, setSelected] = useState<number | null>(null);
-  const [detail, setDetail] = useState<RunDetail | null>(null);
-  const [events, setEvents] = useState<RunEvent[]>([]);
-  const [pending, setPending] = useState<Approval[]>([]);
-  const [view, setView] = useState<keyof typeof VIEW_NAMES>("today");
-  // Undecided until the report answers. Opening on Today and then jumping would flash the
-  // wrong page at somebody whose machine is not set up.
-  const [firstRun, setFirstRun] = useState<boolean | null>(null);
-  const [overlay, setOverlay] = useState<null | "about">(null);
-  // Bumped on every server tick, so the board re-reads without owning a subscription.
-  const [tick, setTick] = useState(0);
-  const [expanded, setExpanded] = useState(false);
-  const [problem, setProblem] = useState<string | null>(null);
   const [info, setInfo] = useState<Health | null>(null);
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [place, setPlace] = useState<Place>({ level: "global", view: "today" });
+  const [setupOpen, setSetupOpen] = useState(false);
+  const [overlay, setOverlay] = useState<null | "about">(null);
+  const [theme, setTheme] = useState<Theme>(stored);
+  const [problem, setProblem] = useState<string | null>(null);
+  // Bumped on every server tick, so views re-read without each owning a subscription.
+  const [tick, setTick] = useState(0);
+  // A run Today asked for, carried until the workspace has taken it.
+  const [openRun, setOpenRun] = useState<number | null>(null);
+  const [firstRun, setFirstRun] = useState<boolean | null>(null);
+  // Where you last were in each project. A command centre you come back to should be where
+  // you left it - resetting to Work every time makes returning feel like starting over.
+  const [lastView, setLastView] = useState<Record<string, WorkspaceView>>({});
+
+  const refresh = useCallback(async () => {
+    try {
+      setProjects(await fetchProjects());
+      setProblem(null);
+    } catch (error: unknown) {
+      setProblem(error instanceof Error ? error.message : String(error));
+    }
+  }, []);
+
+  useEffect(() => {
+    void health().then(setInfo).catch(() => {});
+    void refresh();
+  }, [refresh]);
 
   useEffect(() => {
     apply(theme);
@@ -90,93 +90,38 @@ export default function App() {
   }, [theme]);
 
   // Asked once, on mount. A machine that needs setting up opens on setup rather than on an
-  // empty Today, which is the confusing first impression this replaces.
+  // empty Today, which is the confusing first impression this replaces (M6-S27).
   useEffect(() => {
     void doctorReport()
       .then((report) => {
         setFirstRun(report.needs_setup);
-        if (report.needs_setup) setView("setup");
+        if (report.needs_setup) setSetupOpen(true);
       })
       .catch(() => setFirstRun(false));
   }, []);
 
+  // One subscription for the whole window: `ait ui` and `ait run` are separate processes
+  // sharing a SQLite file, so the tick says the database changed and each view re-reads
+  // whatever it is showing (M3-S11).
   useEffect(() => {
-    health().then(setInfo).catch(() => setInfo(null));
-  }, []);
-
-  const refresh = useCallback(async () => {
-    try {
-      const [nextProjects, nextRuns] = await Promise.all([
-        fetchProjects(),
-        fetchRuns(project ?? undefined),
-      ]);
-      setProjects(nextProjects);
-      setRuns(nextRuns);
-      setProblem(null);
-    } catch (error: unknown) {
-      setProblem(error instanceof Error ? error.message : String(error));
-    }
-  }, [project]);
-
-  // The selected run is refetched separately: it changes far more often than the lists,
-  // and a turn in flight should not redraw the sidebar on every event.
-  const refreshSelected = useCallback(async () => {
-    if (selected === null) {
-      setDetail(null);
-      setEvents([]);
-      setPending([]);
-      return;
-    }
-    try {
-      // The approvals are an addition to this panel, not the point of it. Folding them
-      // into the same failure as the run itself means one bad response blanks a view
-      // that could have rendered everything else.
-      const [next, nextEvents] = await Promise.all([
-        fetchRun(selected),
-        fetchRunEvents(selected),
-      ]);
-      setDetail(next);
-      setEvents(nextEvents);
-      setPending(await fetchApprovals(selected).catch(() => []));
-    } catch (error: unknown) {
-      setProblem(error instanceof Error ? error.message : String(error));
-    }
-  }, [selected]);
-
-  useEffect(() => {
-    void refresh();
+    return subscribe(() => {
+      void refresh();
+      setTick((value) => value + 1);
+    });
   }, [refresh]);
-  useEffect(() => {
-    void refreshSelected();
-  }, [refreshSelected]);
 
-  // One subscription for the window. The tick says only that the database moved; what
-  // that means depends on what is on screen, so both views re-read.
-  const onTick = useRef<() => void>(() => {});
-  onTick.current = () => {
-    void refresh();
-    void refreshSelected();
-    setTick((value) => value + 1);
-  };
-  useEffect(() => subscribe(() => onTick.current()), []);
-
-  // Esc dismisses the topmost surface, innermost first. A single handler, because
-  // "topmost" is a fact about the whole shell.
+  // Esc closes what the shell owns. The workspace handles its own, innermost first.
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       if (overlay !== null) setOverlay(null);
-      else if (expanded) setExpanded(false);
-      else if (selected !== null) setSelected(null);
+      else if (setupOpen) setSetupOpen(false);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [overlay, expanded, selected]);
+  }, [overlay, setupOpen]);
 
-  const shown = useMemo(
-    () => (project === null ? runs : runs.filter((r) => r.project_id === project)),
-    [runs, project],
-  );
+  const inside = place.level === "project" ? projects.find((p) => p.slug === place.slug) : undefined;
 
   return (
     <div className="shell">
@@ -186,67 +131,83 @@ export default function App() {
           <span className="sidebar__version">{info?.version ?? ""}</span>
         </div>
 
-        <nav className="sidebar__section" aria-label="Views">
-          <span className="sidebar__label">View</span>
-          {(["today", "console", "board", "review", "analytics", "schedule", "editor", "terminal", "source", "projects", "roster", "settings"] as const).map(
-            (option) => (
+        {/* Inside a project, its own navigation replaces the global list rather than sitting
+            beside it: two lists of views is two places to look for the same thing. */}
+        {inside === undefined ? (
+          <nav className="sidebar__section" aria-label="Everything">
+            <span className="sidebar__label">Everything</span>
+            {(Object.keys(GLOBAL_VIEWS) as GlobalView[]).map((option) => (
+              <button
+                type="button"
+                key={option}
+                className="nav-item"
+                aria-current={place.level === "global" && place.view === option}
+                onClick={() => setPlace({ level: "global", view: option })}
+              >
+                <span>{GLOBAL_VIEWS[option]}</span>
+              </button>
+            ))}
+          </nav>
+        ) : (
+          <nav className="sidebar__section" aria-label={inside.name}>
             <button
               type="button"
-              key={option}
-              className="nav-item"
-              aria-current={view === option}
-              onClick={() => setView(option)}
+              className="nav-item sidebar__back"
+              onClick={() => setPlace({ level: "global", view: "today" })}
             >
-              <span>{VIEW_NAMES[option]}</span>
+              <span>← Everything</span>
             </button>
-            ),
-          )}
-        </nav>
+            <span className="sidebar__label">{inside.name}</span>
+            {WORKSPACE_VIEWS.map((option) => (
+              <button
+                type="button"
+                key={option}
+                className="nav-item"
+                aria-current={place.level === "project" && place.view === option}
+                onClick={() => {
+                  setLastView((seen) => ({ ...seen, [inside.slug]: option }));
+                  setPlace({ level: "project", slug: inside.slug, view: option });
+                }}
+              >
+                <span>{workspaceViewName(option)}</span>
+              </button>
+            ))}
+          </nav>
+        )}
 
         <nav className="sidebar__section" aria-label="Projects">
           <span className="sidebar__label">Projects</span>
-          <button
-            type="button"
-            className="nav-item"
-            aria-current={project === null}
-            onClick={() => setProject(null)}
-          >
-            <span>Everything</span>
-            <span className="nav-item__count">{runs.length}</span>
-          </button>
           {projects.map((entry) => (
             <button
               type="button"
               key={entry.id}
               className="nav-item"
-              aria-current={project === entry.id}
-              onClick={() => setProject(entry.id)}
+              aria-current={inside?.id === entry.id}
+              // Where you left it, or Work the first time - which is the thing you came
+              // to do.
+              onClick={() =>
+                setPlace({
+                  level: "project",
+                  slug: entry.slug,
+                  view: lastView[entry.slug] ?? "work",
+                })
+              }
             >
               <span>{entry.name}</span>
               <span className="nav-item__count">{entry.open_runs > 0 ? entry.open_runs : ""}</span>
             </button>
           ))}
-          {projects.length === 0 && <span className="faint">None yet - `ait init`.</span>}
+          {projects.length === 0 && (
+            <span className="faint">None yet - add one from Projects.</span>
+          )}
         </nav>
 
         <div className="sidebar__section" style={{ marginTop: "auto" }}>
-          <span className="sidebar__label">Theme</span>
-          {(["system", "dark", "light"] as const).map((option) => (
-            <button
-              type="button"
-              key={option}
-              className="nav-item"
-              aria-current={theme === option}
-              onClick={() => setTheme(option)}
-            >
-              <span>{option}</span>
-            </button>
-          ))}
           {/* Visible from every page, because a machine that cannot run anything is worth
               interrupting whatever somebody is looking at. */}
-          <HealthBanner tick={tick} onOpen={() => setView("setup")} />
-          {firstRun === true && view !== "setup" && (
-            <button type="button" className="nav-item" onClick={() => setView("setup")}>
+          <HealthBanner tick={tick} onOpen={() => setSetupOpen(true)} />
+          {firstRun === true && !setupOpen && (
+            <button type="button" className="nav-item" onClick={() => setSetupOpen(true)}>
               <span>Finish setting up</span>
             </button>
           )}
@@ -258,187 +219,74 @@ export default function App() {
         </div>
       </aside>
 
-      <main className="main">
-        {view === "today" && (
-          <Today
-            tick={tick}
-            onOpenRun={(id) => {
-              // Today answers "what now"; the run itself is the Console's job, so
-              // following an item takes you there rather than growing a third surface
-              // that renders runs slightly differently.
-              setView("console");
-              setSelected(id);
-            }}
-          />
-        )}
-
-        {view === "review" && <Review tick={tick} />}
-
-        {view === "editor" && (
-          <Suspense fallback={<p className="empty">Loading the editor…</p>}>
-            <Editor
-              project={projects.find((entry) => entry.id === project)?.slug ?? null}
-              node={null}
-            />
-          </Suspense>
-        )}
-
-        {view === "projects" && (
-          <Projects
-            onChanged={() => {
-              void refresh();
-              setTick((n) => n + 1);
-            }}
-          />
-        )}
-
-        {view === "roster" && <Roster onChanged={() => setTick((n) => n + 1)} />}
-
-        {view === "setup" && (
+      {/* Setup is a full-window state rather than a view, because it is what you are doing
+          rather than somewhere you are - and it has to be reachable from inside a project
+          as well as from the global list. */}
+      {setupOpen ? (
+        <main className="main">
           <Setup
             onReady={() => {
               setFirstRun(false);
-              setView("today");
+              setSetupOpen(false);
               void refresh();
-              setTick((n) => n + 1);
+              setTick((value) => value + 1);
             }}
           />
-        )}
-
-        {view === "settings" && (
-          <Settings theme={theme} onTheme={setTheme} onChanged={() => setTick((n) => n + 1)} />
-        )}
-
-        {view === "source" && (
-          <Source
-            project={projects.find((entry) => entry.id === project)?.slug ?? null}
-            node={null}
-          />
-        )}
-
-        {view === "terminal" && (
-          <Suspense fallback={<p className="empty">Loading the terminal…</p>}>
-            <TerminalPane
-              project={projects.find((entry) => entry.id === project)?.slug ?? null}
-              node={null}
-            />
-          </Suspense>
-        )}
-
-        {view === "schedule" && (
-          <Schedule
-            project={projects.find((entry) => entry.id === project)?.slug ?? null}
-            tick={tick}
-          />
-        )}
-
-        {view === "analytics" && (
-          <Analytics
-            project={projects.find((entry) => entry.id === project)?.slug ?? null}
-            tick={tick}
-          />
-        )}
-
-        {view === "board" && (
-          <Board
-            project={projects.find((entry) => entry.id === project)?.slug ?? null}
-            tick={tick}
-          />
-        )}
-
-        {view === "console" && (
-          <>
-        <div className="main__header">
-          <h2>Console</h2>
-          {problem !== null && <span className="error">{problem}</span>}
-        </div>
-
-        <Prompt
-          project={projects.find((entry) => entry.id === project)?.slug ?? null}
-          onStarted={() => void refresh()}
+        </main>
+      ) : inside !== undefined && place.level === "project" ? (
+        <Workspace
+          project={inside}
+          view={place.view}
+          tick={tick}
+          openRun={openRun}
+          onOpenedRun={() => setOpenRun(null)}
+          onChanged={() => setTick((value) => value + 1)}
         />
+      ) : (
+        <main className="main">
+          {problem !== null && <p className="error">{problem}</p>}
 
-        <div className="main__header">
-          <h2>Runs</h2>
-        </div>
+          {place.level === "global" && place.view === "today" && (
+            <Today
+              tick={tick}
+              // Today spans projects, so following an item has to say which one - it enters
+              // that project and opens the run there, rather than rendering a run in a
+              // second place that would drift from the first.
+              onOpenRun={(id, slug) => {
+                setOpenRun(id);
+                const target = slug ?? projects[0]?.slug;
+                if (target !== undefined) {
+                  setPlace({ level: "project", slug: target, view: "work" });
+                }
+              }}
+            />
+          )}
 
-        {shown.length === 0 && (
-          <p className="empty">
-            No runs yet. Start one with <code className="mono">ait run -p &lt;project&gt;</code> and
-            it will appear here.
-          </p>
-        )}
+          {place.level === "global" && place.view === "analytics" && <Analytics tick={tick} />}
 
-        <div className="list">
-          {shown.map((entry) => (
-            <button
-              type="button"
-              key={entry.id}
-              className="card"
-              onClick={() => setSelected(entry.id)}
-            >
-              <div className="card__row">
-                <span className="status" data-status={entry.status}>
-                  {entry.status}
-                </span>
-                <span className="faint mono">#{entry.id}</span>
-              </div>
-              <span>{entry.prompt}</span>
-            </button>
-          ))}
-        </div>
-          </>
-        )}
-      </main>
+          {place.level === "global" && place.view === "schedule" && <Schedule tick={tick} />}
 
-      {/* One surface at a time, and it collapses rather than covering what it describes. */}
-      {detail !== null && (
-        <aside className="dock">
-          <div className="dock__header">
-            <span className="dock__title">Run #{detail.id}</span>
-            <button type="button" className="button" onClick={() => setSelected(null)}>
-              Close
-            </button>
-          </div>
+          {place.level === "global" && place.view === "projects" && (
+            <Projects
+              onChanged={() => {
+                void refresh();
+                setTick((value) => value + 1);
+              }}
+            />
+          )}
 
-          <span className="status" data-status={detail.status}>
-            {detail.status}
-          </span>
-          <p className="muted">{detail.prompt}</p>
+          {place.level === "global" && place.view === "team" && (
+            <Roster onChanged={() => setTick((value) => value + 1)} />
+          )}
 
-          <Approvals run={detail} pending={pending} onAnswered={() => void refreshSelected()} />
-
-          <span className="dock__title">Team</span>
-          <Seats nodes={detail.nodes} />
-
-          <div className="card__row">
-            <span className="dock__title">Spent</span>
-            <span className="mono faint">
-              {detail.usage.tokens_in + detail.usage.tokens_out + detail.usage.cache_write} billable
-            </span>
-          </div>
-
-          <div className="card__row">
-            <span className="dock__title">Events</span>
-            <button type="button" className="button" onClick={() => setExpanded(true)}>
-              Expand
-            </button>
-          </div>
-          <Events events={events.slice(-25)} />
-        </aside>
-      )}
-
-      {/* A full-window view, for when the dock is too narrow to read a turn in. */}
-      {expanded && detail !== null && (
-        <section className="full-view">
-          <div className="main__header">
-            <h2>Run #{detail.id}</h2>
-            <button type="button" className="button" onClick={() => setExpanded(false)}>
-              Close <span className="kbd">Esc</span>
-            </button>
-          </div>
-          <Events events={events} />
-        </section>
+          {place.level === "global" && place.view === "settings" && (
+            <Settings
+              theme={theme}
+              onTheme={setTheme}
+              onChanged={() => setTick((value) => value + 1)}
+            />
+          )}
+        </main>
       )}
 
       {overlay === "about" && (
@@ -463,28 +311,16 @@ export default function App() {
                   : "not compiled in"}
               </dd>
             </dl>
-            <button type="button" className="button button--primary" onClick={() => setOverlay(null)}>
+            <button
+              type="button"
+              className="button button--primary"
+              onClick={() => setOverlay(null)}
+            >
               Close
             </button>
           </div>
         </div>
       )}
-    </div>
-  );
-}
-
-function Events({ events }: { events: RunEvent[] }) {
-  if (events.length === 0) {
-    return <p className="faint">Nothing recorded yet.</p>;
-  }
-  return (
-    <div className="events">
-      {events.map((event) => (
-        <div key={event.id} className="event">
-          <span className="event__kind">{event.kind}</span>
-          <span>{event.summary}</span>
-        </div>
-      ))}
     </div>
   );
 }

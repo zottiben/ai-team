@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 
 import {
+  projects as fetchProjects,
+  type Project as ProjectSummary,
   addReminder,
   cancelReminder,
   reminders as fetchReminders,
@@ -33,8 +35,13 @@ function inFromNow(delta: string): string | null {
  * work. An idea needs no date at all - that is what makes it an inbox rather than another
  * queue with a deadline.
  */
-export function Schedule({ project, tick }: { project: string | null; tick: number }) {
+/// Global, because "what is scheduled" spans projects (D18). A scheduled *run* still needs
+/// one, so the form asks - which is better than inheriting whichever project happened to be
+/// selected elsewhere and scheduling work in the wrong repository.
+export function Schedule({ tick }: { tick: number }) {
   const [rows, setRows] = useState<Reminder[] | null>(null);
+  const [projects, setProjects] = useState<ProjectSummary[]>([]);
+  const [project, setProject] = useState<string>("");
   const [problem, setProblem] = useState<string | null>(null);
   const [kind, setKind] = useState<Reminder["kind"]>("idea");
   const [title, setTitle] = useState("");
@@ -42,12 +49,13 @@ export function Schedule({ project, tick }: { project: string | null; tick: numb
 
   const load = useCallback(async () => {
     try {
-      setRows(await fetchReminders(project));
+      setRows(await fetchReminders(null));
+      setProjects(await fetchProjects().catch(() => []));
       setProblem(null);
     } catch (error: unknown) {
       setProblem(error instanceof Error ? error.message : String(error));
     }
-  }, [project]);
+  }, []);
 
   useEffect(() => {
     void load();
@@ -63,10 +71,16 @@ export function Schedule({ project, tick }: { project: string | null; tick: numb
       return;
     }
     try {
+      // A scheduled run needs somewhere to run, and the store refuses one without it -
+      // caught here so the message names the missing thing rather than echoing a constraint.
+      if (kind === "scheduled_run" && project === "") {
+        setProblem("Which project should it run in?");
+        return;
+      }
       await addReminder({
         title,
         kind,
-        ...(project === null ? {} : { project }),
+        ...(project === "" ? {} : { project }),
         ...(due === null ? {} : { due_at: due }),
       });
       setTitle("");
@@ -110,6 +124,22 @@ export function Schedule({ project, tick }: { project: string | null; tick: numb
           value={when}
           onChange={(event) => setWhen(event.target.value)}
         />
+        {/* Only a run needs one: a reminder to cut a release belongs to whoever is reading
+            it, not to a checkout. */}
+        {kind === "scheduled_run" && (
+          <select
+            aria-label="project"
+            value={project}
+            onChange={(event) => setProject(event.target.value)}
+          >
+            <option value="">which project?</option>
+            {projects.map((entry) => (
+              <option key={entry.id} value={entry.slug}>
+                {entry.name}
+              </option>
+            ))}
+          </select>
+        )}
         <button type="submit" className="button button--primary">
           Add
         </button>

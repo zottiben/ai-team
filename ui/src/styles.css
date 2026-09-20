@@ -1166,3 +1166,10 @@ button.card:hover {
   font-size: var(--text-xs);
   cursor: pointer;
 }
+
+/* The way back out of a project. Set apart from the views below it, because it moves you
+ * between the two levels rather than within one. */
+.sidebar__back {
+  color: var(--text-primary-muted);
+  margin-bottom: var(--space-2);
+}

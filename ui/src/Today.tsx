@@ -20,7 +20,15 @@ const URGENCY: Record<TodayItem["urgency"], { label: string; why: string; status
  * judgement, tested in core, and a second one in the client would be a second answer to
  * the same question.
  */
-export function Today({ tick, onOpenRun }: { tick: number; onOpenRun: (id: number) => void }) {
+export function Today({
+  tick,
+  onOpenRun,
+}: {
+  tick: number;
+  /// Today spans projects, so following a run has to say which one it belongs to - the
+  /// shell cannot know from the id alone, and guessing would open the wrong workspace.
+  onOpenRun: (id: number, project: string | null) => void;
+}) {
   const [items, setItems] = useState<TodayItem[] | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
 
@@ -73,7 +81,7 @@ export function Today({ tick, onOpenRun }: { tick: number; onOpenRun: (id: numbe
   );
 }
 
-function Row({ item, onOpenRun }: { item: TodayItem; onOpenRun: (id: number) => void }) {
+function Row({ item, onOpenRun }: { item: TodayItem; onOpenRun: (id: number, project: string | null) => void }) {
   const tier = URGENCY[item.urgency];
   const body = (
     <>
@@ -93,7 +101,7 @@ function Row({ item, onOpenRun }: { item: TodayItem; onOpenRun: (id: number) => 
   return item.run_id === null ? (
     <div className="card">{body}</div>
   ) : (
-    <button type="button" className="card" onClick={() => onOpenRun(item.run_id ?? 0)}>
+    <button type="button" className="card" onClick={() => onOpenRun(item.run_id ?? 0, item.project)}>
       {body}
     </button>
   );

@@ -50,7 +50,7 @@ function stub(rows: AnalyticsRow[]) {
 
 it("shows what a pairing lands and what it costs in context to land it", async () => {
   stub([row({})]);
-  render(<Analytics project={null} tick={0} />);
+  render(<Analytics tick={0} />);
 
   const line = within(await screen.findByRole("row", { name: /backend/ }));
   expect(line.getByText("75%")).toBeDefined(); // accepted, of what was decided
@@ -78,7 +78,7 @@ it("a pairing with no history shows a dash, never a zero", async () => {
       cycle_time: null,
     }),
   ]);
-  render(<Analytics project={null} tick={0} />);
+  render(<Analytics tick={0} />);
 
   const line = within(await screen.findByRole("row", { name: /reviewer/ }));
   expect(line.queryByText("0%")).toBeNull();
@@ -92,7 +92,7 @@ it("marks a seat whose context is almost never served from cache", async () => {
       row({ group: "cold", cache_read: 0, cache_write: 64_000, cache_hit_rate: 0 }),
       row({ group: "warm", cache_hit_rate: 0.94 }),
     ]);
-    return render(<Analytics project={null} tick={0} />);
+    return render(<Analytics tick={0} />);
   })();
 
   await screen.findByText("cold");
@@ -106,22 +106,26 @@ it("cuts the same history four ways", async () => {
   // comparison worth making.
   const user = userEvent.setup();
   const calls = stub([row({})]);
-  render(<Analytics project={null} tick={0} />);
+  render(<Analytics tick={0} />);
   await screen.findByText("backend");
 
   await user.click(screen.getByText("model"));
   await waitFor(() => expect(calls.some((url) => url.includes("by=model"))).toBe(true));
 });
 
-it("scopes to a project when one is selected", async () => {
+it("is global, and never scoped by a selection somewhere else", async () => {
+  // D18: "which pairing earns its seat" is not a question about one repository, and the
+  // `project` grouping already answers the per-project version without a filter elsewhere
+  // silently changing what the page means.
   const calls = stub([row({})]);
-  render(<Analytics project="widget" tick={0} />);
-  await waitFor(() => expect(calls.some((url) => url.includes("project=widget"))).toBe(true));
+  render(<Analytics tick={0} />);
+  await waitFor(() => expect(calls.length).toBeGreaterThan(0));
+  expect(calls.every((url) => !url.includes("project="))).toBe(true);
 });
 
 it("says plainly when there is nothing to compare", async () => {
   stub([]);
-  render(<Analytics project={null} tick={0} />);
+  render(<Analytics tick={0} />);
   expect(await screen.findByText(/nothing to compare/)).toBeDefined();
 });
 
@@ -134,6 +138,6 @@ it("says what is wrong rather than showing an empty table", async () => {
       json: async () => ({ error: "no database yet - run `ait init`" }),
     }),
   );
-  render(<Analytics project={null} tick={0} />);
+  render(<Analytics tick={0} />);
   expect(await screen.findByText(/ait init/)).toBeDefined();
 });

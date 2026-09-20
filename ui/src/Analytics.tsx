@@ -35,19 +35,22 @@ function duration(seconds: number | null): string {
  * are chosen to answer two questions - what does this pairing land, and what does it cost
  * in context to land it.
  */
-export function Analytics({ project, tick }: { project: string | null; tick: number }) {
+/// Global by construction (D18): "which pairing earns its seat" is not a question about
+/// one repository, and the `project` grouping already answers the per-project version
+/// without a filter somewhere else changing what the page means.
+export function Analytics({ tick }: { tick: number }) {
   const [by, setBy] = useState<GroupBy>("agent");
   const [rows, setRows] = useState<AnalyticsRow[] | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
-      setRows(await fetchAnalytics(by, project));
+      setRows(await fetchAnalytics(by, null));
       setProblem(null);
     } catch (error: unknown) {
       setProblem(error instanceof Error ? error.message : String(error));
     }
-  }, [by, project]);
+  }, [by]);
 
   useEffect(() => {
     void load();
