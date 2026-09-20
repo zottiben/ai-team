@@ -1,0 +1,92 @@
+// The draft-commit gate: what a node may not do on its own (M2-S10).
+//
+// Part of the ai-team guard extension for Pi. Not generated: the rule a node is held to
+// should be readable as written.
+//
+// A node's work is a draft. ai-team commits it to an `ai-team/<slice>` branch and stops
+// there, and a human decides whether it goes anywhere. These are the commands that would
+// take that decision away - they reach past the worktree to a remote, a registry or
+// somebody else's branch, and none of them can be undone by returning the lease.
+//
+// This is not a security boundary. A determined model can spell `git push` a hundred
+// ways, and the real containment is that the worktree is disposable and nothing is
+// authenticated to publish. It is a guardrail against the ordinary case: an agent
+// finishing a task and helpfully pushing it.
+
+export type Judgement = { allowed: true } | { allowed: false; reason: string };
+
+/** `word` appears as a command word, not inside a path or a string. */
+function hasWord(command: string, word: string): boolean {
+  return new RegExp(String.raw`(^|[\s;&|(])${word}([\s;&|)]|$)`).test(command);
+}
+
+/**
+ * Blank out quoted spans before matching.
+ *
+ * Without this, `grep -r 'git push' docs/` and a commit message mentioning a command are
+ * both refused - and a guardrail that blocks searching for a word is one people learn to
+ * work around, which is worse than not having it.
+ */
+function outsideQuotes(command: string): string {
+  return command.replace(/'[^']*'|"[^"]*"/g, '""');
+}
+
+type Rule = { when: (command: string) => boolean; reason: string };
+
+const RULES: Rule[] = [
+  {
+    when: (c) => /\bgit\s+push\b/.test(c),
+    reason:
+      "pushing publishes the work. ai-team commits to a branch and leaves it there; the " +
+      "human decides what gets pushed.",
+  },
+  {
+    when: (c) => /\bgit\s+(remote|submodule)\s+(add|set-url|remove|rm)\b/.test(c),
+    reason: "changing a repository's remotes affects the checkout this worktree came from.",
+  },
+  {
+    when: (c) => /\b(npm|pnpm|yarn|bun)\s+publish\b/.test(c) || /\bcargo\s+publish\b/.test(c),
+    reason: "publishing a package cannot be taken back once the registry has it.",
+  },
+  {
+    when: (c) => /\bgh\s+(pr\s+(merge|close)|release\s+(create|delete)|repo\s+delete)\b/.test(c),
+    reason: "merging, releasing and deleting are the human's calls, not a node's.",
+  },
+  {
+    when: (c) => /\bgit\s+tag\b/.test(c) && !/\bgit\s+tag\s+(-l|--list)\b/.test(c),
+    reason: "a tag is a release marker other tooling reacts to.",
+  },
+  {
+    // The classic. Not a real containment - the worktree is disposable - but a node that
+    // reaches for it has misunderstood what it is doing.
+    when: (c) => /\brm\s+(-[a-zA-Z]*[rR][a-zA-Z]*\s+)+\/(\s|$)/.test(c),
+    reason: "that would delete the filesystem root.",
+  },
+  {
+    when: (c) => hasWord(c, "shutdown") || hasWord(c, "reboot"),
+    reason: "a node does not restart the machine it is running on.",
+  },
+];
+
+/**
+ * May this command run?
+ *
+ * Refusals name what to do instead, because a bare "not allowed" sends a model looking
+ * for a way around rather than on with the work.
+ */
+export function judge(command: string): Judgement {
+  const normalised = outsideQuotes(command.replace(/\s+/g, " ").trim());
+  for (const rule of RULES) {
+    if (rule.when(normalised)) {
+      return {
+        allowed: false,
+        reason:
+          `Refused: ${rule.reason}\n\n` +
+          "Commit your work in this worktree and finish. ai-team puts it on a branch " +
+          "for review; if this really is needed, say so in your answer and a human " +
+          "will do it.",
+      };
+    }
+  }
+  return { allowed: true };
+}

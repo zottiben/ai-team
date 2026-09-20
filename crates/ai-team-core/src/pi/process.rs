@@ -63,6 +63,9 @@ pub struct PiTurn {
     pub mcp_config: Option<PathBuf>,
     /// Resume this session rather than starting one.
     pub session_id: Option<String>,
+    /// The ai-team guard extension (D20). Pi's own `bash`, `read`, `write` and `edit`
+    /// answer to nobody; this is what holds them to the lease and refuses to publish.
+    pub guard: Option<PathBuf>,
 }
 
 impl PiTurn {
@@ -77,6 +80,7 @@ impl PiTurn {
             exclude_tools: Vec::new(),
             mcp_config: None,
             session_id: None,
+            guard: None,
         }
     }
 
@@ -106,6 +110,10 @@ impl PiTurn {
         if let Some(session) = &self.session_id {
             args.push("--session-id".into());
             args.push(session.clone());
+        }
+        if let Some(guard) = &self.guard {
+            args.push("--extension".into());
+            args.push(guard.to_string_lossy().into_owned());
         }
         // `--` ends option parsing, so a prompt that happens to begin with a dash is a
         // prompt rather than an unknown flag.
@@ -142,6 +150,10 @@ impl PiProcess {
         command
             .args(turn.args())
             .current_dir(&turn.worktree)
+            // The lease, named explicitly rather than inferred from the working
+            // directory. The guard reads it, and a rule that reads `cwd` is a rule a
+            // `cd` changes (D10).
+            .env("AI_TEAM_WORKTREE", &turn.worktree)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

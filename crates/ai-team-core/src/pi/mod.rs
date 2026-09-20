@@ -10,10 +10,12 @@
 //! worktree, under what budget, and what is written to the database.
 
 mod event;
+mod guard;
 mod ingest;
 mod process;
 
 pub use event::Disposition as PiDisposition;
 pub use event::PiEvent;
+pub use guard::{install as install_guard, install_at as install_guard_at};
 pub use ingest::PiIngested;
 pub use process::{PiProcess, PiTurn, TurnOutcome as PiOutcome};

@@ -63,6 +63,9 @@ jobs:
         run: |
           node --test crates/ai-team-core/src/generate/assets/lib/worktree.test.ts
           node --test crates/ai-team-core/src/generate/assets/lib/irreversible.test.ts
+          node --test crates/ai-team-core/src/pi/assets/worktree.test.ts
+          node --test crates/ai-team-core/src/pi/assets/irreversible.test.ts
+          node --test crates/ai-team-core/src/pi/assets/guard.test.ts
 
       - name: format
         run: cargo fmt --all --check
