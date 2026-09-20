@@ -1173,3 +1173,64 @@ button.card:hover {
   color: var(--text-primary-muted);
   margin-bottom: var(--space-2);
 }
+
+/* --- the crew ----------------------------------------------------------------- */
+
+.crew {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+/* Fixed columns rather than flowing: six cards that change width as their text changes are
+ * six cards you cannot scan down. */
+.crew__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(17rem, 1fr));
+  gap: var(--space-2);
+}
+
+.crew__card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  background: var(--surface-panel-default);
+  border: 1px solid var(--border-subtle-default);
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+}
+
+/* The two states worth catching an eye. Everything else is the same weight, so these read
+ * as exceptions rather than as one of six colours. */
+.crew__card[data-doing="parked"] {
+  border-color: var(--status-parked-default);
+}
+
+.crew__card[data-doing="failed"] {
+  border-color: var(--status-failed-default);
+}
+
+.crew__card[data-doing="disabled"] {
+  opacity: 0.55;
+}
+
+.crew__reason {
+  color: var(--status-failed-default);
+  font-size: var(--text-xs);
+}
+
+/* Clamped: the last thing a seat said can be a paragraph, and a card that grows to hold it
+ * breaks the grid it lives in. */
+.crew__said {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-size: var(--text-xs);
+}
+
+.crew__foot {
+  margin-top: auto;
+  padding-top: var(--space-1);
+}

@@ -1,6 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 
 import { Board } from "./Board";
+import { Crew } from "./Crew";
 import { Approvals, Prompt, Seats } from "./Console";
 import { Review } from "./Review";
 import { Roster } from "./Roster";
@@ -148,6 +149,10 @@ export function Workspace({
             </div>
 
             <Prompt project={project.slug} onStarted={() => void refresh()} />
+
+            {/* The crew above the runs, because "who is doing what" is the question in the
+                chair and a list of runs is the history behind it. */}
+            <Crew project={project.slug} tick={tick} onOpenRun={setSelected} />
 
             <div className="main__header">
               <h2>Runs</h2>

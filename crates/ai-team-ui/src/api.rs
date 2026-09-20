@@ -47,6 +47,7 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/file", get(read_file).post(write_file))
         .route("/search", get(search))
         .route("/projects/{id}/repos", axum::routing::post(attach_repo))
+        .route("/crew", get(crew))
         .route("/roster", get(roster))
         .route("/roster/{id}", axum::routing::post(edit_seat))
         .route("/settings", get(settings))
@@ -195,6 +196,25 @@ async fn write_file(
 }
 
 /// One provider, as the settings page needs it.
+#[derive(Debug, Deserialize)]
+struct CrewQuery {
+    project: String,
+}
+
+/// What every seat is doing, in one read.
+///
+/// One request because the window polls: six would be five too many, and a seat arriving a
+/// tick after its neighbour makes the whole panel look unstable.
+async fn crew(
+    State(state): State<AppState>,
+    Query(query): Query<CrewQuery>,
+) -> Result<Json<Vec<ai_team_core::Member>>> {
+    let store = state.store()?;
+    let store = store.lock();
+    let project = store.find_project(&query.project)?;
+    Ok(Json(ai_team_core::crew_of(&store, project.id)?))
+}
+
 /// One seat, as configured and as it will actually resolve.
 #[derive(Debug, Serialize)]
 struct Seat {

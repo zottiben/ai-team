@@ -611,6 +611,40 @@ export function editSeat(
   return post(`/roster/${id}`, change);
 }
 
+export type Doing =
+  | "working"
+  | "parked"
+  | "failed"
+  | "idle"
+  | "untouched"
+  | "disabled";
+
+export type Member = {
+  agent_id: number;
+  role: string;
+  name: string;
+  provider: string;
+  model: string;
+  read_only: boolean;
+  zone: string;
+  doing: Doing;
+  node_run_id: number | null;
+  run_id: number | null;
+  slice_key: string | null;
+  branch: string | null;
+  attempt: number;
+  blocked_reason: string | null;
+  last_said: string | null;
+  reachable: boolean;
+  turns: number;
+  tokens_in: number;
+  tokens_out: number;
+};
+
+export function crew(project: string): Promise<Member[]> {
+  return api<Member[]>(`/crew?project=${encodeURIComponent(project)}`);
+}
+
 export function post<T>(path: string, body: unknown): Promise<T> {
   return request(path, "POST", body);
 }
