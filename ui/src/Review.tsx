@@ -160,7 +160,12 @@ function Outcome({ outcome }: { outcome: Submitted }) {
   if (outcome.outcome === "steered") {
     return (
       <p className="notice">
-        Sent {outcome.comments} comment(s) to the agent - it is working on them now.
+        Sent {outcome.comments} comment(s) to the agent - it is working on them now.{" "}
+        {/* The plan is amended either way; this says whether the orchestrator also heard it
+            while mid-turn, which is the difference between now and its next plan read. */}
+        {outcome.told_orchestrator
+          ? "The orchestrator has it too."
+          : "The plan is updated, so the orchestrator will see it next time it looks."}
       </p>
     );
   }

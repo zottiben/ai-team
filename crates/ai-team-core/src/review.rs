@@ -29,7 +29,17 @@ use crate::FileDiff;
 #[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum Submitted {
     /// The node that wrote the code took the comments and is working on them.
-    Steered { node_run_id: i64, comments: usize },
+    Steered {
+        node_run_id: i64,
+        comments: usize,
+        /// Whether the orchestrator was told directly as well.
+        ///
+        /// It always learns through the amended slice, which it reads on its next plan
+        /// read - but that is the next time it looks, and if it is mid-turn deciding what
+        /// the work is right now, it is deciding from the old text. So it is told when it
+        /// has a session to tell.
+        told_orchestrator: bool,
+    },
     /// Nobody was listening, so the work is on the plan for the next run.
     Planned { slice_key: String, comments: usize },
     /// Approved with nothing to act on.
@@ -114,6 +124,38 @@ pub fn amendment(comments: &[ReviewComment]) -> String {
             }
         }
     }
+    out
+}
+
+/// The same comments, addressed to the orchestrator.
+///
+/// It is not being asked to fix the code - somebody else is already doing that. It is being
+/// told that what the work *is* has changed, which is its business, and that the slice it
+/// reads has been amended to match.
+pub fn for_orchestrator(comments: &[ReviewComment], review: &Review) -> String {
+    let mut out = format!(
+        "A human reviewed {} and asked for changes. The seat that wrote it is acting on \
+         them, and the slice has been amended so the plan matches. You do not need to make \
+         these edits.\n\nWhat they said:\n\n",
+        review.title
+    );
+    for comment in comments {
+        match (&comment.file_path, comment.line_start) {
+            (Some(path), Some(line)) => {
+                let _ = writeln!(out, "- `{path}:{line}` - {}", comment.body.trim());
+            }
+            (Some(path), None) => {
+                let _ = writeln!(out, "- `{path}` - {}", comment.body.trim());
+            }
+            _ => {
+                let _ = writeln!(out, "- {}", comment.body.trim());
+            }
+        }
+    }
+    out.push_str(
+        "\nTake it into account in anything you plan next. If it changes what remains to be \
+         done, say so on the plan.",
+    );
     out
 }
 
@@ -231,6 +273,20 @@ pub fn responsible(store: &Store, review: &Review) -> Option<crate::model::NodeR
     store.node_run(review.node_run_id?).ok()
 }
 
+/// The orchestrator's current node on this review's run, if it has one.
+///
+/// Scoped to the run rather than to the project: an orchestrator mid-turn on *this* work is
+/// the one whose decisions the correction changes.
+pub fn conductor(store: &Store, review: &Review) -> Option<crate::model::NodeRun> {
+    let run_id = review.run_id?;
+    store
+        .node_runs(run_id)
+        .ok()?
+        .into_iter()
+        .rev()
+        .find(|node| node.role == crate::ROOT_ROLE)
+}
+
 /// Whether submitting would reach the agent or write a slice.
 ///
 /// Worth asking before the human decides what to say, because the two are different
@@ -252,6 +308,10 @@ pub async fn steerable(node: Option<crate::model::NodeRun>) -> bool {
 pub async fn deliver<F, Fut, A, AFut>(
     pending: &Pending,
     node: Option<crate::model::NodeRun>,
+    // The orchestrator's current node, when it has one. A correction reaches it too: it
+    // decides what the work *is*, and feedback that only reaches the author leaves the plan
+    // still saying the old thing.
+    orchestrator: Option<crate::model::NodeRun>,
     plan_slice: F,
     amend_slice: A,
 ) -> Result<Submitted>
@@ -279,9 +339,23 @@ where
             amend_slice(key, amendment(&pending.open)).await?;
         }
         client.follow_up(&session, &pending.message).await?;
+
+        // And the orchestrator, when it is mid-turn. Best effort on purpose: it always
+        // learns through the amended slice, so failing to reach it costs immediacy rather
+        // than the correction, and an unreachable orchestrator must not make a delivered
+        // review look failed.
+        let told_orchestrator = match listening(orchestrator).await {
+            Some((orchestrator, session)) => orchestrator
+                .follow_up(&session, &for_orchestrator(&pending.open, &pending.review))
+                .await
+                .is_ok(),
+            None => false,
+        };
+
         return Ok(Submitted::Steered {
             node_run_id: node_run_id.unwrap_or_default(),
             comments: pending.open.len(),
+            told_orchestrator,
         });
     }
 

@@ -230,7 +230,13 @@ export type ReviewDetail = Review & {
 };
 
 export type Submitted =
-  | { outcome: "steered"; node_run_id: number; comments: number }
+  | {
+      outcome: "steered";
+      node_run_id: number;
+      comments: number;
+      /** Whether the orchestrator was told directly as well as through the plan. */
+      told_orchestrator: boolean;
+    }
   | { outcome: "planned"; slice_key: string; comments: number }
   | { outcome: "accepted" };
 

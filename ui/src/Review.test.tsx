@@ -65,7 +65,12 @@ function stub(over: Record<string, unknown> = {}, list: unknown[] = [{ id: 3, ti
       if (path === "/reviews/3/submit") {
         return Promise.resolve({
           ok: true,
-          json: async () => ({ outcome: "steered", node_run_id: 5, comments: 2 }),
+          json: async () => ({
+            outcome: "steered",
+            node_run_id: 5,
+            comments: 2,
+            told_orchestrator: true,
+          }),
         });
       }
       return Promise.resolve({ ok: true, json: async () => detail(over) });
@@ -148,6 +153,18 @@ it("reports what submitting actually did", async () => {
 
   await user.click(await screen.findByText("Request changes"));
   expect(await screen.findByText(/Sent 2 comment\(s\) to the agent/)).toBeDefined();
+});
+
+it("says whether the orchestrator heard it too, not just the author", async () => {
+  // The author fixes the code; the orchestrator decides what the work is. A correction that
+  // only reaches one leaves the plan still saying the old thing.
+  const user = userEvent.setup();
+  stub();
+  render(<Review tick={0} />);
+  await openReview(user);
+
+  await user.click(await screen.findByText("Request changes"));
+  expect(await screen.findByText(/The orchestrator has it too/)).toBeDefined();
 });
 
 it("shows existing comments against the line they belong to, and resolves them", async () => {

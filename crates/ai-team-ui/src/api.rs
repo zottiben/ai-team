@@ -1415,11 +1415,14 @@ async fn submit(
     JsonBody(request): JsonBody<SubmitRequest>,
 ) -> Result<Json<ai_team_core::Submitted>> {
     // Everything the database knows, read before any await and released after.
-    let (pending, node, repo) = {
+    let (pending, node, orchestrator, repo) = {
         let store = state.store()?;
         let store = store.lock();
         let pending = ai_team_core::pending_review(&store, id)?;
         let node = ai_team_core::responsible(&store, &pending.review);
+        // The orchestrator too: it decides what the work is, and a correction that only
+        // reaches the author leaves the plan still saying the old thing.
+        let orchestrator = ai_team_core::conductor(&store, &pending.review);
         let repo = store
             .project_repos(pending.review.project_id)?
             .into_iter()
@@ -1429,7 +1432,7 @@ async fn submit(
                     "that project has no checkout, so feedback has nowhere to go",
                 ))
             })?;
-        (pending, node, repo)
+        (pending, node, orchestrator, repo)
     };
 
     // Both paths write to ai-planner through its own CLI (D4).
@@ -1437,6 +1440,7 @@ async fn submit(
     let outcome = ai_team_core::deliver_review(
         &pending,
         node,
+        orchestrator,
         |title, scope| async move {
             ai_team_core::Planner::at(for_plan)
                 .add_slice(

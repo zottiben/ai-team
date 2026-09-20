@@ -519,6 +519,33 @@ async fn land(
     {
         Ok(Some(sha)) => {
             store.attach_worktree(node_run_id, &worktree.to_string_lossy(), Some(&name), None)?;
+
+            // A review, so the work is *reviewable*. Nothing opened one before this, which
+            // meant the Review surface was always empty in real use - the team produced
+            // branches and there was nothing to comment on. Opened here rather than when
+            // somebody asks, because the point is to see a diff as the team works rather
+            // than to remember to ask for one afterwards.
+            let node = store.node_run(node_run_id)?;
+            let project_id = store.run(node.run_id)?.project_id;
+            if let Err(error) = store.open_review(
+                project_id,
+                &format!("{slice_key}: {}", title.trim()),
+                Some(node.run_id),
+                Some(node_run_id),
+                Some(&name),
+            ) {
+                // Not fatal: the work is committed and on a branch. A review that could not
+                // be opened costs a surface, not the slice.
+                store.append_event(
+                    node.run_id,
+                    NewEvent::new(
+                        EventKind::Note,
+                        format!("could not open a review for {slice_key}: {error}"),
+                    )
+                    .on_node(node_run_id),
+                )?;
+            }
+
             let _ = planner.set_branch(slice_key, &name).await;
             let _ = planner
                 .log(

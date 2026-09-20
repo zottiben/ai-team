@@ -79,8 +79,9 @@ pub use readiness::{
     report_at as readiness_report_at, Action, Check, Fix, Known, Paths, Report, Severity,
 };
 pub use review::{
-    amendment, as_instructions, deliver as deliver_review, diff_for, instructions_for,
-    pending as pending_review, responsible, steerable, Audience, Pending, Submitted,
+    amendment, as_instructions, conductor, deliver as deliver_review, diff_for, for_orchestrator,
+    instructions_for, pending as pending_review, responsible, steerable, Audience, Pending,
+    Submitted,
 };
 pub use roles::{preset, RolePreset, DEFAULT_LOCAL_MODEL, DEFAULT_ROSTER};
 pub use schedule::{act, announcement, claim_due, notify, runnable, tick, Fired, TICK};

@@ -212,48 +212,16 @@ pub async fn start_turn(agent_id: i64, message: String) -> Result<i64> {
 
     let outcome = drive(&mut store, &project_dir, &env, run.id, &agent, &message).await;
 
-    // Committed *before* the lease goes back, because `awt return` cleans and resets the
-    // worktree - so anything not on a branch by now is gone (D14). The first version of this
-    // skipped it, the agent did the work, and the work was discarded.
-    //
-    // Named for the seat and the run rather than for a slice, because there is no slice: this
-    // turn came from somebody talking to an agent, not from the plan.
     if outcome.is_ok() {
-        let branch = format!("ai-team/{}-{}", agent.role.to_lowercase(), run.id);
-        match keep(lease.path(), &branch, &message).await {
-            Ok(Some(sha)) => {
-                store.append_event(
-                    run.id,
-                    crate::model::NewEvent::new(
-                        crate::model::EventKind::Note,
-                        format!("committed to {branch} ({})", &sha[..7.min(sha.len())]),
-                    )
-                    .by(&agent.role),
-                )?;
-            }
-            // Nothing changed. Worth recording rather than silently succeeding: a turn that
-            // edited nothing did not do what it was asked.
-            Ok(None) => {
-                store.append_event(
-                    run.id,
-                    crate::model::NewEvent::new(
-                        crate::model::EventKind::Note,
-                        "the turn finished without changing a file".to_string(),
-                    )
-                    .by(&agent.role),
-                )?;
-            }
-            Err(error) => {
-                store.append_event(
-                    run.id,
-                    crate::model::NewEvent::new(
-                        crate::model::EventKind::Failed,
-                        format!("could not keep the work: {error}"),
-                    )
-                    .by(&agent.role),
-                )?;
-            }
-        }
+        record_work(
+            &mut store,
+            &agent,
+            run.id,
+            project_id,
+            lease.path(),
+            &message,
+        )
+        .await?;
     }
 
     // Returned whatever happened: a lease held by a crashed turn is a worktree nobody else
@@ -271,6 +239,65 @@ pub async fn start_turn(agent_id: i64, message: String) -> Result<i64> {
             Err(error)
         }
     }
+}
+
+/// Keep the work, and make it reviewable.
+///
+/// Committed *before* the lease goes back, because `awt return` cleans and resets the
+/// worktree - so anything not on a branch by now is gone (D14). The first version of this
+/// skipped it, the agent did the work, and the work was discarded.
+///
+/// Named for the seat and the run rather than for a slice, because there is no slice: this
+/// turn came from somebody talking to an agent, not from the plan.
+async fn record_work(
+    store: &mut Store,
+    agent: &Agent,
+    run_id: i64,
+    project_id: i64,
+    worktree: &Path,
+    message: &str,
+) -> Result<()> {
+    let branch = format!("ai-team/{}-{}", agent.role.to_lowercase(), run_id);
+    let subject = message.lines().next().unwrap_or(message).trim();
+
+    let note = |store: &mut Store, kind, text: String| -> Result<()> {
+        store.append_event(
+            run_id,
+            crate::model::NewEvent::new(kind, text).by(&agent.role),
+        )?;
+        Ok(())
+    };
+
+    match keep(worktree, &branch, subject).await {
+        Ok(Some(sha)) => {
+            note(
+                store,
+                crate::model::EventKind::Note,
+                format!("committed to {branch} ({})", &sha[..7.min(sha.len())]),
+            )?;
+            // Reviewable, for the same reason a slice's work is: a branch nobody can comment
+            // on is a branch you have to go and find in a terminal.
+            let author = store
+                .node_runs(run_id)?
+                .into_iter()
+                .next_back()
+                .map(|found| found.id);
+            let _ = store.open_review(project_id, subject, Some(run_id), author, Some(&branch));
+        }
+        // Nothing changed. Worth recording rather than silently succeeding: a turn that
+        // edited nothing did not do what it was asked.
+        Ok(None) => note(
+            store,
+            crate::model::EventKind::Note,
+            "the turn finished without changing a file".to_string(),
+        )?,
+        Err(error) => note(
+            store,
+            crate::model::EventKind::Failed,
+            format!("could not keep the work: {error}"),
+        )?,
+    }
+    Ok(())
 }
 
 /// How a direct message is put to an agent.
@@ -296,15 +323,12 @@ fn as_instruction(said: &str) -> String {
 }
 
 /// Put whatever changed on a branch, so it survives the lease being returned.
-async fn keep(worktree: &Path, branch: &str, said: &str) -> Result<Option<String>> {
+/// Commit whatever changed, under a subject git will not complain about.
+async fn keep(worktree: &Path, branch: &str, subject: &str) -> Result<Option<String>> {
     let changed = crate::neighbours::git::changed_paths(worktree).await?;
-    // The first line of what was said, which is the nearest thing to a subject there is.
-    let subject = said.lines().next().unwrap_or(said).trim();
-    let subject = if subject.len() > 72 {
-        format!("{}…", &subject[..71])
-    } else {
-        subject.to_string()
-    };
+    // Clipped on a character boundary, because what somebody typed is not a commit subject
+    // and slicing bytes through a multi-byte character panics.
+    let subject: String = subject.chars().take(72).collect();
     crate::neighbours::git::commit_paths(worktree, branch, &subject, &changed).await
 }
 

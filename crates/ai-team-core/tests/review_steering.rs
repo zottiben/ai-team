@@ -174,7 +174,7 @@ async fn an_agent_that_is_still_listening_gets_the_comments() {
 
     let pending = ai_team_core::pending_review(&store, review_id).unwrap();
     let node = ai_team_core::responsible(&store, &pending.review);
-    let outcome = ai_team_core::deliver_review(&pending, node, never_plan, ignore_amend)
+    let outcome = ai_team_core::deliver_review(&pending, node, None, never_plan, ignore_amend)
         .await
         .unwrap();
 
@@ -182,7 +182,9 @@ async fn an_agent_that_is_still_listening_gets_the_comments() {
         outcome,
         Submitted::Steered {
             node_run_id: node_id,
-            comments: 2
+            comments: 2,
+            // Nothing to tell: this review's run has no orchestrator node.
+            told_orchestrator: false,
         }
     );
 
@@ -204,6 +206,7 @@ async fn an_agent_that_has_gone_leaves_the_work_on_the_plan() {
     let outcome = ai_team_core::deliver_review(
         &pending,
         node,
+        None,
         |title, scope| async move {
             assert!(title.contains("PR1: add sub"));
             // Whoever picks this up has no worktree, and telling it otherwise is an
@@ -242,6 +245,7 @@ async fn a_recorded_port_is_not_enough_on_its_own() {
     ai_team_core::deliver_review(
         &pending,
         node,
+        None,
         move |_, _| async move {
             *flag.lock().unwrap() = true;
             Ok("RV1".into())
@@ -268,7 +272,7 @@ async fn an_agent_that_refuses_the_message_is_an_error_not_a_success() {
 
     let pending = ai_team_core::pending_review(&store, review_id).unwrap();
     let node = ai_team_core::responsible(&store, &pending.review);
-    let result = ai_team_core::deliver_review(&pending, node, never_plan, ignore_amend).await;
+    let result = ai_team_core::deliver_review(&pending, node, None, never_plan, ignore_amend).await;
 
     assert!(result.is_err(), "a refused hand-off must surface");
     // And the review is still open, so it can be submitted again.
@@ -294,6 +298,7 @@ async fn steering_amends_the_slice_so_the_verifier_checks_the_right_spec() {
     ai_team_core::deliver_review(
         &pending,
         node,
+        None,
         never_plan,
         move |key, addition| async move {
             *sink.lock().unwrap() = Some((key, addition));
@@ -325,7 +330,7 @@ async fn a_failure_to_amend_the_slice_stops_the_hand_off() {
 
     let pending = ai_team_core::pending_review(&store, review_id).unwrap();
     let node = ai_team_core::responsible(&store, &pending.review);
-    let result = ai_team_core::deliver_review(&pending, node, never_plan, |_, _| async {
+    let result = ai_team_core::deliver_review(&pending, node, None, never_plan, |_, _| async {
         Err(ai_team_core::Error::invalid("ai-planner is not reachable"))
     })
     .await;
@@ -334,6 +339,121 @@ async fn a_failure_to_amend_the_slice_stops_the_hand_off() {
     assert!(
         seen.lock().unwrap().is_empty(),
         "the agent must not be told about a change the plan does not record"
+    );
+}
+
+#[tokio::test]
+async fn a_correction_reaches_the_orchestrator_as_well_as_the_author() {
+    // The author needs it to fix the code; the orchestrator needs it because it decides what
+    // the work *is*, and a correction that only reaches one agent leaves the plan still
+    // saying the old thing.
+    let (mut store, review_id, node_id) = fixture();
+    let (author_port, author_seen) = stub_eve(Agent::Listening).await;
+    store.attach_eve(node_id, author_port, "tok").unwrap();
+    store.set_node_session(node_id, "author").unwrap();
+
+    // An orchestrator mid-turn on the same run.
+    let review = store.review(review_id).unwrap();
+    let run_id = review.run_id.unwrap();
+    let team = store.project(review.project_id).unwrap().team_id.unwrap();
+    let seat = store
+        .agents(team)
+        .unwrap()
+        .into_iter()
+        .find(|agent| agent.role == "orchestrator")
+        .unwrap();
+    let conductor = store
+        .dispatch(run_id, seat.id, None, &ModelRegistry::local_only())
+        .unwrap();
+    let (orch_port, orch_seen) = stub_eve(Agent::Listening).await;
+    store.attach_eve(conductor.id, orch_port, "tok").unwrap();
+    store.set_node_session(conductor.id, "conductor").unwrap();
+
+    let pending = ai_team_core::pending_review(&store, review_id).unwrap();
+    let node = ai_team_core::responsible(&store, &pending.review);
+    let orchestrator = ai_team_core::conductor(&store, &pending.review);
+    assert!(
+        orchestrator.is_some(),
+        "the fixture needs an orchestrator node"
+    );
+
+    let outcome =
+        ai_team_core::deliver_review(&pending, node, orchestrator, never_plan, ignore_amend)
+            .await
+            .unwrap();
+
+    assert_eq!(
+        outcome,
+        Submitted::Steered {
+            node_run_id: node_id,
+            comments: 2,
+            told_orchestrator: true,
+        }
+    );
+
+    // The author is told to fix it.
+    let to_author = author_seen.lock().unwrap().join("\n");
+    assert!(to_author.contains("/eve/v1/session/author"), "{to_author}");
+    assert!(to_author.contains("name it subtract"), "{to_author}");
+
+    // The orchestrator is told the work changed, and explicitly *not* to make the edits -
+    // somebody else is already doing that.
+    let to_orchestrator = orch_seen.lock().unwrap().join("\n");
+    assert!(
+        to_orchestrator.contains("/eve/v1/session/conductor"),
+        "{to_orchestrator}"
+    );
+    assert!(
+        to_orchestrator.contains("name it subtract"),
+        "{to_orchestrator}"
+    );
+    assert!(
+        to_orchestrator.contains("do not need to make these edits"),
+        "{to_orchestrator}"
+    );
+}
+
+#[tokio::test]
+async fn an_unreachable_orchestrator_does_not_make_a_delivered_review_look_failed() {
+    // It always learns through the amended slice, so failing to reach it costs immediacy
+    // rather than the correction.
+    let (mut store, review_id, node_id) = fixture();
+    let (port, _) = stub_eve(Agent::Listening).await;
+    store.attach_eve(node_id, port, "tok").unwrap();
+    store.set_node_session(node_id, "author").unwrap();
+
+    let review = store.review(review_id).unwrap();
+    let run_id = review.run_id.unwrap();
+    let team = store.project(review.project_id).unwrap().team_id.unwrap();
+    let seat = store
+        .agents(team)
+        .unwrap()
+        .into_iter()
+        .find(|agent| agent.role == "orchestrator")
+        .unwrap();
+    let conductor = store
+        .dispatch(run_id, seat.id, None, &ModelRegistry::local_only())
+        .unwrap();
+    // A port nothing is listening on.
+    store.attach_eve(conductor.id, 1, "tok").unwrap();
+    store.set_node_session(conductor.id, "conductor").unwrap();
+
+    let pending = ai_team_core::pending_review(&store, review_id).unwrap();
+    let node = ai_team_core::responsible(&store, &pending.review);
+    let orchestrator = ai_team_core::conductor(&store, &pending.review);
+
+    let outcome =
+        ai_team_core::deliver_review(&pending, node, orchestrator, never_plan, ignore_amend)
+            .await
+            .unwrap();
+
+    assert_eq!(
+        outcome,
+        Submitted::Steered {
+            node_run_id: node_id,
+            comments: 2,
+            told_orchestrator: false,
+        }
     );
 }
 
@@ -348,7 +468,7 @@ async fn approving_with_nothing_outstanding_tells_nobody() {
 
     let pending = ai_team_core::pending_review(&store, review_id).unwrap();
     let node = ai_team_core::responsible(&store, &pending.review);
-    let outcome = ai_team_core::deliver_review(&pending, node, never_plan, ignore_amend)
+    let outcome = ai_team_core::deliver_review(&pending, node, None, never_plan, ignore_amend)
         .await
         .unwrap();
     assert_eq!(outcome, Submitted::Accepted);
