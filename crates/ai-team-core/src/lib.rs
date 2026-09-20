@@ -27,6 +27,7 @@ mod model;
 mod neighbours;
 mod onboard;
 mod paths;
+mod pi;
 mod readiness;
 mod review;
 mod roles;
@@ -51,6 +52,8 @@ pub use eve::{Disposition, Ingested, StreamEvent, StreamMeta, TerminalState};
 pub use gates::{all_passed, discover_gates, evidence, run_gates, Gate, GateKind, GateResult};
 pub use generate::{GeneratedFile, GeneratedProject, ModelExpression, ROOT_ROLE, VERIFIER_ROLE};
 pub use guardrails::{node_may_continue, run_may_continue, Exceeded, Fallout};
+// The Pi runtime (D20). Named rather than glob-exported so the eve types it will replace
+// stay distinguishable while both exist - `Disposition` is a name they share.
 pub use house::{
     read as read_house_rules, read_for as read_house_rules_for, section as house_section, Rules,
 };
@@ -76,6 +79,7 @@ pub use neighbours::{
 };
 pub use onboard::{attach as attach_repo_at, register as register_project, Registered};
 pub use paths::{data_dir, default_db_path, ensure_data_dir, machine_profile_path, HOME_ENV};
+pub use pi::{PiDisposition, PiEvent, PiIngested, PiOutcome, PiProcess, PiTurn};
 pub use readiness::{
     apply as apply_fix, apply_at as apply_fix_at, report as readiness_report,
     report_at as readiness_report_at, Action, Check, Fix, Known, Paths, Report, Severity,
