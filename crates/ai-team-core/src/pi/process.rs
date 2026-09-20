@@ -175,11 +175,17 @@ impl PiProcess {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            // Its own group, so the group can be signalled without killing ai-team. Pi
-            // starts MCP servers and tool subprocesses; signalling only the direct child
-            // leaves those running.
-            .process_group(0)
             .kill_on_drop(true);
+        // Its own group, so the group can be signalled without killing ai-team. Pi starts
+        // MCP servers and tool subprocesses; signalling only the direct child leaves
+        // those running.
+        //
+        // Unix only, because process groups are. Windows gets `kill_on_drop` alone, which
+        // reaches the child and not its descendants - a real difference, and one nobody
+        // is running into, because ai-team targets macOS and is built on Linux (D12). The
+        // Windows binary exists so the release does not lie about what it builds.
+        #[cfg(unix)]
+        command.process_group(0);
 
         let child = command.spawn().map_err(|e| {
             Error::invalid(format!(
@@ -272,12 +278,22 @@ impl PiProcess {
     }
 
     /// Stop the turn and everything it started.
+    #[cfg(unix)]
     pub fn stop(&mut self) {
         if self.pid > 0 {
-            if let Ok(pid) = rustix::process::Pid::from_raw(self.pid).ok_or(()) {
+            if let Some(pid) = rustix::process::Pid::from_raw(self.pid) {
                 let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::TERM);
             }
         }
+    }
+
+    /// Stop the turn.
+    ///
+    /// No process group to signal, so this reaches the child and not what it started.
+    #[cfg(not(unix))]
+    pub fn stop(&mut self) {
+        let _ = self.pid;
+        let _ = self.child.start_kill();
     }
 }
 
