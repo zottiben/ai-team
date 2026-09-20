@@ -47,6 +47,8 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/file", get(read_file).post(write_file))
         .route("/search", get(search))
         .route("/projects/{id}/repos", axum::routing::post(attach_repo))
+        .route("/roster", get(roster))
+        .route("/roster/{id}", axum::routing::post(edit_seat))
         .route("/settings", get(settings))
         .route("/settings/provider", axum::routing::post(set_provider))
         .route("/settings/context", axum::routing::post(set_context))
@@ -193,6 +195,203 @@ async fn write_file(
 }
 
 /// One provider, as the settings page needs it.
+/// One seat, as configured and as it will actually resolve.
+#[derive(Debug, Serialize)]
+struct Seat {
+    id: i64,
+    role: String,
+    name: String,
+    purpose: String,
+    /// What the roster says.
+    provider: String,
+    model: String,
+    /// What dispatch will actually use. Different when the machine denies the configured
+    /// provider and the ranking picks another (D13) - a roster that hides that lies about
+    /// which account the work lands on.
+    effective_provider: String,
+    effective_model: String,
+    /// Why it differs, when it does.
+    fallback_reason: Option<String>,
+    reasoning: String,
+    zone: String,
+    /// Read-only seats never get the editing tools generated, so this is a real capability
+    /// rather than a label.
+    read_only: bool,
+    enabled: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct Roster {
+    /// `None` when asking about the defaults rather than a project.
+    project: Option<String>,
+    team: Option<String>,
+    seats: Vec<Seat>,
+    /// The providers a seat may be set to on this machine, so the page cannot offer one
+    /// that would fail at dispatch.
+    available: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RosterQuery {
+    /// Omitted asks what a new project would get.
+    #[serde(default)]
+    project: Option<String>,
+}
+
+async fn roster(
+    State(state): State<AppState>,
+    Query(query): Query<RosterQuery>,
+) -> Result<Json<Roster>> {
+    let registry = ai_team_core::ModelRegistry::load().ok();
+    let available = registry.as_ref().map_or_else(Vec::new, |registry| {
+        registry
+            .statuses()
+            .into_iter()
+            .filter(|status| status.state == ai_team_core::ProviderState::Allowed)
+            .map(|status| status.provider.as_str().to_string())
+            .collect()
+    });
+
+    // No project named: describe what a new one would get, which is the question somebody
+    // asks before creating one rather than after.
+    let Some(slug) = query.project else {
+        let (provider, model) = registry.as_ref().map_or_else(
+            || (ai_team_core::Provider::Local, "auto".to_string()),
+            ai_team_core::ModelRegistry::preferred_seat,
+        );
+        return Ok(Json(Roster {
+            project: None,
+            team: None,
+            seats: (0i64..)
+                .zip(ai_team_core::DEFAULT_ROSTER)
+                .map(|(ord, preset)| {
+                    let new = preset.to_new_agent_on(provider, &model, ord);
+                    Seat {
+                        // Not a row yet, so it has no id. Negative rather than zero, which
+                        // a surface could mistake for a real one.
+                        id: -1,
+                        role: new.role,
+                        name: new.name,
+                        purpose: new.purpose,
+                        provider: provider.as_str().to_string(),
+                        model: model.clone(),
+                        effective_provider: provider.as_str().to_string(),
+                        effective_model: model.clone(),
+                        fallback_reason: None,
+                        reasoning: new.reasoning.as_str().to_string(),
+                        zone: new.zone,
+                        read_only: new.read_only,
+                        enabled: true,
+                    }
+                })
+                .collect(),
+            available,
+        }));
+    };
+
+    let store = state.store()?;
+    let store = store.lock();
+    let project = store.find_project(&slug)?;
+    let team_id = project.team_id.ok_or_else(|| {
+        crate::error::Error::Core(ai_team_core::Error::invalid("that project has no team yet"))
+    })?;
+    let team = store.team(team_id)?;
+
+    let seats = store
+        .agents(team_id)?
+        .into_iter()
+        .map(|agent| {
+            // Resolved the way dispatch will resolve it, so the page shows the account the
+            // work actually lands on.
+            let resolved = registry
+                .as_ref()
+                .and_then(|registry| registry.resolve(&agent).ok());
+            Seat {
+                id: agent.id,
+                role: agent.role,
+                name: agent.name,
+                purpose: agent.purpose,
+                provider: agent.provider.as_str().to_string(),
+                model: agent.model.clone(),
+                effective_provider: resolved.as_ref().map_or_else(
+                    || agent.provider.as_str().to_string(),
+                    |r| r.provider.as_str().to_string(),
+                ),
+                effective_model: resolved
+                    .as_ref()
+                    .map_or_else(|| agent.model.clone(), |r| r.model.clone()),
+                fallback_reason: resolved.and_then(|r| r.fallback_reason),
+                reasoning: agent.reasoning.as_str().to_string(),
+                zone: agent.zone,
+                read_only: agent.read_only,
+                enabled: agent.enabled,
+            }
+        })
+        .collect();
+
+    Ok(Json(Roster {
+        project: Some(project.slug),
+        team: Some(team.name),
+        seats,
+        available,
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+struct SeatChange {
+    #[serde(default)]
+    provider: Option<ai_team_core::Provider>,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    zone: Option<String>,
+    #[serde(default)]
+    enabled: Option<bool>,
+}
+
+/// Change one seat - `ait agents edit`, from the window.
+///
+/// Leaves the generated eve project stale in exactly the same deliberate way: regenerating
+/// is `ait agents generate`, and `ait run` does it before a turn, so an edit never
+/// half-applies to a project that is mid-run.
+async fn edit_seat(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    JsonBody(change): JsonBody<SeatChange>,
+) -> Result<Json<serde_json::Value>> {
+    let store = state.store()?;
+    let mut store = store.lock();
+    let agent = store.agent(id)?;
+
+    let mut update = ai_team_core::NewAgent::from(&agent);
+    if let Some(provider) = change.provider {
+        update.provider = provider;
+        // A provider change without a model would leave the old provider's model name
+        // behind, which fails at the model call rather than here. Defaulted rather than
+        // refused, because the window has a picker and not a second field.
+        update.model = change
+            .model
+            .clone()
+            .unwrap_or_else(|| ai_team_core::ModelRegistry::default_model(provider).to_string());
+        update.context_window = None;
+    } else if let Some(model) = change.model.clone() {
+        update.model = model;
+    }
+    if let Some(zone) = change.zone {
+        update.zone = zone;
+    }
+    if let Some(enabled) = change.enabled {
+        update.enabled = enabled;
+    }
+
+    let saved = store.update_agent(id, update)?;
+    Ok(Json(serde_json::json!({
+        "role": saved.role,
+        "provider": saved.provider.as_str(),
+        "model": saved.model,
+    })))
+}
+
 #[derive(Debug, Deserialize)]
 struct RegisterRequest {
     /// A directory on this machine. Absolute, because a relative path would be relative to

@@ -1096,3 +1096,22 @@ button.card:hover {
   border-radius: var(--radius-sm);
   padding: var(--space-2);
 }
+
+/* --- roster ------------------------------------------------------------------- */
+
+.roster {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-height: 0;
+  max-width: 52rem;
+}
+
+.roster select {
+  font: inherit;
+  color: var(--text-primary-default);
+  background: var(--surface-canvas-default);
+  border: 1px solid var(--border-subtle-default);
+  border-radius: var(--radius-sm);
+  padding: var(--space-1) var(--space-2);
+}

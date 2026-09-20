@@ -575,6 +575,42 @@ export function attachRepo(id: number, path: string): Promise<{ attached: string
   return post(`/projects/${id}/repos`, { path });
 }
 
+export type Seat = {
+  id: number;
+  role: string;
+  name: string;
+  purpose: string;
+  provider: string;
+  model: string;
+  effective_provider: string;
+  effective_model: string;
+  fallback_reason: string | null;
+  reasoning: string;
+  zone: string;
+  read_only: boolean;
+  enabled: boolean;
+};
+
+export type Roster = {
+  project: string | null;
+  team: string | null;
+  seats: Seat[];
+  available: string[];
+};
+
+/** Omit the project to ask what a new one would get. */
+export function roster(project: string | null): Promise<Roster> {
+  const scope = project === null ? "" : `?project=${encodeURIComponent(project)}`;
+  return api<Roster>(`/roster${scope}`);
+}
+
+export function editSeat(
+  id: number,
+  change: { provider?: string; model?: string; zone?: string; enabled?: boolean },
+): Promise<unknown> {
+  return post(`/roster/${id}`, change);
+}
+
 export function post<T>(path: string, body: unknown): Promise<T> {
   return request(path, "POST", body);
 }

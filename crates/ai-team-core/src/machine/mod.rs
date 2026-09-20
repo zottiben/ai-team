@@ -89,6 +89,15 @@ impl ModelRegistry {
 
     /// Resolve at the policy boundary. Reachability is deliberately not part of this
     /// choice: a transient outage must not silently send work to another account.
+    /// The model a provider defaults to.
+    ///
+    /// Exposed so a surface changing a seat's provider does not have to know the names -
+    /// and so it cannot leave the old provider's model behind, which fails at the model
+    /// call rather than where the change was made.
+    pub fn default_model(provider: Provider) -> &'static str {
+        provider_default(provider).0
+    }
+
     /// The provider a brand-new team should prefer, and its default model.
     ///
     /// A creation-time choice, not a dispatch-time one - which is the distinction D13
