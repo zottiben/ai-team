@@ -269,3 +269,82 @@ async fn the_guard_leaves_ordinary_work_alone() {
         "the guard blocked ordinary work in the lease"
     );
 }
+
+#[tokio::test]
+async fn a_context_source_allow_list_holds_against_a_real_turn() {
+    // D15 in the adapter's spelling, proven rather than configured. A stand-in server
+    // offers a read and a write under one name; the seat's config names only the read.
+    //
+    // The write is the thing to watch: it must be absent from discovery, not merely
+    // refused on call - a tool the model can see is a tool it will keep trying.
+    if !have_pi() {
+        eprintln!("skipping: `pi` is not on PATH");
+        return;
+    }
+    let dir = worktree();
+    let support = tempfile::tempdir().unwrap();
+
+    // A two-tool stdio server, standing in for ClickUp.
+    let server = support.path().join("ticket-server.mjs");
+    std::fs::write(
+        &server,
+        r#"import { createInterface } from "node:readline";
+const send = (m) => process.stdout.write(JSON.stringify(m) + "\n");
+createInterface({ input: process.stdin }).on("line", (line) => {
+  let msg; try { msg = JSON.parse(line); } catch { return; }
+  if (msg.method === "initialize")
+    send({jsonrpc:"2.0",id:msg.id,result:{protocolVersion:"2024-11-05",capabilities:{tools:{}},serverInfo:{name:"tickets",version:"1"}}});
+  else if (msg.method === "tools/list")
+    send({jsonrpc:"2.0",id:msg.id,result:{tools:[
+      {name:"get_task",description:"Read a task.",inputSchema:{type:"object",properties:{}}},
+      {name:"delete_task",description:"Delete a task.",inputSchema:{type:"object",properties:{}}}]}});
+  else if (msg.method === "tools/call")
+    send({jsonrpc:"2.0",id:msg.id,result:{content:[{type:"text",text:"TICKET-OK"}]}});
+  else if (msg.id !== undefined) send({jsonrpc:"2.0",id:msg.id,result:{}});
+});
+"#,
+    )
+    .unwrap();
+
+    let config = support.path().join("mcp-planner.json");
+    std::fs::write(
+        &config,
+        serde_json::to_string_pretty(&serde_json::json!({
+            "mcpServers": {
+                "tickets": {
+                    "command": "node",
+                    "args": [server.to_string_lossy()],
+                    "includeTools": ["get_task"],
+                }
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    let mut turn = PiTurn::new(
+        dir.path(),
+        "Connect to the `tickets` MCP server and list every tool it offers, by name. \
+         Then try to call delete_task and report exactly what happened.",
+    );
+    turn.provider = Some("claude-subscription".into());
+    turn.model = Some("claude-sonnet-5".into());
+    turn.mcp_config = Some(config);
+
+    let mut process = PiProcess::start(&turn).expect("pi starts");
+    let outcome = process.drive(|_| {}).await.expect("driven");
+    assert!(outcome.settled, "stderr: {}", outcome.stderr);
+
+    let said = outcome.said.unwrap_or_default();
+    assert!(
+        said.contains("get_task"),
+        "the allowed tool was not reachable: {said}"
+    );
+    assert!(
+        said.to_lowercase().contains("not found")
+            || said.to_lowercase().contains("no tools")
+            || said.to_lowercase().contains("not available")
+            || said.to_lowercase().contains("unavailable"),
+        "the withheld tool did not read as absent: {said}"
+    );
+}
