@@ -26,6 +26,8 @@ use crate::store::Store;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Doing {
+    /// Dispatched, with its process still coming up. Nothing to say anything to yet.
+    Starting,
     /// Mid-turn.
     Working,
     /// Waiting on a person. The one state worth interrupting somebody for.
@@ -119,7 +121,11 @@ pub fn of_project(store: &Store, project_id: i64) -> Result<Vec<Member>> {
             (false, _) => Doing::Disabled,
             (true, None) => Doing::Untouched,
             (true, Some((node, _))) => match node.status {
-                NodeStatus::Running | NodeStatus::Queued => Doing::Working,
+                NodeStatus::Running => Doing::Working,
+                // Dispatched but not yet driving: the process is still being built and
+                // there is nothing to talk to. Calling it working made this panel disagree
+                // with what talking to it would actually do.
+                NodeStatus::Queued => Doing::Starting,
                 NodeStatus::Parked => Doing::Parked,
                 NodeStatus::Failed | NodeStatus::Blocked => Doing::Failed,
                 NodeStatus::Done | NodeStatus::Cancelled => Doing::Idle,
@@ -130,8 +136,13 @@ pub fn of_project(store: &Store, project_id: i64) -> Result<Vec<Member>> {
         // columns say a process *was* started, and the ordinary case is that it finished
         // (M3-S15). Confirming it properly means a request per seat, which this read will
         // not do - so this is "worth trying", and the attempt reports the truth.
+        // The same three conditions `speak::target` uses, so the panel and what talking to a
+        // seat actually does cannot disagree - they did once, and the symptom was a seat you
+        // could watch working starting a second turn when you spoke to it.
         let reachable = found.is_some_and(|(node, _)| {
-            node.eve_port.is_some() && node.session_id.is_some() && doing != Doing::Idle
+            node.eve_port.is_some()
+                && node.session_id.is_some()
+                && matches!(node.status, NodeStatus::Running | NodeStatus::Parked)
         });
 
         crew.push(Member {

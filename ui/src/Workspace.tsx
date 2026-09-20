@@ -6,12 +6,14 @@ import { Approvals, Prompt, Seats } from "./Console";
 import { Review } from "./Review";
 import { Roster } from "./Roster";
 import { Source } from "./Source";
+import { Talk } from "./Talk";
 import {
   approvals as fetchApprovals,
   run as fetchRun,
   runEvents as fetchRunEvents,
   runs as fetchRuns,
   type Approval,
+  type Member,
   type Project,
   type Run,
   type RunDetail,
@@ -78,6 +80,9 @@ export function Workspace({
   const [pending, setPending] = useState<Approval[]>([]);
   const [expanded, setExpanded] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
+  // Talking to a seat and reading a run are both docks, and only one can be open: two
+  // panels competing for the same edge is two things half-read.
+  const [talking, setTalking] = useState<Member | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -132,11 +137,12 @@ export function Workspace({
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       if (expanded) setExpanded(false);
+      else if (talking !== null) setTalking(null);
       else if (selected !== null) setSelected(null);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [expanded, selected]);
+  }, [expanded, selected, talking]);
 
   return (
     <>
@@ -152,7 +158,18 @@ export function Workspace({
 
             {/* The crew above the runs, because "who is doing what" is the question in the
                 chair and a list of runs is the history behind it. */}
-            <Crew project={project.slug} tick={tick} onOpenRun={setSelected} />
+            <Crew
+              project={project.slug}
+              tick={tick}
+              onOpenRun={(id) => {
+                setTalking(null);
+                setSelected(id);
+              }}
+              onTalk={(member) => {
+                setSelected(null);
+                setTalking(member);
+              }}
+            />
 
             <div className="main__header">
               <h2>Runs</h2>
@@ -203,8 +220,19 @@ export function Workspace({
         )}
       </main>
 
+      {talking !== null && (
+        <Talk
+          member={talking}
+          onClose={() => setTalking(null)}
+          // A started turn shows up as a run, and an interrupted one changes what its seat
+          // is doing - both of which the next tick would find anyway, but waiting a second
+          // to see your own action land reads as nothing having happened.
+          onSent={() => void refresh()}
+        />
+      )}
+
       {/* One surface at a time, and it collapses rather than covering what it describes. */}
-      {detail !== null && (
+      {detail !== null && talking === null && (
         <aside className="dock">
           <div className="dock__header">
             <span className="dock__title">Run #{detail.id}</span>

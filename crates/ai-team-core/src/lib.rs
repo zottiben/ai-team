@@ -31,6 +31,7 @@ mod readiness;
 mod review;
 mod roles;
 mod schedule;
+mod speak;
 mod store;
 mod supervise;
 mod terminal;
@@ -83,6 +84,7 @@ pub use review::{
 };
 pub use roles::{preset, RolePreset, DEFAULT_LOCAL_MODEL, DEFAULT_ROSTER};
 pub use schedule::{act, announcement, claim_due, notify, runnable, tick, Fired, TICK};
+pub use speak::{interrupt, start_turn, target as speak_target, Reached, Target, Would};
 pub use store::Store;
 pub use supervise::{
     approvals_in, drive_turn, free_port, mint_token, outcome_status, reattach,

@@ -1234,3 +1234,22 @@ button.card:hover {
   margin-top: auto;
   padding-top: var(--space-1);
 }
+
+/* --- talking to a seat -------------------------------------------------------- */
+
+.talk__form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.talk__form textarea {
+  font: inherit;
+  font-family: var(--font-ui);
+  color: var(--text-primary-default);
+  background: var(--surface-canvas-default);
+  border: 1px solid var(--border-subtle-default);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2);
+  resize: vertical;
+}

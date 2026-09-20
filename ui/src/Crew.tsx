@@ -4,6 +4,7 @@ import { crew as fetchCrew, type Doing, type Member } from "./api";
 
 /** What each state means, said once, and which colour it borrows. */
 const DOING: Record<Doing, { label: string; status: string; why: string }> = {
+  starting: { label: "starting", status: "queued", why: "its process is coming up" },
   working: { label: "working", status: "running", why: "mid-turn" },
   parked: { label: "waiting on you", status: "parked", why: "it asked a question" },
   failed: { label: "stopped", status: "failed", why: "its last attempt failed" },

@@ -48,6 +48,7 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/search", get(search))
         .route("/projects/{id}/repos", axum::routing::post(attach_repo))
         .route("/crew", get(crew))
+        .route("/crew/{agent}/say", axum::routing::post(say))
         .route("/roster", get(roster))
         .route("/roster/{id}", axum::routing::post(edit_seat))
         .route("/settings", get(settings))
@@ -199,6 +200,60 @@ async fn write_file(
 #[derive(Debug, Deserialize)]
 struct CrewQuery {
     project: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct SayRequest {
+    message: String,
+}
+
+/// Say something to one seat.
+///
+/// Two different acts, and the response says which happened rather than leaving it to be
+/// inferred. A seat mid-turn takes the message now - that is an interruption and it returns
+/// when delivered. An idle seat needs a turn started, which means generating the project,
+/// leasing a worktree and driving it: minutes. So that is spawned and this returns as soon
+/// as it is under way, the same as starting a run (M3-S12).
+async fn say(
+    State(state): State<AppState>,
+    Path(agent): Path<i64>,
+    JsonBody(request): JsonBody<SayRequest>,
+) -> Result<Json<ai_team_core::Reached>> {
+    if request.message.trim().is_empty() {
+        return Err(crate::error::Error::Core(ai_team_core::Error::invalid(
+            "say something",
+        )));
+    }
+
+    // Read in one synchronous window, and the lock released before anything is awaited.
+    let target = {
+        let store = state.store()?;
+        let store = store.lock();
+        ai_team_core::speak_target(&store, agent)?
+    };
+
+    match target.would() {
+        ai_team_core::Would::Nothing => Ok(Json(ai_team_core::Reached::Refused {
+            because: format!(
+                "{} is switched off, so it would never be given the message",
+                target.agent.role
+            ),
+        })),
+        ai_team_core::Would::Interrupt => Ok(Json(
+            ai_team_core::interrupt(&target, &request.message).await?,
+        )),
+        ai_team_core::Would::StartWork => {
+            // Detached: a turn takes minutes and the run records itself in the database the
+            // window is already watching.
+            let message = request.message.clone();
+            tokio::spawn(async move {
+                if let Err(error) = ai_team_core::start_turn(agent, message).await {
+                    eprintln!("starting a turn for seat {agent}: {error}");
+                }
+            });
+            Ok(Json(ai_team_core::Reached::Started))
+        }
+    }
 }
 
 /// What every seat is doing, in one read.

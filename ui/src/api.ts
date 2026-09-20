@@ -612,6 +612,7 @@ export function editSeat(
 }
 
 export type Doing =
+  | "starting"
   | "working"
   | "parked"
   | "failed"
@@ -643,6 +644,15 @@ export type Member = {
 
 export function crew(project: string): Promise<Member[]> {
   return api<Member[]>(`/crew?project=${encodeURIComponent(project)}`);
+}
+
+export type Reached =
+  | { reached: "interrupted"; node_run_id: number }
+  | { reached: "started" }
+  | { reached: "refused"; because: string };
+
+export function sayTo(agent: number, message: string): Promise<Reached> {
+  return post(`/crew/${agent}/say`, { message });
 }
 
 export function post<T>(path: string, body: unknown): Promise<T> {
