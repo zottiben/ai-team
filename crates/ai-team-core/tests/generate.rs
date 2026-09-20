@@ -333,6 +333,52 @@ fn a_context_connection_can_only_read() {
 }
 
 #[test]
+fn admitting_the_repository_s_tools_does_not_widen_a_context_source() {
+    use ai_team_core::{ContextSource, Provider};
+
+    // D19 admits the tools a repository declares, which are `mcp__<server>__*` - the same
+    // shape a context source's tools have. A blanket "any MCP tool" would therefore hand
+    // back exactly the writes D15 spent an allow-list refusing: `clickup_create_task` is
+    // reachable the moment the rule stops excluding the servers that govern themselves.
+    let (mut store, _, team) = seeded();
+    for role in ["orchestrator", "frontend"] {
+        let seat = store
+            .agents(team)
+            .unwrap()
+            .into_iter()
+            .find(|agent| agent.role == role)
+            .unwrap();
+        store
+            .set_agent_model(seat.id, Provider::Claude, "sonnet")
+            .unwrap();
+    }
+    let generated = store
+        .generate_project_with_context(
+            team,
+            "/tmp/unused",
+            &[ContextSource::ClickUp, ContextSource::Figma],
+        )
+        .unwrap();
+
+    // A seat governs the namespaces it actually has, which is the same scoping D15 gives
+    // the connections themselves: the ticket reaches the seats that decide what the work
+    // is, the designs reach the seat whose zone owns the UI.
+    let root = &generated.file("agent/agent.ts").unwrap().contents;
+    assert!(root.contains("governedServers"), "{root}");
+    assert!(root.contains("\"eve\""), "{root}");
+    assert!(root.contains("\"clickup\""), "{root}");
+
+    let frontend = &generated
+        .file("agent/subagents/frontend/agent.ts")
+        .unwrap()
+        .contents;
+    assert!(
+        frontend.contains("\"figma\""),
+        "the seat holding figma must govern it\n{frontend}"
+    );
+}
+
+#[test]
 fn a_machine_that_allows_no_context_source_generates_no_connection() {
     // The default: both are off until the machine profile says otherwise (D9), so a
     // work laptop never reaches an account nobody authorised.
@@ -400,10 +446,25 @@ fn a_claude_seat_bridges_only_its_authored_tools_into_the_subscription() {
         agent.contains("createAiSdkMcpServer(\"eve\", bridgedTools)"),
         "{agent}"
     );
-    assert!(agent.contains("settingSources: []"), "{agent}");
-    assert!(agent.contains("tools: []"), "{agent}");
+    // The repository's own declared tooling reaches the seat, and the human's does not
+    // (D19). `project` alone: `user` or `local` would be the home config D7 excluded.
+    assert!(agent.contains("settingSources: [\"project\"]"), "{agent}");
+    assert!(!agent.contains("\"user\""), "{agent}");
+    assert!(!agent.contains("\"local\""), "{agent}");
+    assert!(agent.contains("skills: \"all\""), "{agent}");
+    // Project settings are discovered relative to cwd, so without the lease none of it
+    // resolves - it would look in the generated project directory instead.
+    assert!(agent.contains("cwd: worktree"), "{agent}");
+    assert!(agent.contains("process.env.AI_TEAM_WORKTREE"), "{agent}");
+    // `Skill` is a built-in tool, so an empty base set leaves a repository's skills
+    // unreachable however `skills` is configured. Host Bash/Read/Write/Edit stay off.
+    assert!(agent.contains("tools: [\"Skill\"]"), "{agent}");
     assert!(agent.contains("canUseTool:"), "{agent}");
     assert!(agent.contains("behavior: \"deny\""), "{agent}");
+    // A seat with no context source still governs its own bridge namespace, or the
+    // project-tool rule would re-admit the bridged tools it deliberately withheld.
+    assert!(agent.contains("governedServers"), "{agent}");
+    assert!(agent.contains("isProjectTool"), "{agent}");
     for tool in ["bash", "read_file", "write_file", "edit_file"] {
         assert!(agent.contains(&format!("mcp__eve__{tool}")), "{agent}");
         assert!(agent.contains(&format!("bridgedTool as {tool}")), "{agent}");

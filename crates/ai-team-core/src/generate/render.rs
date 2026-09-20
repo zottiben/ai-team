@@ -336,23 +336,73 @@ fn model_setup(
     } else {
         format!("\n{context_servers}")
     };
+    // The namespaces that already carry their own allow-list and must not be widened by
+    // the project-tool rule below: `eve` is the bridge, and every context source is
+    // read-only by explicit name (D15). ClickUp and Figma both expose writes, so a blanket
+    // "any MCP tool" would hand over `clickup_create_task`.
+    let governed: Vec<String> = std::iter::once("eve".to_string())
+        .chain(sources.iter().map(|source| source.as_str().to_string()))
+        .map(|name| format!("{name:?}"))
+        .collect();
+    let governed = governed.join(", ");
+
     let setup = format!(
         "// Claude Code owns an inner agent loop, so eve's normal AI SDK tool path does\n\
          // not reach it. Bridge only this seat's authored worktree tools in-process.\n\
          const bridgedTools = {{ {tools} }};\n\
          const allowedClaudeTools = new Set([\n{allowed}\n]);\n\
+         \n\
+         // Namespaces that carry their own allow-list, so the rule below must not widen\n\
+         // them: `eve` is the bridge above, and each context source is read-only by\n\
+         // explicit name (D15) - both ClickUp and Figma expose writes.\n\
+         const governedServers = new Set([{governed}]);\n\
+         \n\
+         // A tool the repository itself declares (D19). `Skill` is how a repo's own\n\
+         // skills are invoked; `mcp__<server>__*` is a server from its .mcp.json.\n\
+         const isProjectTool = (name: string) => {{\n  \
+         if (name === \"Skill\") return true;\n  \
+         const parts = name.split(\"__\");\n  \
+         if (parts.length < 3 || parts[0] !== \"mcp\") return false;\n  \
+         return !governedServers.has(parts[1]);\n\
+         }};\n\
+         \n\
+         // The lease this seat is bound to (D10). Everything below is rooted here.\n\
+         const worktree = process.env.AI_TEAM_WORKTREE;\n\
+         if (!worktree) {{\n  \
+         throw new Error(\"AI_TEAM_WORKTREE is not set - ai-team sets it per lease\");\n\
+         }}\n\
+         \n\
          const claudeSettings = {{\n  \
          mcpServers: {{\n    eve: createAiSdkMcpServer(\"eve\", bridgedTools),{context_servers}\n  }},\n  \
-         allowedTools: [...allowedClaudeTools],\n  \
-         // Disable Claude Code's host Bash/Read/Write/Edit. The MCP tools above are\n  \
-         // the only route to the leased worktree.\n  \
-         tools: [],\n  \
-         // An omitted value inherits the human's CLAUDE.md, settings and MCPs.\n  \
-         settingSources: [],\n  \
-         // The callback is the Agent SDK approval boundary. Current generated tools\n  \
-         // are pre-approved above; anything else still fails closed here.\n  \
+         // The leased worktree, and the reason everything else here works: project\n  \
+         // settings, .mcp.json, skills and CLAUDE.md are all discovered relative to\n  \
+         // cwd. Without it they resolved against the generated project directory,\n  \
+         // where none of them exist - so none of it applied even in principle.\n  \
+         cwd: worktree,\n  \
+         // `project` only (D19). That is the repository's own declared tooling:\n  \
+         // .claude/settings.json, .mcp.json, its skills, and every CLAUDE.md in it -\n  \
+         // checked in, reviewed, and already running in the operator's own harness.\n  \
+         // Never `user` or `local`: the human's home config staying out is what D7 was\n  \
+         // actually protecting, and this does not reopen it.\n  \
+         settingSources: [\"project\"],\n  \
+         // Every skill the repository ships. A repo whose AGENTS.md refers to a skill\n  \
+         // the agent cannot load is a repo the agent cannot follow.\n  \
+         skills: \"all\",\n  \
+         // The base set of built-in tools, and `Skill` is one of them - an empty array\n  \
+         // here is what silently left a repository's skills unreachable even with\n  \
+         // `skills: \"all\"` set. Naming it explicitly keeps Claude Code's host\n  \
+         // Bash/Read/Write/Edit disabled: the MCP tools above stay the only route to\n  \
+         // the leased worktree (D3).\n  \
+         tools: [\"Skill\"],\n  \
+         // The approval boundary. The generated tools are pre-approved above, and so\n  \
+         // are the tools the repository itself declares - an MCP server in .mcp.json is\n  \
+         // the operator asking for that capability in that repo (D19). Everything else\n  \
+         // still fails closed.\n  \
+         //\n  \
+         // The boundary that matters is not this list, it is the lease: one process per\n  \
+         // worktree, and `irreversible.ts` still refusing to publish.\n  \
          canUseTool: async (toolName: string) =>\n    \
-         allowedClaudeTools.has(toolName)\n      \
+         allowedClaudeTools.has(toolName) || isProjectTool(toolName)\n      \
          ? {{ behavior: \"allow\" as const }}\n      \
          : {{\n          behavior: \"deny\" as const,\n          message: `Tool ${{toolName}} is not enabled for this ai-team seat`,\n        }},\n\
          }};\n"
