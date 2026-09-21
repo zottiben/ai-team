@@ -751,7 +751,6 @@ struct Updated {
 }
 
 async fn update_apply(State(state): State<AppState>) -> Result<Json<Updated>> {
-    let _ = &state;
     let available = ai_team_core::check_update().await;
 
     if let Some(blocked) = available.blocked {
@@ -778,7 +777,10 @@ async fn update_apply(State(state): State<AppState>) -> Result<Json<Updated>> {
         crate::error::Error::Core(ai_team_core::Error::invalid(format!("where am I? {error}")))
     })?;
 
-    ai_team_core::apply_update(&latest, &binary, |_| {}).await?;
+    // Which program that is comes from whoever started the server. This route is reached
+    // from `ait ui` and from the desktop app alike, and a release ships both - so an
+    // updater left to guess installs `ait` over the app, which then stops opening.
+    ai_team_core::apply_update(&latest, &binary, state.host(), |_| {}).await?;
     Ok(Json(Updated {
         version: latest,
         restart_required: true,

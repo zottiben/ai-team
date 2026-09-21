@@ -104,7 +104,7 @@ pub use today::{
 };
 pub use update::{
     apply as apply_update, check as check_update, current_version, is_newer,
-    method as install_method, Available, Method, Step,
+    method as install_method, Available, Host, Method, Step,
 };
 pub use util::{mint_token, normalise_remote, now, rfc3339_in, slugify, zone_matches};
 pub use workflow::{run as run_workflow, Progress, Request};

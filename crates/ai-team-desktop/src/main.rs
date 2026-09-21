@@ -49,6 +49,11 @@ fn run() -> Result<()> {
             store: ai_team_core::default_db_path()
                 .ok()
                 .and_then(|path| ai_team_core::Store::open(&path).ok()),
+            // The window's Update button replaces the binary this server runs in, and
+            // here that binary is the app's, not `ait`. Saying so is what keeps an
+            // update from installing the CLI into `ai-team.app` and leaving an app that
+            // launches, prints `--help` to nobody, and exits.
+            host: ai_team_core::Host::Desktop,
             ..Default::default()
         };
         match Server::bind(options).await {

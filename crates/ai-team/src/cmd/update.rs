@@ -1,6 +1,6 @@
 //! `ait update` - replace this binary with the latest release.
 
-use ai_team_core::{Method, Result, Step};
+use ai_team_core::{Host, Method, Result, Step};
 
 pub(crate) async fn run(check_only: bool) -> Result<()> {
     let available = ai_team_core::check_update().await;
@@ -49,7 +49,9 @@ pub(crate) async fn run(check_only: bool) -> Result<()> {
         .map_err(|error| ai_team_core::Error::invalid(format!("where am I? {error}")))?;
 
     println!("\nUpdating to {latest}…");
-    ai_team_core::apply_update(&latest, &binary, |step| {
+    // This is the CLI saying so, not a guess from the path: the same updater also runs
+    // inside the desktop app, where installing `ait` would replace the app with it.
+    ai_team_core::apply_update(&latest, &binary, Host::Cli, |step| {
         println!(
             "  {}",
             match step {

@@ -27,6 +27,9 @@ pub(crate) async fn run(args: UiArgs) -> Result<()> {
         // Named so the window can pick up a database created after it started - from its
         // own setup page, or by `ait init` in another terminal.
         db_path: Some(db),
+        // Served by `ait`, so the update route replaces `ait`. The desktop shell says
+        // `Desktop` instead, and gets the app bundle.
+        host: ai_team_core::Host::Cli,
     })
     .await
     .context("starting the local server")?;

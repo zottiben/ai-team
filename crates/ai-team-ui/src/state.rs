@@ -40,6 +40,9 @@ struct Inner {
     /// The terminals this process has open. A session outlives the window, so it lives
     /// here rather than in a request.
     terminals: ai_team_core::Terminals,
+    /// Which program is serving. The update route replaces the binary it runs in, and
+    /// `ait ui` and the desktop app are two different binaries in one release.
+    host: ai_team_core::Host,
 }
 
 impl AppState {
@@ -60,6 +63,22 @@ impl AppState {
                 db_path: None,
                 lsp: ai_team_core::Pool::new(),
                 terminals: ai_team_core::Terminals::new(),
+                host: ai_team_core::Host::Cli,
+            }),
+        }
+    }
+
+    /// Which program is serving, for the update route.
+    #[must_use]
+    pub fn hosted_by(self, host: ai_team_core::Host) -> Self {
+        Self {
+            inner: Arc::new(Inner {
+                token: self.inner.token.clone(),
+                store: Mutex::new(None),
+                db_path: self.inner.db_path.clone(),
+                lsp: ai_team_core::Pool::new(),
+                terminals: ai_team_core::Terminals::new(),
+                host,
             }),
         }
     }
@@ -74,6 +93,7 @@ impl AppState {
                 db_path,
                 lsp: ai_team_core::Pool::new(),
                 terminals: ai_team_core::Terminals::new(),
+                host: self.inner.host,
             }),
         }
     }
@@ -87,12 +107,18 @@ impl AppState {
                 db_path: self.inner.db_path.clone(),
                 lsp: ai_team_core::Pool::new(),
                 terminals: ai_team_core::Terminals::new(),
+                host: self.inner.host,
             }),
         }
     }
 
     pub fn token(&self) -> &str {
         &self.inner.token
+    }
+
+    /// Which program is serving this window.
+    pub(crate) fn host(&self) -> ai_team_core::Host {
+        self.inner.host
     }
 
     /// The store, or a plain explanation.

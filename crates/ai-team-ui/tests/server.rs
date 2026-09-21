@@ -14,6 +14,9 @@ struct Harness {
     addr: SocketAddr,
     token: String,
     _runtime: tokio::runtime::Runtime,
+    /// Kept alive for as long as the server watches it. Only the no-database harness
+    /// needs one; [`Harness::with_store`] hands its directory back to the caller.
+    _dir: Option<tempfile::TempDir>,
 }
 
 impl Harness {
@@ -54,6 +57,7 @@ impl Harness {
                 addr,
                 token,
                 _runtime: runtime,
+                _dir: None,
             },
             dir,
         )
@@ -61,20 +65,41 @@ impl Harness {
 
     /// A server with no database, watching a path one may appear at.
     fn watching(db_path: &std::path::Path) -> Harness {
-        Harness::bound(ServeOptions {
-            port: 0,
-            token: None,
-            store: None,
-            db_path: Some(db_path.to_path_buf()),
-        })
+        Harness::bound(
+            ServeOptions {
+                port: 0,
+                token: None,
+                store: None,
+                db_path: Some(db_path.to_path_buf()),
+                ..Default::default()
+            },
+            None,
+        )
     }
 
+    /// A server with no database, and no way to find one.
+    ///
+    /// Pointed at an empty temporary directory rather than left to default, because the
+    /// default is *the machine's own* database. These tests were quietly exercising
+    /// `~/.ai-team/team.db` - so they passed on CI, where a runner has none, and failed
+    /// on the Mac this is used on, which is the wrong way round for the platform that
+    /// matters (D12).
     fn start() -> Harness {
-        Harness::bound(ServeOptions::default())
+        let dir = tempfile::tempdir().unwrap();
+        let options = ServeOptions {
+            db_path: Some(dir.path().join("team.db")),
+            ..Default::default()
+        };
+        // The directory is handed to the harness rather than assigned afterwards, so it
+        // is owned from the moment it exists and nothing reads a field spelled `_dir`.
+        Harness::bound(options, Some(dir))
     }
 
     /// Bind, spawn, and hand back the address and token.
-    fn bound(options: ServeOptions) -> Harness {
+    ///
+    /// `dir` is whatever has to outlive the server - a temporary directory it is watching
+    /// for a database that never appears.
+    fn bound(options: ServeOptions, dir: Option<tempfile::TempDir>) -> Harness {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
@@ -91,6 +116,7 @@ impl Harness {
             addr,
             token,
             _runtime: runtime,
+            _dir: dir,
         }
     }
 
@@ -235,6 +261,7 @@ fn the_url_carries_the_token() {
             token: Some("fixed-token".into()),
             store: None,
             db_path: None,
+            ..Default::default()
         }))
         .unwrap();
 

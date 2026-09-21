@@ -10,7 +10,12 @@
 //! install ai-team at all, it ships with macOS and every Linux worth the name, and adding
 //! a TLS stack to this crate to fetch one tarball a month would be a large dependency for
 //! a small job (D4's reasoning, applied to a library rather than a neighbour).
+//!
+//! A release archive carries **two** programs - `ait` and the desktop app - so an update
+//! has to install the one it is replacing. Which one that is comes from the caller as a
+//! [`Host`], because the process knows what it is and a path does not.
 
+use std::ffi::OsStr;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -22,9 +27,91 @@ use crate::error::{Error, Result};
 
 const REPO: &str = "zottiben/ai-team";
 
+/// What the CLI is called inside a release archive.
+const CLI: &str = "ait";
+/// What the macOS app is called inside a release archive.
+const APP: &str = "ai-team.app";
+
 /// The version this binary was built as.
 pub fn current_version() -> &'static str {
     env!("CARGO_PKG_VERSION")
+}
+
+/// Which of the two programs a release ships is asking to be replaced.
+///
+/// Declared by the caller rather than guessed at, because guessing is what broke: `apply`
+/// used to install `ait` over whatever binary was running, and the window's Update button
+/// runs inside the desktop app. Pressing it put the CLI inside `ai-team.app`, so the app
+/// launched, printed `--help` where nobody could see it, and exited - it simply stopped
+/// opening, and nothing said why.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Host {
+    /// The `ait` binary. Replaced file for file.
+    #[default]
+    Cli,
+    /// The desktop app, which on macOS is a bundle and elsewhere is somebody else's
+    /// package.
+    Desktop,
+}
+
+/// What an update replaces on disk, and therefore which half of the archive to install.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Replace {
+    /// One file.
+    File(PathBuf),
+    /// A whole `.app`.
+    ///
+    /// Whole, because the code signature seals `Info.plist` and `Resources/` together
+    /// with the executable: replacing only the executable leaves a bundle `codesign`
+    /// reports as not signed at all, which is a second way to arrive at an app that will
+    /// not open.
+    Bundle(PathBuf),
+}
+
+impl Replace {
+    /// The path being replaced - and so the directory the download unpacks beside, since
+    /// the final step is a rename and a rename cannot cross a filesystem.
+    fn path(&self) -> &Path {
+        match self {
+            Replace::File(path) | Replace::Bundle(path) => path,
+        }
+    }
+}
+
+/// Decide what to replace, or refuse.
+fn plan(host: Host, binary: &Path) -> Result<Replace> {
+    match host {
+        Host::Cli => Ok(Replace::File(binary.to_path_buf())),
+        Host::Desktop => bundle_of(binary).map(Replace::Bundle).ok_or_else(|| {
+            Error::invalid(format!(
+                "{} is not inside a .app bundle, and a release archive carries no other \
+                 kind of desktop app - update it the way you installed it (the .deb, the \
+                 AppImage, or the Windows installer)",
+                binary.display()
+            ))
+        }),
+    }
+}
+
+/// The `.app` a binary is the executable of, recognised by shape rather than by name.
+///
+/// `<name>.app/Contents/MacOS/<exe>` is the only layout macOS will launch, and the
+/// executable's name is whatever the product is called - so the shape is the part worth
+/// matching. Deliberately not behind a `cfg`: macOS is the target but Linux is the
+/// machine this is built on (D12), and a rule only one CI leg can reach is a rule that
+/// rots unseen.
+fn bundle_of(binary: &Path) -> Option<PathBuf> {
+    let macos = binary.parent()?;
+    if macos.file_name() != Some(OsStr::new("MacOS")) {
+        return None;
+    }
+    let contents = macos.parent()?;
+    if contents.file_name() != Some(OsStr::new("Contents")) {
+        return None;
+    }
+    let app = contents.parent()?;
+    (app.extension() == Some(OsStr::new("app"))).then(|| app.to_path_buf())
 }
 
 /// How this copy of ai-team got here.
@@ -182,7 +269,7 @@ pub enum Step {
 /// over a path leaves the running process attached to the old inode and gives every later
 /// exec the new one. That is why the temporary file is put beside the target rather than
 /// in `/tmp`: rename cannot cross a filesystem boundary, and `/tmp` is very often its own.
-pub async fn apply<F>(version: &str, binary: &Path, mut on_step: F) -> Result<()>
+pub async fn apply<F>(version: &str, binary: &Path, host: Host, mut on_step: F) -> Result<()>
 where
     F: FnMut(Step),
 {
@@ -201,10 +288,16 @@ where
     })?;
     let base = format!("https://github.com/{REPO}/releases/download/v{version}");
 
-    // Unpacked beside the binary rather than in /tmp. The swap at the end is a rename,
-    // rename cannot cross a filesystem boundary, and /tmp very often is one - so putting
-    // the work there would turn the atomic step into a copy that can half-finish.
-    let work = Scratch::beside(binary)?;
+    // Worked out before anything is downloaded, so a desktop app this updater cannot
+    // replace is told so immediately rather than after a 40MB download.
+    let plan = plan(host, binary)?;
+
+    // Unpacked beside what is being replaced rather than in /tmp. The swap at the end is
+    // a rename, rename cannot cross a filesystem boundary, and /tmp very often is one -
+    // so putting the work there would turn the atomic step into a copy that can
+    // half-finish. Beside the *bundle* for a desktop update, not beside its executable,
+    // which would put the scratch directory inside the thing being replaced.
+    let work = Scratch::beside(plan.path())?;
     let archive = work.path().join(&asset);
 
     on_step(Step::Downloading);
@@ -234,14 +327,37 @@ where
         return Err(Error::invalid("the downloaded archive would not unpack"));
     }
 
-    let fresh = work.path().join("ait");
-    if !fresh.is_file() {
-        return Err(Error::invalid("the archive contained no `ait`"));
-    }
-    swap(&fresh, binary)?;
+    install(&plan, work.path())?;
 
     on_step(Step::Done);
     Ok(())
+}
+
+/// Put the unpacked archive where it belongs.
+///
+/// Split out from [`apply`] so the choice between the two programs can be tested without
+/// a network. Choosing wrong is what bricked a desktop install, and a release is a bad
+/// place to find that out.
+fn install(plan: &Replace, unpacked: &Path) -> Result<()> {
+    match plan {
+        Replace::File(target) => {
+            let fresh = unpacked.join(CLI);
+            if !fresh.is_file() {
+                return Err(Error::invalid("the archive contained no `ait`"));
+            }
+            swap(&fresh, target)
+        }
+        Replace::Bundle(target) => {
+            let fresh = unpacked.join(APP);
+            if !fresh.is_dir() {
+                return Err(Error::invalid(format!(
+                    "this release publishes no {APP} - update the desktop app the way you \
+                     installed it"
+                )));
+            }
+            swap_bundle(&fresh, target)
+        }
+    }
 }
 
 /// A directory that cleans itself up, next to the binary being replaced.
@@ -304,6 +420,44 @@ fn swap(fresh: &Path, target: &Path) -> Result<()> {
         let _ = std::fs::remove_file(&staged);
         Error::invalid(format!("could not replace {}: {error}", target.display()))
     })
+}
+
+/// Put a whole `.app` where `target` is.
+///
+/// `rename` will not replace a directory that has anything in it, so the installed bundle
+/// is moved aside first and removed only once the new one is in place. The move-aside is
+/// what makes it recoverable: if the second rename fails the old app goes back, because
+/// an update that removes the app and installs nothing is worse than one that does
+/// nothing at all.
+fn swap_bundle(fresh: &Path, target: &Path) -> Result<()> {
+    let parent = target
+        .parent()
+        .ok_or_else(|| Error::invalid("the app has no directory"))?;
+    let aside = parent.join(".ai-team.app.previous");
+    let _ = std::fs::remove_dir_all(&aside);
+
+    let installed = target.exists();
+    if installed {
+        std::fs::rename(target, &aside).map_err(|error| {
+            Error::invalid(format!(
+                "could not replace {} - update ai-team the way you installed it ({error})",
+                target.display()
+            ))
+        })?;
+    }
+
+    if let Err(error) = std::fs::rename(fresh, target) {
+        if installed {
+            let _ = std::fs::rename(&aside, target);
+        }
+        return Err(Error::invalid(format!(
+            "could not replace {}: {error}",
+            target.display()
+        )));
+    }
+
+    let _ = std::fs::remove_dir_all(&aside);
+    Ok(())
 }
 
 async fn curl(url: &str, into: &Path) -> Result<()> {
@@ -520,6 +674,160 @@ mod tests {
         );
     }
 
+    /// An unpacked release archive: the CLI and the app, side by side.
+    fn unpacked(at: &Path) {
+        std::fs::create_dir_all(at.join(APP).join("Contents/MacOS")).unwrap();
+        std::fs::write(at.join(CLI), b"the cli").unwrap();
+        std::fs::write(at.join(APP).join("Contents/MacOS/ai-team"), b"the app").unwrap();
+        std::fs::write(at.join(APP).join("Contents/Info.plist"), b"fresh").unwrap();
+    }
+
+    /// An installed `.app`, one version behind. Returns its executable - the path a
+    /// desktop process sees as `current_exe`.
+    fn installed_app(at: &Path) -> PathBuf {
+        let app = at.join(APP);
+        std::fs::create_dir_all(app.join("Contents/MacOS")).unwrap();
+        std::fs::write(app.join("Contents/MacOS/ai-team"), b"the old app").unwrap();
+        std::fs::write(app.join("Contents/Info.plist"), b"stale").unwrap();
+        app.join("Contents/MacOS/ai-team")
+    }
+
+    #[test]
+    fn the_desktop_app_is_never_replaced_with_the_cli() {
+        // The bug this whole split exists for. A release archive carries `ait` and the
+        // app together, and `install` used to take `ait` whatever it was replacing - so
+        // pressing Update in the window wrote the CLI into `ai-team.app`. The app then
+        // launched, printed `--help` where nobody could see it, and exited: it stopped
+        // opening, with nothing on screen to say why.
+        let dir = tempfile::tempdir().unwrap();
+        let archive = dir.path().join("unpacked");
+        std::fs::create_dir_all(&archive).unwrap();
+        unpacked(&archive);
+
+        let applications = dir.path().join("Applications");
+        std::fs::create_dir_all(&applications).unwrap();
+        let running = installed_app(&applications);
+
+        let plan = plan(Host::Desktop, &running).unwrap();
+        assert_eq!(plan, Replace::Bundle(applications.join(APP)));
+
+        install(&plan, &archive).unwrap();
+
+        assert_eq!(
+            std::fs::read(&running).unwrap(),
+            b"the app",
+            "the app must be replaced with the app, never with the CLI"
+        );
+        // The whole bundle, not only its executable: the signature seals Info.plist and
+        // Resources with it, so a half-replaced bundle is one Gatekeeper refuses.
+        assert_eq!(
+            std::fs::read(applications.join(APP).join("Contents/Info.plist")).unwrap(),
+            b"fresh"
+        );
+        // And nothing is left lying next to it.
+        assert!(!applications.join(".ai-team.app.previous").exists());
+    }
+
+    #[test]
+    fn the_cli_still_gets_the_cli() {
+        let dir = tempfile::tempdir().unwrap();
+        let archive = dir.path().join("unpacked");
+        std::fs::create_dir_all(&archive).unwrap();
+        unpacked(&archive);
+
+        let target = dir.path().join("bin/ait");
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(&target, b"the old cli").unwrap();
+
+        let plan = plan(Host::Cli, &target).unwrap();
+        assert_eq!(plan, Replace::File(target.clone()));
+        install(&plan, &archive).unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"the cli");
+    }
+
+    #[test]
+    fn a_bundle_is_recognised_by_its_shape_not_its_name() {
+        // Runs on both CI legs on purpose (D12): macOS is the target, Linux is where this
+        // is built, and path logic only one leg can reach is logic nobody checks.
+        assert_eq!(
+            bundle_of(Path::new(
+                "/Applications/ai-team.app/Contents/MacOS/ai-team"
+            )),
+            Some(PathBuf::from("/Applications/ai-team.app"))
+        );
+        // The executable is named for the product, so any name inside the shape counts.
+        assert_eq!(
+            bundle_of(Path::new(
+                "/Applications/Whatever.app/Contents/MacOS/anything"
+            )),
+            Some(PathBuf::from("/Applications/Whatever.app"))
+        );
+        // And nothing else does.
+        assert_eq!(bundle_of(Path::new("/usr/local/bin/ait")), None);
+        assert_eq!(
+            bundle_of(Path::new("/Applications/ai-team.app/ai-team")),
+            None
+        );
+        assert_eq!(
+            bundle_of(Path::new("/Applications/ai-team/Contents/MacOS/ai-team")),
+            None
+        );
+    }
+
+    #[test]
+    fn a_desktop_app_that_is_not_a_bundle_says_how_to_update_it() {
+        // The Linux and Windows desktop builds are a .deb, an AppImage and an installer,
+        // and the tarball has nothing in it for any of them. Installing `ait` over one
+        // would brick it exactly the way it bricked the .app.
+        let error = plan(Host::Desktop, Path::new("/usr/bin/ai-team"))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("the way you installed it"), "{error}");
+    }
+
+    #[test]
+    fn an_archive_with_no_app_in_it_refuses_rather_than_improvises() {
+        // Fail closed: the Linux tarball carries only `ait`, and the one thing that must
+        // not happen is it being installed over a desktop app anyway.
+        let dir = tempfile::tempdir().unwrap();
+        let archive = dir.path().join("unpacked");
+        std::fs::create_dir_all(&archive).unwrap();
+        std::fs::write(archive.join(CLI), b"the cli").unwrap();
+
+        let applications = dir.path().join("Applications");
+        std::fs::create_dir_all(&applications).unwrap();
+        let running = installed_app(&applications);
+
+        let error = install(&plan(Host::Desktop, &running).unwrap(), &archive)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("no ai-team.app"), "{error}");
+        assert_eq!(std::fs::read(&running).unwrap(), b"the old app");
+    }
+
+    #[test]
+    fn a_bundle_that_cannot_be_replaced_is_put_back() {
+        // There is nothing to move in, so the second rename fails - and the app that was
+        // there has to come back. An update that removes the app and installs nothing is
+        // worse than one that does nothing.
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join(APP);
+        std::fs::create_dir_all(target.join("Contents")).unwrap();
+        std::fs::write(target.join("Contents/Info.plist"), b"installed").unwrap();
+
+        let error = swap_bundle(&dir.path().join("nothing"), &target)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("could not replace"), "{error}");
+
+        assert_eq!(
+            std::fs::read(target.join("Contents/Info.plist")).unwrap(),
+            b"installed",
+            "a failed update must leave the app that was working where it was"
+        );
+        assert!(!dir.path().join(".ai-team.app.previous").exists());
+    }
+
     #[test]
     fn versions_compare_numerically_not_alphabetically() {
         // `0.10.0` < `0.9.0` as strings, which would offer an update that goes backwards
@@ -610,6 +918,24 @@ mod tests {
         assert!(!dir.path().join(".ait.update").exists());
     }
 
+    /// The test below, named so it can be run as a child of itself.
+    const SLEEPER: &str = "update::tests::sleeps_when_a_parent_test_asks_it_to";
+    /// Where that child reports that it is up. Its presence is also what asks it to sleep.
+    const SLEEPER_MARKER: &str = "AI_TEAM_TEST_SLEEPER_MARKER";
+
+    #[test]
+    fn sleeps_when_a_parent_test_asks_it_to() {
+        // Not a test of anything: a body for the test below to run as a child process, so
+        // it has something of its own to copy and execute. A normal run returns here
+        // immediately.
+        let Some(marker) = std::env::var_os(SLEEPER_MARKER) else {
+            return;
+        };
+        // Report the exec, rather than leaving the parent to guess at it with a sleep.
+        std::fs::write(marker, b"up").unwrap();
+        std::thread::sleep(std::time::Duration::from_secs(5));
+    }
+
     #[cfg(unix)]
     #[test]
     fn a_binary_can_be_replaced_while_it_is_running() {
@@ -620,20 +946,38 @@ mod tests {
         // process already up.
         let dir = tempfile::tempdir().unwrap();
         let target = dir.path().join("runner");
-        std::fs::copy("/bin/sh", &target).unwrap();
 
-        // Two commands, not one. A shell given a single command usually `exec`s it,
-        // replacing its own image - so the copy stops being the running binary and
-        // ETXTBSY no longer applies. The trailing `:` keeps the shell resident, which is
-        // the whole premise of the assertion below.
+        // This test's own binary, not a copy of `/bin/sh`. macOS 26 SIGKILLs a platform
+        // binary that has been copied out of the system - `/bin/sh` is arm64e and signed
+        // as `com.apple.sh` - so that spelling passed on GitHub's runner and died
+        // instantly on a current Mac, which is the wrong way round for the platform that
+        // matters (D12). A binary this workspace built has no such restriction.
+        std::fs::copy(std::env::current_exe().unwrap(), &target).unwrap();
+
+        let marker = dir.path().join("up");
         let mut child = std::process::Command::new(&target)
-            .args(["-c", "sleep 5; :"])
+            .args([SLEEPER, "--exact"])
+            .env(SLEEPER_MARKER, &marker)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
             .spawn()
             .expect("the copy should be runnable");
+
         // `spawn` returns once the fork is under way, which is not the same moment the
-        // kernel has the text segment locked. Without this the assertion races the exec
-        // and fails under load rather than on merit.
-        std::thread::sleep(std::time::Duration::from_millis(250));
+        // kernel has the text segment mapped. Waiting for the child to say so beats a
+        // fixed sleep, which fails under load rather than on merit.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while !marker.exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the child never started"
+            );
+            assert!(
+                child.try_wait().unwrap().is_none(),
+                "the child exited instead of running"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
 
         // Linux refuses to write over an executing file - ETXTBSY - and macOS does not:
         // the text-segment protection is a Linux one. Which means a naive updater that

@@ -58,6 +58,13 @@ pub struct ServeOptions {
     /// `None` means the machine's own, which is what `ait ui` passes; a test passes its
     /// own, because a test that reaches for the real one writes to the developer's home.
     pub db_path: Option<std::path::PathBuf>,
+    /// Which program is serving this window.
+    ///
+    /// The same server runs inside `ait ui` and inside the desktop app, and the update
+    /// route replaces the binary it is running in - so it has to be told which one that
+    /// is. It defaults to the CLI because that is the safe half: an update that installs
+    /// `ait` over the desktop app leaves an app that will not open.
+    pub host: ai_team_core::Host,
 }
 
 /// Bound, but not yet serving.
@@ -79,12 +86,14 @@ impl Server {
             Some(t) if !t.trim().is_empty() => t,
             _ => auth::mint_token()?,
         };
-        let mut state = AppState::new(token.as_str()).watching(
-            options
-                .db_path
-                .clone()
-                .or_else(|| ai_team_core::default_db_path().ok()),
-        );
+        let mut state = AppState::new(token.as_str())
+            .hosted_by(options.host)
+            .watching(
+                options
+                    .db_path
+                    .clone()
+                    .or_else(|| ai_team_core::default_db_path().ok()),
+            );
         if let Some(store) = options.store {
             state = state.with_store(store);
         }
