@@ -66,10 +66,12 @@ it("every token the shell uses actually exists", () => {
 
   for (const path of styleSheets()) {
     const used = [...readFileSync(path, "utf8").matchAll(/var\((--[a-z0-9-]+)/g)].map((m) => m[1]);
+    // Set by a rule or by a component rather than defined in the palette - the
+    // indirection that lets one class carry any status, or any zone's colour. They are
+    // not typos, and they are listed here so a real one still fails.
+    const supplied = new Set<string | undefined>(["--status-color", "--seat-mark"]);
     const unknown = [...new Set(used)].filter(
-      // `--status-color` is set by the rules themselves, as the indirection that lets one
-      // class carry any status.
-      (token) => !defined.has(token) && token !== "--status-color",
+      (token) => !defined.has(token) && !supplied.has(token),
     );
     expect(unknown, `${path} uses tokens that are not defined`).toEqual([]);
   }

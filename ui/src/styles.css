@@ -1253,3 +1253,454 @@ button.card:hover {
   padding: var(--space-2);
   resize: vertical;
 }
+
+/* --- the overview ------------------------------------------------------------- */
+/*
+ * The repo landing. Same vocabulary as the rest of the window - panel surfaces, subtle
+ * borders, the `md` radius, the status dot - so it reads as another view of this app
+ * rather than as a dashboard pasted into it.
+ *
+ * What is different here is motion, and it is all conditional: everything below is still
+ * until something is actually running. Ambient animation that never stops says nothing,
+ * and this page's whole job is to make a live run visible from across the desk. The
+ * blanket `prefers-reduced-motion` rule above turns all of it off.
+ */
+
+.overview {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+/* --- the figures row ----------------------------------------------------------- */
+
+.figures {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.figure {
+  flex: 1 1 7rem;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-3);
+  background: var(--surface-panel-default);
+  border: 1px solid var(--border-subtle-default);
+  border-radius: var(--radius-md);
+}
+
+.figure__label {
+  font-size: var(--text-xs);
+}
+
+.figure__value {
+  font-size: var(--text-lg);
+  font-variant-numeric: tabular-nums;
+}
+
+/* A counter that shows when it moves. A figure that silently replaces itself between two
+ * renders reads as static, which is the opposite of what a climbing token count is. */
+.ticking {
+  display: inline-block;
+  transition: color var(--motion-fast), transform var(--motion-fast);
+}
+
+.ticking[data-bumped="true"] {
+  color: var(--accent-action-default);
+  transform: translateY(-1px);
+}
+
+/* --- a block ------------------------------------------------------------------- */
+
+.block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  background: var(--surface-panel-default);
+  border: 1px solid var(--border-subtle-default);
+  border-radius: var(--radius-md);
+}
+
+.block__head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.block__head h3 {
+  margin: 0;
+  font-size: var(--text-md);
+}
+
+.block__head .faint {
+  flex: 1;
+  font-size: var(--text-sm);
+}
+
+.block__go {
+  font-size: var(--text-sm);
+  color: var(--text-primary-muted);
+  transition: color var(--motion-fast);
+}
+
+.block__go:hover {
+  color: var(--accent-action-default);
+}
+
+.block__foot {
+  font-size: var(--text-sm);
+}
+
+.columns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-4);
+}
+
+@media (width < 68rem) {
+  .columns {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* --- the map ------------------------------------------------------------------- */
+
+.map {
+  width: 100%;
+  height: auto;
+  /* Capped, or a wide repository makes a panel tall enough to push everything below it
+   * off the screen. The viewBox letterboxes inside whatever box this leaves. */
+  max-height: 32rem;
+  display: block;
+}
+
+.map__edge {
+  stroke: var(--border-strong-default);
+  stroke-width: 0.5;
+  opacity: 0.5;
+}
+
+/* A route with work travelling along it is drawn twice: dimmed here, and again in the
+ * flow layer. Without the dimming the static line fights the moving one. */
+.map__edge.is-route {
+  opacity: 0.16;
+}
+
+.map__flow {
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  fill: none;
+  /* Short mark, long gap: a packet moving along the wire rather than a marching-ants
+   * border, which is what an even dash pattern reads as. */
+  stroke-dasharray: 5 15;
+  animation: map-flow var(--motion-flow) linear infinite;
+}
+
+@keyframes map-flow {
+  to {
+    stroke-dashoffset: -20;
+  }
+}
+
+.map__node {
+  opacity: 0.85;
+  transition: opacity var(--motion-fast);
+}
+
+.map__node.is-hub {
+  opacity: 0.95;
+  stroke: var(--surface-panel-default);
+  stroke-width: 1;
+}
+
+/* Everything that is not being worked on steps back while something is, so the lit paths
+ * are found without having to be hunted for. */
+.map[data-busy="true"] .map__node[data-state="still"] {
+  opacity: 0.3;
+}
+
+.map[data-busy="true"] .map__edge:not(.is-route) {
+  opacity: 0.2;
+}
+
+/* A slice named this path and its seat is mid-turn. */
+.map__node[data-state="hot"] {
+  opacity: 1;
+  animation: map-hot var(--motion-beat) ease-in-out infinite;
+}
+
+/* The seat is up but no slice narrows it, so this is territory rather than a file: a
+ * slower, shallower breath that does not claim to know which path. */
+.map__node[data-state="warm"] {
+  opacity: 0.9;
+  animation: map-warm calc(var(--motion-beat) * 2) ease-in-out infinite;
+}
+
+@keyframes map-hot {
+  50% {
+    r: 9;
+    opacity: 0.72;
+  }
+}
+
+@keyframes map-warm {
+  50% {
+    opacity: 0.55;
+  }
+}
+
+.map__labels text {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  fill: var(--text-primary-muted);
+  paint-order: stroke;
+  stroke: var(--surface-panel-default);
+  stroke-width: 4px;
+  stroke-linejoin: round;
+}
+
+.map__labels text[data-working="true"] {
+  fill: var(--text-primary-default);
+  animation: pulse var(--motion-beat) ease-in-out infinite;
+}
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--text-sm);
+  color: var(--text-primary-muted);
+}
+
+.legend li {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.legend li[data-working="true"] {
+  color: var(--text-primary-default);
+}
+
+.legend__swatch {
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+}
+
+.legend li[data-working="true"] .legend__swatch {
+  animation: pulse var(--motion-beat) ease-in-out infinite;
+}
+
+/* --- the crew strip ------------------------------------------------------------ */
+
+.seats {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr));
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.seats__seat {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface-panel-raised);
+  border: 1px solid var(--border-subtle-default);
+  /* The seat's colour on the map, so the two panels can be read against each other. */
+  border-left: 3px solid var(--seat-mark);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+  min-width: 0;
+  transition: border-color var(--motion-fast), background var(--motion-fast);
+}
+
+.seats__seat[data-doing="working"],
+.seats__seat[data-doing="starting"] {
+  background: var(--accent-action-muted);
+}
+
+.seats__seat[data-doing="disabled"] {
+  opacity: 0.55;
+}
+
+.seats__what,
+.seats__meter {
+  font-size: var(--text-xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* --- the board path ------------------------------------------------------------ */
+
+.path {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(6.5rem, 1fr));
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.path__stage {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface-panel-raised);
+  border: 1px solid var(--border-subtle-default);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+}
+
+.path__stage[data-active="true"] {
+  border-color: var(--status-running-default);
+}
+
+.path__count {
+  font-size: var(--text-md);
+  font-variant-numeric: tabular-nums;
+}
+
+.path__stage[data-empty="true"] .path__count {
+  color: var(--text-primary-faint);
+}
+
+.tape {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+}
+
+.tape__tick {
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  background: var(--status-queued-default);
+}
+
+.tape__tick[data-status="done"] { background: var(--status-done-default); }
+.tape__tick[data-status="active"] { background: var(--status-running-default); }
+.tape__tick[data-status="blocked"] { background: var(--status-blocked-default); }
+.tape__tick[data-status="in_review"] { background: var(--status-parked-default); }
+.tape__tick[data-status="deferred"] { background: var(--status-cancelled-default); }
+
+/* The slice a seat has open right now, rather than merely one marked active on the
+ * board - those are different claims and only this one is happening. */
+.tape__tick[data-live="true"] {
+  animation: pulse var(--motion-beat) ease-in-out infinite;
+}
+
+/* --- the seat rack ------------------------------------------------------------- */
+
+.rack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.rack__seat {
+  display: grid;
+  grid-template-columns: 10px 1fr auto auto;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) 0;
+  border-bottom: 1px solid var(--border-subtle-default);
+  font-size: var(--text-sm);
+  min-width: 0;
+}
+
+.rack__seat:last-child {
+  border-bottom: 0;
+}
+
+.rack__seat[data-off="true"] {
+  opacity: 0.55;
+}
+
+.rack__mark {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+}
+
+.rack__name,
+.rack__model {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rack__model {
+  font-size: var(--text-xs);
+}
+
+.rack__owns {
+  font-size: var(--text-xs);
+  color: var(--text-primary-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.rack__owns[data-none="true"] {
+  color: var(--status-blocked-default);
+}
+
+/* --- gate bars ----------------------------------------------------------------- */
+
+.bars {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.bars li {
+  display: grid;
+  grid-template-columns: 7rem 1fr 3rem;
+  align-items: center;
+  gap: var(--space-3);
+  font-size: var(--text-sm);
+}
+
+.bars__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bars__track {
+  height: 6px;
+  background: var(--surface-panel-hover);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.bars__fill {
+  display: block;
+  height: 100%;
+  background: var(--accent-action-default);
+  transition: width var(--motion-fast);
+}
+
+/* A run in flight gets the same treatment its status dot does, so a card scanned from
+ * across the desk says "this one" without being read. */
+.card[data-live="true"] {
+  border-color: var(--accent-action-default);
+  background: var(--accent-action-muted);
+}

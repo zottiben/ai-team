@@ -13,6 +13,17 @@ const DOING: Record<Doing, { label: string; status: string; why: string }> = {
   disabled: { label: "off", status: "cancelled", why: "will not be given work" },
 };
 
+/**
+ * What a seat's state is called, said once for the whole window.
+ *
+ * The overview shows the same six seats, and two surfaces with two vocabularies for one
+ * state is two things to learn - "untouched" here and "not started" there describe the
+ * same row.
+ */
+export function doingLabel(doing: Doing): string {
+  return DOING[doing].label;
+}
+
 /** Thousands, because the interesting numbers are six figures. */
 function tokens(value: number): string {
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;

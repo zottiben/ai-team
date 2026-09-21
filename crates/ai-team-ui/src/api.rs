@@ -43,6 +43,7 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/board/slices/{key}", axum::routing::post(move_slice))
         .route("/today", get(today))
         .route("/tree", get(tree))
+        .route("/map", get(repo_map))
         .route("/file", get(read_file).post(write_file))
         .route("/search", get(search))
         .route("/projects/{id}/repos", axum::routing::post(attach_repo))
@@ -131,6 +132,46 @@ async fn tree(
 ) -> Result<Json<Vec<ai_team_core::Entry>>> {
     let worktree = worktree_for(&state, &query.project, query.node)?;
     Ok(Json(ai_team_core::list_tree(&worktree, &query.path)?))
+}
+
+#[derive(Debug, Deserialize)]
+struct MapQuery {
+    project: String,
+}
+
+/// The checkout, and which seat's zone claims each path.
+///
+/// The seats are read and the lock released *before* the walk: holding the store open
+/// across a few hundred `read_dir` calls would stall every other request on the window
+/// for as long as the disk takes.
+async fn repo_map(
+    State(state): State<AppState>,
+    Query(query): Query<MapQuery>,
+) -> Result<Json<ai_team_core::RepoMap>> {
+    let worktree = worktree_for(&state, &query.project, None)?;
+
+    let owners = {
+        let store = state.store()?;
+        let store = store.lock();
+        let project = store.find_project(&query.project)?;
+        match project.team_id {
+            // A disabled seat is not given work, so its zone does not own anything - the
+            // map has to agree with dispatch or it is describing a different program.
+            Some(team) => store
+                .agents(team)?
+                .into_iter()
+                .filter(|agent| agent.enabled)
+                .map(|agent| ai_team_core::Owner {
+                    role: agent.role,
+                    name: agent.name,
+                    zone: agent.zone,
+                })
+                .collect(),
+            None => Vec::new(),
+        }
+    };
+
+    Ok(Json(ai_team_core::repo_map(&worktree, &owners)?))
 }
 
 #[derive(Debug, Serialize)]

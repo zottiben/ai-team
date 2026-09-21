@@ -21,6 +21,7 @@ mod guardrails;
 mod house;
 mod lsp;
 mod machine;
+mod map;
 mod model;
 mod neighbours;
 mod onboard;
@@ -61,6 +62,7 @@ pub use machine::{
     ensure_machine_profile, set_context, set_fallback, set_provider, ContextSource, MachineProfile,
     ModelRegistry, ModelResolution, ProviderState, ProviderStatus, DEFAULT_MACHINE_PROFILE,
 };
+pub use map::{repo_map, MapEdge, MapNode, MapZone, Owner, RepoMap};
 pub use model::{
     Agent, CommentStatus, DiffSide, Event, EventKind, Guardrails, NewAgent, NewComment, NewEvent,
     NewProject, NewReminder, NewRepo, NodeRun, NodeStatus, OnFailure, Project, ProjectKind,

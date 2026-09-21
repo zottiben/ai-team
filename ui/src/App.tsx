@@ -189,7 +189,9 @@ export default function App() {
                 setPlace({
                   level: "project",
                   slug: entry.slug,
-                  view: lastView[entry.slug] ?? "work",
+                  // Where you left it, or the overview the first time - what the
+                  // repository is, before what you were doing to it.
+                  view: lastView[entry.slug] ?? "overview",
                 })
               }
             >
@@ -241,6 +243,10 @@ export default function App() {
           openRun={openRun}
           onOpenedRun={() => setOpenRun(null)}
           onChanged={() => setTick((value) => value + 1)}
+          onGo={(view) => {
+            setLastView((seen) => ({ ...seen, [inside.slug]: view }));
+            setPlace({ level: "project", slug: inside.slug, view });
+          }}
         />
       ) : (
         <main className="main">

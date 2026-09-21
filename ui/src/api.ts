@@ -330,6 +330,36 @@ export function cancelReminder(id: number): Promise<Reminder> {
 
 export type TreeEntry = { path: string; name: string; dir: boolean };
 
+export type MapNode = {
+  path: string;
+  name: string;
+  dir: boolean;
+  depth: number;
+  /** Files at or under this node; 1 for a file. What sizes a point on the map. */
+  weight: number;
+  /** The role of the seat whose zone claims this path, or null when nobody does. */
+  owner: string | null;
+};
+
+export type MapEdge = { from: number; to: number };
+
+export type MapZone = { role: string; name: string; zone: string; owns: number };
+
+export type RepoMap = {
+  root: string;
+  nodes: MapNode[];
+  edges: MapEdge[];
+  zones: MapZone[];
+  unowned: number;
+  files: number;
+  truncated: boolean;
+};
+
+/** The checkout, and which seat's zone claims each path (D14). */
+export function repoMap(project: string): Promise<RepoMap> {
+  return api<RepoMap>(`/map?project=${encodeURIComponent(project)}`);
+}
+
 export type FileBody = { path: string; text: string; editable: boolean };
 
 export type Hit = {

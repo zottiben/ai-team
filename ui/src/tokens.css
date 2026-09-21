@@ -36,6 +36,12 @@
   /* How quickly a surface answers. Long enough to read as motion, short enough that a
    * mouse-first UI never feels like it is waiting for the animation. */
   --motion-fast: 90ms;
+  /* How long one pulse of "this is happening" takes. Slower than a UI response on
+   * purpose: it is ambient, meant to be caught out of the corner of an eye rather than
+   * watched, and anything quicker reads as a fault rather than as activity. */
+  --motion-beat: 1.6s;
+  /* One traversal of an edge by the flow that marks a live route. */
+  --motion-flow: 1.4s;
 }
 
 /* Dark is the default: this is a tool that sits open next to a terminal all day. */
@@ -73,6 +79,20 @@
   --status-parked-default: #e8c46a;
   --status-blocked-default: #e8c46a;
   --status-cancelled-default: #6b7483;
+
+  /* Zone colours, for the map. Six, because a seventh seat is rarer than a palette that
+   * stops being distinguishable - and they are the window's own hues rather than a
+   * second palette, so the map reads as part of the app and not as a chart pasted into
+   * it. Ordered so neighbours differ. */
+  --zone-1-default: #6ea8fe;
+  --zone-2-default: #5fd08a;
+  --zone-3-default: #e8c46a;
+  --zone-4-default: #c08cf0;
+  --zone-5-default: #4fc3d9;
+  --zone-6-default: #f4909f;
+  /* What nobody claims. Deliberately colourless - an unowned path is an absence, and it
+   * must not compete with the six that mean something. */
+  --zone-none-default: #3c434e;
 
   /* Diff surfaces. Tinted rather than saturated: a whole file of added lines should read
    * as a file, not as a warning. The `line` pair is the row; the `emphasis` pair is for
@@ -121,4 +141,14 @@
   --status-parked-default: #9a6b00;
   --status-blocked-default: #9a6b00;
   --status-cancelled-default: #858e9d;
+
+  /* Darker on paper: the same hue that reads as a point of light on a dark canvas
+   * disappears against white. */
+  --zone-1-default: #2563eb;
+  --zone-2-default: #1a7f4b;
+  --zone-3-default: #9a6b00;
+  --zone-4-default: #7c3aed;
+  --zone-5-default: #0e7490;
+  --zone-6-default: #be185d;
+  --zone-none-default: #b8c0cc;
 }

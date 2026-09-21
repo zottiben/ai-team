@@ -61,6 +61,24 @@ const WIDGET = {
   open_runs: 1,
 };
 
+/** What the overview reads. Entering a project lands there, so every test that opens
+ *  one needs these whether or not it is about them. */
+const CHECKOUT = {
+  "/map": {
+    root: "widget",
+    files: 0,
+    unowned: 0,
+    truncated: false,
+    nodes: [],
+    edges: [],
+    zones: [],
+  },
+  "/roster": { project: "widget", team: "Widget team", seats: [], available: [] },
+  "/crew": [],
+  "/analytics": [],
+  "/board": { plan: null, slices: [], next_step: null },
+};
+
 /** A machine that is set up, with one project and one run in it. */
 function working(over: Record<string, unknown> = {}) {
   stubApi({
@@ -68,6 +86,7 @@ function working(over: Record<string, unknown> = {}) {
     "/doctor": READY,
     "/projects": [WIDGET],
     "/today": [],
+    ...CHECKOUT,
     "/runs": [
       {
         id: 7,
@@ -155,12 +174,24 @@ it("selecting a project enters it, and leaves the global views alone", async () 
   expect(await screen.findByLabelText("Everything")).toBeDefined();
 });
 
-it("entering a project starts on Work, which is the thing you came to do", async () => {
+it("entering a project starts on the overview, which says what the repository is", async () => {
+  // What the checkout is comes before what you were last doing to it: the landing view
+  // answers "whose is this, and how much of it can the team be given".
   const user = userEvent.setup();
   working();
   render(<App />);
 
   await user.click(await screen.findByText("Widget"));
+  expect(await screen.findByText(/every path, and the seat whose zone claims it/i)).toBeDefined();
+});
+
+it("Work is one click away, and still lists the runs", async () => {
+  const user = userEvent.setup();
+  working();
+  render(<App />);
+
+  await user.click(await screen.findByText("Widget"));
+  await user.click(within(screen.getByLabelText("Widget")).getByText("Work"));
   expect(await screen.findByText("add subtract")).toBeDefined();
 });
 
@@ -259,6 +290,9 @@ it("re-reads when the server says something changed", async () => {
   working();
   render(<App />);
   await user.click(await screen.findByText("Widget"));
+  // On Work, because the run list is what this is about - the overview is the landing
+  // view but it is not where runs are read.
+  await user.click(within(screen.getByLabelText("Widget")).getByText("Work"));
   await screen.findByText("add subtract");
 
   // A run started from the CLI, in another process entirely.

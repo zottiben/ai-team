@@ -78,6 +78,7 @@ function area(view: Parameters<typeof Workspace>[0]["view"] = "work", openRun: n
       openRun={openRun}
       onOpenedRun={() => {}}
       onChanged={() => {}}
+      onGo={() => {}}
     />,
   );
 }

@@ -2,6 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react"
 
 import { Board } from "./Board";
 import { Crew } from "./Crew";
+import { Overview } from "./Overview";
 import { Prompt, Seats } from "./Console";
 import { Review } from "./Review";
 import { Roster } from "./Roster";
@@ -26,6 +27,7 @@ const TerminalPane = lazy(async () => ({
 
 /** The views that belong to one project (D18). */
 const VIEWS = {
+  overview: "Overview",
   work: "Work",
   board: "Board",
   review: "Review",
@@ -62,6 +64,7 @@ export function Workspace({
   openRun,
   onOpenedRun,
   onChanged,
+  onGo,
 }: {
   project: Project;
   view: WorkspaceView;
@@ -70,6 +73,8 @@ export function Workspace({
   openRun: number | null;
   onOpenedRun: () => void;
   onChanged: () => void;
+  /** Move to another view of this project - what the overview's panels link to. */
+  onGo: (view: WorkspaceView) => void;
 }) {
   const [runs, setRuns] = useState<Run[]>([]);
   const [selected, setSelected] = useState<number | null>(null);
@@ -142,6 +147,8 @@ export function Workspace({
   return (
     <>
       <main className="main">
+        {view === "overview" && <Overview project={project} tick={tick} onGo={onGo} />}
+
         {view === "work" && (
           <>
             <div className="main__header">
