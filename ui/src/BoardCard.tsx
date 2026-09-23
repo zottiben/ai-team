@@ -53,7 +53,11 @@ export function BoardCard({
 
           <Chip
             className={slice.owner === null ? "owner unowned" : "owner"}
-            label={slice.owner ?? "unowned"}
+            label={
+              (slice.crew ?? []).length > 1
+                ? (slice.crew ?? []).join(" + ")
+                : (slice.owner ?? "unowned")
+            }
             title={
               slice.touches.length > 0
                 ? slice.touches.join(", ")

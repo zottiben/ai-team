@@ -77,6 +77,20 @@ export type Run = {
   ended_at: string | null;
 };
 
+/** Who builds a slice, in a phrase: `backend`, or `backend, then frontend` for a crew. */
+export function crewLabel(slice: { owner: string | null; crew?: string[] }): string | null {
+  const crew = slice.crew ?? (slice.owner === null ? [] : [slice.owner]);
+  if (crew.length === 0) return null;
+  if (crew.length === 1) return crew[0] ?? null;
+  return `${crew.slice(0, -1).join(", ")}, then ${crew[crew.length - 1]}`;
+}
+
+/** What a seat is on: `PR1 T2`, or `PR1` for a pull request built as one piece of work. */
+export function workLabel(slice: string | null, task?: string | null): string | null {
+  if (slice === null) return null;
+  return task ? `${slice} ${task}` : slice;
+}
+
 export type NodeRun = {
   id: number;
   role: string;
@@ -85,6 +99,8 @@ export type NodeRun = {
   status: string;
   attempt: number;
   slice_key: string | null;
+  /** Which task of the PR this turn built, when the PR is built as tasks. */
+  task_key?: string | null;
   worktree_path: string | null;
   branch: string | null;
   blocked_reason: string | null;
@@ -235,6 +251,8 @@ export type BoardSlice = {
   updated_at: string | null;
   /** ai-team's addition: the seat whose zone owns the declared paths. */
   owner: string | null;
+  /** Every seat that builds it, in the order each first builds: its tasks' owners. */
+  crew?: string[];
   touches: string[];
   /** True only for ai-team's exact plan-approval hold, not an ordinary blocker. */
   approval_held?: boolean;
@@ -1002,6 +1020,8 @@ export type Member = {
   node_run_id: number | null;
   run_id: number | null;
   slice_key: string | null;
+  /** Which task of that PR it is on, when the PR is built as tasks. */
+  task_key?: string | null;
   branch: string | null;
   pushed_at?: string | null;
   pr_url?: string | null;

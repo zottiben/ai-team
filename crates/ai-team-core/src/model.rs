@@ -509,6 +509,9 @@ pub struct NodeRun {
     pub status: NodeStatus,
     pub attempt: i64,
     pub slice_key: Option<String>,
+    /// Which task of the slice this turn built (PW4), as the planner numbered it. `None`
+    /// for a slice built as one piece of work, and for seats that do not build.
+    pub task_key: Option<String>,
     pub worktree_path: Option<String>,
     pub branch: Option<String>,
     pub lease_id: Option<String>,

@@ -49,9 +49,9 @@ pub const DEFAULT_ROSTER: &[RolePreset] = &[
     RolePreset {
         role: "planner",
         name: "Planner",
-        purpose: "Turns the orchestrator's grounded brief into ai-planner slices small enough to \
-                  demo, each with owned paths and acceptance evidence. Owns the shape of the work, \
-                  not the code or dispatch.",
+        purpose: "Turns the orchestrator's grounded brief into an ai-planner plan: one user story \
+                  per pull request, with acceptance criteria, a demo, and tasks each owned by a \
+                  seat. Owns the shape of the work, not the code or dispatch.",
         zone: "",
         reasoning: Reasoning::High,
         read_only: true,

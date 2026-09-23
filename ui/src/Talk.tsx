@@ -1,6 +1,6 @@
 import { useState } from "react";
 
-import { sayTo, type Member } from "./api";
+import { sayTo, workLabel, type Member } from "./api";
 
 /**
  * Saying something to one seat.
@@ -83,7 +83,9 @@ export function Talk({ member, workspace, onClose, onSent }: {
         <span className="faint mono">
           {member.provider}/{member.model}
         </span>
-        {member.slice_key !== null && <span className="faint">on {member.slice_key}</span>}
+        {member.slice_key !== null && (
+          <span className="faint">on {workLabel(member.slice_key, member.task_key)}</span>
+        )}
       </div>
 
       {/* Said before, not after. These are different acts. */}

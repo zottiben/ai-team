@@ -7,6 +7,7 @@ import {
   editBoardSlice,
   noteBoardSlice,
   releaseBoardSlice,
+  crewLabel,
   type BoardSlice,
   type BoardSliceDetail,
   type BoardStatus,
@@ -183,7 +184,13 @@ export function BoardDrawer({
           )}
 
           <div className={`board-callout${current.owner === null ? " unowned" : ""}`}>
-            <b>{current.owner === null ? "No seat owns this slice" : `Owned by ${current.owner}`}</b>
+            <b>
+              {crewLabel(current) === null
+                ? "No seat owns this slice"
+                : (current.crew ?? []).length > 1
+                  ? `Built by ${crewLabel(current)}`
+                  : `Owned by ${crewLabel(current)}`}
+            </b>
             <span>{current.touches.length > 0 ? current.touches.join(", ") : "No paths declared"}</span>
           </div>
 

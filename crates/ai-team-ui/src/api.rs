@@ -2236,8 +2236,11 @@ struct BoardSlice {
     slice: ai_team_core::Slice,
     /// The seat whose zone owns the paths this slice touches, if any owns them. `None`
     /// is a real answer - a slice nobody owns is reported rather than guessed at, which
-    /// is the same rule dispatch follows.
+    /// is the same rule dispatch follows. For a PR built as tasks, its first task's owner.
     owner: Option<String>,
+    /// Every seat that builds it, in the order each first builds (PW4): its tasks'
+    /// owners, or the zone owner of a slice built whole. Empty when nobody can.
+    crew: Vec<String>,
     /// The paths it declared, so a card can say why it routed where it did.
     touches: Vec<String>,
     /// Blocked only for explicit ai-team plan approval, never a substantive failure.
@@ -2421,15 +2424,34 @@ fn decorate_slice(
     delivery: Option<SliceDelivery>,
 ) -> Result<BoardSlice> {
     let touches = slice.touches();
-    let owner = touches
-        .iter()
-        .find_map(|path| store.agent_for_path(team_id, path).transpose())
-        .transpose()?
-        .map(|agent| agent.role);
+    let listed = slice.tasks();
+    // Read the way dispatch reads it: task lines name their owners, and a slice with none
+    // is one piece of work for the seat whose zone owns its paths.
+    let crew: Vec<String> = if !listed.problems.is_empty() {
+        Vec::new()
+    } else if listed.tasks.is_empty() {
+        touches
+            .iter()
+            .find_map(|path| store.agent_for_path(team_id, path).transpose())
+            .transpose()?
+            .map(|agent| agent.role)
+            .into_iter()
+            .collect()
+    } else {
+        let mut roles: Vec<String> = Vec::new();
+        for task in listed.tasks {
+            if !roles.contains(&task.owner) {
+                roles.push(task.owner);
+            }
+        }
+        roles
+    };
+    let owner = crew.first().cloned();
     let approval_held = slice.is_approval_held();
     Ok(BoardSlice {
         slice,
         owner,
+        crew,
         touches,
         approval_held,
         delivery,

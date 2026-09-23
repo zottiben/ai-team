@@ -118,7 +118,11 @@ most of what D20 bought. Four things cost a build each to learn:
   without checking the role lets a prompt containing `VERDICT: pass` verify itself.
 
 Sessions resume by id, which is how a repair attempt keeps the conversation that produced
-the work it is repairing.
+the work it is repairing. Within a PR a seat's session moves to each new row it opens
+(`Store::continue_session`), **with its stream cursor**: events are keyed
+`<session>:<index>`, and a row that restarted the index at 0 would collide with the rows
+before it and have its events silently ignored. Replies waiting on the old row move too.
+Not across providers - another account's model starts fresh, so every prompt stands alone.
 
 ### 3. The database is the team (D2)
 A seat is rows, resolved into flags at dispatch. `~/.ai-team/seats/<project>/` holds only
@@ -150,10 +154,10 @@ nobody. `pi/assets/guard.ts` is loaded with `--extension` and refuses, through
 `pi.on("tool_call")`, anything that resolves outside `$AI_TEAM_WORKTREE` or that
 publishes - `git push`, `npm`/`cargo publish`, `gh pr merge`, releases, tags.
 
-**One Pi process per leased worktree (D10),** with `cwd` on the lease and the root named
-explicitly in the environment: a rule keyed on the working directory is a rule a `cd`
-changes. The guard is installed *outside* the lease, because a guard a node can edit is
-not a guard.
+**One Pi process at a time per leased worktree (D10),** with `cwd` on the lease and the
+root named explicitly in the environment: a rule keyed on the working directory is a rule
+a `cd` changes. The guard is installed *outside* the lease, because a guard a node can
+edit is not a guard.
 
 It is not a security boundary and the file says so. A model with `bash` can spell
 anything. What contains a node is that the worktree is disposable, the branch is a draft,
@@ -199,9 +203,10 @@ four minutes.
 
 ### 7. The orchestrator plans; Rust leases and dispatches (D14)
 `ait run` without `--worktree` runs the orchestrator seat to write an ai-planner plan,
-then **Rust** reads the ready slices back, leases a worktree each with `awt`, and starts
-one Pi process per lease. An agent shelling out to `awt` and spawning sibling agents
-would be the supervisor's job done with no budget or failure isolation around it.
+then **Rust** reads the ready slices back, leases a worktree for each PR with `awt`, and
+hands it to its crew - one Pi process per task turn, one turn at a time in each lease. An
+agent shelling out to `awt` and spawning sibling agents would be the supervisor's job done
+with no budget or failure isolation around it.
 
 ai-planner has **no dependency edges** — only `ord`, `status`, and a claim scoped to a
 worktree. So dispatch means *ready, claimed, and the owning seat is idle*; a dependent
@@ -223,10 +228,19 @@ base) before the planner's turn, and every seat's `aip serve` runs with
 `AI_PLANNER_PLAN=<the run's plan>`. The orchestrator's grounding turn gets no planning
 tools at all: there is no plan yet, and nothing to infer.
 
-Routing is by **zone**. A slice must name the paths it touches (`plan_add_slice` requires
-it, and writes them as a `Touches:` trailer on the scope); the seat whose zone owns them
-builds it. A slice nobody owns is reported undone rather than given to somebody — guessing
-is how two agents end up in one file.
+**A slice is one PR, built as its tasks (PW4).** The planner writes them into the scope,
+one line each - `- T1 [backend] Title - Touches: paths` - and `tasks.rs` reads them back;
+ai-planner has no level below a slice and is not to be changed for one, so the scope is
+where they live and nothing copies them. The **owner is the authority** (PW5): an owner the
+team cannot use (absent, switched off, read-only) leaves the PR unbuilt and says why, and a
+path outside its zone is only noted - never silently rerouted. A slice with no task lines
+is one piece of work for the seat whose **zone** owns its `Touches:` trailer, and one
+nobody owns is reported undone - guessing is how two agents end up in one file.
+
+**One writer at a time per checkout** (PW6). A PR's tasks run in order in its lease, each
+committed as it finishes (`PR1 T2: title`), so the next starts from a known state. They
+share one index, lockfiles and gates; parallelism comes from sibling PRs, never from seats
+sharing a checkout. A seat is dispatched once per wave, and a PR holds its whole crew.
 
 **A leased worktree is borrowed.** `awt return` cleans and resets it, so a node's work is
 committed to an `ai-team/<slice>` branch *before* the lease goes back. The worktrees are
@@ -242,6 +256,15 @@ ran. No manifest means *no gates*, which is reported, not treated as a pass.
 The verifier is asked the three things a green test run does not answer - **existence,
 substantive, wired** - and answers `VERDICT: pass|reject`. Reading it **fails closed**:
 anything that is not an explicit pass is a rejection.
+
+**A PR is checked once it is whole** (PW7), against the commit it was built on - every task
+is committed, so `git diff HEAD` would show nothing. Halfway through, the gates can fail
+only because the next task has not been built. A rejection goes to the seat that can fix
+it: a failing gate names its manifest and the zone owning `ui/package.json` gets it; a
+verifier names one with `OWNER: <role>`; otherwise the last task's owner. It is recorded
+on **that seat's** row, because that is the attempt that was rejected. Acceptance is a fact
+about the PR, so every row stays `running` until the verdict and then takes it - a `done`
+row is what analytics counts as accepted.
 
 Two rules the loop broke once each. A model's answer is captured from the **stream**
 (`PiEvent::assistant_message`), never by filtering `Note` rows back out of the event
@@ -263,7 +286,9 @@ why it failed.
 
 **The gates run inside the lease and leave build output there.** ai-team writes `target/`,
 `node_modules/`, `dist/` and `.output/` into `.git/info/exclude` for that lease,
-and commits only the paths captured *before* the gates ran. Two traps: `git status
+and commits only what each turn changed: `git::snapshot` hashes every dirty path before a
+turn and `changed_since` keeps the ones that differ after, so gate output nothing ignores
+is never a seat's work. Two traps: `git status
 --porcelain` writes `XY path`, so trimming the front eats an unstaged file's leading space
 and every path starts a character late; and the gates are repo-wide, so a violation
 anywhere rejects a node whose zone does not contain it.
@@ -326,8 +351,8 @@ channel a local, GLM or ChatGPT seat has, and the only one that carries `AGENTS.
 Claude convention.
 
 Nested files are found too, because a repository puts its rules next to the code they
-govern. They are **selected by what the slice touches** — `ui/AGENTS.md` for a slice
-touching `ui/src/App.tsx` — matching a glob on its literal prefix, since `plan_add_slice`
+govern. They are **selected by what the task touches** — `ui/AGENTS.md` for a task
+touching `ui/src/App.tsx` — matching a glob on its literal prefix, since a task line
 writes `Touches: crates/**`. Sending every AGENTS.md in a monorepo is not context, it is
 noise that crowds out the slice. Deepest-first under the 16k budget so the most specific
 survives a cut; shallowest-first in the prompt so it reads as qualifying what came above.

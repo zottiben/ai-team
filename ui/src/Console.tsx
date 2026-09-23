@@ -1,6 +1,6 @@
 import { useState } from "react";
 
-import { startRun, type NodeRun, type Worktree } from "./api";
+import { startRun, workLabel, type NodeRun, type Worktree } from "./api";
 
 /**
  * The prompt that starts a workflow, and the run beside it.
@@ -141,7 +141,7 @@ export function Seats({ nodes }: { nodes: NodeRun[] }) {
             </span>
             {node.attempt > 1 && <span className="faint mono">try {node.attempt}</span>}
           </div>
-          <span className="faint mono">{node.slice_key ?? "—"}</span>
+          <span className="faint mono">{workLabel(node.slice_key, node.task_key) ?? "—"}</span>
           <span className="faint mono">
             {node.provider}/{node.model}
           </span>

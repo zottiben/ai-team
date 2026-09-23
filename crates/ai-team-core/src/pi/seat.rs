@@ -406,10 +406,16 @@ impl Seat<'_> {
                 .map(str::to_string),
             );
         }
+        // Read here and handed over rather than left for the model to open (PW13): a planner
+        // that skips its method writes a plan the dispatcher cannot route.
+        let guide = (self.agent.role == "planner")
+            .then(|| crate::skills::find(self.worktree, crate::skills::PLANNING_SKILL))
+            .flatten();
         turn.instructions = Some(super::instructions::for_seat(
             self.agent,
             self.team,
             self.roster,
+            guide.as_ref().map(|skill| skill.body.as_str()),
         ));
         Ok(turn)
     }

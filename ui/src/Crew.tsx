@@ -6,6 +6,7 @@ import {
   crew as fetchCrew,
   deliverNode,
   startRun,
+  workLabel,
   type Board,
   type BoardSlice,
   type Doing,
@@ -239,7 +240,7 @@ export function Crew({
               {member.slice_key !== null && (
                 <div className="card__row">
                   <span className="faint">on</span>
-                  <span className="mono">{member.slice_key}</span>
+                  <span className="mono">{workLabel(member.slice_key, member.task_key)}</span>
                   {/* An attempt above the first is worth seeing: it means this has been
                       rejected and retried, which reads very differently from progress. */}
                   {member.attempt > 1 && (

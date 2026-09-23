@@ -133,6 +133,13 @@ it("the org graph says who is working and on what", async () => {
   expect(screen.getByText(/try 2/)).toBeDefined();
 });
 
+it("names the task a seat built, not only its pull request", () => {
+  render(<Seats nodes={[{ ...NODE, slice_key: "PR1", task_key: "T2" }, NODE]} />);
+  expect(screen.getByText("PR1 T2")).toBeTruthy();
+  // A pull request built as one piece of work reads as it always did.
+  expect(screen.getByText("S1")).toBeTruthy();
+});
+
 it("says plainly when nothing has been dispatched", () => {
   render(<Seats nodes={[]} />);
   expect(screen.getByText(/No seat has been dispatched/)).toBeDefined();

@@ -209,6 +209,22 @@ impl Store {
         self.take_pending_where(agent_id, None)
     }
 
+    /// Move a seat's undelivered replies from one of its rows to the row its conversation
+    /// continues on.
+    ///
+    /// A reply belongs to the conversation, and within a PR a seat's conversation moves to
+    /// each new row it opens. Left behind, a reply would wait on a row nothing will ever
+    /// resume - and resuming it would reuse a stream cursor its session has moved past.
+    pub fn retarget_pending(&mut self, agent_id: i64, from: i64, to: i64) -> Result<usize> {
+        self.db_mut().write(|tx| {
+            Ok(tx.execute(
+                "UPDATE pending_message SET node_run_id = ?3
+                  WHERE agent_id = ?1 AND node_run_id = ?2 AND delivered_at IS NULL",
+                rusqlite::params![agent_id, from, to],
+            )?)
+        })
+    }
+
     /// Take replies for this node only, plus legacy rows that predate node scoping.
     pub fn take_pending_for(&mut self, agent_id: i64, node_run_id: i64) -> Result<Vec<String>> {
         self.take_pending_where(agent_id, Some(node_run_id))
