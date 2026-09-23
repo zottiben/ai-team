@@ -146,7 +146,16 @@ fn node_item(node: &crate::model::NodeRun, slug: &str, run_id: i64) -> Option<It
         NodeStatus::Running => Some(Item {
             urgency: Urgency::InFlight,
             kind: "node".into(),
-            title: format!("{} is building{}", node.role, on(" ")),
+            title: format!(
+                "{} is {}{}",
+                node.role,
+                if node.role == crate::VERIFIER_ROLE {
+                    "checking"
+                } else {
+                    "building"
+                },
+                on(" ")
+            ),
             detail: None,
             project: Some(slug.to_string()),
             run_id: Some(run_id),
@@ -192,13 +201,29 @@ pub fn from_store(store: &Store) -> Result<Vec<Item>> {
                         .is_some_and(|newest| *newest > failed.id)
                 })
             };
-            for node in store.node_runs(run.id)? {
+            let nodes = store.node_runs(run.id)?;
+            // A PR's rows stay running until its verdict, so the turns that built it are
+            // still open while it is checked. Its one seat actually at work is its newest
+            // running row; the others are waiting on the answer.
+            let waiting = |node: &crate::model::NodeRun| {
+                node.status == NodeStatus::Running
+                    && node.slice_key.is_some()
+                    && nodes.iter().any(|later| {
+                        later.id > node.id
+                            && later.status == NodeStatus::Running
+                            && later.slice_key == node.slice_key
+                    })
+            };
+            for node in &nodes {
                 if matches!(node.status, NodeStatus::Failed | NodeStatus::Blocked)
-                    && superseded(&node)
+                    && superseded(node)
                 {
                     continue;
                 }
-                if let Some(item) = node_item(&node, &slug, run.id) {
+                if waiting(node) {
+                    continue;
+                }
+                if let Some(item) = node_item(node, &slug, run.id) {
                     items.push(item);
                 }
             }
@@ -398,6 +423,57 @@ mod tests {
             .map(|item| item.title)
             .collect();
         assert_eq!(failed, ["backend failed on PR4", "backend failed on PR2"]);
+    }
+
+    #[test]
+    fn a_pr_in_flight_is_one_item_naming_the_seat_taking_its_turn() {
+        // A PR's rows stay running until its verdict, so while the verifier checks it the
+        // turns that built it are open too. That is one PR being checked, not three seats
+        // at work.
+        let mut store = Store::memory().unwrap();
+        let project = store
+            .create_project(crate::NewProject {
+                name: "Widget".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        let team = store.seed_default_team(project.id).unwrap();
+        let seat = |store: &Store, role: &str| {
+            store
+                .agents(team.id)
+                .unwrap()
+                .into_iter()
+                .find(|agent| agent.role == role)
+                .unwrap()
+                .id
+        };
+        let registry = crate::machine::ModelRegistry::local_only();
+        let run = store
+            .create_run(project.id, "build", crate::RunTrigger::Manual)
+            .unwrap();
+        let backend = seat(&store, "backend");
+        let running = |store: &mut Store, agent: i64, slice: &str, task: Option<&str>| {
+            let node = store
+                .dispatch_task(run.id, agent, slice, task, &registry)
+                .unwrap();
+            store.set_node_status(node.id, NodeStatus::Running).unwrap();
+        };
+        let (verifier, frontend) = (seat(&store, "verifier"), seat(&store, "frontend"));
+        running(&mut store, backend, "PR1", Some("T1"));
+        running(&mut store, backend, "PR1", Some("T2"));
+        running(&mut store, verifier, "PR1", None);
+        running(&mut store, frontend, "PR2", Some("T1"));
+
+        let flying: Vec<String> = from_store(&store)
+            .unwrap()
+            .into_iter()
+            .filter(|item| item.urgency == Urgency::InFlight)
+            .map(|item| item.title)
+            .collect();
+        assert_eq!(
+            flying,
+            ["verifier is checking PR1", "frontend is building PR2"]
+        );
     }
 
     #[test]
