@@ -211,9 +211,13 @@ with no budget or failure isolation around it.
 
 The only dependency ai-planner records is a **stack**: a slice's `base_branch` naming
 another slice's `branch` (PW9). Its MCP server cannot set one, so a planner seat writes
-`Stacks on: PR1` in the scope and `stack.rs` writes the base through the CLI, naming every
-slice's branch `<plan>/<key>` on the way - `ai-team/pr1` was shared by every plan, and a
-run would reset another plan's branch. A child builds once its parent is **built**
+`Stacks on: PR1` in the scope and `stack.rs` writes the base through the CLI. **Every PR's
+branch lives under its plan's slug**: right after planning, before anything is built, a
+planner's own name `pr1-x` becomes `<plan>/pr1-x` (`stack::Names::Own`); later, names stand,
+because work may be on them. A bare name is shared across plans, and since a branch with
+commits is *continued*, a re-planned feature would silently build on the old plan's work.
+A new plan's slug is never an existing branch, or git could not make `<slug>/...`. A child
+builds once its parent is **built**
 (`in_review`/`done`), not merged; the board is read again after every wave so it is
 picked up in the same run. Never add a deps table here: that is plan structure, and
 copying it is what D4 forbids.

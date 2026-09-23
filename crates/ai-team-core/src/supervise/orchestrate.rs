@@ -345,9 +345,9 @@ impl Orchestrator {
             .for_plan(plan.clone())
             .current()
             .await?;
-        // Its stack made explicit before anybody approves it: every PR's branch, and the
-        // base a `Stacks on:` line asks for.
-        crate::workspace::settle_stack(&self.planner, &plan).await?;
+        // Its stack made explicit before anybody approves it: every PR's branch, under
+        // the plan's name, and the base a `Stacks on:` line asks for.
+        crate::workspace::settle_stack(&self.planner, &plan, crate::stack::Names::Own).await?;
         Ok(planner_outcome)
     }
 
@@ -498,7 +498,7 @@ impl Orchestrator {
         F: FnMut(&str) + Send,
     {
         if let Some(plan) = self.planner.plan_slug() {
-            crate::workspace::settle_stack(&self.planner, plan).await?;
+            crate::workspace::settle_stack(&self.planner, plan, crate::stack::Names::Keep).await?;
         }
         let mut out = Orchestration::default();
         let mut attempted: Vec<String> = Vec::new();

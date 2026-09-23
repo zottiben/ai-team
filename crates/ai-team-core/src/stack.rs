@@ -46,13 +46,33 @@ pub(crate) fn declared_parent(slice: &Slice) -> Option<String> {
         .filter(|key| !key.is_empty() && !key.eq_ignore_ascii_case("none"))
 }
 
-fn branch_of(plan: &str, slice: &Slice) -> String {
-    slice
+/// Whose branch names stand when a plan's stack is settled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Names {
+    /// A plan just written: nothing is built yet, so every branch is put under the plan's
+    /// name - `<plan>/<the planner's name>`, or `<plan>/<key>` when it gave none. Plan slugs
+    /// are unique, so no two plans' PRs can then share a branch.
+    Own,
+    /// A plan already in play: a branch it has is kept, because work may be on it. Only a
+    /// missing one is filled in.
+    Keep,
+}
+
+/// The branch `slice` should have, and whether that differs from what it has.
+fn settled_branch(plan: &str, slice: &Slice, names: Names) -> (String, bool) {
+    let current = slice
         .branch
         .as_deref()
         .map(str::trim)
-        .filter(|branch| !branch.is_empty())
-        .map_or_else(|| default_branch(plan, &slice.key), str::to_string)
+        .filter(|branch| !branch.is_empty());
+    let prefix = format!("{plan}/");
+    match (current, names) {
+        (None, _) => (default_branch(plan, &slice.key), true),
+        (Some(branch), Names::Own) if !branch.starts_with(&prefix) => {
+            (format!("{prefix}{branch}"), true)
+        }
+        (Some(branch), _) => (branch.to_string(), false),
+    }
 }
 
 /// What to write to the plan so every slice has a branch and every declared stack a base.
@@ -60,17 +80,14 @@ fn branch_of(plan: &str, slice: &Slice) -> String {
 /// Idempotent: a plan already explicit needs nothing, so this is safe to ask before every
 /// build. A `Stacks on:` naming a slice the plan does not have changes nothing - that is
 /// a problem to report, not a base to guess.
-pub(crate) fn edits(plan: &str, slices: &[Slice]) -> Vec<Edit> {
+pub(crate) fn edits(plan: &str, slices: &[Slice], names: Names) -> Vec<Edit> {
     let mut edits = Vec::new();
     for slice in slices {
-        if slice
-            .branch
-            .as_deref()
-            .is_none_or(|branch| branch.trim().is_empty())
-        {
+        let (branch, changed) = settled_branch(plan, slice, names);
+        if changed {
             edits.push(Edit::Branch {
                 key: slice.key.clone(),
-                branch: default_branch(plan, &slice.key),
+                branch,
             });
         }
         let Some(parent) = declared_parent(slice) else {
@@ -82,7 +99,7 @@ pub(crate) fn edits(plan: &str, slices: &[Slice]) -> Vec<Edit> {
         else {
             continue;
         };
-        let base = branch_of(plan, parent);
+        let (base, _) = settled_branch(plan, parent, names);
         if slice.base_branch.as_deref().map(str::trim) != Some(base.as_str()) {
             edits.push(Edit::Base {
                 key: slice.key.clone(),
@@ -197,7 +214,7 @@ mod tests {
         ];
 
         assert_eq!(
-            edits("csv-export", &slices),
+            edits("csv-export", &slices, Names::Keep),
             [
                 Edit::Branch {
                     key: "PR1".into(),
@@ -216,12 +233,58 @@ mod tests {
     }
 
     #[test]
+    fn a_plan_just_written_has_every_branch_put_under_its_name() {
+        // A planner names branches as it likes. Left bare, `pr1-shout-option` from one plan
+        // is the branch a later plan's PR1 continues - someone else's commits built on as
+        // if they were its own. Nothing is built yet, so the names are ai-team's to set.
+        let slices = [
+            slice("PR1", "", Some("pr1-shout-option"), Some("main")),
+            slice(
+                "PR2",
+                "Stacks on: PR1",
+                Some("pr2-web-command"),
+                Some("main"),
+            ),
+            slice("PR3", "", Some("shout/pr3-docs"), Some("main")),
+            slice("PR4", "", None, Some("main")),
+        ];
+
+        assert_eq!(
+            edits("shout", &slices, Names::Own),
+            [
+                Edit::Branch {
+                    key: "PR1".into(),
+                    branch: "shout/pr1-shout-option".into()
+                },
+                Edit::Branch {
+                    key: "PR2".into(),
+                    branch: "shout/pr2-web-command".into()
+                },
+                // Stacked on PR1 as PR1 is now called.
+                Edit::Base {
+                    key: "PR2".into(),
+                    base: "shout/pr1-shout-option".into()
+                },
+                // Already the plan's.
+                Edit::Branch {
+                    key: "PR4".into(),
+                    branch: "shout/pr4".into()
+                },
+            ]
+        );
+
+        // Once work may be on them, a plan's names stand, whatever they are.
+        let named = [slice("PR1", "", Some("pr1-shout-option"), Some("main"))];
+        assert!(edits("shout", &named, Names::Keep).is_empty());
+    }
+
+    #[test]
     fn a_plan_already_explicit_needs_nothing() {
         let slices = [
             slice("PR1", "", Some("p/pr1"), Some("main")),
             slice("PR2", "Stacks on: `PR1`", Some("p/pr2"), Some("p/pr1")),
         ];
-        assert!(edits("p", &slices).is_empty());
+        assert!(edits("p", &slices, Names::Keep).is_empty());
     }
 
     #[test]

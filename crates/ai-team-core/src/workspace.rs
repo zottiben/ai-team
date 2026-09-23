@@ -160,10 +160,17 @@ pub(crate) fn refuse_default_branch(branch: &str, trunk: &str, allowed: bool) ->
 /// Written through ai-planner's CLI, because its MCP server can set neither - which is
 /// why a planner seat says it in the scope instead. Idempotent, so it is asked before
 /// every build as well as after planning: a plan somebody wrote by hand gets the same.
-pub(crate) async fn settle_stack(planner: &Planner, slug: &str) -> Result<()> {
+/// `names` says whether the plan's branch names are ai-team's to set (see [`Names`]).
+///
+/// [`Names`]: crate::stack::Names
+pub(crate) async fn settle_stack(
+    planner: &Planner,
+    slug: &str,
+    names: crate::stack::Names,
+) -> Result<()> {
     let planner = planner.clone().for_plan(slug);
     let slices = planner.slices().await?;
-    for edit in crate::stack::edits(slug, &slices) {
+    for edit in crate::stack::edits(slug, &slices, names) {
         match edit {
             crate::stack::Edit::Branch { key, branch } => {
                 planner.set_branch(&key, &branch).await?;
