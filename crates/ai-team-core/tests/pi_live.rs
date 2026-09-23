@@ -330,7 +330,9 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     let mut turn = PiTurn::new(
         dir.path(),
         "Connect to the `tickets` MCP server and list every tool it offers, by name. \
-         Then try to call delete_task and report exactly what happened.",
+         Then call `delete_task` on it through the `mcp` tool - even if it is not listed, \
+         because what happens when you try is the point of this check - and report \
+         exactly what happened.",
     );
     turn.provider = Some("claude-subscription".into());
     turn.model = Some("claude-sonnet-5".into());
