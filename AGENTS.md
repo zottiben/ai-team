@@ -346,6 +346,16 @@ streaming rows would mean the server knowing what every surface renders.
 `EventSource` cannot set a header, so the stream takes its token from the **query**. That
 makes it the one route where an auth hole would go unnoticed, and it has its own test.
 
+**What a checkout owns is one rule, in the store** (`WorkspaceScope`, PW1). A checkout a
+run started in owns that run and every row of it, wherever its PRs were built. A PR's
+worktree starts nothing: it owns the rows that built or checked the PR it holds there -
+makers' turns and the verifier's, which is why a verifier row names its PR. Run lists, run
+detail and events, reply, resume, deliver, reset, the crew and analytics all ask it; an
+endpoint comparing `run.workspace_path` itself will list what it then refuses to open. The
+rule compares paths in SQL, so every checkout path a run or node row holds is **stored
+resolved** - `/var` and `/private/var` are different strings (D12). The sidebar's nesting is
+derived too (`layout.rs`, from the building rows and the plan's bases), never stored.
+
 Every surface resolves a semantic token (`--{category}-{role}-{state}`); the palette lives
 only in `ui/src/tokens.css`. A raw colour in a component is a component that stays dark
 when the window goes light — enforced by a test, because there is no browser on the

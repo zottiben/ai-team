@@ -4,7 +4,7 @@ import { AgentActivity } from "./AgentActivity";
 import { activityOf, isBusy, type Activity } from "./activity";
 import { RepoGraph, zoneColour } from "./Map";
 import { PageLayout } from "./PageLayout";
-import { OrganizationGraph } from "./TeamGraph";
+import { OrganizationGraph, pullRequestCrew } from "./TeamGraph";
 import { workspaceTitle } from "./tree";
 import {
   analytics as fetchAnalytics,
@@ -251,7 +251,14 @@ export function Overview({
             id: "activity",
             label: "Agent activity",
             span: 2,
-            content: <AgentActivity runs={runs} workspace={workspace.path} tick={tick} />,
+            content: (
+              <AgentActivity
+                runs={runs}
+                workspace={workspace.path}
+                leaf={workspace.kind === "pr"}
+                tick={tick}
+              />
+            ),
           },
           {
             id: "map",
@@ -324,7 +331,19 @@ export function Overview({
           </button>
         </div>
 
-        <OrganizationGraph members={crew} workspace={workspace.path} onChanged={load} />
+        <OrganizationGraph
+          members={
+            workspace.kind === "pr"
+              ? pullRequestCrew(
+                  crew,
+                  board.slices.find((slice) => slice.key === workspace.slice_key),
+                )
+              : crew
+          }
+          workspace={workspace.path}
+          coordinates={workspace.kind !== "pr"}
+          onChanged={load}
+        />
               </section>
             ),
           },

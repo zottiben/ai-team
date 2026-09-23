@@ -12,7 +12,7 @@ import {
   type Doing,
   type Member,
 } from "./api";
-import { WorkGraph } from "./TeamGraph";
+import { pullRequestCrew, WorkGraph } from "./TeamGraph";
 
 /** What each state means, said once, and which colour it borrows. */
 const DOING: Record<Doing, { label: string; status: string; why: string }> = {
@@ -61,12 +61,15 @@ export function Crew({
   onOpenRun,
   onTalk,
   showGraph = false,
-  leaf = false,
+  pullRequest,
 }: {
   project: string;
   workspace?: string | null;
-  /** A pull request's worktree: its crew builds it, and nothing here starts a run. */
-  leaf?: boolean;
+  /**
+   * Set when the workspace is a pull request's worktree: that PR's key. Its crew builds it,
+   * and nothing here starts a run.
+   */
+  pullRequest?: string;
   tick: number;
   onOpenRun: (id: number) => void;
   onTalk?: (member: Member) => void;
@@ -190,8 +193,15 @@ export function Crew({
     return <p className="empty">This project has no team yet.</p>;
   }
 
-  const busy = crew.filter((member) => member.doing === "working").length;
-  const waiting = crew.filter((member) => member.doing === "parked").length;
+  const leaf = pullRequest !== undefined;
+  const seats = leaf
+    ? pullRequestCrew(
+        crew,
+        board?.slices.find((slice) => slice.key === pullRequest),
+      )
+    : crew;
+  const busy = seats.filter((member) => member.doing === "working").length;
+  const waiting = seats.filter((member) => member.doing === "parked").length;
 
   return (
     <div className="crew">
@@ -212,7 +222,7 @@ export function Crew({
 
       {showGraph && board !== null ? (
         <WorkGraph
-          members={crew}
+          members={seats}
           board={board}
           onTalk={onTalk}
           coordinates={!leaf}
@@ -224,7 +234,7 @@ export function Crew({
         />
       ) : (
       <div className="crew__grid">
-        {crew.map((member) => {
+        {seats.map((member) => {
           const state = DOING[member.doing];
           return (
             <article key={member.agent_id} className="crew__card" data-doing={member.doing}>

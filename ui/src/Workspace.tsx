@@ -229,6 +229,7 @@ export function Workspace({
                     <AgentActivity
                       runs={runs}
                       workspace={workspace.path}
+                      leaf={workspace.kind === "pr"}
                       tick={tick}
                       onOpenRun={(id) => {
                         setTalking(null);
@@ -246,7 +247,9 @@ export function Workspace({
                       <Crew
                         project={project.slug}
                         workspace={workspace.path}
-                        leaf={workspace.kind === "pr"}
+                        pullRequest={
+                          workspace.kind === "pr" ? (workspace.slice_key ?? undefined) : undefined
+                        }
                         tick={tick}
                         onOpenRun={(id) => {
                           setTalking(null);

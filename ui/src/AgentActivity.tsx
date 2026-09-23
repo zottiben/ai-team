@@ -36,11 +36,14 @@ function firstRun(runs: Run[]): number | null {
 export function AgentActivity({
   runs,
   workspace,
+  leaf = false,
   tick,
   onOpenRun,
 }: {
   runs: Run[];
   workspace: string;
+  /** A pull request's worktree: its work arrives from a run started above it. */
+  leaf?: boolean;
   tick: number;
   onOpenRun?: (id: number) => void;
 }) {
@@ -211,7 +214,18 @@ export function AgentActivity({
 
       {problem !== null && <p className="error">{problem}</p>}
       {detail === null ? (
-        <p className="empty">Start a run to see the team think and work here.</p>
+        // Said only when there is nothing to show - not under an error, and not while the
+        // run being opened is still on its way.
+        problem === null &&
+        (runs.length === 0 ? (
+          <p className="empty">
+            {leaf
+              ? "Nothing has been built here yet. A run started above it dispatches its crew here."
+              : "Start a run to see the team think and work here."}
+          </p>
+        ) : (
+          <p className="empty">Reading the run…</p>
+        ))
       ) : (
         <>
           <div className="agent-activity__state">

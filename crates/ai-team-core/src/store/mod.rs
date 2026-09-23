@@ -14,6 +14,7 @@ mod reviews;
 mod runs;
 
 pub(crate) use runs::workspace_busy;
+pub(crate) use runs::WorkspaceScope;
 
 use std::path::Path;
 

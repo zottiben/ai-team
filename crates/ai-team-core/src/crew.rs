@@ -138,11 +138,48 @@ fn approval_run_id(
         .map(|run| run.id))
 }
 
+/// Each seat's newest row among `runs`, and the run it is in.
+///
+/// A pull request's worktree shows that PR's crew, not everything its run did (PW1), so
+/// from one only the rows that built or checked its PR count.
+fn latest_by_role(
+    store: &Store,
+    runs: &[crate::model::Run],
+    worktree: Option<&std::path::Path>,
+) -> Result<std::collections::HashMap<String, (crate::model::NodeRun, i64)>> {
+    let scope = worktree
+        .map(|worktree| store.workspace_scope(worktree))
+        .transpose()?;
+    let mut latest: std::collections::HashMap<String, (crate::model::NodeRun, i64)> =
+        std::collections::HashMap::new();
+    for run in runs {
+        for node in store.node_runs(run.id)? {
+            if scope
+                .as_ref()
+                .is_some_and(|scope| !scope.covers(&node, run))
+            {
+                continue;
+            }
+            // Runs come back newest first, and node runs within one ascend - so a later
+            // attempt in the same run replaces an earlier one, and an older run never
+            // replaces a newer.
+            let keep = match latest.get(&node.role) {
+                None => true,
+                Some((seen, seen_run)) => *seen_run == run.id && node.id > seen.id,
+            };
+            if keep {
+                latest.insert(node.role.clone(), (node, run.id));
+            }
+        }
+    }
+    Ok(latest)
+}
+
 /// The crew as seen from one checkout.
 ///
-/// Every configured seat remains visible, but activity comes only from runs rooted in
-/// this workspace. Maker nodes may be attached to temporary leases; they still belong to
-/// the checkout whose orchestrator planned and dispatched their run.
+/// Every configured seat remains visible, but activity comes only from what belongs to
+/// that checkout: the runs started in it, wherever their pull requests were built - or,
+/// in a pull request's own worktree, the turns that built that PR there.
 pub fn of_workspace(
     store: &Store,
     project_id: i64,
@@ -164,22 +201,7 @@ pub fn of_workspace(
         None => store.runs(Some(project_id), 60)?,
     };
     let approval_run_id = approval_run_id(store, project_id, team_id, worktree)?;
-    let mut latest: std::collections::HashMap<String, (crate::model::NodeRun, i64)> =
-        std::collections::HashMap::new();
-    for run in &runs {
-        for node in store.node_runs(run.id)? {
-            // Runs come back newest first, and node runs within one ascend - so a later
-            // attempt in the same run replaces an earlier one, and an older run never
-            // replaces a newer.
-            let keep = match latest.get(&node.role) {
-                None => true,
-                Some((seen, seen_run)) => *seen_run == run.id && node.id > seen.id,
-            };
-            if keep {
-                latest.insert(node.role.clone(), (node, run.id));
-            }
-        }
-    }
+    let latest = latest_by_role(store, &runs, worktree)?;
 
     let mut crew = Vec::new();
     for agent in store.agents(team_id)? {
@@ -321,6 +343,55 @@ mod tests {
         crew.iter()
             .find(|member| member.role == role)
             .unwrap_or_else(|| panic!("no {role} in {:?}", crew.iter().map(|m| &m.role)))
+    }
+
+    #[test]
+    fn a_pr_worktree_shows_the_crew_of_its_pr_not_of_its_run() {
+        // One run builds PR1 and PR2 in two worktrees. Seen from PR2's, the backend built
+        // nothing: its turns were PR1's, in the other worktree.
+        let (mut store, project, team) = seeded();
+        let registry = ModelRegistry::local_only();
+        let run = store
+            .create_run_in(
+                project,
+                "two PRs",
+                RunTrigger::Manual,
+                Some(std::path::Path::new("/tmp/widget-main")),
+            )
+            .unwrap();
+        store.set_run_plan(run.id, "csv").unwrap();
+        for (role, slice, worktree) in [
+            ("backend", "PR1", "/tmp/pool/1"),
+            ("frontend", "PR2", "/tmp/pool/2"),
+        ] {
+            let node = store
+                .dispatch_task(
+                    run.id,
+                    seat(&store, team, role),
+                    slice,
+                    Some("T1"),
+                    &registry,
+                )
+                .unwrap();
+            store
+                .attach_worktree(node.id, worktree, Some(&format!("csv/{slice}")), None)
+                .unwrap();
+            store.set_node_status(node.id, NodeStatus::Done).unwrap();
+        }
+
+        let pr2 = of_workspace(&store, project, Some(std::path::Path::new("/tmp/pool/2"))).unwrap();
+        assert_eq!(member(&pr2, "frontend").slice_key.as_deref(), Some("PR2"));
+        assert_eq!(member(&pr2, "backend").doing, Doing::Untouched);
+
+        // The checkout the run started in still has all of it.
+        let main = of_workspace(
+            &store,
+            project,
+            Some(std::path::Path::new("/tmp/widget-main")),
+        )
+        .unwrap();
+        assert_eq!(member(&main, "backend").slice_key.as_deref(), Some("PR1"));
+        assert_eq!(member(&main, "frontend").slice_key.as_deref(), Some("PR2"));
     }
 
     #[test]

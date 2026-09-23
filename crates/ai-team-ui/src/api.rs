@@ -2027,7 +2027,7 @@ fn review_in_workspace(
     let Some(run_id) = run_id else {
         return Ok(false);
     };
-    Ok(run_in_workspace(&store.run(run_id)?, worktree))
+    run_in_workspace(store, run_id, worktree)
 }
 
 /// A review, its diff, and everything anybody has said about it.
@@ -2985,11 +2985,14 @@ fn default_limit() -> i64 {
     50
 }
 
-fn run_in_workspace(run: &Run, workspace: &std::path::Path) -> bool {
-    let selected = workspace.to_string_lossy();
-    run.workspace_path
-        .as_deref()
-        .is_some_and(|path| ai_team_core::same_worktree(path, &selected))
+/// Whether a run belongs to the selected checkout: the same rule its run list follows, so
+/// what the window lists there is what it may open, reply to, resume or deliver.
+fn run_in_workspace(
+    store: &ai_team_core::Store,
+    run_id: i64,
+    workspace: &std::path::Path,
+) -> ai_team_core::Result<bool> {
+    store.run_in_workspace(run_id, workspace)
 }
 
 async fn runs(
@@ -3066,15 +3069,18 @@ async fn run(
     let scope = runtime_scope_for(&state, &slug, query.workspace.as_deref()).await?;
     let store = state.store()?;
     let store = store.lock();
-    if scope
-        .as_deref()
-        .is_some_and(|scope| !run_in_workspace(&run, scope))
-    {
-        return Err(crate::error::Error::Core(ai_team_core::Error::invalid(
-            "that run does not belong to the selected workspace",
-        )));
+    if let Some(scope) = scope.as_deref() {
+        if !run_in_workspace(&store, run.id, scope)? {
+            return Err(crate::error::Error::Core(ai_team_core::Error::invalid(
+                "that run does not belong to the selected workspace",
+            )));
+        }
     }
-    let nodes = store.node_runs(id)?;
+    // From a pull request's worktree, only the turns that built or checked that PR.
+    let nodes = match scope.as_deref() {
+        Some(scope) => store.nodes_in_workspace(id, scope)?,
+        None => store.node_runs(id)?,
+    };
     let usage = nodes
         .iter()
         .fold(ai_team_core::Usage::default(), |mut total, node| {
@@ -3278,21 +3284,18 @@ async fn run_events(
     let store = state.store()?;
     let store = store.lock();
     let run = store.run(id)?;
-    if scope
-        .as_deref()
-        .is_some_and(|scope| !run_in_workspace(&run, scope))
-    {
-        return Err(crate::error::Error::Core(ai_team_core::Error::invalid(
-            "that run does not belong to the selected workspace",
-        )));
+    if let Some(scope) = scope.as_deref() {
+        if !run_in_workspace(&store, run.id, scope)? {
+            return Err(crate::error::Error::Core(ai_team_core::Error::invalid(
+                "that run does not belong to the selected workspace",
+            )));
+        }
     }
-    Ok(Json(
-        store
-            .events(id, query.after, query.limit)?
-            .into_iter()
-            .map(ActivityEvent::from)
-            .collect(),
-    ))
+    let events = match scope.as_deref() {
+        Some(scope) => store.events_in_workspace(id, scope, query.after, query.limit)?,
+        None => store.events(id, query.after, query.limit)?,
+    };
+    Ok(Json(events.into_iter().map(ActivityEvent::from).collect()))
 }
 
 #[derive(Debug, Deserialize)]
@@ -3315,7 +3318,7 @@ async fn reply_to_node(
         )));
     }
 
-    let (slug, run_workspace, agent_id) = {
+    let (slug, agent_id) = {
         let store = state.store()?;
         let store = store.lock();
         let run = store.run(run_id)?;
@@ -3348,17 +3351,16 @@ async fn reply_to_node(
                 "that turn has no active Pi session to continue",
             )));
         }
-        (
-            store.project(run.project_id)?.slug,
-            run.workspace_path,
-            agent_id,
-        )
+        (store.project(run.project_id)?.slug, agent_id)
     };
 
     let selected = worktree_for(&state, &slug, None, Some(&request.workspace)).await?;
-    if !run_workspace.as_deref().is_some_and(|workspace| {
-        ai_team_core::same_worktree(&selected.to_string_lossy(), workspace)
-    }) {
+    let belongs = {
+        let store = state.store()?;
+        let store = store.lock();
+        run_in_workspace(&store, run_id, &selected)?
+    };
+    if !belongs {
         return Err(crate::error::Error::Core(ai_team_core::Error::invalid(
             "that node does not belong to the selected workspace",
         )));
@@ -3391,7 +3393,7 @@ async fn resume_node(
     Path((run_id, node_id)): Path<(i64, i64)>,
     JsonBody(request): JsonBody<ResumeNodeRequest>,
 ) -> Result<Json<serde_json::Value>> {
-    let (slug, run_workspace, previous_pid) = {
+    let (slug, previous_pid) = {
         let store = state.store()?;
         let store = store.lock();
         let run = store.run(run_id)?;
@@ -3429,17 +3431,16 @@ async fn resume_node(
                 "that turn is still supervised; refresh its live activity",
             )));
         }
-        (
-            store.project(run.project_id)?.slug,
-            run.workspace_path,
-            node.supervisor_pid,
-        )
+        (store.project(run.project_id)?.slug, node.supervisor_pid)
     };
 
     let selected = worktree_for(&state, &slug, None, Some(&request.workspace)).await?;
-    if !run_workspace.as_deref().is_some_and(|workspace| {
-        ai_team_core::same_worktree(&selected.to_string_lossy(), workspace)
-    }) {
+    let belongs = {
+        let store = state.store()?;
+        let store = store.lock();
+        run_in_workspace(&store, run_id, &selected)?
+    };
+    if !belongs {
         return Err(crate::error::Error::Core(ai_team_core::Error::invalid(
             "that node does not belong to the selected workspace",
         )));
@@ -3475,7 +3476,7 @@ async fn deliver_node(
     Path((run_id, node_id)): Path<(i64, i64)>,
     JsonBody(request): JsonBody<DeliveryRequest>,
 ) -> Result<Json<NodeRun>> {
-    let (db, run_workspace) = {
+    let db = {
         let store = state.store()?;
         let store = store.lock();
         let node = store.node_run(node_id)?;
@@ -3491,12 +3492,7 @@ async fn deliver_node(
                 "that delivery node does not belong to the selected project",
             )));
         }
-        let workspace = run.workspace_path.ok_or_else(|| {
-            crate::error::Error::Core(ai_team_core::Error::invalid(
-                "that delivery run has no workspace",
-            ))
-        })?;
-        (store.path().to_path_buf(), workspace)
+        store.path().to_path_buf()
     };
     let selected = worktree_for(
         &state,
@@ -3505,7 +3501,12 @@ async fn deliver_node(
         Some(request.workspace.as_str()),
     )
     .await?;
-    if !ai_team_core::same_worktree(&selected.to_string_lossy(), &run_workspace) {
+    let belongs = {
+        let store = state.store()?;
+        let store = store.lock();
+        run_in_workspace(&store, run_id, &selected)?
+    };
+    if !belongs {
         return Err(crate::error::Error::Core(ai_team_core::Error::invalid(
             "that delivery node does not belong to the selected workspace",
         )));
@@ -3525,19 +3526,19 @@ async fn reset_node_session(
     Path((run_id, node_id)): Path<(i64, i64)>,
     JsonBody(request): JsonBody<ResetSessionRequest>,
 ) -> Result<Json<serde_json::Value>> {
-    let (slug, workspace) = {
+    let slug = {
         let store = state.store()?;
         let store = store.lock();
         let run = store.run(run_id)?;
-        (
-            store.project(run.project_id)?.slug,
-            run.workspace_path.ok_or_else(|| {
-                crate::error::Error::Core(ai_team_core::Error::invalid("that run has no workspace"))
-            })?,
-        )
+        store.project(run.project_id)?.slug
     };
     let selected = worktree_for(&state, &slug, None, Some(&request.workspace)).await?;
-    if !ai_team_core::same_worktree(&selected.to_string_lossy(), &workspace) {
+    let belongs = {
+        let store = state.store()?;
+        let store = store.lock();
+        run_in_workspace(&store, run_id, &selected)?
+    };
+    if !belongs {
         return Err(crate::error::Error::Core(ai_team_core::Error::invalid(
             "that node does not belong to the selected workspace",
         )));

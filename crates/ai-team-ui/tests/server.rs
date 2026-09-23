@@ -678,6 +678,115 @@ fn a_run_and_all_its_leased_nodes_stay_in_the_workspace_that_started_it() {
     ));
 }
 
+/// A run started in `repo` that built PR1 in `pr1`, with the planning it did in `repo`: a
+/// planner turn and a note of its own, the checkout above's business rather than PR1's.
+fn pr_run(db: &std::path::Path, repo: &std::path::Path, pr1: &std::path::Path) -> (i64, i64) {
+    let mut store = ai_team_core::Store::open(db).unwrap();
+    let project = store.find_project("widget").unwrap();
+    let agents = store.agents(project.team_id.unwrap()).unwrap();
+    let seat = |role: &str| agents.iter().find(|agent| agent.role == role).unwrap().id;
+    let registry = ai_team_core::ModelRegistry::local_only();
+    let run = store
+        .create_run_in(
+            project.id,
+            "two PRs",
+            ai_team_core::RunTrigger::Manual,
+            Some(repo),
+        )
+        .unwrap();
+    store.set_run_plan(run.id, "csv").unwrap();
+    let built = store
+        .dispatch_task(run.id, seat("backend"), "PR1", Some("T1"), &registry)
+        .unwrap();
+    store
+        .attach_worktree(built.id, &pr1.to_string_lossy(), Some("feature/task"), None)
+        .unwrap();
+    let planning = store
+        .dispatch(run.id, seat("planner"), None, &registry)
+        .unwrap();
+    store
+        .attach_worktree(planning.id, &repo.to_string_lossy(), None, None)
+        .unwrap();
+    for (node, note) in [(Some(planning.id), "planned it"), (None, "PR1 starts")] {
+        let mut event = ai_team_core::NewEvent::new(ai_team_core::EventKind::Note, note);
+        if let Some(node) = node {
+            event = event.on_node(node);
+        }
+        store.append_event(run.id, event).unwrap();
+    }
+    (run.id, project.id)
+}
+
+#[test]
+fn a_pr_worktree_lists_and_opens_the_run_that_built_it_and_no_other_checkout_does() {
+    // A run started in main builds PR1 in its own worktree. That worktree lists the run,
+    // and what it lists it can open - its own PR's turns, not the run's coordination. A
+    // checkout the run never touched can do neither.
+    let (source, repo, pr1) = linked_checkout();
+    let other = source.path().join("other");
+    let added = std::process::Command::new("git")
+        .args(["worktree", "add", "-q", "-b", "side"])
+        .arg(&other)
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    assert!(
+        added.status.success(),
+        "{}",
+        String::from_utf8_lossy(&added.stderr)
+    );
+    let (app, db) = Harness::with_repo(&repo);
+    let (run_id, project_id) = pr_run(&db.path().join("team.db"), &repo, &pr1);
+
+    let seen = |workspace: &std::path::Path| {
+        let runs = app.get(&format!(
+            "/api/runs?project={project_id}&workspace={}",
+            encoded(workspace)
+        ));
+        let listed = runs.json().as_array().unwrap().len();
+        let detail = app.get(&format!(
+            "/api/runs/{run_id}?workspace={}",
+            encoded(workspace)
+        ));
+        let events = app.get(&format!(
+            "/api/runs/{run_id}/events?workspace={}",
+            encoded(workspace)
+        ));
+        assert_eq!(detail.status, events.status, "{}", events.body);
+        if detail.status != 200 {
+            return (listed, detail.status, Vec::new(), Vec::new());
+        }
+        let roles: Vec<String> = detail.json()["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|node| node["role"].as_str().unwrap().to_string())
+            .collect();
+        let said: Vec<String> = events
+            .json()
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|event| event["summary"].as_str().unwrap_or_default().to_string())
+            .filter(|summary| summary == "planned it" || summary == "PR1 starts")
+            .collect();
+        (listed, detail.status, roles, said)
+    };
+
+    let strings = |items: &[&str]| items.iter().map(|item| (*item).to_string()).collect();
+    assert_eq!(
+        seen(&repo),
+        (
+            1,
+            200,
+            strings(&["backend", "planner"]),
+            strings(&["planned it", "PR1 starts"])
+        )
+    );
+    assert_eq!(seen(&pr1), (1, 200, strings(&["backend"]), Vec::new()));
+    assert_eq!(seen(&other), (0, 400, Vec::new(), Vec::new()));
+}
+
 #[test]
 fn a_maker_session_reset_retires_the_address_and_keeps_the_node_evidence() {
     let (_source, repo, task) = linked_checkout();

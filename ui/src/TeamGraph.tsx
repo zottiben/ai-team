@@ -14,6 +14,29 @@ import {
 const COORDINATE = new Set(["orchestrator"]);
 const PLAN = new Set(["planner"]);
 const CHECK = new Set(["verifier", "reviewer"]);
+
+/** Whether a seat coordinates or plans work: never part of a pull request's own crew. */
+function coordinatesWork(member: Member): boolean {
+  return COORDINATE.has(member.role) || PLAN.has(member.role);
+}
+
+/**
+ * A pull request's own crew: the seats its tasks name, and the ones that check it.
+ *
+ * Seen from that PR's worktree, the rest of the roster is somebody else's work. Without
+ * the PR's slice to read, everything but the coordinating seats is kept.
+ */
+export function pullRequestCrew(
+  members: Member[],
+  slice: Pick<BoardSlice, "owner" | "crew"> | undefined,
+): Member[] {
+  const builds = new Set(slice?.crew ?? (slice?.owner ? [slice.owner] : []));
+  return members.filter((member) =>
+    builds.size === 0
+      ? !coordinatesWork(member)
+      : builds.has(member.role) || CHECK.has(member.role),
+  );
+}
 const DOING_LABEL: Record<Doing, string> = {
   starting: "starting",
   working: "working",
@@ -37,10 +60,16 @@ type Stage = (typeof STAGES)[number];
 export function OrganizationGraph({
   members,
   workspace,
+  coordinates = true,
   onChanged,
 }: {
   members: Member[];
   workspace: string | null;
+  /**
+   * Whether this checkout coordinates work. A pull request's worktree does not: its crew
+   * builds and checks it, and the seats that coordinate and plan work from above.
+   */
+  coordinates?: boolean;
   onChanged?: () => void | Promise<void>;
 }) {
   const [catalog, setCatalog] = useState<ModelChoice[]>([]);
@@ -79,18 +108,19 @@ export function OrganizationGraph({
   }, []);
 
   const stages = useMemo(
-    () => [
-      { key: "coordinate" as const, members: members.filter((m) => COORDINATE.has(m.role)) },
-      { key: "plan" as const, members: members.filter((m) => PLAN.has(m.role)) },
-      {
-        key: "make" as const,
-        members: members.filter(
-          (m) => !COORDINATE.has(m.role) && !PLAN.has(m.role) && !CHECK.has(m.role),
-        ),
-      },
-      { key: "check" as const, members: members.filter((m) => CHECK.has(m.role)) },
-    ],
-    [members],
+    () =>
+      [
+        { key: "coordinate" as const, members: members.filter((m) => COORDINATE.has(m.role)) },
+        { key: "plan" as const, members: members.filter((m) => PLAN.has(m.role)) },
+        {
+          key: "make" as const,
+          members: members.filter(
+            (m) => !COORDINATE.has(m.role) && !PLAN.has(m.role) && !CHECK.has(m.role),
+          ),
+        },
+        { key: "check" as const, members: members.filter((m) => CHECK.has(m.role)) },
+      ].filter((stage) => coordinates || (stage.key !== "coordinate" && stage.key !== "plan")),
+    [members, coordinates],
   );
 
   const reset = async (member: Member) => {
@@ -426,10 +456,7 @@ export function WorkGraph({
           )}
           {onTalk !== undefined && members
             .filter((member) => member.doing !== "disabled")
-            .filter(
-              (member) =>
-                coordinates || (member.role !== "orchestrator" && member.role !== "planner"),
-            )
+            .filter((member) => coordinates || !coordinatesWork(member))
             .map((member) => (
               <button
                 type="button"

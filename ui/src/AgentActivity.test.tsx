@@ -130,6 +130,29 @@ function stub(run: Partial<Run> = {}, recoverable = false, events?: unknown[]) {
 
 afterEach(() => vi.unstubAllGlobals());
 
+it("says what empty means in a pull request's worktree, and nothing under an error", async () => {
+  const { unmount } = render(
+    <AgentActivity runs={[]} workspace="/awt/widget/2/widget" leaf tick={0} />,
+  );
+  expect(screen.getByText(/A run started above it dispatches its crew here/)).toBeDefined();
+  expect(screen.queryByText(/Start a run/)).toBeNull();
+  unmount();
+
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(() =>
+      Promise.resolve({
+        ok: false,
+        status: 400,
+        json: async () => ({ error: "that run does not belong to the selected workspace" }),
+      }),
+    ),
+  );
+  render(<AgentActivity runs={[RUN]} workspace="/tmp/widget" tick={0} />);
+  expect(await screen.findByText("that run does not belong to the selected workspace")).toBeDefined();
+  expect(screen.queryByText(/Start a run/)).toBeNull();
+});
+
 it("shows thinking and the full answer instead of only the clipped event summary", async () => {
   stub();
   render(<AgentActivity runs={[RUN]} workspace="/tmp/widget" tick={0} />);

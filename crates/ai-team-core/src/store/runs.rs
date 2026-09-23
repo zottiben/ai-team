@@ -46,17 +46,15 @@ impl Store {
             Some(team_id) => self.team(team_id)?.guardrails,
             None => return Err(Error::NoTeam(project.slug)),
         };
+        // Stored resolved, like every checkout path a run or node row holds: they are
+        // compared in SQL, where `/var` and `/private/var` are two different strings (D12).
         let workspace_path = match workspace {
-            Some(path) => Some(
-                path.canonicalize()
-                    .unwrap_or_else(|_| path.to_path_buf())
-                    .to_string_lossy()
-                    .into_owned(),
-            ),
+            Some(path) => Some(resolved(path)),
             None => self
                 .project_repos(project_id)?
                 .into_iter()
-                .find_map(|repo| repo.main_path),
+                .find_map(|repo| repo.main_path)
+                .map(|path| resolved(Path::new(&path))),
         };
         let at = now();
 
@@ -120,13 +118,39 @@ impl Store {
         Ok(rows)
     }
 
-    /// Newest runs that belong to one checkout: the ones started in it, and - for a pull
-    /// request's worktree - the ones that built that PR in it (PW1).
+    /// What one checkout's surfaces are about (PW1).
     ///
-    /// A PR's worktree starts no runs of its own; the run that builds it is rooted in the
-    /// checkout above. Listed only by where runs started, the worktree would show nothing
-    /// of the work done in it. Only the PR it holds now, though: an `awt` slot is reused,
-    /// and the PRs it held before are other work.
+    /// The pull request a worktree holds is read from the newest maker turn that built in
+    /// it. A worktree holding a PR whose run started somewhere else is that PR's worktree;
+    /// anything else - the project's own checkout, one the operator made, a one-PR plan
+    /// built in place - is scoped by the runs started in it. The project's checkout is the
+    /// top of every tree and never a PR's, whatever an older run did in it.
+    pub(crate) fn workspace_scope(&self, workspace: &Path) -> Result<WorkspaceScope> {
+        let workspace = workspace
+            .canonicalize()
+            .unwrap_or_else(|_| workspace.to_path_buf());
+        let path = workspace.to_string_lossy().into_owned();
+        let same = |other: &str| crate::neighbours::same_worktree(other, &path);
+        let pr = match self.latest_pr_node_in(&path)? {
+            Some(node) => {
+                let run = self.run(node.run_id)?;
+                let started_here = run.workspace_path.as_deref().is_some_and(same);
+                let main = self
+                    .project_repos(run.project_id)?
+                    .iter()
+                    .any(|repo| repo.main_path.as_deref().is_some_and(same));
+                if started_here || main {
+                    None
+                } else {
+                    run.plan_slug.zip(node.slice_key)
+                }
+            }
+            None => None,
+        };
+        Ok(WorkspaceScope { path, pr })
+    }
+
+    /// Newest runs that belong to one checkout (see [`WorkspaceScope`]).
     ///
     /// This filters before applying the limit. Filtering a bounded project-wide list in
     /// Rust lets a busy sibling workspace hide this one's latest run entirely.
@@ -136,31 +160,44 @@ impl Store {
         workspace: &Path,
         limit: i64,
     ) -> Result<Vec<Run>> {
-        let workspace = workspace
-            .canonicalize()
-            .unwrap_or_else(|_| workspace.to_path_buf());
-        let path = workspace.to_string_lossy();
-        // The PR this worktree holds now, if it holds one.
-        let held = match self.latest_pr_node_in(&path)? {
-            Some(node) => node.slice_key.zip(self.run(node.run_id)?.plan_slug),
-            None => None,
-        };
-        let (slice, plan) = held.unzip();
+        let scope = self.workspace_scope(workspace)?;
+        let (path, plan, slice) = scope.params();
         let mut stmt = self.db().conn().prepare(&format!(
-            "{RUN_SELECT} WHERE project_id = ?1
-               AND (workspace_path = ?2
-                    OR id IN (SELECT n.run_id FROM node_run n JOIN run r ON r.id = n.run_id
-                               WHERE n.worktree_path = ?2 AND n.slice_key = ?3
-                                 AND r.plan_slug = ?4))
-             ORDER BY id DESC LIMIT ?5"
+            "{RUN_SELECT} WHERE project_id = ?1 AND {}
+             ORDER BY id DESC LIMIT ?5",
+            WorkspaceScope::run_sql("run", 2)
         ))?;
         let rows = stmt
-            .query_map(
-                params![project_id, path.as_ref(), slice, plan, limit],
-                run_from_row,
-            )?
+            .query_map(params![project_id, path, plan, slice, limit], run_from_row)?
             .collect::<rusqlite::Result<_>>()?;
         Ok(rows)
+    }
+
+    /// A run's rows as seen from one checkout: all of them from a checkout the run started
+    /// in, and only the ones that built or checked the PR a PR's worktree holds.
+    pub fn nodes_in_workspace(&self, run_id: i64, workspace: &Path) -> Result<Vec<NodeRun>> {
+        let scope = self.workspace_scope(workspace)?;
+        let run = self.run(run_id)?;
+        Ok(self
+            .node_runs(run_id)?
+            .into_iter()
+            .filter(|node| scope.covers(node, &run))
+            .collect())
+    }
+
+    /// Whether one run belongs to a checkout (see [`WorkspaceScope`]). What the window may
+    /// open, reply to, resume or deliver from a checkout is what it lists there.
+    pub fn run_in_workspace(&self, run_id: i64, workspace: &Path) -> Result<bool> {
+        let scope = self.workspace_scope(workspace)?;
+        let (path, plan, slice) = scope.params();
+        Ok(self.db().conn().query_row(
+            &format!(
+                "SELECT EXISTS (SELECT 1 FROM run WHERE id = ?1 AND {})",
+                WorkspaceScope::run_sql("run", 2)
+            ),
+            params![run_id, path, plan, slice],
+            |row| row.get(0),
+        )?)
     }
 
     /// The newest run in this checkout blocked for one exact reason.
@@ -832,17 +869,19 @@ impl Store {
         self.node_run(id)
     }
 
-    /// The newest pull-request turn taken in a worktree, if any was.
+    /// The newest maker turn that built a pull request in a worktree, if any did.
     ///
     /// How the window learns which PR a leased worktree holds, and which run's checkout
     /// it belongs under, without keeping a table of its own: the rows that did the work
-    /// already say where they did it.
+    /// already say where they did it. A maker's row names the branch it built on; the
+    /// verifier's check of the same PR names the PR but builds nothing.
     pub fn latest_pr_node_in(&self, worktree: &str) -> Result<Option<NodeRun>> {
         self.db()
             .conn()
             .query_row(
                 &format!(
                     "{NODE_SELECT} WHERE worktree_path = ?1 AND slice_key IS NOT NULL
+                       AND branch IS NOT NULL
                      ORDER BY id DESC LIMIT 1"
                 ),
                 params![worktree],
@@ -883,6 +922,7 @@ impl Store {
         branch: Option<&str>,
         lease_id: Option<&str>,
     ) -> Result<NodeRun> {
+        let worktree_path = resolved(Path::new(worktree_path));
         let at = now();
         self.db_mut().write(|tx| {
             let changed = tx.execute(
@@ -1282,6 +1322,83 @@ impl Store {
     }
 }
 
+/// A checkout path as the filesystem resolves it, or as written when it does not exist.
+fn resolved(path: &Path) -> String {
+    path.canonicalize()
+        .unwrap_or_else(|_| path.to_path_buf())
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// Which rows one checkout's surfaces are about (PW1).
+///
+/// A checkout a run started in owns that run: its orchestrator, its planner, and every
+/// pull request it built, wherever each was built. A pull request's worktree starts
+/// nothing - it holds one PR, and owns only the rows that built that PR there: its makers'
+/// turns and the verifier's checks. So the run list there is the runs that built it, and
+/// its crew, spend and gates are that PR's, not the whole run's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct WorkspaceScope {
+    path: String,
+    /// The plan and slice of the pull request this worktree holds, when it is one's.
+    pr: Option<(String, String)>,
+}
+
+impl WorkspaceScope {
+    /// Path, plan and slice, bound in that order to the numbered parameters the SQL below
+    /// is written with. Plan and slice are NULL for a checkout that is not a PR's.
+    pub(crate) fn params(&self) -> (&str, Option<&str>, Option<&str>) {
+        (
+            &self.path,
+            self.pr.as_ref().map(|(plan, _)| plan.as_str()),
+            self.pr.as_ref().map(|(_, slice)| slice.as_str()),
+        )
+    }
+
+    /// Whether run `run` belongs: it started here, or it built the PR held here, here.
+    /// Takes the path, plan and slice as `?first`, `?first + 1` and `?first + 2`.
+    pub(crate) fn run_sql(run: &str, first: usize) -> String {
+        let (path, plan, slice) = (first, first + 1, first + 2);
+        format!(
+            "({run}.workspace_path = ?{path}
+              OR {run}.id IN (SELECT built.run_id FROM node_run built
+                               JOIN run owner ON owner.id = built.run_id
+                              WHERE built.worktree_path = ?{path}
+                                AND built.slice_key = ?{slice}
+                                AND owner.plan_slug = ?{plan}))"
+        )
+    }
+
+    /// Whether node `node` of run `run` belongs: for a PR's worktree, the rows that built
+    /// or checked that PR there; for any other checkout, every row of the runs started in
+    /// it. Parameters as for [`WorkspaceScope::run_sql`].
+    pub(crate) fn node_sql(node: &str, run: &str, first: usize) -> String {
+        let (path, plan, slice) = (first, first + 1, first + 2);
+        format!(
+            "(CASE WHEN ?{slice} IS NULL THEN {run}.workspace_path = ?{path}
+                   ELSE {node}.worktree_path = ?{path} AND {node}.slice_key = ?{slice}
+                        AND {run}.plan_slug = ?{plan} END)"
+        )
+    }
+
+    /// The same question as [`WorkspaceScope::node_sql`], for rows already read.
+    pub(crate) fn covers(&self, node: &NodeRun, run: &Run) -> bool {
+        match &self.pr {
+            None => run
+                .workspace_path
+                .as_deref()
+                .is_some_and(|root| crate::neighbours::same_worktree(root, &self.path)),
+            Some((plan, slice)) => {
+                node.worktree_path
+                    .as_deref()
+                    .is_some_and(|here| crate::neighbours::same_worktree(here, &self.path))
+                    && node.slice_key.as_deref() == Some(slice.as_str())
+                    && run.plan_slug.as_deref() == Some(plan.as_str())
+            }
+        }
+    }
+}
+
 /// Why a checkout cannot take a second run yet. Shared by the check made before a run row
 /// exists and the one that closes the race after.
 pub(crate) fn workspace_busy(run_id: i64, status: RunStatus, pid: i64) -> String {
@@ -1645,6 +1762,59 @@ mod tests {
         assert_eq!(found, [now[1], now[0]]);
         // The checkout they started in still has all three.
         assert_eq!(s.runs_in_workspace(project, main, 10).unwrap().len(), 3);
+    }
+
+    /// On macOS a tempdir under `/var/folders` is `/private/var/folders` (D12); the explicit
+    /// link makes the same true on Linux, so this bites on both CI legs.
+    #[cfg(unix)]
+    #[test]
+    fn checkout_paths_are_stored_the_way_the_filesystem_resolves_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let resolved = real.canonicalize().unwrap().to_string_lossy().into_owned();
+
+        let mut s = Store::memory().unwrap();
+        let project = s
+            .create_project(NewProject {
+                name: "Widget".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        let team = s.seed_default_team(project.id).unwrap();
+        s.attach_repo(
+            project.id,
+            crate::model::NewRepo {
+                main_path: Some(link.to_string_lossy().into_owned()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        // A run with no checkout named starts in the project's, resolved.
+        let run = s
+            .create_run(project.id, "ship it", RunTrigger::Manual)
+            .unwrap();
+        assert_eq!(run.workspace_path.as_deref(), Some(resolved.as_str()));
+
+        let node = s
+            .dispatch(
+                run.id,
+                backend(&s, team.id),
+                Some("PR1"),
+                &ModelRegistry::local_only(),
+            )
+            .unwrap();
+        let node = s
+            .attach_worktree(node.id, &link.to_string_lossy(), Some("csv/pr1"), None)
+            .unwrap();
+        assert_eq!(node.worktree_path.as_deref(), Some(resolved.as_str()));
+
+        // And so it is found by whichever spelling it is asked for.
+        assert!(s.run_in_workspace(run.id, &link).unwrap());
+        assert_eq!(s.runs_in_workspace(project.id, &link, 5).unwrap().len(), 1);
     }
 
     #[test]

@@ -2,7 +2,7 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, it, vi } from "vitest";
 
-import { TeamGraph, WorkGraph } from "./TeamGraph";
+import { pullRequestCrew, TeamGraph, WorkGraph } from "./TeamGraph";
 import type { Board, Member } from "./api";
 
 function member(change: Partial<Member>): Member {
@@ -146,6 +146,64 @@ it("draws the role flow, exact context occupancy, and fresh-session action", asy
   await waitFor(() =>
     expect(calls).toContain("/runs/7/nodes/12/reset-session"),
   );
+});
+
+it("in a pull request's worktree draws only the seats that build and check it", () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(() => Promise.resolve({ ok: true, json: async () => ({ models: [], error: null }) })),
+  );
+  render(
+    <TeamGraph
+      members={[
+        member({ agent_id: 2, role: "orchestrator", name: "Orchestrator" }),
+        member({ agent_id: 3, role: "planner", name: "Planner" }),
+        member({ agent_id: 4, role: "frontend", name: "Frontend" }),
+        member({ agent_id: 5, role: "verifier", name: "Verifier" }),
+      ]}
+      workspace="/awt/widget/2/widget"
+      coordinates={false}
+    />,
+  );
+
+  expect(screen.queryByRole("region", { name: "coordinate" })).toBeNull();
+  expect(screen.queryByRole("region", { name: "plan" })).toBeNull();
+  expect(screen.queryByText("Orchestrator")).toBeNull();
+  expect(screen.getByRole("region", { name: "make" }).textContent).toContain("Frontend");
+  expect(screen.getByRole("region", { name: "check" }).textContent).toContain("Verifier");
+  // Two stages lay out as two columns, not as two of four with the rest scrolled away.
+  expect(document.querySelector(".team-graph__flow")?.getAttribute("data-stages")).toBe("2");
+});
+
+it("a pull request's crew is the seats its tasks name and the ones that check it", () => {
+  const roster = [
+    member({ agent_id: 2, role: "orchestrator" }),
+    member({ agent_id: 3, role: "planner" }),
+    member({ agent_id: 4, role: "backend" }),
+    member({ agent_id: 5, role: "frontend" }),
+    member({ agent_id: 6, role: "verifier" }),
+    member({ agent_id: 7, role: "reviewer" }),
+  ];
+  const roles = (members: ReturnType<typeof pullRequestCrew>) => members.map((m) => m.role);
+
+  expect(roles(pullRequestCrew(roster, { owner: "frontend", crew: ["frontend"] }))).toEqual([
+    "frontend",
+    "verifier",
+    "reviewer",
+  ]);
+  // A slice built whole names only its owner.
+  expect(roles(pullRequestCrew(roster, { owner: "backend" }))).toEqual([
+    "backend",
+    "verifier",
+    "reviewer",
+  ]);
+  // Without the slice, everyone but the seats that coordinate.
+  expect(roles(pullRequestCrew(roster, undefined))).toEqual([
+    "backend",
+    "frontend",
+    "verifier",
+    "reviewer",
+  ]);
 });
 
 it("draws work from board evidence rather than treating every configured seat as work", () => {
