@@ -99,10 +99,11 @@ pub fn rank(mut items: Vec<Item>) -> Vec<Item> {
     items
 }
 
-/// The newest accepted turn on each PR, by plan and slice.
+/// The newest accepted maker turn on each PR, by plan and slice.
 ///
 /// A rejected attempt is evidence, not work waiting on anyone, once a later turn on the
-/// same PR - in its own run or a review follow-up - was accepted.
+/// same PR - in its own run or a review follow-up - was accepted. The verifier's rows name
+/// the PR too, but a verifier's turn finishing is not the PR being accepted.
 fn newest_accepted(
     store: &Store,
     runs: &[crate::model::Run],
@@ -110,6 +111,9 @@ fn newest_accepted(
     let mut accepted = std::collections::HashMap::new();
     for run in runs {
         for node in store.node_runs(run.id)? {
+            if node.role == crate::VERIFIER_ROLE {
+                continue;
+            }
             if let (NodeStatus::Done, Some(slice)) = (node.status, node.slice_key) {
                 let newest = accepted
                     .entry((run.plan_slug.clone(), slice))
@@ -368,6 +372,18 @@ mod tests {
             .unwrap();
         store.set_node_status(later.id, NodeStatus::Done).unwrap();
 
+        // Rejected, and then only checked: a verifier finishing is not the PR accepted.
+        let unrepaired = store
+            .dispatch_task(run.id, backend, "PR4", Some("T1"), &registry)
+            .unwrap();
+        store
+            .set_node_status(unrepaired.id, NodeStatus::Failed)
+            .unwrap();
+        let checked = store
+            .dispatch_task(run.id, seat(&store, "verifier"), "PR4", None, &registry)
+            .unwrap();
+        store.set_node_status(checked.id, NodeStatus::Done).unwrap();
+
         // Rejected and never repaired: still somebody's problem.
         let stuck = store
             .dispatch_task(run.id, backend, "PR2", None, &registry)
@@ -381,7 +397,7 @@ mod tests {
             .filter(|item| item.urgency == Urgency::Failed)
             .map(|item| item.title)
             .collect();
-        assert_eq!(failed, ["backend failed on PR2"]);
+        assert_eq!(failed, ["backend failed on PR4", "backend failed on PR2"]);
     }
 
     #[test]

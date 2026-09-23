@@ -143,7 +143,12 @@ impl Rows {
             if node.slice_key.as_deref() != Some(pr.slice.key.as_str()) {
                 continue;
             }
-            if let Some(agent_id) = node.agent_id {
+            // The crew's rows only. The verifier's checks name the PR too, but they are
+            // settled as they finish and are nobody's conversation to continue.
+            if let Some(agent_id) = node
+                .agent_id
+                .filter(|agent| pr.crew.iter().any(|seat| seat.agent_id == *agent))
+            {
                 rows.opened(agent_id, &node);
             }
         }
@@ -958,7 +963,8 @@ async fn check(
         pr.rig,
         pr.run_id,
         verifier.agent_id,
-        None,
+        // The check is of this PR: its row says so, for the window and the PR's worktree.
+        Some(&pr.slice.key),
         pr.worktree,
         &verify_prompt(pr.slice, pr.crew, pr.base, &evidence),
         |event| {
@@ -1729,6 +1735,7 @@ esac
                 .unwrap()
                 .into_iter()
                 .filter(|node| node.slice_key.as_deref() == Some("PR1"))
+                .filter(|node| node.role != crate::VERIFIER_ROLE)
                 .collect()
         }
 
@@ -1804,6 +1811,18 @@ esac
             })
             .count();
         assert_eq!(gates, 2);
+
+        // The verifier checked this PR, and its rows say which: the window's CHECK stage
+        // and a PR worktree's crew both read that.
+        let checks: Vec<Option<String>> = pr
+            .store
+            .node_runs(pr.run_id)
+            .unwrap()
+            .into_iter()
+            .filter(|node| node.role == crate::VERIFIER_ROLE)
+            .map(|node| node.slice_key)
+            .collect();
+        assert_eq!(checks, [Some("PR1".to_string())]);
 
         let (status, _) = settle(&mut pr.store, pr.run_id, "PR1", &rows, &attempted).unwrap();
         assert_eq!(status, NodeStatus::Done);
