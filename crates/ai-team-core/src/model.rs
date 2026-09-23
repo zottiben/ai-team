@@ -492,7 +492,9 @@ pub struct Run {
     /// unless the operator asked, for this run alone.
     pub on_default_branch: bool,
     /// The process driving the run, while one is. A second run in the same checkout is
-    /// refused only while this one is alive.
+    /// refused only while this one is alive. Not rendered to the browser, like a node's:
+    /// a process id is a question for this machine, not something to show.
+    #[serde(skip_serializing)]
     pub supervisor_pid: Option<i64>,
 }
 
