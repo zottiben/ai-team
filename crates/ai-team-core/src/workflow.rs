@@ -1142,7 +1142,7 @@ pub fn open_follow_up(
     let run = store.create_run_in(
         built_by.project_id,
         &format!("Address review comments on {}", target.slice_key),
-        RunTrigger::Manual,
+        RunTrigger::Review,
         Some(&workspace),
     )?;
     store.set_run_plan(run.id, &plan)
@@ -1409,6 +1409,62 @@ fn notify_run(store: &mut Store, run_id: i64, kind: &str, title: &str, body: &st
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_review_follow_up_is_a_run_of_its_own_triggered_by_the_review() {
+        let checkout = tempfile::tempdir().unwrap();
+        let mut store = Store::memory().unwrap();
+        let project = store
+            .create_project(crate::NewProject {
+                name: "Widget".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        let team = store.seed_default_team(project.id).unwrap();
+        let built = store
+            .create_run_in(
+                project.id,
+                "build PR1",
+                RunTrigger::Manual,
+                Some(checkout.path()),
+            )
+            .unwrap();
+        let built = store.set_run_plan(built.id, "widget-plan").unwrap();
+        let backend = store
+            .agents(team.id)
+            .unwrap()
+            .into_iter()
+            .find(|agent| agent.role == "backend")
+            .unwrap();
+        let node = store
+            .dispatch_task(
+                built.id,
+                backend.id,
+                "PR1",
+                Some("T1"),
+                &ModelRegistry::local_only(),
+            )
+            .unwrap();
+        let node = store.set_node_status(node.id, NodeStatus::Done).unwrap();
+        let target = crate::review::FollowUp {
+            run_id: built.id,
+            node,
+            slice_key: "PR1".into(),
+            plan: "widget-plan".into(),
+            worktree: PathBuf::from("/work/pr1"),
+            branch: "widget-plan/pr1".into(),
+        };
+
+        let follow = open_follow_up(&mut store, &target).unwrap();
+
+        // Its own spend and verdict, rooted and planned where the PR was built - and on
+        // the record as a review's, which is what started it.
+        assert_ne!(follow.id, built.id);
+        assert_eq!(follow.trigger, RunTrigger::Review);
+        assert_eq!(follow.workspace_path, built.workspace_path);
+        assert_eq!(follow.plan_slug.as_deref(), Some("widget-plan"));
+        assert_eq!(follow.prompt, "Address review comments on PR1");
+    }
 
     #[test]
     fn an_explicit_prompt_is_planned_even_when_an_existing_plan_has_ready_work() {
