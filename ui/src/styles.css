@@ -2320,7 +2320,9 @@ button.card:hover {
   font-size: var(--text-sm);
 }
 
-.diff__comment[data-status="resolved"] {
+/* Resolved, or sent and since built on: kept for the record, quieter than what is open. */
+.diff__comment[data-status="resolved"],
+.diff__comment[data-status="outdated"] {
   opacity: 0.6;
 }
 

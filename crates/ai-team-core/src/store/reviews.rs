@@ -37,6 +37,57 @@ impl Store {
         self.review(id)
     }
 
+    /// The review a pull request already has, opened again for another look.
+    ///
+    /// A PR is built again after review - a follow-up, a steered seat - and each time it
+    /// used to get a review of its own, so one PR piled up a review per round. One PR has
+    /// one review: when it lands again, the latest one still in play for its branch goes
+    /// back to open and points at the turn that just finished. Comments already sent with a
+    /// submission are marked outdated - still readable, but the code under them has moved
+    /// and submitting again must not send them twice. A review somebody approved or
+    /// dismissed is finished; `None` then, and the caller opens a new one.
+    pub fn reopen_review(
+        &mut self,
+        project_id: i64,
+        branch: &str,
+        run_id: Option<i64>,
+        node_run_id: Option<i64>,
+    ) -> Result<Option<Review>> {
+        let at = now();
+        let reopened = self.db_mut().write(|tx| {
+            let found: Option<(i64, Option<String>)> = tx
+                .query_row(
+                    "SELECT id, submitted_at FROM review
+                      WHERE project_id = ?1 AND branch = ?2
+                        AND status IN ('open', 'changes_requested')
+                      ORDER BY id DESC LIMIT 1",
+                    params![project_id, branch],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()?;
+            let Some((id, submitted_at)) = found else {
+                return Ok(None);
+            };
+            if let Some(submitted_at) = submitted_at {
+                tx.execute(
+                    "UPDATE review_comment SET status = 'outdated'
+                      WHERE review_id = ?1 AND status = 'open' AND created_at <= ?2",
+                    params![id, submitted_at],
+                )?;
+            }
+            tx.execute(
+                "UPDATE review
+                    SET status = 'open', submitted_at = NULL,
+                        run_id = COALESCE(?2, run_id), node_run_id = COALESCE(?3, node_run_id),
+                        rev = rev + 1, updated_at = ?4
+                  WHERE id = ?1",
+                params![id, run_id, node_run_id, at],
+            )?;
+            Ok(Some(id))
+        })?;
+        reopened.map(|id| self.review(id)).transpose()
+    }
+
     pub fn review(&self, id: i64) -> Result<Review> {
         self.db()
             .conn()
@@ -305,6 +356,55 @@ mod tests {
             .unwrap();
         assert_eq!(review.node_run_id, Some(node));
         assert_eq!(review.status, ReviewStatus::Open);
+    }
+
+    #[test]
+    fn a_pr_built_again_reopens_its_review_rather_than_piling_up_another() {
+        let (mut s, project, node) = reviewable();
+        let review = s
+            .open_review(project, "PR1", None, Some(node), Some("csv/pr1"))
+            .unwrap();
+        let sent = s.comment(review.id, comment_on(7)).unwrap();
+        s.submit_review(review.id, ReviewStatus::ChangesRequested)
+            .unwrap();
+
+        // The follow-up lands again on the same branch.
+        let reopened = s
+            .reopen_review(project, "csv/pr1", None, Some(node))
+            .unwrap()
+            .expect("the PR's review is still in play");
+        assert_eq!(reopened.id, review.id);
+        assert_eq!(reopened.status, ReviewStatus::Open);
+        assert!(reopened.submitted_at.is_none());
+        // Already sent, and the code under it has moved: kept, but not sent again.
+        let comments = s.comments(review.id).unwrap();
+        assert_eq!(comments[0].id, sent.id);
+        assert_eq!(comments[0].status, CommentStatus::Outdated);
+        assert_eq!(s.unresolved_count(review.id).unwrap(), 0);
+
+        // Not submitted since: a comment written meanwhile is still to be sent.
+        s.comment(review.id, comment_on(9)).unwrap();
+        s.reopen_review(project, "csv/pr1", None, Some(node))
+            .unwrap()
+            .unwrap();
+        assert_eq!(s.unresolved_count(review.id).unwrap(), 1);
+
+        // A review somebody finished is not reopened; the PR gets a fresh one.
+        s.resolve_comment(
+            s.comments(review.id).unwrap()[1].id,
+            CommentStatus::Resolved,
+        )
+        .unwrap();
+        s.submit_review(review.id, ReviewStatus::Approved).unwrap();
+        assert!(s
+            .reopen_review(project, "csv/pr1", None, Some(node))
+            .unwrap()
+            .is_none());
+        // And another branch's review is none of this one's business.
+        assert!(s
+            .reopen_review(project, "csv/pr2", None, Some(node))
+            .unwrap()
+            .is_none());
     }
 
     #[test]

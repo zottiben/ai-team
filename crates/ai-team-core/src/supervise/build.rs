@@ -1302,13 +1302,19 @@ async fn land(
     // because the point is to see a diff as the team works rather than to remember to ask
     // for one afterwards.
     let project_id = store.run(node.run_id)?.project_id;
-    if let Err(error) = store.open_review(
-        project_id,
-        &subject,
-        Some(node.run_id),
-        Some(node.id),
-        Some(branch),
-    ) {
+    // One PR, one review: built again after review, it reopens the one it has.
+    let reviewed = match store.reopen_review(project_id, branch, Some(node.run_id), Some(node.id)) {
+        Ok(Some(review)) => Ok(review),
+        Ok(None) => store.open_review(
+            project_id,
+            &subject,
+            Some(node.run_id),
+            Some(node.id),
+            Some(branch),
+        ),
+        Err(error) => Err(error),
+    };
+    if let Err(error) = reviewed {
         // Not fatal: the work is committed and on a branch. A review that could not be
         // opened costs a surface, not the PR.
         store.append_event(
