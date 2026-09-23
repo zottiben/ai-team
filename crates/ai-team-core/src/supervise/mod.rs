@@ -9,4 +9,5 @@ mod orchestrate;
 mod outcome;
 
 pub use orchestrate::{Dispatched, Orchestration, Orchestrator, Rig};
+pub(crate) use outcome::quota_exhaustion;
 pub use outcome::{outcome_status, TurnOutcome};

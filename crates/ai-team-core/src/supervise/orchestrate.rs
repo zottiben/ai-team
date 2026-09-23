@@ -1,10 +1,11 @@
 //! One prompt, into a plan, into several nodes building slices in parallel.
 //!
-//! The split is D14's: the orchestrator *node* turns the prompt into an ai-planner plan,
-//! and this module - Rust - reads the ready slices back, leases a worktree per slice,
-//! routes each to the seat whose zone owns its paths, and starts one eve process per
-//! lease (D10). Scheduling, budgets and routing are the control plane's job; an agent
-//! spawning sibling agents would be the same work with no guardrails around it.
+//! The split is D12's: the orchestrator *node* grounds the request and coordinates the
+//! graph, the planner node alone shapes the ai-planner plan, and this module - Rust -
+//! reads approved slices back, leases a worktree per slice, routes each to the seat whose
+//! zone owns its paths, and starts one Pi process per lease (D10). Scheduling, budgets and
+//! routing are the control plane's job; an agent spawning sibling agents would be the
+//! same work with no guardrails around it.
 //!
 //! Nothing here stores a plan or a slice. `node_run.slice_key` is a reference into
 //! ai-planner and that is the whole of the coupling (D4).
@@ -66,21 +67,21 @@ impl Rig {
         &self,
         store: &Store,
         agent_id: i64,
+        node_run_id: i64,
         worktree: &Path,
         prompt: &str,
     ) -> Result<crate::PiTurn> {
         let agent = store.agent(agent_id)?;
+        let node = store.node_run(node_run_id)?;
         let team = store.team(agent.team_id)?;
         let roster = store.agents(agent.team_id)?;
-        let (effective, _) = self.registry.resolve_agents(std::slice::from_ref(&agent))?;
-        let resolved = effective.first().unwrap_or(&agent);
         // Only the seats that may shape the plan get the tools that shape it. A maker
         // that can add slices can give itself work.
-        let may_plan = agent.role == ROOT_ROLE || agent.role == "planner";
+        let may_plan = agent.role == "planner";
         crate::PiSeat {
             agent: &agent,
-            provider: resolved.provider,
-            model: &resolved.model,
+            provider: node.provider,
+            model: &node.model,
             worktree,
             support: &self.support,
             sources: &self.sources,
@@ -108,6 +109,27 @@ pub struct Orchestrator {
     pub worktrees: Worktrees,
 }
 
+fn grounding_prompt(prompt: &str) -> String {
+    format!(
+        "Ground this request for the planner seat. Read the repository and every \
+         required ClickUp or Figma source before writing a delegation brief. If a \
+         required context server or tool is unavailable, answer with \
+         `CONTEXT_UNAVAILABLE:` followed by the source and reason; do not use a \
+         browser or generic web search instead.\n\nOperator request:\n\n{prompt}"
+    )
+}
+
+fn planner_prompt(prompt: &str, brief: &str) -> String {
+    format!(
+        "Create a new ai-planner plan specifically for this run and make it the \
+         current plan. Do not append this work to an unrelated existing plan. Build \
+         the slices from the orchestrator's grounded delegation brief below, and \
+         leave every buildable slice ready. Do not write source code or dispatch \
+         agents.\n\nOriginal request:\n\n{prompt}\n\n---\n\nOrchestrator delegation \
+         brief:\n\n{brief}"
+    )
+}
+
 impl Orchestrator {
     /// What every Pi turn in this run shares.
     pub fn rig(&self) -> Rig {
@@ -119,37 +141,195 @@ impl Orchestrator {
         }
     }
 
-    /// Phase one: the orchestrator node reads the prompt and writes the plan.
-    ///
-    /// It runs against the repository rather than a lease, because a plan written inside
-    /// a leased copy is a plan nobody finds again, and because planning reads the code it
-    /// is planning against.
-    pub async fn plan<F>(&self, store: &mut Store, prompt: &str, on_event: F) -> Result<TurnOutcome>
+    /// Phase one: the orchestrator grounds the request, then delegates plan construction
+    /// to the planner seat. They are deliberately separate visible nodes: the
+    /// orchestrator coordinates the graph; only the planner can shape its board.
+    pub async fn plan<F>(
+        &self,
+        store: &mut Store,
+        prompt: &str,
+        mut on_event: F,
+    ) -> Result<TurnOutcome>
     where
         F: FnMut(&crate::PiEvent) + Send,
     {
-        let orchestrator = store
-            .agents(self.team_id)?
+        let agents = store.agents(self.team_id)?;
+        let orchestrator = agents
+            .iter()
+            .find(|agent| agent.role == ROOT_ROLE && agent.enabled)
+            .ok_or_else(|| Error::invalid("the team has no enabled orchestrator"))?;
+        let planner = agents
+            .iter()
+            .find(|agent| agent.role == "planner" && agent.enabled)
+            .ok_or_else(|| Error::invalid("the team has no enabled planner"))?;
+
+        let grounding_prompt = grounding_prompt(prompt);
+        let mut brief = String::new();
+        let mut context_failure = None;
+        let (coordinator, coordinator_outcome) = match take_fresh_turn(
+            store,
+            &self.rig(),
+            self.run_id,
+            orchestrator.id,
+            None,
+            &self.repo,
+            &grounding_prompt,
+            |event| {
+                if let Some(message) = event.assistant_message() {
+                    brief = message;
+                }
+                if let Some(failure) = event.context_tool_failure() {
+                    context_failure = Some(failure);
+                }
+                on_event(event);
+            },
+        )
+        .await?
+        {
+            FreshTurn::Finished(finished) => *finished,
+            FreshTurn::Unavailable { reason } => {
+                return Err(Error::invalid(format!("MODEL_UNAVAILABLE: {reason}")));
+            }
+        };
+        let coordinator_status = outcome_status(&coordinator_outcome);
+        if coordinator_status != NodeStatus::Done {
+            return Ok(coordinator_outcome);
+        }
+        if let Some(failure) = context_failure {
+            store.block_node(coordinator.id, &failure)?;
+            return Err(Error::invalid(failure));
+        }
+        if brief.trim().is_empty() {
+            store.block_node(
+                coordinator.id,
+                "the orchestrator produced no delegation brief",
+            )?;
+            return Err(Error::invalid(
+                "the orchestrator produced no delegation brief",
+            ));
+        }
+        if brief.contains("CONTEXT_UNAVAILABLE:") {
+            store.block_node(coordinator.id, brief.trim())?;
+            return Err(Error::invalid(brief.trim()));
+        }
+
+        let planner_prompt = planner_prompt(prompt, &brief);
+        let mut context_failure = None;
+        let (planning, planner_outcome) = match take_fresh_turn(
+            store,
+            &self.rig(),
+            self.run_id,
+            planner.id,
+            None,
+            &self.repo,
+            &planner_prompt,
+            |event| {
+                if let Some(failure) = event.context_tool_failure() {
+                    context_failure = Some(failure);
+                }
+                on_event(event);
+            },
+        )
+        .await?
+        {
+            FreshTurn::Finished(finished) => *finished,
+            FreshTurn::Unavailable { reason } => {
+                return Err(Error::invalid(format!("MODEL_UNAVAILABLE: {reason}")));
+            }
+        };
+        if let Some(failure) = context_failure {
+            store.block_node(planning.id, &failure)?;
+            return Err(Error::invalid(failure));
+        }
+        let planner_status = outcome_status(&planner_outcome);
+        if planner_status == NodeStatus::Done {
+            let current = self.planner.current().await?;
+            store.set_run_plan(self.run_id, &current.plan)?;
+        }
+        Ok(planner_outcome)
+    }
+
+    /// Resume the exact orchestrator conversation after a human approves its planner's
+    /// board. Rust still decides what is dispatched; the model only acknowledges the
+    /// transition and calls out any last coordination concern in the same session.
+    pub async fn acknowledge_plan_approval(&self, store: &mut Store) -> Result<TurnOutcome> {
+        let coordinator = store
+            .node_runs(self.run_id)?
             .into_iter()
-            .find(|agent| agent.role == ROOT_ROLE)
-            .ok_or_else(|| Error::invalid("the team has no orchestrator"))?;
+            .rev()
+            .find(|node| node.role == ROOT_ROLE && node.session_id.is_some())
+            .ok_or_else(|| Error::invalid("the run has no orchestrator session to resume"))?;
+        let agent_id = coordinator
+            .agent_id
+            .ok_or_else(|| Error::invalid("the run's orchestrator seat no longer exists"))?;
+        store.set_node_status(coordinator.id, NodeStatus::Running)?;
+        let outcome = take_turn(
+            store,
+            &self.rig(),
+            agent_id,
+            coordinator.id,
+            &self.repo,
+            "The human approved the planner's plan. Acknowledge the approved plan and \
+             identify any final routing concern. Do not edit the plan, dispatch agents, \
+             or build code; Rust will now route its ready slices.",
+        )
+        .await?;
+        store.set_node_status(coordinator.id, outcome_status(&outcome))?;
+        Ok(outcome)
+    }
 
-        let node = store.dispatch(self.run_id, orchestrator.id, None, &self.registry)?;
-        store.attach_worktree(node.id, &self.repo.to_string_lossy(), None, None)?;
-        store.set_node_status(node.id, NodeStatus::Running)?;
-
+    /// Resume the orchestrator one final time so its context is checkpointed before the
+    /// session address is retired. A prose promise does not count: the event stream must
+    /// contain a successful ai-planner `write_handoff` tool result.
+    pub async fn handoff_before_session_reset(
+        &self,
+        store: &mut Store,
+        node_id: i64,
+    ) -> Result<()> {
+        let node = store.node_run(node_id)?;
+        if node.run_id != self.run_id || node.role != ROOT_ROLE {
+            return Err(Error::invalid("that node is not this run's orchestrator"));
+        }
+        let agent_id = node
+            .agent_id
+            .ok_or_else(|| Error::invalid("the run's orchestrator seat no longer exists"))?;
+        let plan = store.run(self.run_id)?.plan_slug.ok_or_else(|| {
+            Error::invalid(
+                "the orchestrator session was kept because this run has no ai-planner plan to hand off",
+            )
+        })?;
+        let instruction = format!(
+            "Your Pi session is about to be reset. Before it is retired, call the \
+             ai-planner `write_handoff` tool for plan `{plan}`. Record the real current \
+             state, only gates evidenced in this conversation, and the next concrete \
+             action. Do not merely describe a handoff in prose: make the tool call. Do \
+             not edit code or reshape the plan."
+        );
         let turn = self
             .rig()
-            .seat(store, orchestrator.id, &self.repo, prompt)?;
-        let outcome = match crate::run_pi_turn(store, node.id, &turn, on_event).await {
+            .seat(store, agent_id, node_id, &self.repo, &instruction)?;
+        store.set_node_status(node_id, NodeStatus::Running)?;
+        let mut wrote_handoff = false;
+        let outcome = match crate::run_pi_turn(store, node_id, &turn, |event| {
+            wrote_handoff |= event.wrote_planner_handoff();
+        })
+        .await
+        {
             Ok((_, outcome)) => outcome,
             Err(error) => {
-                store.set_node_status(node.id, NodeStatus::Failed)?;
+                store.set_node_status(node_id, NodeStatus::Failed)?;
                 return Err(error);
             }
         };
-        store.set_node_status(node.id, outcome_status(&outcome))?;
-        Ok(outcome)
+        let status = outcome_status(&outcome);
+        store.set_node_status(node_id, status)?;
+        if status != NodeStatus::Done || !wrote_handoff {
+            return Err(Error::invalid(
+                "the orchestrator session was kept because its ai-planner handoff did not succeed",
+            ));
+        }
+        store.retire_node_session(node_id)?;
+        Ok(())
     }
 
     /// The slices that are ready, nobody holds, and some seat owns.
@@ -223,8 +403,21 @@ impl Orchestrator {
             let mut tasks = Vec::new();
             for (slice, agent_id, role) in wave.drain(..) {
                 on_progress(&format!("{} -> {role}", slice.key));
-                let node = self.prepare(store, &slice, agent_id).await?;
-                tasks.push(tokio::spawn(run_one(node)));
+                match self.prepare(store, &slice, agent_id, &role).await {
+                    Ok(node) => tasks.push(tokio::spawn(run_one(node))),
+                    Err(error) => {
+                        let reason = format!("preparation failed: {error}");
+                        store.append_event(
+                            self.run_id,
+                            NewEvent::new(
+                                EventKind::Failed,
+                                format!("{} not dispatched: {reason}", slice.key),
+                            )
+                            .by("orchestrator"),
+                        )?;
+                        out.unrouted.push((slice.key, reason));
+                    }
+                }
             }
 
             for task in tasks {
@@ -254,19 +447,59 @@ impl Orchestrator {
     }
 
     /// Lease, claim and register one slice, ready to be run on its own task.
-    async fn prepare(&self, store: &mut Store, slice: &Slice, agent_id: i64) -> Result<NodeTask> {
-        let lease = self
-            .worktrees
-            .lease(&format!("ai-team:{}", slice.key))
-            .await?;
+    async fn prepare(
+        &self,
+        store: &mut Store,
+        slice: &Slice,
+        agent_id: i64,
+        role: &str,
+    ) -> Result<NodeTask> {
+        // Resolve this before claiming the slice. An error after the external claim would
+        // otherwise leave work assigned to a lease that is immediately returned.
+        let verifier = self.verifier(store)?;
+        let holder = lease_holder(self.run_id, &slice.key, role);
+        let lease = self.worktrees.lease(&holder).await?;
         let worktree = lease.path().to_path_buf();
-        // Before anything runs in it: the gates write build output into this worktree,
-        // and a repo that does not already ignore it would get it committed.
-        git::ignore_build_output(&worktree).await?;
+        let branch = slice_branch(slice);
+        let prepared = async {
+            // Name the checkout before the agent starts and keep gate output untracked.
+            // The plan's base is binding for stacked work; a lease's incidental HEAD is not.
+            git::ignore_build_output(&worktree).await?;
+            git::prepare_branch_from(&worktree, &branch, slice.base_branch.as_deref()).await?;
+            crate::gates::prepare_dependencies(&worktree).await
+        }
+        .await;
+        let setup = match prepared {
+            Ok(setup) => setup,
+            Err(error) => {
+                let reason = format!("dependency/worktree preparation failed: {error}");
+                let _ = self
+                    .planner
+                    .set_status(&slice.key, "blocked", Some(&reason))
+                    .await;
+                let _ = lease.release().await;
+                return Err(Error::invalid(reason));
+            }
+        };
+        if !setup.is_empty() {
+            store.append_event(
+                self.run_id,
+                NewEvent::new(
+                    EventKind::Note,
+                    format!(
+                        "{} prepared dependencies with {}",
+                        slice.key,
+                        setup.join(", ")
+                    ),
+                )
+                .by("orchestrator"),
+            )?;
+        }
 
         // Claim through ai-planner, in the leased worktree, so the board shows where the
         // work is actually happening and a second run is told the slice is taken.
         if !self.planner.claim(&slice.key, &worktree).await? {
+            let _ = lease.release().await;
             return Err(Error::invalid(format!(
                 "{} is claimed by another worktree",
                 slice.key
@@ -280,6 +513,7 @@ impl Orchestrator {
             registry: self.registry.clone(),
             slice_key: slice.key.clone(),
             title: slice.title.clone(),
+            branch,
             // Read from the lease, not the main checkout: a branch that changes the
             // house rules should be judged by the rules it is proposing.
             // Narrowed to the paths this slice touches, so a nested AGENTS.md governing
@@ -292,8 +526,93 @@ impl Orchestrator {
             // Read off the run, never back through the team: what this run was allowed
             // to spend is a fact about this run (D2).
             max_repairs: store.run(self.run_id)?.max_repairs,
-            verifier: self.verifier(store)?,
+            verifier,
         })
+    }
+
+    /// Reattach one interrupted maker to its exact lease and Pi session.
+    ///
+    /// No branch is prepared and no dependencies are reinstalled here: both could
+    /// overwrite evidence left by the interrupted process. The persisted node, planner
+    /// claim and awt lease must all agree before a model is started.
+    pub async fn resume_node(&self, store: &mut Store, node_id: i64) -> Result<Dispatched> {
+        let node = store.node_run(node_id)?;
+        if node.run_id != self.run_id || node.status != NodeStatus::Running {
+            return Err(Error::invalid(
+                "that node is no longer an interrupted running turn",
+            ));
+        }
+        if node.session_id.is_none() || node.session_retired_at.is_some() {
+            return Err(Error::invalid(
+                "that interrupted turn has no active Pi session",
+            ));
+        }
+        if node.supervisor_pid != Some(i64::from(std::process::id())) {
+            return Err(Error::invalid(
+                "this process has not claimed the interrupted turn",
+            ));
+        }
+        let agent_id = node
+            .agent_id
+            .ok_or_else(|| Error::invalid("the interrupted node's seat no longer exists"))?;
+        let slice_key = node
+            .slice_key
+            .clone()
+            .ok_or_else(|| Error::invalid("only interrupted maker slices can be resumed"))?;
+        let worktree = node
+            .worktree_path
+            .as_deref()
+            .map(PathBuf::from)
+            .ok_or_else(|| Error::invalid("the interrupted node has no leased worktree"))?;
+        let slice = self.planner.slice(&slice_key).await?;
+        if !slice.worktree_path.as_deref().is_some_and(|claimed| {
+            crate::neighbours::same_worktree(claimed, &worktree.to_string_lossy())
+        }) {
+            return Err(Error::invalid(
+                "the planner claim no longer points at the interrupted worktree",
+            ));
+        }
+        let branch = node.branch.clone().unwrap_or_else(|| slice_branch(&slice));
+        let holder = lease_holder(self.run_id, &slice_key, &node.role);
+        let lease = self.worktrees.resume(&worktree, &holder).await?;
+        let verifier = self.verifier(store)?;
+        let prompt = format!(
+            "Resume {slice_key} after the local ai-team supervisor was interrupted. Keep \
+             the work already present in this checkout, read the person's queued replies, \
+             and complete the same task. Do not restart or discard the existing diff.\n\n{}",
+            slice_prompt(&slice, &crate::house::read_for(&worktree, &slice.touches()))
+        );
+        store.append_event(
+            self.run_id,
+            NewEvent::new(
+                EventKind::Note,
+                format!(
+                    "resuming interrupted {slice_key} turn in {}",
+                    worktree.display()
+                ),
+            )
+            .on_node(node.id)
+            .by("ai-team"),
+        )?;
+
+        resume_one(ResumeTask {
+            db_path: self.db_path.clone(),
+            rig: self.rig(),
+            agent_id,
+            registry: self.registry.clone(),
+            node,
+            slice_key,
+            title: slice.title,
+            branch,
+            prompt,
+            worktree,
+            lease,
+            planner: self.planner.clone(),
+            run_id: self.run_id,
+            max_repairs: store.run(self.run_id)?.max_repairs,
+            verifier,
+        })
+        .await
     }
 
     /// Whether the verifier is a genuinely second opinion.
@@ -346,10 +665,7 @@ impl Orchestrator {
             .agents(self.team_id)?
             .into_iter()
             .find(|agent| agent.role == crate::VERIFIER_ROLE && agent.enabled)
-            .map(|agent| VerifierSeat {
-                agent_id: agent.id,
-                registry: self.registry.clone(),
-            }))
+            .map(|agent| VerifierSeat { agent_id: agent.id }))
     }
 }
 
@@ -361,6 +677,25 @@ struct NodeTask {
     registry: ModelRegistry,
     slice_key: String,
     title: String,
+    branch: String,
+    prompt: String,
+    worktree: PathBuf,
+    lease: crate::neighbours::Lease,
+    planner: Planner,
+    run_id: i64,
+    max_repairs: i64,
+    verifier: Option<VerifierSeat>,
+}
+
+struct ResumeTask {
+    db_path: PathBuf,
+    rig: Rig,
+    agent_id: i64,
+    registry: ModelRegistry,
+    node: crate::model::NodeRun,
+    slice_key: String,
+    title: String,
+    branch: String,
     prompt: String,
     worktree: PathBuf,
     lease: crate::neighbours::Lease,
@@ -382,6 +717,7 @@ async fn run_one(task: NodeTask) -> Result<Dispatched> {
         registry,
         slice_key,
         title,
+        branch,
         prompt,
         worktree,
         lease,
@@ -393,21 +729,14 @@ async fn run_one(task: NodeTask) -> Result<Dispatched> {
 
     let mut store = Store::open(&db_path)?;
 
-    let Attempted {
-        outcome,
-        rejection,
-        attempt,
-        node_run_id,
-        role,
-        exhausted,
-        changed,
-    } = match attempt_until_accepted(AttemptArgs {
+    let attempted = match attempt_until_accepted(AttemptArgs {
         store: &mut store,
         rig: &rig,
         agent_id,
         registry: &registry,
         run_id,
         slice_key: &slice_key,
+        branch: &branch,
         worktree: &worktree,
         max_repairs,
         verifier: verifier.as_ref(),
@@ -417,19 +746,128 @@ async fn run_one(task: NodeTask) -> Result<Dispatched> {
     {
         Ok(attempted) => attempted,
         Err(error) => {
-            let _ = planner.release(&slice_key, &worktree).await;
-            let _ = planner
-                .log(
-                    &format!("ai-team: {slice_key} failed - {error}"),
-                    Some(&slice_key),
-                )
-                .await;
-            let _ = lease.release().await;
+            return Err(
+                release_failed_attempt(&planner, &slice_key, &worktree, lease, error).await,
+            );
+        }
+    };
+    finish_attempt(
+        &mut store,
+        Completion {
+            db_path,
+            planner,
+            slice_key,
+            title,
+            branch,
+            worktree,
+            lease,
+            run_id,
+        },
+        attempted,
+    )
+    .await
+}
+
+async fn resume_one(task: ResumeTask) -> Result<Dispatched> {
+    let ResumeTask {
+        db_path,
+        rig,
+        agent_id,
+        registry,
+        node,
+        slice_key,
+        title,
+        branch,
+        prompt,
+        worktree,
+        lease,
+        planner,
+        run_id,
+        max_repairs,
+        verifier,
+    } = task;
+    let mut store = Store::open(&db_path)?;
+    let attempted = match resume_attempt_until_accepted(
+        AttemptArgs {
+            store: &mut store,
+            rig: &rig,
+            agent_id,
+            registry: &registry,
+            run_id,
+            slice_key: &slice_key,
+            branch: &branch,
+            worktree: &worktree,
+            max_repairs,
+            verifier: verifier.as_ref(),
+            first: prompt,
+        },
+        node.clone(),
+    )
+    .await
+    {
+        Ok(attempted) => attempted,
+        Err(error) => {
+            // Recovery must be retryable too. Keep both the Pi session address and the
+            // dirty lease; returning it here would make awt clean away partial work.
+            let _ = store.release_node_supervision(node.id, i64::from(std::process::id()));
+            lease.preserve();
             return Err(error);
         }
     };
-    let (mut status, fallout) = settle_status(
+    finish_attempt(
         &mut store,
+        Completion {
+            db_path,
+            planner,
+            slice_key,
+            title,
+            branch,
+            worktree,
+            lease,
+            run_id,
+        },
+        attempted,
+    )
+    .await
+}
+
+struct Completion {
+    db_path: PathBuf,
+    planner: Planner,
+    slice_key: String,
+    title: String,
+    branch: String,
+    worktree: PathBuf,
+    lease: crate::neighbours::Lease,
+    run_id: i64,
+}
+
+async fn finish_attempt(
+    store: &mut Store,
+    completion: Completion,
+    attempted: Attempted,
+) -> Result<Dispatched> {
+    let Completion {
+        db_path,
+        planner,
+        slice_key,
+        title,
+        branch,
+        worktree,
+        lease,
+        run_id,
+    } = completion;
+    let Attempted {
+        outcome,
+        rejection,
+        attempt,
+        node_run_id,
+        role,
+        exhausted,
+        changed,
+    } = attempted;
+    let (mut status, fallout) = settle_status(
+        store,
         run_id,
         node_run_id,
         &role,
@@ -439,15 +877,20 @@ async fn run_one(task: NodeTask) -> Result<Dispatched> {
         attempt,
         exhausted,
     )?;
+    // Close the reply window before committing and returning the lease. Leaving the row
+    // `running` during landing lets the UI accept a message after the final queue check,
+    // when no supervisor remains to deliver it.
+    store.set_node_status(node_run_id, status)?;
 
-    let branch = land(
-        &mut store,
+    let landed_branch = land(
+        store,
         &planner,
         Landing {
             worktree: &worktree,
             node_run_id,
             slice_key: &slice_key,
             title: &title,
+            branch: &branch,
             changed: &changed,
         },
         &mut status,
@@ -464,6 +907,10 @@ async fn run_one(task: NodeTask) -> Result<Dispatched> {
         rejection.as_deref(),
     )
     .await;
+    // Delivery and notification are deliberately best-effort. The node row and event
+    // stream are the truth; neither remote system may turn accepted local work into
+    // failed work.
+    let _ = notify_node(store, node_run_id, &slice_key, &role, status);
 
     let dispatched = Dispatched {
         slice_key,
@@ -472,12 +919,92 @@ async fn run_one(task: NodeTask) -> Result<Dispatched> {
         node_run_id,
         status,
         outcome,
-        branch,
+        branch: landed_branch,
     };
-    // Returned explicitly so a failure to return is reported rather than swallowed by
-    // the Drop fallback.
-    lease.release().await?;
+    release_and_deliver(lease, &db_path, &dispatched).await?;
     Ok(dispatched)
+}
+
+async fn release_failed_attempt(
+    planner: &Planner,
+    slice_key: &str,
+    worktree: &Path,
+    lease: crate::neighbours::Lease,
+    error: Error,
+) -> Error {
+    let _ = planner.release(slice_key, worktree).await;
+    let _ = planner
+        .log(
+            &format!("ai-team: {slice_key} failed - {error}"),
+            Some(slice_key),
+        )
+        .await;
+    let _ = lease.release().await;
+    error
+}
+
+async fn release_and_deliver(
+    lease: crate::neighbours::Lease,
+    db_path: &Path,
+    dispatched: &Dispatched,
+) -> Result<()> {
+    // Returned explicitly so a failure to return is reported rather than swallowed by
+    // the Drop fallback. Remote delivery uses the surviving branch and never needs to
+    // hold the scarce maker lease while GitHub checks run.
+    lease.release().await?;
+    if dispatched.status == NodeStatus::Done && dispatched.branch.is_some() {
+        crate::delivery::automatic_delivery(db_path, dispatched.node_run_id).await;
+    }
+    Ok(())
+}
+
+fn notify_node(
+    store: &mut Store,
+    node_run_id: i64,
+    slice_key: &str,
+    role: &str,
+    status: NodeStatus,
+) -> Result<()> {
+    let node = store.node_run(node_run_id)?;
+    let run = store.run(node.run_id)?;
+    let (kind, title, body) = match status {
+        NodeStatus::Done => (
+            "completed",
+            format!("{role} finished"),
+            format!("{slice_key} is built and ready to review."),
+        ),
+        NodeStatus::Parked => (
+            "input_required",
+            format!("{role} needs your input"),
+            node.blocked_reason
+                .unwrap_or_else(|| format!("{slice_key} is waiting for your reply.")),
+        ),
+        NodeStatus::Failed | NodeStatus::Blocked => (
+            "failed",
+            format!("{role} stopped"),
+            node.blocked_reason
+                .unwrap_or_else(|| format!("{slice_key} did not finish.")),
+        ),
+        NodeStatus::Cancelled => (
+            "follow_up",
+            format!("{role} was cancelled"),
+            format!("{slice_key} was cancelled before it finished."),
+        ),
+        NodeStatus::Queued | NodeStatus::Running => return Ok(()),
+    };
+    let project = store.project(run.project_id)?;
+    store.notify_once(crate::model::NewNotification {
+        dedupe_key: format!("node:{node_run_id}:{}", status.as_str()),
+        project_id: run.project_id,
+        workspace_path: run.workspace_path,
+        run_id: Some(run.id),
+        node_run_id: Some(node_run_id),
+        kind: kind.into(),
+        title: format!("{} · {title}", project.name),
+        body,
+        action_path: None,
+    })?;
+    Ok(())
 }
 
 /// Slices paired with the seat that will build them, and the ones nobody can.
@@ -518,6 +1045,22 @@ fn route(store: &Store, team_id: i64, slices: Vec<Slice>) -> Result<Routing> {
     Ok((routed, unrouted))
 }
 
+fn lease_holder(run_id: i64, slice_key: &str, role: &str) -> String {
+    format!("ai-team run-{run_id} {slice_key} {role}")
+}
+
+fn slice_branch(slice: &Slice) -> String {
+    slice
+        .branch
+        .as_deref()
+        .map(str::trim)
+        .filter(|branch| !branch.is_empty())
+        .map_or_else(
+            || format!("ai-team/{}", slice.key.to_lowercase()),
+            str::to_string,
+        )
+}
+
 /// Commit the work onto a branch, before the lease goes back.
 ///
 /// `awt return` cleans and resets the worktree, so this is the only thing standing
@@ -534,22 +1077,22 @@ async fn land(
         node_run_id,
         slice_key,
         title,
+        branch,
         changed,
     } = work;
     if *status != NodeStatus::Done {
         return Ok(None);
     }
-    let name = format!("ai-team/{}", slice_key.to_lowercase());
     match git::commit_paths(
         worktree,
-        &name,
+        branch,
         &format!("{slice_key}: {}", title.trim()),
         changed,
     )
     .await
     {
         Ok(Some(sha)) => {
-            store.attach_worktree(node_run_id, &worktree.to_string_lossy(), Some(&name), None)?;
+            store.attach_worktree(node_run_id, &worktree.to_string_lossy(), Some(branch), None)?;
 
             // A review, so the work is *reviewable*. Nothing opened one before this, which
             // meant the Review surface was always empty in real use - the team produced
@@ -563,7 +1106,7 @@ async fn land(
                 &format!("{slice_key}: {}", title.trim()),
                 Some(node.run_id),
                 Some(node_run_id),
-                Some(&name),
+                Some(branch),
             ) {
                 // Not fatal: the work is committed and on a branch. A review that could not
                 // be opened costs a surface, not the slice.
@@ -577,14 +1120,14 @@ async fn land(
                 )?;
             }
 
-            let _ = planner.set_branch(slice_key, &name).await;
+            let _ = planner.set_branch(slice_key, branch).await;
             let _ = planner
                 .log(
-                    &format!("ai-team built {slice_key} on {name} ({})", &sha[..12]),
+                    &format!("ai-team built {slice_key} on {branch} ({})", &sha[..12]),
                     Some(slice_key),
                 )
                 .await;
-            Ok(Some(name))
+            Ok(Some(branch.to_string()))
         }
         Ok(None) => {
             // A turn that reports done but changed no file did not build the slice.
@@ -636,6 +1179,74 @@ impl Attempted {
         }
     }
 
+    /// A provider/runtime turn failed before there was any work to verify. Preserve its
+    /// diagnostic, but do not spend a repair on gates for an implementation that never ran.
+    fn failed(
+        outcome: TurnOutcome,
+        node: &crate::model::NodeRun,
+        attempt: i64,
+        changed: Vec<String>,
+        reason: String,
+    ) -> Attempted {
+        Attempted {
+            outcome,
+            rejection: Some(reason),
+            attempt,
+            node_run_id: node.id,
+            role: node.role.clone(),
+            exhausted: false,
+            changed,
+        }
+    }
+
+    /// Stopped because every eligible subscription account was unavailable. This is a
+    /// terminal rejection, but not a repair-budget exhaustion.
+    fn unavailable(
+        outcome: TurnOutcome,
+        node: &crate::model::NodeRun,
+        attempt: i64,
+        changed: Vec<String>,
+        reason: String,
+    ) -> Attempted {
+        Attempted {
+            outcome,
+            rejection: Some(reason),
+            attempt,
+            node_run_id: node.id,
+            role: node.role.clone(),
+            exhausted: false,
+            changed,
+        }
+    }
+
+    fn quota_unavailable(
+        outcome: TurnOutcome,
+        node: &crate::model::NodeRun,
+        attempt: i64,
+        changed: Vec<String>,
+        slice_key: &str,
+        quota: &str,
+    ) -> Attempted {
+        Attempted::unavailable(
+            outcome,
+            node,
+            attempt,
+            changed,
+            format!(
+                "{slice_key} cannot continue: every reachable allowed model subscription is unavailable; last response: {quota}"
+            ),
+        )
+    }
+
+    fn refused(
+        node: &crate::model::NodeRun,
+        attempt: i64,
+        changed: Vec<String>,
+        reason: String,
+    ) -> Attempted {
+        Attempted::stopped(TurnOutcome::default(), node, attempt, changed, reason)
+    }
+
     /// Stopped without being accepted: out of repairs, or out of budget.
     fn stopped(
         outcome: TurnOutcome,
@@ -665,10 +1276,167 @@ struct AttemptArgs<'a> {
     registry: &'a ModelRegistry,
     run_id: i64,
     slice_key: &'a str,
+    branch: &'a str,
     worktree: &'a Path,
     max_repairs: i64,
     verifier: Option<&'a VerifierSeat>,
     first: String,
+}
+
+struct AttemptStart<'a> {
+    rig: &'a Rig,
+    agent_id: i64,
+    registry: &'a ModelRegistry,
+    run_id: i64,
+    slice_key: &'a str,
+    branch: &'a str,
+    worktree: &'a Path,
+    resolution: Option<&'a crate::ModelResolution>,
+    instruction: &'a str,
+}
+
+enum StartedAttempt {
+    Turn(crate::model::NodeRun, TurnOutcome),
+    Refused(crate::model::NodeRun, String),
+}
+
+async fn start_attempt(store: &mut Store, start: AttemptStart<'_>) -> Result<StartedAttempt> {
+    let node = open_attempt(store, &start)?;
+    if let Some(exceeded) = crate::guardrails::run_may_continue(store, start.run_id)? {
+        return Ok(StartedAttempt::Refused(node, exceeded.reason));
+    }
+    store.set_node_status(node.id, NodeStatus::Running)?;
+    match take_turn(
+        store,
+        start.rig,
+        start.agent_id,
+        node.id,
+        start.worktree,
+        start.instruction,
+    )
+    .await
+    {
+        Ok(turn) => Ok(StartedAttempt::Turn(node, turn)),
+        Err(error) => {
+            store.set_node_status(node.id, NodeStatus::Failed)?;
+            Err(error)
+        }
+    }
+}
+
+struct AttemptReview<'a> {
+    rig: &'a Rig,
+    agent_id: i64,
+    node: &'a crate::model::NodeRun,
+    worktree: &'a Path,
+    verifier: Option<&'a VerifierSeat>,
+    attempt: i64,
+    turn: TurnOutcome,
+    changed: Vec<String>,
+}
+
+enum ReviewedAttempt {
+    Finished(Box<Attempted>),
+    Rejected(Box<(TurnOutcome, Vec<String>, String)>),
+}
+
+async fn review_attempt(store: &mut Store, review: AttemptReview<'_>) -> Result<ReviewedAttempt> {
+    let AttemptReview {
+        rig,
+        agent_id,
+        node,
+        worktree,
+        verifier,
+        attempt,
+        mut turn,
+        mut changed,
+    } = review;
+    loop {
+        // Captured before `check` runs the gates: running them writes build output into
+        // the worktree, and that is ai-team's mess rather than the agent's work.
+        for path in crate::neighbours::git::changed_paths(worktree).await? {
+            if !changed.contains(&path) {
+                changed.push(path);
+            }
+        }
+        if outcome_status(&turn) != NodeStatus::Done {
+            let reason = crate::supervise::outcome::provider_diagnostic(&turn)
+                .unwrap_or_else(|| "the model turn failed before completing".to_string());
+            return Ok(ReviewedAttempt::Finished(Box::new(Attempted::failed(
+                turn, node, attempt, changed, reason,
+            ))));
+        }
+        if store.waiting_for_node(agent_id, node.id)? > 0 {
+            turn = take_replied_turn(store, rig, agent_id, node.id, worktree).await?;
+            continue;
+        }
+
+        let verdict = check(store, node.id, worktree, rig, verifier).await?;
+        // Checks can take minutes. A reply written during them still belongs in this
+        // conversation and must be applied before accepting and returning the lease.
+        if store.waiting_for_node(agent_id, node.id)? > 0 {
+            turn = take_replied_turn(store, rig, agent_id, node.id, worktree).await?;
+            continue;
+        }
+        return Ok(match verdict {
+            Verdict::Accepted => ReviewedAttempt::Finished(Box::new(Attempted::settled(
+                turn, node, attempt, changed,
+            ))),
+            Verdict::Unavailable(reason) => ReviewedAttempt::Finished(Box::new(
+                Attempted::unavailable(turn, node, attempt, changed, reason),
+            )),
+            Verdict::Rejected(reason) => {
+                ReviewedAttempt::Rejected(Box::new((turn, changed, reason)))
+            }
+        });
+    }
+}
+
+struct RejectedAttempt<'a> {
+    run_id: i64,
+    slice_key: &'a str,
+    node: &'a crate::model::NodeRun,
+    attempt: i64,
+    max_repairs: i64,
+    turn: TurnOutcome,
+    changed: Vec<String>,
+    reason: String,
+}
+
+enum RepairDecision {
+    Stop(Box<Attempted>),
+    Continue(String, Vec<String>),
+}
+
+fn after_rejection(store: &mut Store, rejected: RejectedAttempt<'_>) -> Result<RepairDecision> {
+    let RejectedAttempt {
+        run_id,
+        slice_key,
+        node,
+        attempt,
+        max_repairs,
+        turn,
+        changed,
+        reason,
+    } = rejected;
+    record_rejection(
+        store, run_id, node.id, slice_key, &node.role, attempt, &reason,
+    )?;
+    if let Some(exceeded) = crate::guardrails::node_may_continue(store, node.id)? {
+        return Ok(RepairDecision::Stop(Box::new(Attempted::stopped(
+            turn,
+            node,
+            attempt,
+            changed,
+            format!("{}; last rejection: {reason}", exceeded.reason),
+        ))));
+    }
+    if attempt >= max_repairs {
+        return Ok(RepairDecision::Stop(Box::new(Attempted::stopped(
+            turn, node, attempt, changed, reason,
+        ))));
+    }
+    Ok(RepairDecision::Continue(reason, changed))
 }
 
 /// Build, check, repair, until it is accepted or the repair budget is spent.
@@ -681,6 +1449,25 @@ struct AttemptArgs<'a> {
 /// All of it happens inside the lease: the worktree is reset when it goes back, so there
 /// is no checking the work afterwards.
 async fn attempt_until_accepted(args: AttemptArgs<'_>) -> Result<Attempted> {
+    drive_attempts(args, None).await
+}
+
+/// Continue an interrupted maker on its existing node row, session and checkout before
+/// rejoining the ordinary check/repair loop. The interrupted attempt is evidence, not a
+/// failed repair, so it keeps its original attempt number.
+async fn resume_attempt_until_accepted(
+    args: AttemptArgs<'_>,
+    node: crate::model::NodeRun,
+) -> Result<Attempted> {
+    let turn =
+        take_replied_turn(args.store, args.rig, args.agent_id, node.id, args.worktree).await?;
+    drive_attempts(args, Some((node, turn))).await
+}
+
+async fn drive_attempts(
+    args: AttemptArgs<'_>,
+    mut resumed: Option<(crate::model::NodeRun, TurnOutcome)>,
+) -> Result<Attempted> {
     let AttemptArgs {
         store,
         rig,
@@ -688,85 +1475,264 @@ async fn attempt_until_accepted(args: AttemptArgs<'_>) -> Result<Attempted> {
         registry,
         run_id,
         slice_key,
+        branch,
         worktree,
         max_repairs,
         verifier,
         first,
     } = args;
 
-    let mut attempt = 0;
+    let mut attempt = resumed
+        .as_ref()
+        .map_or(0, |(node, _)| node.attempt.saturating_sub(1));
     let mut instruction = first;
-    let mut changed: Vec<String> = Vec::new();
+    let (mut changed, mut exhausted_providers) = (Vec::new(), Vec::new());
+    let mut runtime_resolution: Option<crate::ModelResolution> = None;
 
     loop {
-        let node = open_attempt(store, run_id, agent_id, slice_key, registry, worktree)?;
-        let node_run_id = node.id;
-        if let Some(exceeded) = crate::guardrails::run_may_continue(store, run_id)? {
-            return Ok(Attempted::stopped(
-                TurnOutcome::default(),
-                &node,
-                attempt,
-                changed,
-                exceeded.reason,
+        let (node, turn) = if let Some(resumed) = resumed.take() {
+            resumed
+        } else {
+            match start_attempt(
+                store,
+                AttemptStart {
+                    rig,
+                    agent_id,
+                    registry,
+                    run_id,
+                    slice_key,
+                    branch,
+                    worktree,
+                    resolution: runtime_resolution.as_ref(),
+                    instruction: &instruction,
+                },
+            )
+            .await?
+            {
+                StartedAttempt::Turn(node, turn) => (node, turn),
+                StartedAttempt::Refused(node, reason) => {
+                    return Ok(Attempted::refused(&node, attempt, changed, reason));
+                }
+            }
+        };
+        if let Some(quota) = crate::supervise::quota_exhaustion(&turn) {
+            runtime_resolution = record_quota_and_resolve(
+                store,
+                &mut exhausted_providers,
+                QuotaFailover::new(registry, run_id, agent_id, slice_key, &node, &quota),
+            )?;
+            if runtime_resolution.is_some() {
+                // Repeat the instruction without spending a repair or running gates.
+                continue;
+            }
+            return Ok(Attempted::quota_unavailable(
+                turn, &node, attempt, changed, slice_key, &quota,
             ));
         }
-        store.set_node_status(node_run_id, NodeStatus::Running)?;
 
-        let turn = match take_turn(store, rig, agent_id, node_run_id, worktree, &instruction).await
+        // Keep this node and session alive through replies and checks. A background turn
+        // after this function returned would race `awt return` cleaning its checkout.
+        let (turn, next_changed, reason) = match review_attempt(
+            store,
+            AttemptReview {
+                rig,
+                agent_id,
+                node: &node,
+                worktree,
+                verifier,
+                attempt,
+                turn,
+                changed,
+            },
+        )
+        .await?
         {
-            Ok(turn) => turn,
+            ReviewedAttempt::Finished(finished) => return Ok(*finished),
+            ReviewedAttempt::Rejected(rejected) => *rejected,
+        };
+
+        match after_rejection(
+            store,
+            RejectedAttempt {
+                run_id,
+                slice_key,
+                node: &node,
+                attempt,
+                max_repairs,
+                turn,
+                changed: next_changed,
+                reason,
+            },
+        )? {
+            RepairDecision::Stop(stopped) => return Ok(*stopped),
+            RepairDecision::Continue(reason, next_changed) => {
+                attempt += 1;
+                instruction = repair_prompt(slice_key, &reason);
+                changed = next_changed;
+            }
+        }
+    }
+}
+
+struct QuotaFailover<'a> {
+    registry: &'a ModelRegistry,
+    run_id: i64,
+    agent_id: i64,
+    subject: &'a str,
+    node: &'a crate::model::NodeRun,
+    quota: &'a str,
+}
+
+impl<'a> QuotaFailover<'a> {
+    fn new(
+        registry: &'a ModelRegistry,
+        run_id: i64,
+        agent_id: i64,
+        subject: &'a str,
+        node: &'a crate::model::NodeRun,
+        quota: &'a str,
+    ) -> Self {
+        Self {
+            registry,
+            run_id,
+            agent_id,
+            subject,
+            node,
+            quota,
+        }
+    }
+}
+
+fn record_quota_and_resolve(
+    store: &mut Store,
+    exhausted_providers: &mut Vec<crate::Provider>,
+    failover: QuotaFailover<'_>,
+) -> Result<Option<crate::ModelResolution>> {
+    let QuotaFailover {
+        registry,
+        run_id,
+        agent_id,
+        subject,
+        node,
+        quota,
+    } = failover;
+    let provider = node.provider;
+    if !exhausted_providers.contains(&provider) {
+        exhausted_providers.push(provider);
+    }
+    let detail = format!("{provider} subscription unavailable: {quota}");
+    store.block_node(node.id, &truncate_reason(&detail))?;
+    store.set_node_status(node.id, NodeStatus::Blocked)?;
+    store.append_event(
+        run_id,
+        NewEvent::new(
+            EventKind::Note,
+            format!("{subject}: {detail}; looking for an eligible fallback"),
+        )
+        .on_node(node.id)
+        .by(&node.role)
+        .with(serde_json::json!({
+            "availability": "quota_exhausted",
+            "provider": provider,
+            "model": node.model,
+            "reason": quota,
+        })),
+    )?;
+
+    let agent = store.agent(agent_id)?;
+    registry.quota_fallback(
+        &agent,
+        exhausted_providers,
+        &format!("{provider} subscription quota was exhausted"),
+    )
+}
+
+enum FreshTurn {
+    Finished(Box<(crate::model::NodeRun, TurnOutcome)>),
+    Unavailable { reason: String },
+}
+
+/// Start a fresh node and move it across subscription accounts only when Pi reports a
+/// recognized quota boundary. Generic model/network/tool failures return normally and
+/// retain their ordinary failure semantics.
+#[allow(clippy::too_many_arguments)]
+async fn take_fresh_turn<F>(
+    store: &mut Store,
+    rig: &Rig,
+    run_id: i64,
+    agent_id: i64,
+    slice_key: Option<&str>,
+    worktree: &Path,
+    instruction: &str,
+    mut on_event: F,
+) -> Result<FreshTurn>
+where
+    F: FnMut(&crate::PiEvent) + Send,
+{
+    let mut exhausted_providers = Vec::new();
+    let mut resolution: Option<crate::ModelResolution> = None;
+
+    loop {
+        let node = match resolution.as_ref() {
+            Some(resolution) => {
+                store.dispatch_with_resolution(run_id, agent_id, slice_key, resolution)?
+            }
+            None => store.dispatch(run_id, agent_id, slice_key, &rig.registry)?,
+        };
+        store.attach_worktree(node.id, &worktree.to_string_lossy(), None, None)?;
+        store.set_node_status(node.id, NodeStatus::Running)?;
+        let turn = rig.seat(store, agent_id, node.id, worktree, instruction)?;
+        let outcome = match crate::run_pi_turn(store, node.id, &turn, |event| on_event(event)).await
+        {
+            Ok((_, outcome)) => outcome,
             Err(error) => {
-                store.set_node_status(node_run_id, NodeStatus::Failed)?;
+                store.set_node_status(node.id, NodeStatus::Failed)?;
                 return Err(error);
             }
         };
 
-        // Captured here, before `check` runs the gates: running them writes build output
-        // into the worktree, and that is ai-team's mess rather than the agent's work.
-        for path in crate::neighbours::git::changed_paths(worktree).await? {
-            if !changed.contains(&path) {
-                changed.push(path);
-            }
-        }
-
-        // A parked turn is waiting on a person, and checking an unfinished thing would
-        // reject it for not being finished. Leave it parked with its question intact.
-        if outcome_status(&turn) != NodeStatus::Done {
-            return Ok(Attempted::settled(turn, &node, attempt, changed));
-        }
-
-        let reason = match check(store, node_run_id, worktree, rig, verifier).await? {
-            Verdict::Accepted => return Ok(Attempted::settled(turn, &node, attempt, changed)),
-            Verdict::Rejected(reason) => reason,
+        let Some(quota) = crate::supervise::quota_exhaustion(&outcome) else {
+            store.set_node_status(node.id, outcome_status(&outcome))?;
+            return Ok(FreshTurn::Finished(Box::new((node, outcome))));
         };
-
-        record_rejection(
+        resolution = record_quota_and_resolve(
             store,
-            run_id,
-            node_run_id,
-            slice_key,
-            &node.role,
-            attempt,
-            &reason,
+            &mut exhausted_providers,
+            QuotaFailover {
+                registry: &rig.registry,
+                run_id,
+                agent_id,
+                subject: &node.role,
+                node: &node,
+                quota: &quota,
+            },
         )?;
-
-        // A cap reached mid-repair stops the repairing. Otherwise a node in a retry
-        // loop spends the whole run's budget proving it cannot do the slice.
-        if let Some(exceeded) = crate::guardrails::node_may_continue(store, node_run_id)? {
-            return Ok(Attempted::stopped(
-                turn,
-                &node,
-                attempt,
-                changed,
-                format!("{}; last rejection: {reason}", exceeded.reason),
-            ));
+        if resolution.is_none() {
+            return Ok(FreshTurn::Unavailable {
+                reason: format!(
+                    "every reachable allowed model subscription is unavailable; last response: {quota}"
+                ),
+            });
         }
-        if attempt >= max_repairs {
-            return Ok(Attempted::stopped(turn, &node, attempt, changed, reason));
-        }
-        attempt += 1;
-        instruction = repair_prompt(slice_key, &reason);
     }
+}
+
+async fn take_replied_turn(
+    store: &mut Store,
+    rig: &Rig,
+    agent_id: i64,
+    node_run_id: i64,
+    worktree: &Path,
+) -> Result<TurnOutcome> {
+    take_turn(
+        store,
+        rig,
+        agent_id,
+        node_run_id,
+        worktree,
+        "Continue the same task, taking the person's reply into account.",
+    )
+    .await
 }
 
 /// One turn against one node row, with the process always stopped afterwards.
@@ -783,10 +1749,23 @@ async fn take_turn(
     worktree: &Path,
     instruction: &str,
 ) -> Result<TurnOutcome> {
+    let pid = i64::from(std::process::id());
+    let node = store.node_run(node_run_id)?;
+    match node.supervisor_pid {
+        Some(owner) if owner == pid => {}
+        None => {
+            store.claim_node_supervision(node_run_id, pid, None)?;
+        }
+        Some(_) => {
+            return Err(Error::invalid(
+                "that turn is already supervised by another ai-team process",
+            ));
+        }
+    }
     // Anything said to this seat while it was busy goes in front of the instruction, in
     // the order it was said (M9-S42). A correction is only worth anything before the work
     // it corrects, so it leads rather than trails.
-    let waiting = store.take_pending(agent_id)?;
+    let waiting = store.take_pending_for(agent_id, node_run_id)?;
     let instruction = if waiting.is_empty() {
         instruction.to_string()
     } else {
@@ -805,7 +1784,7 @@ async fn take_turn(
             waiting.join("\n\n")
         )
     };
-    let turn = rig.seat(store, agent_id, worktree, &instruction)?;
+    let turn = rig.seat(store, agent_id, node_run_id, worktree, &instruction)?;
     let (_, outcome) = crate::run_pi_turn(store, node_run_id, &turn, |_| {}).await?;
     Ok(outcome)
 }
@@ -816,6 +1795,7 @@ struct Landing<'a> {
     node_run_id: i64,
     slice_key: &'a str,
     title: &'a str,
+    branch: &'a str,
     changed: &'a [String],
 }
 
@@ -912,16 +1892,27 @@ fn settle_status(
 ///
 /// The row is opened before the budget is checked, so a refusal has somewhere to be
 /// recorded; it is only marked running once the budget allows it.
-fn open_attempt(
-    store: &mut Store,
-    run_id: i64,
-    agent_id: i64,
-    slice_key: &str,
-    registry: &ModelRegistry,
-    worktree: &Path,
-) -> Result<crate::model::NodeRun> {
-    let node = store.dispatch(run_id, agent_id, Some(slice_key), registry)?;
-    store.attach_worktree(node.id, &worktree.to_string_lossy(), None, None)?;
+fn open_attempt(store: &mut Store, start: &AttemptStart<'_>) -> Result<crate::model::NodeRun> {
+    let node = match start.resolution {
+        Some(resolution) => store.dispatch_with_resolution(
+            start.run_id,
+            start.agent_id,
+            Some(start.slice_key),
+            resolution,
+        )?,
+        None => store.dispatch(
+            start.run_id,
+            start.agent_id,
+            Some(start.slice_key),
+            start.registry,
+        )?,
+    };
+    store.attach_worktree(
+        node.id,
+        &start.worktree.to_string_lossy(),
+        Some(start.branch),
+        None,
+    )?;
     Ok(node)
 }
 
@@ -970,13 +1961,13 @@ fn truncate_reason(reason: &str) -> String {
 #[derive(Debug, Clone)]
 struct VerifierSeat {
     agent_id: i64,
-    registry: ModelRegistry,
 }
 
 /// The answer to "is this actually done?".
 enum Verdict {
     Accepted,
     Rejected(String),
+    Unavailable(String),
 }
 
 /// Run the project's own gates, then let the verifier read what the maker left.
@@ -1047,43 +2038,37 @@ async fn check(
         return Ok(Verdict::Accepted);
     };
 
-    let node = store.dispatch(run_id, verifier.agent_id, None, &verifier.registry)?;
-    store.attach_worktree(node.id, &worktree.to_string_lossy(), None, None)?;
-    store.set_node_status(node.id, NodeStatus::Running)?;
-
     // Captured off the stream rather than read back out of the event table. A node's
     // Note events also carry ai-team's own bookkeeping - the model-fallback notice, for
     // one - and parsing that as the verifier's answer rejects work it never looked at.
     let mut said = String::new();
-    let verdict = async {
-        let turn = rig.seat(
-            store,
-            verifier.agent_id,
-            worktree,
-            &verify_prompt(&evidence),
-        )?;
-        let (_, outcome) = crate::run_pi_turn(store, node.id, &turn, |event| {
+    match take_fresh_turn(
+        store,
+        rig,
+        run_id,
+        verifier.agent_id,
+        None,
+        worktree,
+        &verify_prompt(&evidence),
+        |event| {
             if let Some(message) = event.assistant_message() {
                 said = message;
             }
-        })
-        .await?;
-        Ok::<_, Error>(outcome)
-    }
-    .await;
-
-    let outcome = match verdict {
-        Ok(outcome) => outcome,
+        },
+    )
+    .await
+    {
+        Ok(FreshTurn::Finished(_)) => Ok(read_verdict(&said)),
+        Ok(FreshTurn::Unavailable { reason }) => Ok(Verdict::Unavailable(format!(
+            "the verifier could not run because {reason}"
+        ))),
         Err(error) => {
-            store.set_node_status(node.id, NodeStatus::Failed)?;
             // A verifier that could not run has not approved anything.
-            return Ok(Verdict::Rejected(format!(
+            Ok(Verdict::Rejected(format!(
                 "the verifier could not run: {error}"
-            )));
+            )))
         }
-    };
-    store.set_node_status(node.id, outcome_status(&outcome))?;
-    Ok(read_verdict(&said))
+    }
 }
 
 /// Read the verifier's answer.
@@ -1177,6 +2162,24 @@ mod tests {
     }
 
     #[test]
+    fn a_lease_holder_names_the_run_slice_and_role() {
+        assert_eq!(
+            lease_holder(7, "S1", "frontend"),
+            "ai-team run-7 S1 frontend"
+        );
+    }
+
+    #[test]
+    fn a_slice_uses_the_branch_the_plan_declared() {
+        let mut planned = slice("S1", "Touches: crates/**");
+        planned.branch = Some("feature/stack-one".into());
+        assert_eq!(slice_branch(&planned), "feature/stack-one");
+
+        planned.branch = None;
+        assert_eq!(slice_branch(&planned), "ai-team/s1");
+    }
+
+    #[test]
     fn a_slice_goes_to_the_seat_whose_zone_owns_its_paths() {
         let (store, team_id) = team();
         let (routed, unrouted) = route(
@@ -1235,6 +2238,96 @@ mod tests {
         // Not "unroutable" either: there is nothing wrong with them, they are just not
         // this run's to take.
         assert!(unrouted.is_empty(), "{unrouted:?}");
+    }
+
+    #[tokio::test]
+    async fn a_provider_error_skips_gates_verifier_and_repairs() {
+        let (mut store, team_id) = team();
+        let project_id = store.team(team_id).unwrap().project_id.unwrap();
+        let run = store
+            .create_run(project_id, "build S1", crate::RunTrigger::Manual)
+            .unwrap();
+        let agents = store.agents(team_id).unwrap();
+        let maker = agents
+            .iter()
+            .find(|agent| agent.role == "frontend")
+            .unwrap();
+        let verifier = agents
+            .iter()
+            .find(|agent| agent.role == crate::VERIFIER_ROLE)
+            .unwrap();
+        let registry = ModelRegistry::local_only();
+        let node = store
+            .dispatch(run.id, maker.id, Some("S1"), &registry)
+            .unwrap();
+
+        let repo = tempfile::tempdir().unwrap();
+        let git = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(repo.path())
+                .status()
+                .unwrap();
+            assert!(status.success(), "git {args:?}");
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.email", "test@example.invalid"]);
+        git(&["config", "user.name", "ai-team test"]);
+        std::fs::write(
+            repo.path().join("package.json"),
+            r#"{"scripts":{"test":"touch gate-ran"}}"#,
+        )
+        .unwrap();
+        git(&["add", "package.json"]);
+        git(&["commit", "-qm", "fixture"]);
+
+        let rig = Rig {
+            support: repo.path().into(),
+            plan_root: repo.path().into(),
+            sources: Vec::new(),
+            registry,
+        };
+        let reviewed = review_attempt(
+            &mut store,
+            AttemptReview {
+                rig: &rig,
+                agent_id: maker.id,
+                node: &node,
+                worktree: repo.path(),
+                verifier: Some(&VerifierSeat {
+                    agent_id: verifier.id,
+                }),
+                attempt: 0,
+                turn: TurnOutcome {
+                    provider_message: Some(
+                        "Not logged in · Please run /login\nNot logged in · Please run /login"
+                            .into(),
+                    ),
+                    terminal: Some(crate::TerminalState::Failed),
+                    ..TurnOutcome::default()
+                },
+                changed: Vec::new(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let ReviewedAttempt::Finished(finished) = reviewed else {
+            panic!("a provider error must finish rather than enter the repair path");
+        };
+        assert_eq!(finished.attempt, 0);
+        assert_eq!(
+            finished.rejection.as_deref(),
+            Some(
+                "The selected provider is not signed in. Open Settings and sign in before retrying this slice."
+            )
+        );
+        assert!(!repo.path().join("gate-ran").exists(), "a gate ran");
+        assert_eq!(
+            store.node_runs(run.id).unwrap().len(),
+            1,
+            "a verifier or repair node was dispatched"
+        );
     }
 
     #[test]

@@ -82,10 +82,13 @@ async fn ignore_amend(_: String, _: String) -> ai_team_core::Result<()> {
 type Queued = Arc<Mutex<Vec<(i64, String)>>>;
 
 /// Records what would have been queued, and for whom.
-fn recorder() -> (Queued, impl FnMut(i64, &str) -> ai_team_core::Result<()>) {
+fn recorder() -> (
+    Queued,
+    impl FnMut(i64, i64, &str) -> ai_team_core::Result<()>,
+) {
     let seen = Arc::new(Mutex::new(Vec::new()));
     let sink = Arc::clone(&seen);
-    (seen, move |agent_id: i64, message: &str| {
+    (seen, move |_node_id: i64, agent_id: i64, message: &str| {
         sink.lock().unwrap().push((agent_id, message.to_string()));
         Ok(())
     })

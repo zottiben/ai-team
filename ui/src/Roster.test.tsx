@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, expect, it, vi } from "vitest";
 
 import { Roster } from "./Roster";
-import type { Seat } from "./api";
+import type { ModelChoice, Seat } from "./api";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -28,7 +28,35 @@ function seat(over: Partial<Seat> = {}): Seat {
   };
 }
 
-function stub(options: { seats?: Seat[]; available?: string[]; project?: string | null } = {}) {
+const choices: ModelChoice[] = [
+  {
+    provider: "claude",
+    runtime_provider: "claude-subscription",
+    model: "claude-opus-5",
+    context: "1M",
+    max_output: "128K",
+    thinking: true,
+    images: true,
+  },
+  {
+    provider: "local",
+    runtime_provider: "llama.cpp",
+    model: "Qwen3-Coder-Next",
+    context: "128K",
+    max_output: "32K",
+    thinking: true,
+    images: false,
+  },
+];
+
+function stub(options: {
+  seats?: Seat[];
+  available?: string[];
+  project?: string | null;
+  models?: ModelChoice[];
+  catalogError?: string | null;
+  delivery?: { push: "manual" | "ask" | "auto"; pr: "manual" | "ask" | "auto"; merge: "manual" | "ask" | "auto" };
+} = {}) {
   const calls: { url: string; method: string; body: unknown }[] = [];
   vi.stubGlobal(
     "fetch",
@@ -53,8 +81,18 @@ function stub(options: { seats?: Seat[]; available?: string[]; project?: string 
           json: async () => ({
             project: options.project ?? null,
             team: null,
+            delivery: options.delivery ?? { push: "ask", pr: "ask", merge: "ask" },
             seats: options.seats ?? [seat()],
             available: options.available ?? ["claude", "local"],
+          }),
+        });
+      }
+      if (url === "/models") {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            models: options.models ?? choices,
+            error: options.catalogError ?? null,
           }),
         });
       }
@@ -63,6 +101,22 @@ function stub(options: { seats?: Seat[]; available?: string[]; project?: string 
   );
   return calls;
 }
+
+it("edits each remote delivery boundary independently", async () => {
+  const user = userEvent.setup();
+  const calls = stub({ project: "widget" });
+  render(<Roster project="widget" onChanged={() => {}} />);
+
+  await user.selectOptions(await screen.findByLabelText("push policy"), "auto");
+
+  await waitFor(() =>
+    expect(calls).toContainEqual({
+      url: "/roster/delivery",
+      method: "POST",
+      body: { project: "widget", push: "auto", pr: "ask", merge: "ask" },
+    }),
+  );
+});
 
 it("shows what a seat will actually run as when that differs from its setting", async () => {
   // D13: a seat set to a provider the machine denies falls back through the ranking. A
@@ -91,33 +145,48 @@ it("says nothing extra when the seat runs as configured", async () => {
   expect(screen.queryByText(/Runs as/)).toBeNull();
 });
 
-it("changing a provider sends it and tells the rest of the window", async () => {
+it("changing a model sends its exact Pi provider and id", async () => {
   const user = userEvent.setup();
   const calls = stub();
   let told = 0;
   render(<Roster onChanged={() => (told += 1)} />);
 
-  await user.selectOptions(await screen.findByLabelText("provider for backend"), "local");
+  await user.selectOptions(
+    await screen.findByLabelText("model for backend"),
+    JSON.stringify(["local", "Qwen3-Coder-Next"]),
+  );
   await waitFor(() => expect(calls.some((c) => c.url === "/roster/3")).toBe(true));
-  expect(calls.find((c) => c.url === "/roster/3")?.body).toEqual({ provider: "local" });
+  expect(calls.find((c) => c.url === "/roster/3")?.body).toEqual({
+    provider: "local",
+    model: "Qwen3-Coder-Next",
+  });
   await waitFor(() => expect(told).toBeGreaterThan(0));
 });
 
-it("the configured provider stays in the picker even when unavailable", async () => {
-  // Otherwise the picker silently shows something the seat is not set to, and the next
-  // change would move it without anybody asking.
-  stub({ seats: [seat({ provider: "zai" })], available: ["claude"] });
+it("lists exact usable Pi model ids and their limits", async () => {
+  stub();
   render(<Roster onChanged={() => {}} />);
 
-  const picker = await screen.findByLabelText("provider for backend");
-  expect((picker as HTMLSelectElement).value).toBe("zai");
-  expect(screen.getByText(/zai \(unavailable\)/)).toBeDefined();
+  await screen.findByLabelText("model for backend");
+  expect(screen.getByText("claude-opus-5 · 1M context · 128K max")).toBeDefined();
+  expect(screen.getByText("Qwen3-Coder-Next · 128K context · 32K max")).toBeDefined();
 });
 
-it("with no provider available it says so rather than offering an empty picker", async () => {
-  stub({ available: [] });
+it("the configured model stays in the picker even when unavailable", async () => {
+  // Otherwise the picker silently shows something the seat is not set to, and the next
+  // change would move it without anybody asking.
+  stub({ seats: [seat({ provider: "zai", model: "glm-old" })] });
   render(<Roster onChanged={() => {}} />);
-  expect(await screen.findByText(/No provider is available/)).toBeDefined();
+
+  const picker = await screen.findByLabelText("model for backend");
+  expect((picker as HTMLSelectElement).value).toBe(JSON.stringify(["zai", "glm-old"]));
+  expect(screen.getByText(/zai-coding-plan\/glm-old \(unavailable\)/)).toBeDefined();
+});
+
+it("with no usable model it says so rather than offering an empty picker", async () => {
+  stub({ models: [] });
+  render(<Roster onChanged={() => {}} />);
+  expect(await screen.findByText(/Pi reports no usable model/)).toBeDefined();
 });
 
 it("defaults are shown when no project is chosen, and are not editable", async () => {
@@ -126,8 +195,67 @@ it("defaults are shown when no project is chosen, and are not editable", async (
   render(<Roster onChanged={() => {}} />);
 
   expect(await screen.findByText(/seats a new project gets/)).toBeDefined();
-  expect((await screen.findByLabelText("provider for backend")).getAttribute("disabled")).not.toBeNull();
+  expect((await screen.findByLabelText("model for backend")).getAttribute("disabled")).not.toBeNull();
   expect(screen.queryByText("Disable")).toBeNull();
+});
+
+it("edits a maker's ownership patterns", async () => {
+  const user = userEvent.setup();
+  const calls = stub({ project: "widget" });
+  render(<Roster project="widget" onChanged={() => {}} />);
+
+  const ownership = await screen.findByLabelText("ownership for backend");
+  await user.clear(ownership);
+  await user.type(ownership, "server/**\nconfig/**");
+  await user.click(screen.getByText("Save ownership"));
+
+  await waitFor(() =>
+    expect(
+      calls.some(
+        (call) =>
+          call.url === "/roster/3" &&
+          JSON.stringify(call.body) === JSON.stringify({ zone: "server/**\nconfig/**" }),
+      ),
+    ).toBe(true),
+  );
+});
+
+it("only re-detects repository ownership after explicit confirmation", async () => {
+  const user = userEvent.setup();
+  const calls = stub({ project: "widget" });
+  render(<Roster project="widget" onChanged={() => {}} />);
+
+  await user.click(await screen.findByText("Detect ownership"));
+  expect(calls.some((call) => call.url === "/roster/ownership/detect")).toBe(false);
+  await user.click(screen.getByText("Replace ownership"));
+  await waitFor(() =>
+    expect(
+      calls.some(
+        (call) =>
+          call.url === "/roster/ownership/detect" &&
+          JSON.stringify(call.body) === JSON.stringify({ project: "widget" }),
+      ),
+    ).toBe(true),
+  );
+});
+
+it("keeps existing model choices until an explicit role-default reset is confirmed", async () => {
+  const user = userEvent.setup();
+  const calls = stub({ project: "widget" });
+  render(<Roster project="widget" onChanged={() => {}} />);
+
+  await user.click(await screen.findByText("Reset role models"));
+  expect(calls.some((call) => call.url === "/roster/models/reset")).toBe(false);
+  await user.click(screen.getByText("Replace models"));
+  await waitFor(() =>
+    expect(
+      calls.some(
+        (call) =>
+          call.url === "/roster/models/reset" &&
+          JSON.stringify(call.body) === JSON.stringify({ project: "widget" }),
+      ),
+    ).toBe(true),
+  );
 });
 
 it("a seat that owns nothing says so rather than showing an empty field", async () => {

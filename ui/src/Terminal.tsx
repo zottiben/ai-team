@@ -21,12 +21,19 @@ import "@xterm/xterm/css/xterm.css";
  * session lives in the server, so closing the window does not kill a `cargo test` four
  * minutes in; reopening finds it by asking which sessions this worktree already has.
  */
-export function TerminalPane({ project, node }: { project: string | null; node: number | null }) {
-  const host = useRef<HTMLDivElement | null>(null);
+export function TerminalPane({
+  project,
+  workspace = null,
+  node,
+}: {
+  project: string | null;
+  workspace?: string | null;
+  node: number | null;
+}) {
   const [id, setId] = useState<number | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
 
-  const where: Where | null = project === null ? null : { project, node };
+  const where: Where | null = project === null ? null : { project, workspace, node };
 
   // Attach to an existing session before opening one, so a reconnecting window rejoins
   // the terminal it had rather than leaving it orphaned and starting another.
@@ -40,14 +47,62 @@ export function TerminalPane({ project, node }: { project: string | null; node: 
       setProblem(error instanceof Error ? error.message : String(error));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [project, node]);
+  }, [project, workspace, node]);
 
   useEffect(() => {
     void attach();
   }, [attach]);
 
+  if (project === null) {
+    return <p className="empty">Pick a project to open a terminal in it.</p>;
+  }
+
+  return (
+    <div className="terminal">
+      <div className="main__header">
+        <h2>Terminal</h2>
+        {id !== null && <span className="faint mono">session {id}</span>}
+        <button
+          type="button"
+          className="button"
+          onClick={() => {
+            if (id !== null) void closeTerminal(id).then(() => setId(null)).then(attach);
+          }}
+        >
+          Restart
+        </button>
+      </div>
+      {problem !== null && <p className="error">{problem}</p>}
+      {id !== null && <Session id={id} />}
+    </div>
+  );
+}
+
+/** xterm needs real colours, so the semantic tokens are resolved once at mount. */
+function readTheme(): Record<string, string> {
+  const styles = getComputedStyle(document.documentElement);
+  const token = (name: string, fallback: string) =>
+    styles.getPropertyValue(name).trim() || fallback;
+  return {
+    background: token("--surface-canvas-default", "#101418"),
+    foreground: token("--text-primary-default", "#e6e9ee"),
+    cursor: token("--accent-action-default", "#6ea8fe"),
+    selectionBackground: token("--accent-action-muted", "#6ea8fe40"),
+  };
+}
+
+/**
+ * One server-side session, attached to an xterm.
+ *
+ * Split out from the pane because a session is not always a worktree's: signing a
+ * provider in opens one in the home directory (D25), and it needs exactly this - a
+ * terminal to watch - without a project to be a terminal *of*.
+ */
+export function Session({ id }: { id: number }) {
+  const host = useRef<HTMLDivElement | null>(null);
+
   useEffect(() => {
-    if (id === null || host.current === null) return undefined;
+    if (host.current === null) return undefined;
 
     const term = new XTerm({
       convertEol: true,
@@ -74,7 +129,7 @@ export function TerminalPane({ project, node }: { project: string | null; node: 
 
     term.onData((text) => void writeTerminal(id, text).catch(() => {}));
 
-    // Polled from an absolute cursor, the same way eve's stream is ingested: a reconnect
+    // Polled from an absolute cursor, the same way Pi's stream is ingested: a reconnect
     // asks from a number it already has rather than replaying everything.
     let cursor = 0;
     let stopped = false;
@@ -105,40 +160,5 @@ export function TerminalPane({ project, node }: { project: string | null; node: 
     };
   }, [id]);
 
-  if (project === null) {
-    return <p className="empty">Pick a project to open a terminal in it.</p>;
-  }
-
-  return (
-    <div className="terminal">
-      <div className="main__header">
-        <h2>Terminal</h2>
-        {id !== null && <span className="faint mono">session {id}</span>}
-        <button
-          type="button"
-          className="button"
-          onClick={() => {
-            if (id !== null) void closeTerminal(id).then(() => setId(null)).then(attach);
-          }}
-        >
-          Restart
-        </button>
-      </div>
-      {problem !== null && <p className="error">{problem}</p>}
-      <div className="terminal__host" ref={host} />
-    </div>
-  );
-}
-
-/** xterm needs real colours, so the semantic tokens are resolved once at mount. */
-function readTheme(): Record<string, string> {
-  const styles = getComputedStyle(document.documentElement);
-  const token = (name: string, fallback: string) =>
-    styles.getPropertyValue(name).trim() || fallback;
-  return {
-    background: token("--surface-canvas-default", "#101418"),
-    foreground: token("--text-primary-default", "#e6e9ee"),
-    cursor: token("--accent-action-default", "#6ea8fe"),
-    selectionBackground: token("--accent-action-muted", "#6ea8fe40"),
-  };
+  return <div className="terminal__host" ref={host} />;
 }

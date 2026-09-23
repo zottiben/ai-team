@@ -63,6 +63,55 @@ impl Harness {
         )
     }
 
+    /// A server whose project is attached to a real git checkout.
+    fn with_repo(repo: &std::path::Path) -> (Harness, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("team.db");
+        let mut store = ai_team_core::Store::init(&path).unwrap();
+        let project = store
+            .create_project(ai_team_core::NewProject {
+                name: "Widget".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        store
+            .attach_repo(
+                project.id,
+                ai_team_core::NewRepo {
+                    main_path: Some(repo.to_string_lossy().into_owned()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        store.seed_default_team(project.id).unwrap();
+        drop(store);
+
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let server = runtime
+            .block_on(Server::bind(ServeOptions {
+                store: Some(ai_team_core::Store::open(&path).unwrap()),
+                ..Default::default()
+            }))
+            .unwrap();
+        let addr = server.addr();
+        let token = server.token().to_string();
+        runtime.spawn(async move {
+            let _ = server.serve().await;
+        });
+        (
+            Harness {
+                addr,
+                token,
+                _runtime: runtime,
+                _dir: None,
+            },
+            dir,
+        )
+    }
+
     /// A server with no database, watching a path one may appear at.
     fn watching(db_path: &std::path::Path) -> Harness {
         Harness::bound(
@@ -165,7 +214,15 @@ impl Harness {
 fn read_response(mut stream: TcpStream) -> Response {
     let mut raw = String::new();
     {
-        stream.read_to_string(&mut raw).unwrap();
+        if let Err(error) = stream.read_to_string(&mut raw) {
+            // macOS may report ECONNRESET after axum has already written a complete
+            // `Connection: close` response. The bytes are authoritative; only fail when
+            // the reset arrived before there was a response to parse.
+            assert!(
+                error.kind() == std::io::ErrorKind::ConnectionReset && !raw.is_empty(),
+                "reading HTTP response: {error}"
+            );
+        }
     }
     {
         let (head, body) = raw.split_once("\r\n\r\n").expect("a complete response");
@@ -299,18 +356,511 @@ fn the_api_is_a_view_over_the_database() {
     assert!(detail.body.contains("\"usage\""), "{}", detail.body);
 }
 
+fn linked_checkout() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
+    let source = tempfile::tempdir().unwrap();
+    let repo = source.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let git = |args: &[&str]| {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {}: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+    git(&["init", "-q", "-b", "main"]);
+    git(&["config", "user.email", "test@example.com"]);
+    git(&["config", "user.name", "test"]);
+    std::fs::write(repo.join("main.txt"), "main").unwrap();
+    git(&["add", "main.txt"]);
+    git(&["commit", "-qm", "main"]);
+    let task = source.path().join("task");
+    git(&[
+        "worktree",
+        "add",
+        "-q",
+        "-b",
+        "feature/task",
+        task.to_str().unwrap(),
+    ]);
+    std::fs::write(task.join("task.txt"), "task").unwrap();
+    (source, repo, task)
+}
+
+fn encoded(path: &std::path::Path) -> String {
+    path.to_string_lossy().replace('/', "%2F")
+}
+
+fn split_run(
+    db: &std::path::Path,
+    repo: &std::path::Path,
+    task: &std::path::Path,
+) -> (i64, i64, i64) {
+    let mut store = ai_team_core::Store::open(db).unwrap();
+    let project = store.find_project("widget").unwrap();
+    let agents = store.agents(project.team_id.unwrap()).unwrap();
+    let run = store
+        .create_run_in(
+            project.id,
+            "build it",
+            ai_team_core::RunTrigger::Manual,
+            Some(task),
+        )
+        .unwrap();
+    let registry = ai_team_core::ModelRegistry::local_only();
+    let writable: Vec<_> = agents.iter().filter(|agent| !agent.read_only).collect();
+    let mut leased_node = 0;
+    for (agent, slice, path, branch) in [
+        (writable[0], "W1", repo, "ai-team/W1"),
+        (writable[1], "W2", task, "feature/task"),
+    ] {
+        let node = store
+            .dispatch(run.id, agent.id, Some(slice), &registry)
+            .unwrap();
+        store
+            .attach_worktree(node.id, path.to_str().unwrap(), Some(branch), None)
+            .unwrap();
+        store
+            .set_node_status(node.id, ai_team_core::NodeStatus::Running)
+            .unwrap();
+        if path == repo {
+            leased_node = node.id;
+        }
+    }
+    (run.id, project.id, leased_node)
+}
+
+#[test]
+fn delivery_approval_policies_are_visible_and_edited_together() {
+    let (app, _dir) = Harness::with_store();
+    let before = app.get("/api/roster?project=widget");
+    assert_eq!(before.status, 200);
+    assert_eq!(before.json()["delivery"]["push"], "ask");
+
+    let changed = app.post(
+        "/api/roster/delivery",
+        r#"{"project":"widget","push":"auto","pr":"ask","merge":"manual"}"#,
+    );
+    assert_eq!(changed.status, 200, "{}", changed.body);
+
+    let after = app.get("/api/roster?project=widget").json();
+    assert_eq!(after["delivery"]["push"], "auto");
+    assert_eq!(after["delivery"]["pr"], "ask");
+    assert_eq!(after["delivery"]["merge"], "manual");
+}
+
+#[test]
+fn manual_delivery_policy_refuses_a_remote_action_before_running_git_or_gh() {
+    let (_source, repo, task) = linked_checkout();
+    let (app, db) = Harness::with_repo(&repo);
+    let mut store = ai_team_core::Store::open(&db.path().join("team.db")).unwrap();
+    let project = store.find_project("widget").unwrap();
+    let team_id = project.team_id.unwrap();
+    store
+        .update_delivery(
+            team_id,
+            ai_team_core::DeliverySettings {
+                push: ai_team_core::DeliveryPolicy::Manual,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let run = store
+        .create_run(project.id, "ship it", ai_team_core::RunTrigger::Manual)
+        .unwrap();
+    let backend = store
+        .agents(team_id)
+        .unwrap()
+        .into_iter()
+        .find(|agent| agent.role == "backend")
+        .unwrap();
+    let node = store
+        .dispatch(
+            run.id,
+            backend.id,
+            Some("S1"),
+            &ai_team_core::ModelRegistry::local_only(),
+        )
+        .unwrap();
+    store
+        .attach_worktree(node.id, repo.to_str().unwrap(), Some("ai-team/s1"), None)
+        .unwrap();
+    store
+        .set_node_status(node.id, ai_team_core::NodeStatus::Done)
+        .unwrap();
+    drop(store);
+
+    let request = serde_json::json!({
+        "action": "push",
+        "project": "widget",
+        "workspace": repo,
+    });
+    let answer = app.post(
+        &format!("/api/runs/{}/nodes/{}/deliver", run.id, node.id),
+        &request.to_string(),
+    );
+    assert_eq!(answer.status, 400, "{}", answer.body);
+    assert!(answer.body.contains("manual"), "{}", answer.body);
+
+    let mut store = ai_team_core::Store::open(&db.path().join("team.db")).unwrap();
+    store
+        .update_delivery(
+            team_id,
+            ai_team_core::DeliverySettings {
+                push: ai_team_core::DeliveryPolicy::Ask,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    drop(store);
+    let wrong_workspace = serde_json::json!({
+        "action": "push",
+        "project": "widget",
+        "workspace": task,
+    });
+    let answer = app.post(
+        &format!("/api/runs/{}/nodes/{}/deliver", run.id, node.id),
+        &wrong_workspace.to_string(),
+    );
+    assert_eq!(answer.status, 400, "{}", answer.body);
+    assert!(
+        answer.body.contains("selected workspace"),
+        "{}",
+        answer.body
+    );
+}
+
+#[test]
+fn ownership_detection_updates_the_editable_team_from_the_repository_stack() {
+    let (_source, repo, _task) = linked_checkout();
+    for name in ["app", "database", "resources"] {
+        std::fs::create_dir_all(repo.join(name)).unwrap();
+    }
+    std::fs::write(repo.join("composer.json"), "{}").unwrap();
+    std::fs::write(repo.join("package.json"), "{}").unwrap();
+    let (app, db) = Harness::with_repo(&repo);
+
+    let answer = app.post("/api/roster/ownership/detect", r#"{"project":"widget"}"#);
+    assert_eq!(answer.status, 200, "{}", answer.body);
+
+    let store = ai_team_core::Store::open(&db.path().join("team.db")).unwrap();
+    let project = store.find_project("widget").unwrap();
+    let agents = store.agents(project.team_id.unwrap()).unwrap();
+    let backend = agents.iter().find(|agent| agent.role == "backend").unwrap();
+    let frontend = agents
+        .iter()
+        .find(|agent| agent.role == "frontend")
+        .unwrap();
+    assert!(backend.zone.contains("app/**"), "{}", backend.zone);
+    assert!(!frontend.zone.contains("app/**"), "{}", frontend.zone);
+    assert!(frontend.zone.contains("resources/**"), "{}", frontend.zone);
+}
+
+#[test]
+fn an_arbitrary_path_cannot_be_used_as_a_workspace() {
+    let (_source, repo, task) = linked_checkout();
+    let (app, _db) = Harness::with_repo(&repo);
+    let linked = app.get(&format!(
+        "/api/tree?project=widget&workspace={}&path=",
+        encoded(&task)
+    ));
+    assert_eq!(linked.status, 200, "{}", linked.body);
+    assert!(linked.body.contains("task.txt"), "{}", linked.body);
+
+    let unrelated = tempfile::tempdir().unwrap();
+    let refused = app.get(&format!(
+        "/api/tree?project=widget&workspace={}&path=",
+        encoded(unrelated.path())
+    ));
+    assert_eq!(refused.status, 400, "{}", refused.body);
+    assert!(
+        refused.body.contains("is not a worktree"),
+        "{}",
+        refused.body
+    );
+
+    let refused_start = app.post(
+        "/api/runs",
+        &serde_json::json!({
+            "project": "widget",
+            "workspace": unrelated.path(),
+            "prompt": "do not run this elsewhere"
+        })
+        .to_string(),
+    );
+    assert_eq!(refused_start.status, 400, "{}", refused_start.body);
+    assert!(
+        refused_start.body.contains("is not a worktree"),
+        "{}",
+        refused_start.body
+    );
+}
+
+#[test]
+fn a_run_and_all_its_leased_nodes_stay_in_the_workspace_that_started_it() {
+    let (_source, repo, task) = linked_checkout();
+    let (app, db) = Harness::with_repo(&repo);
+    let (run_id, project_id, _) = split_run(&db.path().join("team.db"), &repo, &task);
+
+    let run_count = |workspace: &std::path::Path| {
+        let answer = app.get(&format!(
+            "/api/runs?project={project_id}&workspace={}",
+            encoded(workspace)
+        ));
+        serde_json::from_str::<serde_json::Value>(&answer.body)
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .len()
+    };
+    assert_eq!(run_count(&repo), 0, "a child run must not leak into main");
+    assert_eq!(run_count(&task), 1);
+
+    let wrong_workspace = app.get(&format!("/api/runs/{run_id}?workspace={}", encoded(&repo)));
+    assert_eq!(wrong_workspace.status, 400, "{}", wrong_workspace.body);
+
+    let task_detail = app.get(&format!("/api/runs/{run_id}?workspace={}", encoded(&task)));
+    assert_eq!(task_detail.status, 200, "{}", task_detail.body);
+    let task_detail: serde_json::Value = serde_json::from_str(&task_detail.body).unwrap();
+    assert_eq!(task_detail["nodes"].as_array().unwrap().len(), 2);
+    assert!(ai_team_core::same_worktree(
+        task_detail["workspace_path"].as_str().unwrap(),
+        &task.to_string_lossy()
+    ));
+}
+
+#[test]
+fn a_maker_session_reset_retires_the_address_and_keeps_the_node_evidence() {
+    let (_source, repo, task) = linked_checkout();
+    let (app, db) = Harness::with_repo(&repo);
+    let path = db.path().join("team.db");
+    let (run_id, _project_id, node_id) = split_run(&path, &repo, &task);
+    {
+        let mut store = ai_team_core::Store::open(&path).unwrap();
+        store.set_node_session(node_id, "session-old").unwrap();
+        store
+            .set_node_status(node_id, ai_team_core::NodeStatus::Done)
+            .unwrap();
+    }
+
+    let answer = app.post(
+        &format!("/api/runs/{run_id}/nodes/{node_id}/reset-session"),
+        &serde_json::json!({ "workspace": task }).to_string(),
+    );
+    assert_eq!(answer.status, 200, "{}", answer.body);
+
+    let started = std::time::Instant::now();
+    loop {
+        let store = ai_team_core::Store::open(&path).unwrap();
+        let node = store.node_run(node_id).unwrap();
+        if node.session_retired_at.is_some() {
+            assert_eq!(node.session_id.as_deref(), Some("session-old"));
+            break;
+        }
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+fn assert_node_recoverable(
+    app: &Harness,
+    run_id: i64,
+    workspace: &std::path::Path,
+    expected: bool,
+) {
+    let detail = app.get(&format!(
+        "/api/runs/{run_id}?workspace={}",
+        encoded(workspace)
+    ));
+    assert_eq!(detail.status, 200, "{}", detail.body);
+    assert_eq!(detail.json()["nodes"][0]["recoverable"], expected);
+}
+
+#[test]
+fn run_activity_is_readable_and_a_reply_stays_in_its_workspace_thread() {
+    let (_source, repo, task) = linked_checkout();
+    let (app, db) = Harness::with_repo(&repo);
+    let path = db.path().join("team.db");
+    let (run_id, _project_id, node_id) = split_run(&path, &repo, &task);
+    {
+        let mut store = ai_team_core::Store::open(&path).unwrap();
+        store.set_node_session(node_id, "session-1").unwrap();
+        store
+            .append_event(
+                run_id,
+                ai_team_core::NewEvent::new(ai_team_core::EventKind::Cost, "step finished")
+                    .on_node(node_id)
+                    .by("orchestrator")
+                    .with(serde_json::json!({
+                        "message": { "content": [{
+                            "type": "thinking",
+                            "thinking": "Checking the plan",
+                            "thinkingSignature": "do-not-send"
+                        }] }
+                    })),
+            )
+            .unwrap();
+        store
+            .append_event(
+                run_id,
+                ai_team_core::NewEvent::new(ai_team_core::EventKind::Note, "The short answer…")
+                    .on_node(node_id)
+                    .by("orchestrator")
+                    .with(serde_json::json!({
+                        "message": { "content": [{
+                            "type": "text",
+                            "text": "The complete answer the operator needs."
+                        }] }
+                    })),
+            )
+            .unwrap();
+    }
+
+    assert_node_recoverable(&app, run_id, &task, true);
+    {
+        let mut store = ai_team_core::Store::open(&path).unwrap();
+        store
+            .claim_node_supervision(node_id, i64::from(std::process::id()), None)
+            .unwrap();
+    }
+    assert_node_recoverable(&app, run_id, &task, false);
+
+    let events = app.get(&format!(
+        "/api/runs/{run_id}/events?workspace={}",
+        encoded(&task)
+    ));
+    assert_eq!(events.status, 200, "{}", events.body);
+    assert!(events.body.contains("Checking the plan"), "{}", events.body);
+    assert!(
+        events
+            .body
+            .contains("The complete answer the operator needs."),
+        "{}",
+        events.body
+    );
+    assert!(!events.body.contains("do-not-send"), "{}", events.body);
+
+    let reply = app.post(
+        &format!("/api/runs/{run_id}/nodes/{node_id}/reply"),
+        &serde_json::json!({
+            "workspace": task.to_string_lossy(),
+            "message": "Yes, continue with E5.3."
+        })
+        .to_string(),
+    );
+    assert_eq!(reply.status, 200, "{}", reply.body);
+
+    let store = ai_team_core::Store::open(&path).unwrap();
+    assert_eq!(
+        store
+            .waiting_for(store.node_run(node_id).unwrap().agent_id.unwrap())
+            .unwrap(),
+        1
+    );
+    let human = store.events(run_id, None, 100).unwrap().pop().unwrap();
+    assert_eq!(human.actor.as_deref(), Some("human"));
+    assert_eq!(human.node_run_id, Some(node_id));
+    assert_eq!(
+        human.payload.unwrap()["body"],
+        serde_json::Value::String("Yes, continue with E5.3.".into())
+    );
+    drop(store);
+
+    let mut store = ai_team_core::Store::open(&path).unwrap();
+    store
+        .set_node_status(node_id, ai_team_core::NodeStatus::Done)
+        .unwrap();
+    drop(store);
+    let closed = app.post(
+        &format!("/api/runs/{run_id}/nodes/{node_id}/reply"),
+        &serde_json::json!({
+            "workspace": task.to_string_lossy(),
+            "message": "This must not start unrelated work."
+        })
+        .to_string(),
+    );
+    assert_eq!(closed.status, 400, "{}", closed.body);
+    assert!(closed.body.contains("no longer active"), "{}", closed.body);
+}
+
 #[test]
 fn a_server_with_no_database_says_so_instead_of_failing() {
     // `ait ui` before `ait init` is a normal first run. The window should explain
     // itself, not look broken - and health must still answer, since that is what
     // `ait doctor` asks.
-    let app = Harness::start();
+    //
+    // `watching` rather than `start`, and for the reason the comment further down already
+    // gives: `ServeOptions::default()` resolves the *machine's* database, so on a laptop
+    // that has ever run `ait init` this asserted "no database" against a real one and
+    // failed. It passed in CI and on a fresh checkout, which is the worst way for a test
+    // to be wrong.
+    let dir = tempfile::tempdir().unwrap();
+    let app = Harness::watching(&dir.path().join("team.db"));
 
     assert_eq!(app.get("/api/health").status, 200);
 
     let projects = app.get("/api/projects");
     assert_eq!(projects.status, 503, "not a 500: nothing is broken");
     assert!(projects.body.contains("ait init"), "{}", projects.body);
+}
+
+#[test]
+fn plan_approval_claims_the_existing_run_instead_of_starting_another() {
+    let (app, dir) = Harness::with_store();
+    let path = dir.path().join("team.db");
+    let mut store = ai_team_core::Store::open(&path).unwrap();
+    let run = store.runs(None, 1).unwrap().remove(0);
+    store.set_run_plan(run.id, "widget-plan").unwrap();
+    store.block_run(run.id, "Plan ready for approval").unwrap();
+    drop(store);
+
+    let continued = app.post(&format!("/api/runs/{}/approve-plan", run.id), "{}");
+    assert_eq!(continued.status, 200, "{}", continued.body);
+    assert_eq!(continued.json()["run_id"], run.id);
+
+    // The claim is atomic. Even if the background continuation has already failed for
+    // this deliberately node-less fixture, another window cannot start it again.
+    let duplicate = app.post(&format!("/api/runs/{}/approve-plan", run.id), "{}");
+    assert_eq!(duplicate.status, 400, "{}", duplicate.body);
+    let store = ai_team_core::Store::open(&path).unwrap();
+    assert_eq!(store.runs(None, 10).unwrap().len(), 1);
+}
+
+#[test]
+fn notifications_are_listed_and_marked_read_without_changing_run_state() {
+    let (app, dir) = Harness::with_store();
+    let path = dir.path().join("team.db");
+    let mut store = ai_team_core::Store::open(&path).unwrap();
+    let project = store.projects().unwrap().remove(0);
+    let notice = store
+        .notify_once(ai_team_core::NewNotification {
+            dedupe_key: "node:7:parked".into(),
+            project_id: project.id,
+            workspace_path: Some("/repo/task".into()),
+            run_id: None,
+            node_run_id: None,
+            kind: "input_required".into(),
+            title: "Planner needs input".into(),
+            body: "Choose an acceptance criterion.".into(),
+            action_path: None,
+        })
+        .unwrap()
+        .unwrap();
+    drop(store);
+
+    let listed = app.get("/api/notifications");
+    assert_eq!(listed.status, 200);
+    assert_eq!(listed.json()[0]["title"], "Planner needs input");
+    assert!(listed.json()[0]["read_at"].is_null());
+
+    let read = app.post(&format!("/api/notifications/{}/read", notice.id), "{}");
+    assert_eq!(read.status, 200);
+    assert!(read.json()["read_at"].is_string());
 }
 
 #[test]
@@ -331,7 +881,10 @@ fn the_health_report_is_served_without_a_database() {
     // The one route that must work on a machine nobody has set up, because that is the
     // machine somebody most needs a report about. Every other route answers 503 and says
     // `ait init`, which is right for them and exactly wrong here.
-    let harness = Harness::start();
+    //
+    // Its own path, not the machine's - see the note on the test above.
+    let dir = tempfile::tempdir().unwrap();
+    let harness = Harness::watching(&dir.path().join("team.db"));
 
     assert_eq!(harness.get("/api/projects").status, 503);
 
@@ -403,5 +956,217 @@ fn the_window_picks_up_a_database_created_after_it_started() {
         harness.get("/api/projects").status,
         200,
         "the same process should find it"
+    );
+}
+
+#[test]
+fn a_repository_can_be_found_by_browsing_before_there_is_a_database() {
+    // D24. The picker exists so the *first* thing somebody does on a new machine - find
+    // the repository - does not require typing an absolute path from memory. One that
+    // needed a project registered already would be unavailable exactly then, so this runs
+    // against a server with no store at all.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("widget/.git")).unwrap();
+    std::fs::create_dir_all(dir.path().join("notes")).unwrap();
+    std::fs::write(dir.path().join("a-file.txt"), "x").unwrap();
+
+    let harness = Harness::watching(&dir.path().join("team.db"));
+
+    let listed = harness.get(&format!(
+        "/api/browse?path={}",
+        urlencode(&dir.path().to_string_lossy())
+    ));
+    assert_eq!(listed.status, 200, "{}", listed.body);
+    assert!(listed.body.contains("widget"), "{}", listed.body);
+    assert!(listed.body.contains(r#""repo":true"#), "{}", listed.body);
+    assert!(listed.body.contains("notes"), "{}", listed.body);
+    // Directories only. This is for finding a checkout, not for reading somebody's files.
+    assert!(!listed.body.contains("a-file.txt"), "{}", listed.body);
+}
+
+#[test]
+fn browsing_needs_a_token_like_everything_else() {
+    let dir = tempfile::tempdir().unwrap();
+    let harness = Harness::watching(&dir.path().join("team.db"));
+    assert_eq!(harness.get_anonymous("/api/browse").status, 401);
+}
+
+/// Percent-encode a path for a query string.
+///
+/// Written out because this is the only test that needs it and a dependency to escape a
+/// temp directory would be one more thing in the lockfile.
+fn urlencode(value: &str) -> String {
+    value
+        .bytes()
+        .map(|byte| match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => {
+                (byte as char).to_string()
+            }
+            other => format!("%{other:02X}"),
+        })
+        .collect()
+}
+
+/// Nothing ai-team serves ever carries a context token.
+///
+/// The property that makes the settings page safe, and the reason its field is blank on
+/// load: `/settings` says *whether* there is a token, never what it is, so there is
+/// nothing to prefill it with and nothing to end up in a response body, a browser cache
+/// or a log in between.
+#[test]
+fn no_route_ever_produces_a_context_token() {
+    let (harness, _dir) = Harness::with_store();
+
+    let settings = harness.get("/api/settings");
+    assert_eq!(settings.status, 200, "{}", settings.body);
+
+    let sources = settings.json()["context"].clone();
+    for source in sources.as_array().expect("context sources") {
+        // Presence booleans and a variable name. No field that could hold a value.
+        assert!(source["oauth_connected"].is_boolean(), "{source}");
+        assert!(source["token_set"].is_boolean(), "{source}");
+        assert!(
+            source.get("token").is_none(),
+            "a token field exists: {source}"
+        );
+        assert!(
+            source.get("value").is_none(),
+            "a value field exists: {source}"
+        );
+    }
+}
+
+#[test]
+fn storing_a_token_answers_without_repeating_it() {
+    // Clearing, deliberately: an empty token is the one request that changes nothing on a
+    // machine with no token stored, so this asserts the route's shape without writing to
+    // the operator's keychain. What a successful store does is the ignored test below.
+    let (harness, _dir) = Harness::with_store();
+
+    let cleared = harness.post("/api/settings/token", r#"{"source":"clickup","token":""}"#);
+    assert_eq!(cleared.status, 200, "{}", cleared.body);
+    assert_eq!(cleared.json()["token_set"], false);
+}
+
+/// A token really going into this machine's store, through a request.
+///
+/// Ignored, and it has to stay that way: it writes to the operator's **login keychain**,
+/// which on macOS can raise an authorization dialog at whoever is using the machine. An
+/// earlier version of this ran on every `cargo test` and did exactly that. Run it by hand
+/// when the store or the route changes:
+///
+/// ```text
+/// cargo test -p ai-team-ui --test server -- --ignored --nocapture
+/// ```
+#[test]
+#[ignore = "writes to the operator's real keychain and can raise an OS dialog"]
+fn a_context_token_goes_in_and_never_comes_back() {
+    const SECRET: &str = "pk_a_very_recognisable_test_token";
+
+    let (harness, _dir) = Harness::with_store();
+
+    let stored = harness.post(
+        "/api/settings/token",
+        &format!(r#"{{"source":"clickup","token":"{SECRET}"}}"#),
+    );
+    assert_eq!(stored.status, 200, "{}", stored.body);
+    assert_eq!(stored.json()["token_set"], true);
+    assert!(
+        !stored.body.contains(SECRET),
+        "the route echoed the token back: {}",
+        stored.body
+    );
+
+    let settings = harness.get("/api/settings");
+    assert!(
+        !settings.body.contains(SECRET),
+        "settings produced the token: {}",
+        settings.body
+    );
+
+    // Put the machine back as it was - this runs against a developer's own keychain.
+    let cleared = harness.post("/api/settings/token", r#"{"source":"clickup","token":""}"#);
+    assert_eq!(cleared.status, 200, "{}", cleared.body);
+}
+
+#[test]
+fn a_sign_in_request_cannot_carry_a_command() {
+    // D25 lets this route start a process, which is the thing D17 spends a lot of care
+    // refusing - so the boundary is that the command is *not in the request*. The server
+    // looks it up from the provider, exactly as `/doctor/fix` looks a repair up from an
+    // `Action`, and a body that tries to supply one is refused rather than quietly having
+    // the field ignored. Ignoring it would be the same behaviour for a reason nobody can
+    // see in the type, and nothing here could assert on it.
+    //
+    // Deliberately no happy path in this test: succeeding would start a real OAuth flow
+    // and open somebody's browser. What the command *is* is asserted in `ai-team-core`,
+    // where it is a lookup rather than a process.
+    let (harness, _dir) = Harness::with_store();
+
+    for body in [
+        r#"{"provider":"claude","command":"rm -rf /"}"#,
+        r#"{"command":"rm -rf /"}"#,
+        r#"{"provider":"rm -rf /"}"#,
+        r#"{"provider":"claude","extra":1}"#,
+    ] {
+        let answer = harness.post("/api/settings/sign-in", body);
+        assert_eq!(answer.status, 422, "{body} was accepted: {}", answer.body);
+    }
+}
+
+#[test]
+fn context_oauth_accepts_a_source_and_never_a_command_or_url() {
+    // Deliberately no happy path: succeeding starts Pi and may open a browser. The exact
+    // generated config is asserted in core; this asserts that loopback cannot turn the
+    // route into a shell by supplying a command or endpoint.
+    let (harness, _dir) = Harness::with_store();
+
+    for body in [
+        r#"{"source":"clickup","command":"rm -rf /"}"#,
+        r#"{"command":"rm -rf /"}"#,
+        r#"{"source":"https://attacker.invalid/mcp"}"#,
+        r#"{"source":"clickup","url":"https://attacker.invalid/mcp"}"#,
+    ] {
+        let answer = harness.post("/api/settings/context-auth", body);
+        assert_eq!(answer.status, 422, "{body} was accepted: {}", answer.body);
+    }
+}
+
+#[test]
+fn a_provider_with_no_sign_in_flow_is_refused_rather_than_half_started() {
+    // The local gateway has no account and a GLM plan is a key to paste. Offering either
+    // a terminal would leave somebody watching a shell that exits immediately.
+    let (harness, _dir) = Harness::with_store();
+
+    for provider in ["local", "zai"] {
+        let answer = harness.post(
+            "/api/settings/sign-in",
+            &format!(r#"{{"provider":"{provider}"}}"#),
+        );
+        assert_ne!(answer.status, 200, "{provider}: {}", answer.body);
+    }
+}
+
+#[test]
+fn a_project_with_no_checkout_says_so_rather_than_reporting_no_worktrees() {
+    // The two answers look identical as an empty list and mean opposite things: one is a
+    // repository whose pool is empty, the other is ai-team having nowhere to look. The
+    // bug this guards is the second reported as the first, which reads as "you have no
+    // worktrees" to somebody who has four.
+    let (harness, _dir) = Harness::with_store();
+
+    let answer = harness.get("/api/worktrees?project=widget");
+    assert_ne!(answer.status, 200, "{}", answer.body);
+    assert!(answer.body.contains("checkout"), "{}", answer.body);
+}
+
+#[test]
+fn worktrees_need_a_token_like_everything_else() {
+    let (harness, _dir) = Harness::with_store();
+    assert_eq!(
+        harness
+            .get_anonymous("/api/worktrees?project=widget")
+            .status,
+        401
     );
 }

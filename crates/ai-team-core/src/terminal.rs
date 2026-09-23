@@ -131,6 +131,41 @@ impl Terminals {
     /// behave the way theirs does - aliases, prompt and all. On macOS that is zsh (D12),
     /// which is why the shell is read from the environment rather than assumed.
     pub fn open(&self, worktree: &Path) -> Result<u64> {
+        self.open_running(worktree, None)
+    }
+
+    /// The same, running one command instead of waiting for you to type.
+    ///
+    /// This is how the setup page signs a provider in (D25). It is not a weakening of
+    /// D17: `claude auth login` and `codex login` install nothing, touch only the
+    /// operator's own accounts, and cannot run unattended - they open a browser and wait
+    /// for a person. Installing a neighbour is still a command that is copied and never
+    /// run.
+    ///
+    /// The shell is a login shell so the command is looked up the way it would be in a
+    /// terminal, which matters for the same reason `launch_path` does: a window launched
+    /// from Finder has been handed launchd's PATH.
+    pub fn open_running(&self, worktree: &Path, command: Option<&str>) -> Result<u64> {
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
+        let mut spawn = CommandBuilder::new(shell);
+        if let Some(line) = command {
+            spawn.args(["-l", "-c", line]);
+        }
+        self.open_builder(worktree, spawn, "shell")
+    }
+
+    /// Open one program with exact arguments, without putting them through a shell.
+    ///
+    /// The OAuth setup route uses this for Pi. Its config path comes from the machine's
+    /// data directory, which can contain spaces or shell metacharacters; passing an argv
+    /// means none of those become syntax and the route never grows into a loopback shell.
+    pub fn open_program(&self, worktree: &Path, program: &str, args: &[String]) -> Result<u64> {
+        let mut spawn = CommandBuilder::new(program);
+        spawn.args(args);
+        self.open_builder(worktree, spawn, program)
+    }
+
+    fn open_builder(&self, worktree: &Path, mut spawn: CommandBuilder, label: &str) -> Result<u64> {
         let system = NativePtySystem::default();
         let pair = system
             .openpty(PtySize {
@@ -141,16 +176,13 @@ impl Terminals {
             })
             .map_err(|error| Error::invalid(format!("could not open a terminal: {error}")))?;
 
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
-        let mut command = CommandBuilder::new(shell);
-        command.cwd(worktree);
+        spawn.cwd(worktree);
         // Told what it is, or programs guess "dumb" and stop colouring anything.
-        command.env("TERM", "xterm-256color");
+        spawn.env("TERM", "xterm-256color");
 
-        let mut child = pair
-            .slave
-            .spawn_command(command)
-            .map_err(|error| Error::invalid(format!("could not start a shell: {error}")))?;
+        let mut child = pair.slave.spawn_command(spawn).map_err(|error| {
+            Error::invalid(format!("could not start {label} in a terminal: {error}"))
+        })?;
         // Dropped immediately: while this end is open the terminal never reports EOF, so
         // a pane whose shell has exited would sit there looking alive.
         drop(pair.slave);
@@ -404,10 +436,12 @@ mod tests {
         let id = terminals.open(dir.path()).unwrap();
         terminals.write(id, "ls\nexit\n").unwrap();
 
-        // Polled: a shell takes a moment to start, echo and exit.
+        // Polled: a shell takes a moment to start, echo and exit. The full suite also
+        // starts real Pi, LSP and nested path-test processes, so use a scheduler-independent
+        // deadline rather than assuming this subprocess always exits within 5 seconds.
         let mut text = String::new();
         let mut cursor = 0;
-        for _ in 0..100 {
+        for _ in 0..300 {
             let chunk = terminals.read(id, cursor).unwrap();
             text.push_str(&chunk.text);
             cursor = chunk.cursor;
@@ -419,6 +453,36 @@ mod tests {
 
         assert!(text.contains("marker.txt"), "{text}");
         assert!(terminals.read(id, cursor).unwrap().done);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_exact_program_argument_is_not_reinterpreted_by_a_shell() {
+        // OAuth passes a config path from AI_TEAM_HOME. A quote, semicolon or space in
+        // that path must remain one argv item rather than becoming shell syntax.
+        let dir = tempfile::tempdir().unwrap();
+        let terminals = Terminals::new();
+        let marker = "one argument; $(not-a-command) ' with spaces".to_string();
+        let id = terminals
+            .open_program(
+                dir.path(),
+                "/usr/bin/printf",
+                &["%s".to_string(), marker.clone()],
+            )
+            .unwrap();
+
+        let mut text = String::new();
+        let mut cursor = 0;
+        for _ in 0..100 {
+            let chunk = terminals.read(id, cursor).unwrap();
+            text.push_str(&chunk.text);
+            cursor = chunk.cursor;
+            if chunk.done {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(text.contains(&marker), "{text}");
     }
 
     #[cfg(unix)]

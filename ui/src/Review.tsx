@@ -22,7 +22,15 @@ import {
  * from the server's parse of git's own output rather than from counting rows here - a
  * comment that lands one line off reads as a confident remark about different code.
  */
-export function Review({ tick }: { tick: number }) {
+export function Review({
+  project = null,
+  workspace = null,
+  tick,
+}: {
+  project?: string | null;
+  workspace?: string | null;
+  tick: number;
+}) {
   const [list, setList] = useState<ReviewSummary[]>([]);
   const [open, setOpen] = useState<number | null>(null);
   const [detail, setDetail] = useState<ReviewDetail | null>(null);
@@ -31,11 +39,11 @@ export function Review({ tick }: { tick: number }) {
 
   const load = useCallback(async () => {
     try {
-      setList(await fetchReviews(true));
+      setList(await fetchReviews(project, workspace, true));
     } catch (error: unknown) {
       setProblem(error instanceof Error ? error.message : String(error));
     }
-  }, []);
+  }, [project, workspace]);
 
   const loadDetail = useCallback(async () => {
     if (open === null) {
@@ -43,12 +51,12 @@ export function Review({ tick }: { tick: number }) {
       return;
     }
     try {
-      setDetail(await fetchReview(open));
+      setDetail(await fetchReview(open, workspace));
       setProblem(null);
     } catch (error: unknown) {
       setProblem(error instanceof Error ? error.message : String(error));
     }
-  }, [open]);
+  }, [open, workspace]);
 
   useEffect(() => {
     void load();
@@ -60,7 +68,7 @@ export function Review({ tick }: { tick: number }) {
   const submit = async (status: string) => {
     if (open === null) return;
     try {
-      setOutcome(await submitReview(open, status));
+      setOutcome(await submitReview(open, status, workspace));
       await Promise.all([load(), loadDetail()]);
     } catch (error: unknown) {
       setProblem(error instanceof Error ? error.message : String(error));

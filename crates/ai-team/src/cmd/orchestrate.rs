@@ -16,10 +16,12 @@ pub(crate) async fn run(args: RunArgs) -> Result<()> {
     let request = core::Request {
         project: args.project.clone(),
         prompt: args.prompt.clone(),
+        workspace: None,
         plan: args.plan.clone(),
         width: args.width,
         replan: args.replan,
         plan_only: args.plan_only,
+        approval_required: false,
     };
 
     let done = core::run_workflow(&request, report)

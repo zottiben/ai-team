@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { Analytics } from "./Analytics";
+import { Notifications } from "./Notifications";
 import { Projects } from "./Projects";
 import { Roster } from "./Roster";
 import { Schedule } from "./Schedule";
@@ -18,9 +19,13 @@ import {
   doctor as doctorReport,
   health,
   projects as fetchProjects,
+  run as fetchRun,
   subscribe,
+  worktrees as fetchWorktrees,
   type Health,
+  type Notification as TeamNotification,
   type Project,
+  type Worktree,
 } from "./api";
 import { apply, followSystem, stored, type Theme } from "./theme";
 
@@ -51,11 +56,12 @@ type GlobalView = keyof typeof GLOBAL_VIEWS;
 /** Where you are: across everything, or inside one project. */
 type Place =
   | { level: "global"; view: GlobalView }
-  | { level: "project"; slug: string; view: WorkspaceView };
+  | { level: "project"; slug: string; workspace: string | null; view: WorkspaceView };
 
 export default function App() {
   const [info, setInfo] = useState<Health | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
+  const [workspaces, setWorkspaces] = useState<Record<string, Worktree[]>>({});
   const [place, setPlace] = useState<Place>({ level: "global", view: "today" });
   const [setupOpen, setSetupOpen] = useState(false);
   const [overlay, setOverlay] = useState<null | "about">(null);
@@ -69,6 +75,7 @@ export default function App() {
   // Where you last were in each project. A command centre you come back to should be where
   // you left it - resetting to Work every time makes returning feel like starting over.
   const [lastView, setLastView] = useState<Record<string, WorkspaceView>>({});
+  const [lastWorkspace, setLastWorkspace] = useState<Record<string, string | null>>({});
 
   const refresh = useCallback(async () => {
     try {
@@ -83,6 +90,23 @@ export default function App() {
     void health().then(setInfo).catch(() => {});
     void refresh();
   }, [refresh]);
+
+  const loadWorkspaces = useCallback(async (slug: string) => {
+    try {
+      const found = await fetchWorktrees(slug);
+      setWorkspaces((current) => ({ ...current, [slug]: found }));
+    } catch {
+      // The project still opens. Its surfaces will report the precise checkout error;
+      // the sidebar does not replace the whole window with it.
+      setWorkspaces((current) => ({ ...current, [slug]: [] }));
+    }
+  }, []);
+
+  useEffect(() => {
+    for (const project of projects) {
+      if (workspaces[project.slug] === undefined) void loadWorkspaces(project.slug);
+    }
+  }, [loadWorkspaces, projects, workspaces]);
 
   useEffect(() => {
     apply(theme);
@@ -122,6 +146,41 @@ export default function App() {
   }, [overlay, setupOpen]);
 
   const inside = place.level === "project" ? projects.find((p) => p.slug === place.slug) : undefined;
+  const insideWorkspace =
+    inside === undefined || place.level !== "project"
+      ? undefined
+      : place.workspace === null
+        ? workspaces[inside.slug]?.find((workspace) => workspace.main)
+        : workspaces[inside.slug]?.find((workspace) => workspace.path === place.workspace);
+
+  const openNotification = useCallback(
+    (notification: TeamNotification) => {
+      const project = projects.find((entry) => entry.id === notification.project_id);
+      if (project === undefined) return;
+      if (notification.run_id !== null) setOpenRun(notification.run_id);
+      setLastWorkspace((seen) => ({
+        ...seen,
+        [project.slug]: notification.workspace_path,
+      }));
+      setLastView((seen) => ({ ...seen, [project.slug]: "work" }));
+      setPlace({
+        level: "project",
+        slug: project.slug,
+        workspace: notification.workspace_path,
+        view: "work",
+      });
+    },
+    [projects],
+  );
+
+  // Worktree state changes much less often than events. Polling `awt` on every event tick
+  // would spawn two processes hundreds of times during a turn, so refresh only the active
+  // repository on a human-scale cadence.
+  useEffect(() => {
+    if (inside === undefined) return undefined;
+    const timer = setInterval(() => void loadWorkspaces(inside.slug), 5000);
+    return () => clearInterval(timer);
+  }, [inside, loadWorkspaces]);
 
   return (
     <div className="shell">
@@ -157,7 +216,16 @@ export default function App() {
             >
               <span>← Everything</span>
             </button>
-            <span className="sidebar__label">{inside.name}</span>
+            <span className="sidebar__label">
+              {inside.name}
+              {insideWorkspace !== undefined && (
+                <span className="sidebar__workspace-label mono">
+                  {insideWorkspace.main
+                    ? "main"
+                    : insideWorkspace.branch ?? insideWorkspace.name}
+                </span>
+              )}
+            </span>
             {WORKSPACE_VIEWS.map((option) => (
               <button
                 type="button"
@@ -166,7 +234,12 @@ export default function App() {
                 aria-current={place.level === "project" && place.view === option}
                 onClick={() => {
                   setLastView((seen) => ({ ...seen, [inside.slug]: option }));
-                  setPlace({ level: "project", slug: inside.slug, view: option });
+                  setPlace({
+                    level: "project",
+                    slug: inside.slug,
+                    workspace: place.level === "project" ? place.workspace : null,
+                    view: option,
+                  });
                 }}
               >
                 <span>{workspaceViewName(option)}</span>
@@ -177,34 +250,79 @@ export default function App() {
 
         <nav className="sidebar__section" aria-label="Projects">
           <span className="sidebar__label">Projects</span>
-          {projects.map((entry) => (
-            <button
-              type="button"
-              key={entry.id}
-              className="nav-item"
-              aria-current={inside?.id === entry.id}
-              // Where you left it, or Work the first time - which is the thing you came
-              // to do.
-              onClick={() =>
-                setPlace({
-                  level: "project",
-                  slug: entry.slug,
-                  // Where you left it, or the overview the first time - what the
-                  // repository is, before what you were doing to it.
-                  view: lastView[entry.slug] ?? "overview",
-                })
-              }
-            >
-              <span>{entry.name}</span>
-              <span className="nav-item__count">{entry.open_runs > 0 ? entry.open_runs : ""}</span>
-            </button>
-          ))}
+          {projects.map((entry) => {
+            const trees = workspaces[entry.slug];
+            const currentPath =
+              place.level === "project" && place.slug === entry.slug ? place.workspace : undefined;
+            return (
+              <div className="sidebar-project" key={entry.id}>
+                <button
+                  type="button"
+                  className="nav-item sidebar-project__repo"
+                  aria-current={inside?.id === entry.id}
+                  onClick={() => {
+                    const workspace =
+                      lastWorkspace[entry.slug] ?? trees?.find((tree) => tree.main)?.path ?? null;
+                    setPlace({
+                      level: "project",
+                      slug: entry.slug,
+                      workspace,
+                      view: lastView[entry.slug] ?? "overview",
+                    });
+                  }}
+                >
+                  <span>{entry.name}</span>
+                  <span className="nav-item__count">
+                    {entry.open_runs > 0 ? entry.open_runs : ""}
+                  </span>
+                </button>
+                <div className="sidebar-project__workspaces" aria-label={`${entry.name} workspaces`}>
+                  {trees === undefined && <span className="faint">reading checkouts…</span>}
+                  {trees?.map((workspace) => {
+                    const selected =
+                      inside?.id === entry.id &&
+                      (currentPath === workspace.path || (currentPath === null && workspace.main));
+                    return (
+                      <button
+                        type="button"
+                        key={workspace.path}
+                        className="nav-item nav-item--workspace"
+                        aria-current={selected}
+                        title={workspace.path}
+                        onClick={() => {
+                          setLastWorkspace((seen) => ({
+                            ...seen,
+                            [entry.slug]: workspace.path,
+                          }));
+                          setPlace({
+                            level: "project",
+                            slug: entry.slug,
+                            workspace: workspace.path,
+                            view: lastView[entry.slug] ?? "overview",
+                          });
+                        }}
+                      >
+                        <span className="workspace-dot" data-status={workspace.status} />
+                        <span>{workspace.main ? "main" : workspace.branch ?? workspace.name}</span>
+                        {workspace.lease_holder !== null && (
+                          <span className="nav-item__lease" title={workspace.lease_holder}>
+                            {workspace.lease_holder.startsWith("orphaned:") ? "!" : "leased"}
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
           {projects.length === 0 && (
             <span className="faint">None yet - add one from Projects.</span>
           )}
         </nav>
 
         <div className="sidebar__section" style={{ marginTop: "auto" }}>
+          <Notifications tick={tick} onOpen={openNotification} />
           {/* Visible from every page, because a machine that cannot run anything is worth
               interrupting whatever somebody is looking at. */}
           <HealthBanner tick={tick} onOpen={() => setSetupOpen(true)} />
@@ -236,18 +354,34 @@ export default function App() {
           />
         </main>
       ) : inside !== undefined && place.level === "project" ? (
-        <Workspace
-          project={inside}
-          view={place.view}
-          tick={tick}
-          openRun={openRun}
-          onOpenedRun={() => setOpenRun(null)}
-          onChanged={() => setTick((value) => value + 1)}
-          onGo={(view) => {
-            setLastView((seen) => ({ ...seen, [inside.slug]: view }));
-            setPlace({ level: "project", slug: inside.slug, view });
-          }}
-        />
+        insideWorkspace === undefined ? (
+          <main className="main">
+            <p className="empty">Reading this repository's workspaces…</p>
+          </main>
+        ) : (
+          <Workspace
+            project={inside}
+            workspace={insideWorkspace}
+            view={place.view}
+            tick={tick}
+            openRun={openRun}
+            onOpenedRun={() => setOpenRun(null)}
+            onChanged={() => {
+              void loadWorkspaces(inside.slug);
+              setTick((value) => value + 1);
+            }}
+            onGo={(view) => {
+              setLastView((seen) => ({ ...seen, [inside.slug]: view }));
+              setPlace({
+                level: "project",
+                slug: inside.slug,
+                workspace: place.workspace,
+                view,
+              });
+            }}
+            onTeamStarted={() => setTick((value) => value + 1)}
+          />
+        )
       ) : (
         <main className="main">
           {problem !== null && <p className="error">{problem}</p>}
@@ -261,9 +395,19 @@ export default function App() {
               onOpenRun={(id, slug) => {
                 setOpenRun(id);
                 const target = slug ?? projects[0]?.slug;
-                if (target !== undefined) {
-                  setPlace({ level: "project", slug: target, view: "work" });
-                }
+                if (target === undefined) return;
+                void fetchRun(id)
+                  .then((detail) => {
+                    const workspace =
+                      detail.workspace_path ??
+                      detail.nodes.find((node) => node.worktree_path !== null)?.worktree_path ??
+                      null;
+                    setLastWorkspace((seen) => ({ ...seen, [target]: workspace }));
+                    setPlace({ level: "project", slug: target, workspace, view: "work" });
+                  })
+                  .catch(() => {
+                    setPlace({ level: "project", slug: target, workspace: null, view: "work" });
+                  });
               }}
             />
           )}

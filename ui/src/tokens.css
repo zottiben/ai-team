@@ -80,6 +80,16 @@
   --status-blocked-default: #e8c46a;
   --status-cancelled-default: #6b7483;
 
+  /* ai-planner's seven board states. They stay distinct from run states: `ready` and
+   * `active` are both healthy but mean different actions on a kanban board. */
+  --status-draft-default: #7b7b75;
+  --status-ready-default: #8aa0b8;
+  --status-active-default: #6b91ff;
+  --status-in-review-default: #bd8ae6;
+  --status-board-blocked-default: #ef7a63;
+  --status-board-done-default: #4fbe84;
+  --status-deferred-default: #6e6e68;
+
   /* Zone colours, for the map. Six, because a seventh seat is rarer than a palette that
    * stops being distinguishable - and they are the window's own hues rather than a
    * second palette, so the map reads as part of the app and not as a chart pasted into
@@ -141,6 +151,14 @@
   --status-parked-default: #9a6b00;
   --status-blocked-default: #9a6b00;
   --status-cancelled-default: #858e9d;
+
+  --status-draft-default: #9b9b93;
+  --status-ready-default: #6a7a8c;
+  --status-active-default: #3f6ef0;
+  --status-in-review-default: #a763d8;
+  --status-board-blocked-default: #d4543f;
+  --status-board-done-default: #2f9e63;
+  --status-deferred-default: #8c8c84;
 
   /* Darker on paper: the same hue that reads as a point of light on a dark canvas
    * disappears against white. */

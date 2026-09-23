@@ -8,13 +8,15 @@ use crate::error::{Error, Result};
 use crate::model::{Agent, Provider};
 
 mod ailocal;
+mod catalog;
 mod probe;
 mod profile;
 
 use ailocal::{non_empty_env, AilocalSettings};
+pub use catalog::{ModelChoice, RoleModelDefault};
 pub(crate) use probe::provider_default;
 use probe::{implemented, probe};
-pub use probe::{ProviderState, ProviderStatus};
+pub use probe::{sign_in as sign_in_command, ProviderState, ProviderStatus};
 mod edit;
 
 pub use edit::{set_context, set_fallback, set_provider};
@@ -249,6 +251,10 @@ impl ModelRegistry {
                         provider,
                         state: ProviderState::Denied,
                         detail: "blocked by machine.toml".into(),
+                        // Carried even here: ticking a denied provider is the commonest
+                        // way somebody arrives at needing to sign in, and the page would
+                        // otherwise have nothing to offer until the next poll.
+                        sign_in: probe::sign_in(provider),
                     }
                 }
             })

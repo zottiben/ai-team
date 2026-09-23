@@ -1,14 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { AgentActivity } from "./AgentActivity";
 import { activityOf, isBusy, type Activity } from "./activity";
-import { doingLabel } from "./Crew";
 import { RepoGraph, zoneColour } from "./Map";
+import { PageLayout } from "./PageLayout";
+import { OrganizationGraph } from "./TeamGraph";
 import {
   analytics as fetchAnalytics,
   board as fetchBoard,
   crew as fetchCrew,
   repoMap as fetchMap,
-  roster as fetchRoster,
   runs as fetchRuns,
   BOARD_COLUMNS,
   type AnalyticsRow,
@@ -16,15 +17,14 @@ import {
   type Member,
   type Project,
   type RepoMap,
-  type Roster,
   type Run,
+  type Worktree,
 } from "./api";
 import type { WorkspaceView } from "./Workspace";
 
 /** What the page re-reads on every tick. The map is not in here on purpose. */
 type Live = {
   board: Board;
-  roster: Roster;
   crew: Member[];
   runs: Run[];
   gates: AnalyticsRow[];
@@ -104,8 +104,8 @@ function useNow(live: boolean): number {
 /**
  * One repository, at a glance, and in motion while it is being worked on.
  *
- * The landing view. What this checkout is, who owns which part of it, and - when a run is
- * up - which paths are being edited right now, by whom, and how far along it is. Every
+ * The landing view. What this checkout is, which paths are covered for dispatch, and - when
+ * a run is up - which paths are being edited right now, by whom, and what they are doing. Every
  * number is read from the same database the CLI writes; the empty states say so plainly
  * rather than drawing an impressive shape out of nothing.
  *
@@ -116,10 +116,12 @@ function useNow(live: boolean): number {
  */
 export function Overview({
   project,
+  workspace,
   tick,
   onGo,
 }: {
   project: Project;
+  workspace: Worktree;
   tick: number;
   onGo: (view: WorkspaceView) => void;
 }) {
@@ -131,7 +133,7 @@ export function Overview({
   // `read_dir` calls a second during a run, to redraw a shape that has not changed.
   useEffect(() => {
     let current = true;
-    fetchMap(project.slug)
+    fetchMap(project.slug, workspace.path)
       .then((found) => {
         if (current) setMap(found);
       })
@@ -141,26 +143,25 @@ export function Overview({
     return () => {
       current = false;
     };
-  }, [project.slug]);
+  }, [project.slug, workspace.path]);
 
   const load = useCallback(async () => {
     try {
-      const [board, roster, crew, runs, gates] = await Promise.all([
-        fetchBoard(project.slug),
-        fetchRoster(project.slug),
-        fetchCrew(project.slug),
+      const [board, crew, runs, gates] = await Promise.all([
+        fetchBoard(project.slug, workspace.path),
+        fetchCrew(project.slug, workspace.path),
         // Runs are scoped by id and everything else by slug, because that is what each
         // route takes - resolving one into the other here would invent a mapping the
         // server already owns.
-        fetchRuns(project.id),
-        fetchAnalytics("agent", project.slug),
+        fetchRuns(project.id, workspace.path),
+        fetchAnalytics("agent", project.slug, workspace.path),
       ]);
-      setLive({ board, roster, crew, runs, gates });
+      setLive({ board, crew, runs, gates });
       setProblem(null);
     } catch (error: unknown) {
       setProblem(error instanceof Error ? error.message : String(error));
     }
-  }, [project.slug, project.id]);
+  }, [project.slug, project.id, workspace.path]);
 
   useEffect(() => {
     void load();
@@ -172,7 +173,7 @@ export function Overview({
   if (problem !== null) return <p className="error">{problem}</p>;
   if (live === null) return <p className="empty">Reading the checkout…</p>;
 
-  const { board, roster, crew, runs, gates } = live;
+  const { board, crew, runs, gates } = live;
   const activity: Activity =
     map === null
       ? { hot: new Map(), warm: new Map(), live: new Map(), working: new Set() }
@@ -181,7 +182,6 @@ export function Overview({
 
   const roles = [...new Set((map?.zones ?? []).map((zone) => zone.role))].sort();
   const working = crew.filter((member) => activity.working.has(member.role));
-  const waiting = crew.filter((member) => member.doing === "parked");
 
   const owned = map === null ? 0 : map.files - map.unowned;
   const counted = (status: string) =>
@@ -195,7 +195,12 @@ export function Overview({
   return (
     <div className="overview" data-busy={busy}>
       <div className="main__header">
-        <h2>{project.name}</h2>
+        <div>
+          <h2>{project.name}</h2>
+          <span className="workspace-title mono">
+            {workspace.main ? "main checkout" : workspace.branch ?? workspace.name}
+          </span>
+        </div>
         {running === null ? (
           <span className="status" data-status="queued">
             nothing running
@@ -238,8 +243,21 @@ export function Overview({
         </div>
       </div>
 
-      {/* --- the map -------------------------------------------------------------- */}
-      <section className="block">
+      <PageLayout
+        view="overview"
+        panels={[
+          {
+            id: "activity",
+            label: "Agent activity",
+            span: 2,
+            content: <AgentActivity runs={runs} workspace={workspace.path} tick={tick} />,
+          },
+          {
+            id: "map",
+            label: "Repository map",
+            span: 1,
+            content: (
+              <section className="block">
         <div className="block__head">
           <h3>Map</h3>
           <span className="faint">
@@ -288,61 +306,33 @@ export function Overview({
             </p>
           </>
         )}
-      </section>
-
-      {/* --- who is doing what right now ------------------------------------------ */}
-      <section className="block">
+              </section>
+            ),
+          },
+          {
+            id: "crew",
+            label: "Organization",
+            span: 1,
+            content: (
+              <section className="block">
         <div className="block__head">
-          <h3>Crew</h3>
-          <span className="faint">
-            {working.length === 0 ? "nobody is working" : `${working.length} working`}
-            {waiting.length > 0 ? ` · ${waiting.length} waiting on you` : ""}
-          </span>
+          <h3>Organization</h3>
+          <span className="faint">roles, live commands, models, and retained context</span>
           <button type="button" className="block__go" onClick={() => onGo("work")}>
             work →
           </button>
         </div>
 
-        {crew.length === 0 ? (
-          <p className="empty">This project has no team yet.</p>
-        ) : (
-          <ul className="seats">
-            {crew.map((member) => {
-              const up = activity.working.has(member.role);
-              return (
-                <li
-                  key={member.agent_id}
-                  className="seats__seat"
-                  data-doing={member.doing}
-                  style={
-                    {
-                      "--seat-mark": up
-                        ? zoneColour(member.role, roles)
-                        : "var(--border-subtle-default)",
-                    } as React.CSSProperties
-                  }
-                >
-                  <span className="status" data-status={up ? "running" : member.doing}>
-                    {member.name}
-                  </span>
-                  <span className="faint seats__what">
-                    {member.slice_key ?? doingLabel(member.doing)}
-                  </span>
-                  {up && (
-                    <span className="mono seats__meter">
-                      <Ticking value={member.turns} /> turns ·{" "}
-                      <Ticking value={member.tokens_in + member.tokens_out} format={compact} />
-                    </span>
-                  )}
-                </li>
-              );
-            })}
-          </ul>
-        )}
-      </section>
-
-      {/* --- the board ------------------------------------------------------------ */}
-      <section className="block">
+        <OrganizationGraph members={crew} workspace={workspace.path} onChanged={load} />
+              </section>
+            ),
+          },
+          {
+            id: "board",
+            label: "Board",
+            span: 1,
+            content: (
+              <section className="block">
         <div className="block__head">
           <h3>Board</h3>
           <span className="faint">{board.plan?.title ?? "no plan yet"}</span>
@@ -385,48 +375,15 @@ export function Overview({
             </div>
           </>
         )}
-      </section>
-
-      {/* --- seats and gates ------------------------------------------------------ */}
-      <div className="columns">
-        <section className="block">
-          <div className="block__head">
-            <h3>Seats</h3>
-            <span className="faint">zone, model, and what it owns here</span>
-            <button type="button" className="block__go" onClick={() => onGo("team")}>
-              team →
-            </button>
-          </div>
-          <ul className="rack">
-            {roster.seats.map((seat) => {
-              const owns = map?.zones.find((zone) => zone.role === seat.role)?.owns ?? 0;
-              return (
-                <li key={seat.id} className="rack__seat" data-off={!seat.enabled}>
-                  <span
-                    className="rack__mark"
-                    style={{
-                      // A seat that owns nothing gets the neutral mark, so a colour on
-                      // this page always means "find me on the map".
-                      background:
-                        owns === 0 ? "var(--zone-none-default)" : zoneColour(seat.role, roles),
-                    }}
-                  />
-                  <span className="rack__name">{seat.name}</span>
-                  <span className="faint mono rack__model">
-                    {seat.effective_provider}/{seat.effective_model}
-                  </span>
-                  {/* A zone that claims nothing is the interesting case: that seat will
-                      never be given work, and the roster's text alone cannot say so. */}
-                  <span className="mono rack__owns" data-none={owns === 0}>
-                    {owns === 0 ? "owns nothing" : `${owns}`}
-                  </span>
-                </li>
-              );
-            })}
-          </ul>
-        </section>
-
-        <section className="block">
+              </section>
+            ),
+          },
+          {
+            id: "gates",
+            label: "Gates",
+            span: 1,
+            content: (
+              <section className="block">
           <div className="block__head">
             <h3>Gates</h3>
             <span className="faint">this repo's own checks, discovered not assumed</span>
@@ -456,11 +413,15 @@ export function Overview({
                 ))}
             </ul>
           )}
-        </section>
-      </div>
-
-      {/* --- recent runs ---------------------------------------------------------- */}
-      <section className="block">
+              </section>
+            ),
+          },
+          {
+            id: "runs",
+            label: "Recent runs",
+            span: 1,
+            content: (
+              <section className="block">
         <div className="block__head">
           <h3>Runs</h3>
           <span className="faint">{runs.length === 0 ? "none yet" : `${runs.length} here`}</span>
@@ -487,7 +448,11 @@ export function Overview({
             ))}
           </div>
         )}
-      </section>
+              </section>
+            ),
+          },
+        ]}
+      />
     </div>
   );
 }

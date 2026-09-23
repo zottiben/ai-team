@@ -2,7 +2,16 @@ import { render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 
 import { Overview } from "./Overview";
-import type { Board, BoardSlice, Member, Project, RepoMap, Roster, Run } from "./api";
+import type {
+  Board,
+  BoardSlice,
+  BoardStatus,
+  Member,
+  Project,
+  RepoMap,
+  Run,
+  Worktree,
+} from "./api";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -15,6 +24,16 @@ const WIDGET: Project = {
   kind: "repo",
   status: "active",
   open_runs: 0,
+};
+
+const MAIN: Worktree = {
+  name: "main",
+  path: "/tmp/widget",
+  status: "main",
+  lease_holder: null,
+  processes: [],
+  branch: "main",
+  main: true,
 };
 
 function map(over: Partial<RepoMap> = {}): RepoMap {
@@ -39,24 +58,6 @@ function map(over: Partial<RepoMap> = {}): RepoMap {
       { role: "mobile", name: "Mobile", zone: "ios/**", owns: 0 },
     ],
     ...over,
-  };
-}
-
-function seat(role: string) {
-  return {
-    id: role === "backend" ? 1 : 2,
-    role,
-    name: role === "backend" ? "Backend" : "Mobile",
-    purpose: "",
-    provider: "local",
-    model: "auto",
-    effective_provider: "local",
-    effective_model: "auto",
-    fallback_reason: null,
-    reasoning: "none",
-    zone: role === "backend" ? "src/**" : "ios/**",
-    read_only: false,
-    enabled: true,
   };
 }
 
@@ -85,15 +86,28 @@ function member(over: Partial<Member> = {}): Member {
   };
 }
 
-function slice(key: string, status: string, touches: string[]): BoardSlice {
+function slice(key: string, status: BoardStatus, touches: string[]): BoardSlice {
   return {
+    id: 1,
+    plan_id: 1,
     key,
     title: key,
     status,
     ord: 1,
     scope_md: null,
     demo_md: null,
+    estimate_files: null,
+    branch: null,
+    base_branch: null,
+    pr_url: null,
+    worktree_path: null,
     claimed_by: null,
+    claimed_at: null,
+    blocked_reason: null,
+    started_at: null,
+    completed_at: null,
+    rev: 1,
+    updated_at: null,
     owner: null,
     touches,
   };
@@ -106,7 +120,6 @@ function board(over: Partial<Board> = {}): Board {
 function stub(parts: {
   map?: RepoMap;
   board?: Board;
-  roster?: Roster;
   crew?: Member[];
   runs?: Run[];
   gates?: unknown[];
@@ -114,12 +127,6 @@ function stub(parts: {
   const routes: Record<string, unknown> = {
     "/map": parts.map ?? map(),
     "/board": parts.board ?? board(),
-    "/roster": parts.roster ?? {
-      project: "widget",
-      team: "Widget team",
-      seats: [seat("backend"), seat("mobile")],
-      available: [],
-    },
     "/crew": parts.crew ?? [],
     "/runs": parts.runs ?? [],
     "/analytics": parts.gates ?? [],
@@ -138,13 +145,26 @@ function stub(parts: {
 }
 
 function sheet() {
-  return render(<Overview project={WIDGET} tick={0} onGo={() => {}} />);
+  return render(<Overview project={WIDGET} workspace={MAIN} tick={0} onGo={() => {}} />);
 }
 
 /** A run in flight, with one seat mid-turn on a slice that names `src/**`. */
 function busyParts() {
   return {
-    crew: [member({ doing: "working", slice_key: "M1-S1", turns: 3, tokens_in: 900 })],
+    crew: [
+      member({
+        doing: "working",
+        slice_key: "M1-S1",
+        turns: 3,
+        tokens_in: 900,
+        last_said: "running the repository checks",
+        activity: {
+          kind: "tool_call",
+          summary: "bash · cargo test",
+          at: new Date(Date.now() - 12_000).toISOString(),
+        },
+      }),
+    ],
     board: board({
       plan: { plan: "widget", title: "Ship it", status: "active", slice: null },
       slices: [slice("M1-S1", "active", ["src/**"])],
@@ -156,6 +176,7 @@ function busyParts() {
         prompt: "add subtract",
         status: "running",
         trigger: "manual",
+        workspace_path: "/tmp/widget",
         created_at: "",
         started_at: new Date().toISOString(),
         ended_at: null,
@@ -191,14 +212,18 @@ it("names what nobody owns, because that is work a run reports undone", async ()
   expect(await screen.findByText(/2 paths belong to no zone/)).toBeTruthy();
 });
 
-it("says so when a seat's zone claims nothing in this repository", async () => {
-  // A seat configured for a directory this checkout does not have will never be given
-  // work, and nothing else in the window says that out loud.
-  stub({});
+it("keeps seat ownership off operational cards", async () => {
+  stub({
+    crew: [
+      member(),
+      member({ agent_id: 2, role: "mobile", name: "Mobile", zone: "ios/**" }),
+    ],
+  });
   sheet();
 
   await screen.findByText("Mobile");
-  expect(screen.getAllByText("owns nothing").length).toBe(1);
+  expect(screen.getByText("builds server and data changes")).toBeTruthy();
+  expect(screen.queryByText(/owns (src|nothing)/)).toBeNull();
 });
 
 it("reports a gate pass rate only once a gate has run", async () => {
@@ -236,16 +261,17 @@ it("lights the paths a live slice touches, and the route to them", async () => {
   expect(document.querySelector('.map[data-busy="true"]')).toBeTruthy();
 });
 
-it("shows a working seat's live counters", async () => {
+it("shows live command evidence instead of presenting token spend as progress", async () => {
   stub(busyParts());
   sheet();
 
-  expect(await screen.findByText("M1-S1")).toBeTruthy();
+  expect(await screen.findByText("bash · cargo test")).toBeTruthy();
+  expect(screen.getByRole("progressbar", { name: "Backend current command" })).toBeTruthy();
   expect(screen.getByText(/run #7/)).toBeTruthy();
-  // Three turns, counted twice on purpose: once in the page's own total and once on the
-  // seat accruing them.
-  expect(screen.getAllByText("3").length).toBe(2);
-  expect(screen.getAllByText("900").length).toBe(2);
+  // Spend remains an aggregate fact at the top. The card visualizes observable work,
+  // and never turns token usage into a guessed completion percentage.
+  expect(screen.getAllByText("3").length).toBe(1);
+  expect(screen.getAllByText("900").length).toBe(1);
 });
 
 it("marks the slice a seat actually has open, not merely one the board calls active", async () => {
@@ -280,15 +306,17 @@ it("reads the checkout once, not on every tick", async () => {
   // The map is a filesystem walk. Re-running it on every database tick would be hundreds
   // of `read_dir` calls a second during exactly the run it is meant to be drawing.
   stub({});
-  const view = render(<Overview project={WIDGET} tick={0} onGo={() => {}} />);
+  const view = render(
+    <Overview project={WIDGET} workspace={MAIN} tick={0} onGo={() => {}} />,
+  );
   await screen.findByText("Widget");
 
   const mapCalls = () =>
     vi.mocked(fetch).mock.calls.filter(([url]) => String(url).startsWith("/api/map")).length;
   expect(mapCalls()).toBe(1);
 
-  view.rerender(<Overview project={WIDGET} tick={1} onGo={() => {}} />);
-  view.rerender(<Overview project={WIDGET} tick={2} onGo={() => {}} />);
+  view.rerender(<Overview project={WIDGET} workspace={MAIN} tick={1} onGo={() => {}} />);
+  view.rerender(<Overview project={WIDGET} workspace={MAIN} tick={2} onGo={() => {}} />);
   await waitFor(() =>
     expect(
       vi.mocked(fetch).mock.calls.filter(([url]) => String(url).startsWith("/api/crew")).length,

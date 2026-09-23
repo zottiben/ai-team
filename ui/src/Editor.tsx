@@ -21,12 +21,20 @@ type Buffer = {
   editable: boolean;
 };
 
-export function Editor({ project, node }: { project: string | null; node: number | null }) {
+export function Editor({
+  project,
+  workspace = null,
+  node,
+}: {
+  project: string | null;
+  workspace?: string | null;
+  node: number | null;
+}) {
   const [open, setOpen] = useState<Buffer[]>([]);
   const [active, setActive] = useState<string | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
 
-  const where: Where | null = project === null ? null : { project, node };
+  const where: Where | null = project === null ? null : { project, workspace, node };
   const current = open.find((buffer) => buffer.path === active) ?? null;
 
   const openPath = useCallback(
@@ -47,7 +55,7 @@ export function Editor({ project, node }: { project: string | null; node: number
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [project, node, open],
+    [project, workspace, node, open],
   );
 
   const save = useCallback(async () => {
@@ -64,7 +72,7 @@ export function Editor({ project, node }: { project: string | null; node: number
       setProblem(error instanceof Error ? error.message : String(error));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [project, node, current]);
+  }, [project, workspace, node, current]);
 
   // Ctrl/Cmd-S, because that is the muscle memory and the browser's own Save is useless
   // here.
@@ -86,8 +94,8 @@ export function Editor({ project, node }: { project: string | null; node: number
   return (
     <div className="editor">
       <div className="editor__side">
-        <Search where={{ project, node }} onOpen={(path) => void openPath(path)} />
-        <Tree where={{ project, node }} onOpen={(path) => void openPath(path)} />
+        <Search where={{ project, workspace, node }} onOpen={(path) => void openPath(path)} />
+        <Tree where={{ project, workspace, node }} onOpen={(path) => void openPath(path)} />
       </div>
 
       <div className="editor__main">
@@ -138,7 +146,7 @@ export function Editor({ project, node }: { project: string | null; node: number
         ) : current.editable ? (
           <Surface
             key={current.path}
-            where={{ project, node }}
+            where={{ project, workspace, node }}
             path={current.path}
             text={current.saved}
             onChange={(text) =>

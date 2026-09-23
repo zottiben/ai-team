@@ -1,10 +1,14 @@
 //! Runs, and the node runs under them.
 
+use std::path::Path;
+
 use rusqlite::{params, OptionalExtension, Row};
 
 use crate::error::{Error, Result};
-use crate::machine::ModelRegistry;
-use crate::model::{EventKind, NodeRun, NodeStatus, Provider, Run, RunStatus, RunTrigger, Usage};
+use crate::machine::{ModelRegistry, ModelResolution};
+use crate::model::{
+    DeliveryAction, EventKind, NodeRun, NodeStatus, Provider, Run, RunStatus, RunTrigger, Usage,
+};
 use crate::store::{non_empty, Store};
 use crate::util::now;
 
@@ -18,6 +22,21 @@ impl Store {
         prompt: &str,
         trigger: RunTrigger,
     ) -> Result<Run> {
+        self.create_run_in(project_id, prompt, trigger, None)
+    }
+
+    /// Start a run rooted in one checkout.
+    ///
+    /// The root is not the same as every node's worktree: makers may fan out into leased
+    /// worktrees while their run remains visible in the checkout where the operator
+    /// started it. Callers that omit it get the project's main checkout.
+    pub fn create_run_in(
+        &mut self,
+        project_id: i64,
+        prompt: &str,
+        trigger: RunTrigger,
+        workspace: Option<&Path>,
+    ) -> Result<Run> {
         let prompt = prompt.trim().to_string();
         if prompt.is_empty() {
             return Err(Error::invalid("a run needs a prompt"));
@@ -27,20 +46,33 @@ impl Store {
             Some(team_id) => self.team(team_id)?.guardrails,
             None => return Err(Error::NoTeam(project.slug)),
         };
+        let workspace_path = match workspace {
+            Some(path) => Some(
+                path.canonicalize()
+                    .unwrap_or_else(|_| path.to_path_buf())
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
+            None => self
+                .project_repos(project_id)?
+                .into_iter()
+                .find_map(|repo| repo.main_path),
+        };
         let at = now();
 
         let id = self.db_mut().write(|tx| {
             tx.execute(
                 "INSERT INTO run
-                   (project_id, team_id, prompt, trigger, parallel_width, budget_tokens,
-                    budget_seconds, max_repairs, budget_tokens_node, budget_seconds_node,
-                    max_turns_node, on_failure, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13)",
+                   (project_id, team_id, prompt, trigger, workspace_path, parallel_width,
+                    budget_tokens, budget_seconds, max_repairs, budget_tokens_node,
+                    budget_seconds_node, max_turns_node, on_failure, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?14)",
                 params![
                     project_id,
                     project.team_id,
                     prompt,
                     trigger,
+                    workspace_path,
                     guardrails.parallel_width,
                     guardrails.budget_tokens_run,
                     guardrails.budget_seconds_run,
@@ -88,6 +120,294 @@ impl Store {
         Ok(rows)
     }
 
+    /// Newest runs initiated from exactly one checkout.
+    ///
+    /// This filters before applying the limit. Filtering a bounded project-wide list in
+    /// Rust lets a busy sibling workspace hide this one's latest run entirely.
+    pub fn runs_in_workspace(
+        &self,
+        project_id: i64,
+        workspace: &Path,
+        limit: i64,
+    ) -> Result<Vec<Run>> {
+        let mut stmt = self.db().conn().prepare(&format!(
+            "{RUN_SELECT} WHERE project_id = ?1 AND workspace_path = ?2
+             ORDER BY id DESC LIMIT ?3"
+        ))?;
+        let workspace = workspace
+            .canonicalize()
+            .unwrap_or_else(|_| workspace.to_path_buf());
+        let path = workspace.to_string_lossy();
+        let rows = stmt
+            .query_map(params![project_id, path.as_ref(), limit], run_from_row)?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(rows)
+    }
+
+    /// The newest run in this checkout blocked for one exact reason.
+    ///
+    /// This is a direct query rather than a scan of the latest N runs. Crew and Talk must
+    /// agree whether approval is pending even after a busy workspace has accumulated more
+    /// history than either surface displays.
+    pub fn blocked_run_in_workspace(
+        &self,
+        project_id: i64,
+        team_id: i64,
+        workspace: &Path,
+        reasons: [&str; 2],
+    ) -> Result<Option<Run>> {
+        let workspace = workspace
+            .canonicalize()
+            .unwrap_or_else(|_| workspace.to_path_buf());
+        self.db()
+            .conn()
+            .query_row(
+                &format!(
+                    "{RUN_SELECT} WHERE project_id = ?1 AND team_id = ?2
+                       AND workspace_path = ?3 AND status = 'blocked'
+                       AND plan_slug IS NOT NULL AND blocked_reason IN (?4, ?5)
+                     ORDER BY id DESC LIMIT 1"
+                ),
+                params![
+                    project_id,
+                    team_id,
+                    workspace.to_string_lossy().as_ref(),
+                    reasons[0],
+                    reasons[1]
+                ],
+                run_from_row,
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    /// Newest blocked run for this project/team and exact control-plane reason.
+    pub fn blocked_run_for_project(
+        &self,
+        project_id: i64,
+        team_id: i64,
+        reasons: [&str; 2],
+    ) -> Result<Option<Run>> {
+        self.db()
+            .conn()
+            .query_row(
+                &format!(
+                    "{RUN_SELECT} WHERE project_id = ?1 AND team_id = ?2
+                       AND status = 'blocked' AND plan_slug IS NOT NULL
+                       AND blocked_reason IN (?3, ?4) ORDER BY id DESC LIMIT 1"
+                ),
+                params![project_id, team_id, reasons[0], reasons[1]],
+                run_from_row,
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    /// A control-plane blocked run that owns this exact ai-planner plan, regardless of
+    /// which checkout started it. Sibling worktrees may resolve to one plan, so guarding
+    /// only by workspace would allow one of them to orphan the other's continuation.
+    pub fn blocked_run_for_plan(
+        &self,
+        project_id: i64,
+        team_id: i64,
+        plan_slug: &str,
+        reasons: [&str; 2],
+    ) -> Result<Option<Run>> {
+        self.db()
+            .conn()
+            .query_row(
+                &format!(
+                    "{RUN_SELECT} WHERE project_id = ?1 AND team_id = ?2
+                       AND status = 'blocked' AND plan_slug = ?3
+                       AND blocked_reason IN (?4, ?5)
+                     ORDER BY id DESC LIMIT 1"
+                ),
+                params![project_id, team_id, plan_slug, reasons[0], reasons[1]],
+                run_from_row,
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    /// A run already coordinating or building this exact plan. This closes the short
+    /// interval before a maker claims the first slice, when the board still looks ready
+    /// but another click must not start a duplicate workflow.
+    pub fn active_run_for_plan(
+        &self,
+        project_id: i64,
+        team_id: i64,
+        plan_slug: &str,
+    ) -> Result<Option<Run>> {
+        self.db()
+            .conn()
+            .query_row(
+                &format!(
+                    "{RUN_SELECT} WHERE project_id = ?1 AND team_id = ?2
+                       AND plan_slug = ?3 AND status IN ('queued', 'planning', 'running')
+                     ORDER BY id DESC LIMIT 1"
+                ),
+                params![project_id, team_id, plan_slug],
+                run_from_row,
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    /// Reserve this run as the approval owner for its plan before mutating ai-planner.
+    /// The conditional update and competing-owner check share one SQLite transaction, so
+    /// a legacy adoption in another process cannot pass the same gap.
+    pub fn begin_plan_hold(
+        &mut self,
+        id: i64,
+        preparing_reason: &str,
+        ready_reason: &str,
+    ) -> Result<Run> {
+        if self.run(id)?.plan_slug.is_none() {
+            let reason = "plan approval requires a plan to approve";
+            self.block_run(id, reason)?;
+            return Err(Error::invalid(reason));
+        }
+        let at = now();
+        let changed = self.db_mut().write(|tx| {
+            Ok(tx.execute(
+                "UPDATE run AS target
+                    SET status = 'blocked', blocked_reason = ?2, rev = rev + 1,
+                        updated_at = ?4
+                  WHERE target.id = ?1 AND target.plan_slug IS NOT NULL
+                    AND NOT EXISTS (
+                        SELECT 1 FROM run AS owner
+                         WHERE owner.id != target.id
+                           AND owner.project_id = target.project_id
+                           AND owner.team_id = target.team_id
+                           AND owner.plan_slug = target.plan_slug
+                           AND (
+                               owner.status = 'running'
+                               OR (owner.status = 'blocked'
+                                   AND owner.blocked_reason IN (?2, ?3))
+                           )
+                    )",
+                params![id, preparing_reason, ready_reason, at],
+            )?)
+        })?;
+        if changed == 0 {
+            let reason = "another run already owns plan approval for this plan";
+            self.block_run(id, reason)?;
+            return Err(Error::invalid(reason));
+        }
+        self.run(id)
+    }
+
+    /// Attach a pre-run/session approval board to the blocked orchestrator turn that made
+    /// it. If a current run already owns the plan, return that instead. Both decisions are
+    /// made in one transaction so another process cannot create two owners.
+    pub fn adopt_legacy_plan_approval(
+        &mut self,
+        project_id: i64,
+        team_id: i64,
+        workspace: &Path,
+        plan_slug: &str,
+        preparing_reason: &str,
+        ready_reason: &str,
+    ) -> Result<Run> {
+        let workspace = workspace
+            .canonicalize()
+            .unwrap_or_else(|_| workspace.to_path_buf());
+        let path = workspace.to_string_lossy();
+        let at = now();
+        let id = self.db_mut().write(|tx| {
+            let existing = tx
+                .query_row(
+                    "SELECT id FROM run
+                      WHERE project_id = ?1 AND team_id = ?2 AND plan_slug = ?3
+                        AND status = 'blocked' AND blocked_reason IN (?4, ?5)
+                      ORDER BY id DESC LIMIT 1",
+                    params![
+                        project_id,
+                        team_id,
+                        plan_slug,
+                        preparing_reason,
+                        ready_reason
+                    ],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if let Some(id) = existing {
+                return Ok(id);
+            }
+            let active = tx
+                .query_row(
+                    "SELECT id FROM run
+                      WHERE project_id = ?1 AND team_id = ?2 AND plan_slug = ?3
+                        AND status IN ('queued', 'planning', 'running')
+                      ORDER BY id DESC LIMIT 1",
+                    params![project_id, team_id, plan_slug],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()?;
+            if let Some(id) = active {
+                return Err(Error::invalid(format!(
+                    "run #{id} already owns this plan and is not waiting for approval"
+                )));
+            }
+
+            let legacy = tx
+                .query_row(
+                    "SELECT run.id FROM run
+                      WHERE run.project_id = ?1 AND run.team_id = ?2
+                        AND run.workspace_path = ?3 AND run.status = 'blocked'
+                        AND run.plan_slug IS NULL AND run.blocked_reason IS NULL
+                        AND EXISTS (
+                            SELECT 1 FROM node_run
+                             WHERE node_run.run_id = run.id
+                               AND node_run.role = 'orchestrator'
+                               AND node_run.status = 'done'
+                               AND node_run.session_id IS NOT NULL
+                               AND node_run.id = (
+                                   SELECT MAX(latest.id) FROM node_run AS latest
+                                    WHERE latest.run_id = run.id
+                                      AND latest.role = 'orchestrator'
+                               )
+                        )
+                      ORDER BY run.id DESC LIMIT 1",
+                    params![project_id, team_id, path.as_ref()],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()?
+                .ok_or_else(|| {
+                    Error::invalid(
+                        "this approval board has no orchestrator run that can be continued",
+                    )
+                })?;
+            tx.execute(
+                "UPDATE run SET plan_slug = ?2, blocked_reason = ?3,
+                                rev = rev + 1, updated_at = ?4
+                  WHERE id = ?1 AND plan_slug IS NULL AND status = 'blocked'",
+                params![legacy, plan_slug, ready_reason, at],
+            )?;
+            Ok(legacy)
+        })?;
+        self.run(id)
+    }
+
+    /// Replace one blocked reason only while this run still owns the expected state.
+    /// Approval may recover a stale preparing state in another process, so callers must
+    /// not overwrite that claim when their external ai-planner operation eventually ends.
+    pub fn transition_blocked_run(
+        &mut self,
+        id: i64,
+        expected_reason: &str,
+        next_reason: &str,
+    ) -> Result<bool> {
+        let at = now();
+        self.db_mut().write(|tx| {
+            Ok(tx.execute(
+                "UPDATE run SET blocked_reason = ?3, rev = rev + 1, updated_at = ?4
+                  WHERE id = ?1 AND status = 'blocked' AND blocked_reason = ?2",
+                params![id, expected_reason, next_reason, at],
+            )? == 1)
+        })
+    }
+
     pub fn set_run_status(&mut self, id: i64, status: RunStatus) -> Result<Run> {
         let at = now();
         self.db_mut().write(|tx| {
@@ -104,6 +424,23 @@ impl Store {
                         updated_at = ?3
                   WHERE id = ?1",
                 params![id, status, at],
+            )?;
+            if changed == 0 {
+                return Err(Error::NoSuchRun(id.to_string()));
+            }
+            Ok(())
+        })?;
+        self.run(id)
+    }
+
+    pub fn fail_run(&mut self, id: i64, reason: &str) -> Result<Run> {
+        let at = now();
+        self.db_mut().write(|tx| {
+            let changed = tx.execute(
+                "UPDATE run SET status = 'failed', blocked_reason = ?2, ended_at = ?3,
+                                rev = rev + 1, updated_at = ?3
+                  WHERE id = ?1",
+                params![id, reason, at],
             )?;
             if changed == 0 {
                 return Err(Error::NoSuchRun(id.to_string()));
@@ -130,6 +467,91 @@ impl Store {
         self.run(id)
     }
 
+    /// Atomically claim a plan-approval continuation. Two windows may render the same
+    /// button; only the first is allowed to resume and dispatch the run.
+    pub fn begin_plan_approval(
+        &mut self,
+        id: i64,
+        expected_reason: &str,
+        not_newer_than: Option<&str>,
+    ) -> Result<Run> {
+        let at = now();
+        let changed = self.db_mut().write(|tx| {
+            Ok(tx.execute(
+                "UPDATE run
+                    SET status = 'running', blocked_reason = NULL, rev = rev + 1,
+                        updated_at = ?4
+                  WHERE id = ?1 AND status = 'blocked' AND blocked_reason = ?2
+                    AND plan_slug IS NOT NULL
+                    AND (?3 IS NULL OR updated_at <= ?3)",
+                params![id, expected_reason, not_newer_than, at],
+            )?)
+        })?;
+        if changed == 0 {
+            return Err(Error::invalid(
+                "that run is not waiting for plan approval; refresh its current state",
+            ));
+        }
+        self.run(id)
+    }
+
+    /// Atomically claim plan approval and put the person's direction into the exact
+    /// orchestrator conversation. If either write fails, the run remains approval-held.
+    pub fn begin_plan_approval_with_direction(
+        &mut self,
+        id: i64,
+        expected_reason: &str,
+        node_run_id: i64,
+        agent_id: i64,
+        body: &str,
+        not_newer_than: Option<&str>,
+    ) -> Result<Run> {
+        let body = body.trim();
+        if body.is_empty() {
+            return Err(Error::invalid("say something"));
+        }
+        let node = self.node_run(node_run_id)?;
+        if node.run_id != id || node.agent_id != Some(agent_id) {
+            return Err(Error::invalid(
+                "that orchestrator conversation does not belong to this run",
+            ));
+        }
+        let at = now();
+        let summary = super::conversation_summary(body);
+        let payload = serde_json::to_string(&serde_json::json!({
+            "conversation": "reply",
+            "body": body,
+        }))?;
+        self.db_mut().write(|tx| {
+            let changed = tx.execute(
+                "UPDATE run
+                    SET status = 'running', blocked_reason = NULL, rev = rev + 1,
+                        updated_at = ?4
+                  WHERE id = ?1 AND status = 'blocked' AND blocked_reason = ?2
+                    AND plan_slug IS NOT NULL
+                    AND (?3 IS NULL OR updated_at <= ?3)",
+                params![id, expected_reason, not_newer_than, at],
+            )?;
+            if changed == 0 {
+                return Err(Error::invalid(
+                    "that run is not waiting for plan approval; refresh its current state",
+                ));
+            }
+            tx.execute(
+                "INSERT INTO pending_message (agent_id, node_run_id, body, created_at)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![agent_id, node_run_id, body, at],
+            )?;
+            tx.execute(
+                "INSERT INTO event (run_id, node_run_id, at, kind, actor, summary, payload_json)
+                 VALUES (?1, ?2, ?3, 'note', 'human', ?4, ?5)",
+                params![id, node_run_id, at, summary, payload],
+            )?;
+            Ok(())
+        })?;
+        self.run(id)
+    }
+
     pub fn set_run_plan(&mut self, id: i64, plan_slug: &str) -> Result<Run> {
         let at = now();
         self.db_mut().write(|tx| {
@@ -142,6 +564,35 @@ impl Store {
             }
             Ok(())
         })?;
+        self.run(id)
+    }
+
+    /// Attach an immediately-built plan only if no other live run already owns it.
+    /// UI mutexes prevent ordinary double-clicks, while this transaction closes the
+    /// cross-process race between a desktop window, browser window, CLI, or daemon.
+    pub fn claim_run_plan(&mut self, id: i64, plan_slug: &str) -> Result<Run> {
+        let at = now();
+        let changed = self.db_mut().write(|tx| {
+            Ok(tx.execute(
+                "UPDATE run AS target
+                    SET plan_slug = ?2, rev = rev + 1, updated_at = ?3
+                  WHERE target.id = ?1
+                    AND NOT EXISTS (
+                        SELECT 1 FROM run AS other
+                         WHERE other.id != target.id
+                           AND other.project_id = target.project_id
+                           AND other.team_id = target.team_id
+                           AND other.plan_slug = ?2
+                           AND other.status IN ('queued', 'planning', 'running')
+                    )",
+                params![id, plan_slug, at],
+            )?)
+        })?;
+        if changed == 0 {
+            return Err(Error::invalid(
+                "another active run already owns this plan; open that run instead",
+            ));
+        }
         self.run(id)
     }
 
@@ -161,6 +612,20 @@ impl Store {
         // The picker and generated project are not a permission boundary. Resolve again
         // here so a scheduled, unattended run cannot reach a denied account (D8).
         let resolution = registry.resolve(&agent)?;
+        self.dispatch_with_resolution(run_id, agent_id, slice_key, &resolution)
+    }
+
+    /// Dispatch with an explicit runtime resolution after a recognized account quota
+    /// boundary. The roster remains unchanged; this row records what this attempt truly
+    /// used.
+    pub(crate) fn dispatch_with_resolution(
+        &mut self,
+        run_id: i64,
+        agent_id: i64,
+        slice_key: Option<&str>,
+        resolution: &ModelResolution,
+    ) -> Result<NodeRun> {
+        let agent = self.agent(agent_id)?;
         let at = now();
 
         // A retry is a new row, not an edit. Losing the first attempt would lose the
@@ -270,11 +735,114 @@ impl Store {
         self.node_run(node_run_id)
     }
 
+    /// Atomically claim one publishing boundary. The prerequisite is part of the write,
+    /// so two app windows cannot both push/create/merge the same branch.
+    pub fn claim_delivery(&mut self, node_run_id: i64, action: DeliveryAction) -> Result<bool> {
+        let node = self.node_run(node_run_id)?;
+        let already_done = match action {
+            DeliveryAction::Push => node.pushed_at.is_some(),
+            DeliveryAction::Pr => node.pr_url.is_some(),
+            DeliveryAction::Merge => node.merge_requested_at.is_some(),
+        };
+        if already_done {
+            return Ok(false);
+        }
+        let prerequisite = match action {
+            DeliveryAction::Push => "1 = 1",
+            DeliveryAction::Pr => "pushed_at IS NOT NULL",
+            DeliveryAction::Merge => "pr_url IS NOT NULL",
+        };
+        let sql = format!(
+            "UPDATE node_run
+                SET delivery_claim = ?2, delivery_claimed_at = ?3, delivery_error = NULL,
+                    rev = rev + 1, updated_at = ?3
+              WHERE id = ?1 AND status = 'done' AND branch IS NOT NULL
+                AND (delivery_claim IS NULL OR delivery_claimed_at <= ?4)
+                AND {prerequisite}"
+        );
+        let at = now();
+        let stale = crate::util::rfc3339_in(-5 * 60);
+        let changed = self
+            .db_mut()
+            .write(|tx| Ok(tx.execute(&sql, params![node_run_id, action, at, stale])?))?;
+        if changed == 0 {
+            return Err(Error::invalid(format!(
+                "{} is not ready for {} delivery",
+                node.slice_key.as_deref().unwrap_or("that node"),
+                action.as_str()
+            )));
+        }
+        Ok(true)
+    }
+
+    pub fn complete_delivery(
+        &mut self,
+        node_run_id: i64,
+        action: DeliveryAction,
+        value: Option<&str>,
+    ) -> Result<NodeRun> {
+        let at = now();
+        let (column, stored) = match action {
+            DeliveryAction::Push => ("pushed_at", at.as_str()),
+            DeliveryAction::Pr => (
+                "pr_url",
+                value.ok_or_else(|| Error::invalid("a PR needs its URL"))?,
+            ),
+            DeliveryAction::Merge => ("merge_requested_at", at.as_str()),
+        };
+        let sql = format!(
+            "UPDATE node_run SET {column} = ?2, delivery_claim = NULL,
+                    delivery_claimed_at = NULL, delivery_error = NULL,
+                    rev = rev + 1, updated_at = ?3
+              WHERE id = ?1 AND delivery_claim = ?4"
+        );
+        let changed = self
+            .db_mut()
+            .write(|tx| Ok(tx.execute(&sql, params![node_run_id, stored, at, action])?))?;
+        if changed == 0 {
+            return Err(Error::invalid("that delivery action is no longer claimed"));
+        }
+        self.node_run(node_run_id)
+    }
+
+    pub fn fail_delivery(
+        &mut self,
+        node_run_id: i64,
+        action: DeliveryAction,
+        reason: &str,
+    ) -> Result<NodeRun> {
+        let changed = self.db_mut().write(|tx| {
+            Ok(tx.execute(
+                "UPDATE node_run SET delivery_claim = NULL, delivery_claimed_at = NULL,
+                        delivery_error = ?3, rev = rev + 1, updated_at = ?4
+                  WHERE id = ?1 AND delivery_claim = ?2",
+                params![node_run_id, action, reason, now()],
+            )?)
+        })?;
+        if changed == 0 {
+            return Err(Error::invalid("that delivery action is no longer claimed"));
+        }
+        self.node_run(node_run_id)
+    }
+
     pub fn set_node_session(&mut self, node_run_id: i64, session_id: &str) -> Result<NodeRun> {
         let at = now();
         self.db_mut().write(|tx| {
             let changed = tx.execute(
-                "UPDATE node_run SET session_id = ?2, rev = rev + 1, updated_at = ?3 WHERE id = ?1",
+                "UPDATE node_run
+                    SET session_retired_at = NULL,
+                        session_resetting_at = CASE
+                            WHEN session_id = ?2 THEN session_resetting_at
+                            ELSE NULL
+                        END,
+                        context_tokens = CASE
+                            WHEN session_id = ?2 AND session_retired_at IS NULL
+                                THEN context_tokens
+                            ELSE NULL
+                        END,
+                        session_id = ?2,
+                        rev = rev + 1, updated_at = ?3
+                  WHERE id = ?1",
                 params![node_run_id, session_id, at],
             )?;
             if changed == 0 {
@@ -282,6 +850,58 @@ impl Store {
             }
             Ok(())
         })?;
+        self.node_run(node_run_id)
+    }
+
+    pub fn claim_node_session_reset(&mut self, node_run_id: i64) -> Result<NodeRun> {
+        let at = now();
+        let changed = self.db_mut().write(|tx| {
+            Ok(tx.execute(
+                "UPDATE node_run
+                    SET session_resetting_at = ?2, rev = rev + 1, updated_at = ?2
+                  WHERE id = ?1 AND session_id IS NOT NULL
+                    AND session_retired_at IS NULL AND session_resetting_at IS NULL
+                    AND status NOT IN ('queued', 'running')",
+                params![node_run_id, at],
+            )?)
+        })?;
+        if changed == 0 {
+            return Err(Error::invalid(
+                "that node has no idle active Pi session to reset",
+            ));
+        }
+        self.node_run(node_run_id)
+    }
+
+    pub fn cancel_node_session_reset(&mut self, node_run_id: i64) -> Result<NodeRun> {
+        let at = now();
+        self.db_mut().write(|tx| {
+            tx.execute(
+                "UPDATE node_run SET session_resetting_at = NULL, rev = rev + 1,
+                                     updated_at = ?2 WHERE id = ?1",
+                params![node_run_id, at],
+            )?;
+            Ok(())
+        })?;
+        self.node_run(node_run_id)
+    }
+
+    pub fn retire_node_session(&mut self, node_run_id: i64) -> Result<NodeRun> {
+        let at = now();
+        let changed = self.db_mut().write(|tx| {
+            Ok(tx.execute(
+                "UPDATE node_run
+                    SET session_retired_at = ?2, session_resetting_at = NULL,
+                        rev = rev + 1, updated_at = ?2
+                  WHERE id = ?1 AND session_id IS NOT NULL AND session_retired_at IS NULL",
+                params![node_run_id, at],
+            )?)
+        })?;
+        if changed == 0 {
+            return Err(Error::invalid(
+                "that node has no active Pi session to reset",
+            ));
+        }
         self.node_run(node_run_id)
     }
 
@@ -295,6 +915,8 @@ impl Store {
                                           THEN ?3 ELSE started_at END,
                         ended_at   = CASE WHEN ?2 IN ('done','failed','cancelled')
                                           THEN ?3 ELSE NULL END,
+                        supervisor_pid = CASE WHEN ?2 = 'running'
+                                              THEN supervisor_pid ELSE NULL END,
                         rev = rev + 1,
                         updated_at = ?3
                   WHERE id = ?1",
@@ -305,6 +927,61 @@ impl Store {
             }
             Ok(())
         })?;
+        self.node_run(node_run_id)
+    }
+
+    /// Claim supervision of one running node with a compare-and-swap on its previous
+    /// owner. A restarted app passes the dead pid it observed; two windows cannot both
+    /// turn that observation into a live continuation.
+    pub fn claim_node_supervision(
+        &mut self,
+        node_run_id: i64,
+        supervisor_pid: i64,
+        previous_pid: Option<i64>,
+    ) -> Result<NodeRun> {
+        let node = self.node_run(node_run_id)?;
+        if node.supervisor_pid == Some(supervisor_pid) {
+            return Ok(node);
+        }
+        let changed = self.db_mut().write(|tx| {
+            Ok(tx.execute(
+                "UPDATE node_run
+                    SET supervisor_pid = ?2, rev = rev + 1, updated_at = ?4
+                  WHERE id = ?1 AND status = 'running'
+                    AND session_retired_at IS NULL
+                    AND supervisor_pid IS ?3",
+                params![node_run_id, supervisor_pid, previous_pid, now()],
+            )?)
+        })?;
+        if changed == 0 {
+            return Err(Error::invalid(
+                "that turn is already supervised or is no longer running",
+            ));
+        }
+        self.node_run(node_run_id)
+    }
+
+    /// Give an interrupted node back without closing its session or discarding its
+    /// worktree. The pid predicate prevents an old recovery task from clearing a newer
+    /// supervisor's claim.
+    pub fn release_node_supervision(
+        &mut self,
+        node_run_id: i64,
+        supervisor_pid: i64,
+    ) -> Result<NodeRun> {
+        let changed = self.db_mut().write(|tx| {
+            Ok(tx.execute(
+                "UPDATE node_run
+                    SET supervisor_pid = NULL, rev = rev + 1, updated_at = ?3
+                  WHERE id = ?1 AND supervisor_pid = ?2",
+                params![node_run_id, supervisor_pid, now()],
+            )?)
+        })?;
+        if changed == 0 {
+            return Err(Error::invalid(
+                "that process no longer supervises this turn",
+            ));
+        }
         self.node_run(node_run_id)
     }
 
@@ -413,9 +1090,9 @@ impl Store {
 }
 
 const RUN_SELECT: &str = "SELECT id, project_id, team_id, prompt, status, trigger, plan_slug, \
-     parallel_width, budget_tokens, budget_seconds, max_repairs, budget_tokens_node, \
-     budget_seconds_node, max_turns_node, on_failure, blocked_reason, started_at, ended_at, \
-     rev, created_at, updated_at FROM run";
+     workspace_path, parallel_width, budget_tokens, budget_seconds, max_repairs, \
+     budget_tokens_node, budget_seconds_node, max_turns_node, on_failure, blocked_reason, \
+     started_at, ended_at, rev, created_at, updated_at FROM run";
 
 fn run_from_row(r: &Row<'_>) -> rusqlite::Result<Run> {
     Ok(Run {
@@ -426,27 +1103,30 @@ fn run_from_row(r: &Row<'_>) -> rusqlite::Result<Run> {
         status: r.get(4)?,
         trigger: r.get(5)?,
         plan_slug: non_empty(r.get(6)?),
-        parallel_width: r.get(7)?,
-        budget_tokens: r.get(8)?,
-        budget_seconds: r.get(9)?,
-        max_repairs: r.get(10)?,
-        budget_tokens_node: r.get(11)?,
-        budget_seconds_node: r.get(12)?,
-        max_turns_node: r.get(13)?,
-        on_failure: r.get(14)?,
-        blocked_reason: non_empty(r.get(15)?),
-        started_at: non_empty(r.get(16)?),
-        ended_at: non_empty(r.get(17)?),
-        rev: r.get(18)?,
-        created_at: r.get(19)?,
-        updated_at: r.get(20)?,
+        workspace_path: non_empty(r.get(7)?),
+        parallel_width: r.get(8)?,
+        budget_tokens: r.get(9)?,
+        budget_seconds: r.get(10)?,
+        max_repairs: r.get(11)?,
+        budget_tokens_node: r.get(12)?,
+        budget_seconds_node: r.get(13)?,
+        max_turns_node: r.get(14)?,
+        on_failure: r.get(15)?,
+        blocked_reason: non_empty(r.get(16)?),
+        started_at: non_empty(r.get(17)?),
+        ended_at: non_empty(r.get(18)?),
+        rev: r.get(19)?,
+        created_at: r.get(20)?,
+        updated_at: r.get(21)?,
     })
 }
 
 const NODE_SELECT: &str = "SELECT id, run_id, agent_id, role, provider, model, status, attempt, \
      slice_key, worktree_path, branch, lease_id, session_id, eve_port, eve_token, stream_cursor, \
      tokens_in, tokens_out, tokens_cache_read, tokens_cache_write, turns, blocked_reason, \
-     started_at, ended_at, rev, created_at, updated_at FROM node_run";
+     started_at, ended_at, rev, created_at, updated_at, context_tokens, session_retired_at, \
+     session_resetting_at, pushed_at, pr_url, merge_requested_at, delivery_claim, \
+     delivery_claimed_at, delivery_error, supervisor_pid FROM node_run";
 
 fn node_from_row(r: &Row<'_>) -> rusqlite::Result<NodeRun> {
     Ok(NodeRun {
@@ -462,7 +1142,17 @@ fn node_from_row(r: &Row<'_>) -> rusqlite::Result<NodeRun> {
         worktree_path: non_empty(r.get(9)?),
         branch: non_empty(r.get(10)?),
         lease_id: non_empty(r.get(11)?),
+        pushed_at: non_empty(r.get(30)?),
+        pr_url: non_empty(r.get(31)?),
+        merge_requested_at: non_empty(r.get(32)?),
+        delivery_claim: non_empty(r.get(33)?),
+        delivery_claimed_at: non_empty(r.get(34)?),
+        delivery_error: non_empty(r.get(35)?),
         session_id: non_empty(r.get(12)?),
+        session_retired_at: non_empty(r.get(28)?),
+        session_resetting_at: non_empty(r.get(29)?),
+        supervisor_pid: r.get(36)?,
+        context_tokens: r.get(27)?,
         eve_port: r.get(13)?,
         eve_token: non_empty(r.get(14)?),
         stream_cursor: r.get(15)?,
@@ -509,6 +1199,79 @@ mod tests {
     }
 
     #[test]
+    fn interrupted_node_supervision_is_claimed_once_and_only_its_owner_can_release_it() {
+        let (mut s, project, team) = seeded();
+        let run = s
+            .create_run(project, "ship it", RunTrigger::Manual)
+            .unwrap();
+        let node = s
+            .dispatch(
+                run.id,
+                backend(&s, team),
+                Some("S1"),
+                &ModelRegistry::local_only(),
+            )
+            .unwrap();
+        s.set_node_session(node.id, "session-1").unwrap();
+        s.set_node_status(node.id, NodeStatus::Running).unwrap();
+
+        let claimed = s.claim_node_supervision(node.id, 101, None).unwrap();
+        assert_eq!(claimed.supervisor_pid, Some(101));
+        assert!(s.claim_node_supervision(node.id, 202, None).is_err());
+        assert!(s.release_node_supervision(node.id, 202).is_err());
+
+        let released = s.release_node_supervision(node.id, 101).unwrap();
+        assert_eq!(released.supervisor_pid, None);
+        let reclaimed = s.claim_node_supervision(node.id, 202, None).unwrap();
+        assert_eq!(reclaimed.supervisor_pid, Some(202));
+        let done = s.set_node_status(node.id, NodeStatus::Done).unwrap();
+        assert_eq!(done.supervisor_pid, None);
+    }
+
+    #[test]
+    fn delivery_boundaries_are_ordered_claimed_and_idempotent() {
+        let (mut s, project, team) = seeded();
+        let run = s
+            .create_run(project, "ship it", RunTrigger::Manual)
+            .unwrap();
+        let node = s
+            .dispatch(
+                run.id,
+                backend(&s, team),
+                Some("S1"),
+                &ModelRegistry::local_only(),
+            )
+            .unwrap();
+        s.attach_worktree(node.id, "/tmp/widget", Some("ai-team/s1"), None)
+            .unwrap();
+        s.set_node_status(node.id, NodeStatus::Done).unwrap();
+
+        assert!(s.claim_delivery(node.id, DeliveryAction::Pr).is_err());
+        assert!(s.claim_delivery(node.id, DeliveryAction::Push).unwrap());
+        assert!(s.claim_delivery(node.id, DeliveryAction::Push).is_err());
+        s.complete_delivery(node.id, DeliveryAction::Push, None)
+            .unwrap();
+        assert!(!s.claim_delivery(node.id, DeliveryAction::Push).unwrap());
+        assert!(s.claim_delivery(node.id, DeliveryAction::Pr).unwrap());
+        s.complete_delivery(
+            node.id,
+            DeliveryAction::Pr,
+            Some("https://github.com/acme/widget/pull/7"),
+        )
+        .unwrap();
+        assert!(s.claim_delivery(node.id, DeliveryAction::Merge).unwrap());
+        let merged = s
+            .complete_delivery(node.id, DeliveryAction::Merge, None)
+            .unwrap();
+        assert!(merged.pushed_at.is_some());
+        assert_eq!(
+            merged.pr_url.as_deref(),
+            Some("https://github.com/acme/widget/pull/7")
+        );
+        assert!(merged.merge_requested_at.is_some());
+    }
+
+    #[test]
     fn a_run_snapshots_the_teams_guardrails() {
         let (mut s, project, team) = seeded();
         let run = s
@@ -533,6 +1296,221 @@ mod tests {
     }
 
     #[test]
+    fn a_run_remembers_the_workspace_that_started_it() {
+        let (mut s, project, _) = seeded();
+        let run = s
+            .create_run_in(
+                project,
+                "ship it here",
+                RunTrigger::Manual,
+                Some(Path::new("/tmp/widget-task")),
+            )
+            .unwrap();
+
+        assert_eq!(run.workspace_path.as_deref(), Some("/tmp/widget-task"));
+    }
+
+    #[test]
+    fn a_legacy_board_is_adopted_by_the_orchestrator_run_that_made_it() {
+        let (mut s, project, team) = seeded();
+        let workspace = tempfile::tempdir().unwrap();
+        let run = s
+            .create_run_in(
+                project,
+                "make the old plan",
+                RunTrigger::Manual,
+                Some(workspace.path()),
+            )
+            .unwrap();
+        let orchestrator = s
+            .agents(team)
+            .unwrap()
+            .into_iter()
+            .find(|agent| agent.role == crate::ROOT_ROLE)
+            .unwrap();
+        let node = s
+            .dispatch(run.id, orchestrator.id, None, &ModelRegistry::local_only())
+            .unwrap();
+        s.set_node_session(node.id, "legacy-session").unwrap();
+        s.set_node_status(node.id, NodeStatus::Done).unwrap();
+        s.block_run(run.id, "Planning needs context - ClickUp is not connected")
+            .unwrap();
+        assert!(s
+            .adopt_legacy_plan_approval(
+                project,
+                team,
+                workspace.path(),
+                "legacy-plan",
+                "Preparing plan approval",
+                "Plan ready for approval",
+            )
+            .is_err());
+        s.db_mut()
+            .write(|tx| {
+                tx.execute(
+                    "UPDATE run SET blocked_reason = NULL WHERE id = ?1",
+                    params![run.id],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+
+        let adopted = s
+            .adopt_legacy_plan_approval(
+                project,
+                team,
+                workspace.path(),
+                "legacy-plan",
+                "Preparing plan approval",
+                "Plan ready for approval",
+            )
+            .unwrap();
+        assert_eq!(adopted.id, run.id);
+        assert_eq!(adopted.plan_slug.as_deref(), Some("legacy-plan"));
+        assert_eq!(
+            adopted.blocked_reason.as_deref(),
+            Some("Plan ready for approval")
+        );
+    }
+
+    #[test]
+    fn workspace_limit_is_applied_after_workspace_filtering() {
+        let (mut s, project, _) = seeded();
+        let task = Path::new("/tmp/widget-task");
+        let expected = s
+            .create_run_in(project, "task", RunTrigger::Manual, Some(task))
+            .unwrap();
+        for prompt in ["main one", "main two", "main three"] {
+            s.create_run_in(
+                project,
+                prompt,
+                RunTrigger::Manual,
+                Some(Path::new("/tmp/widget-main")),
+            )
+            .unwrap();
+        }
+
+        let found = s.runs_in_workspace(project, task, 1).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].id, expected.id);
+    }
+
+    #[test]
+    fn a_blocked_plan_is_found_across_sibling_workspaces() {
+        let (mut s, project, team) = seeded();
+        let run = s
+            .create_run_in(
+                project,
+                "plan it",
+                RunTrigger::Manual,
+                Some(Path::new("/tmp/widget-first")),
+            )
+            .unwrap();
+        s.set_run_plan(run.id, "shared-plan").unwrap();
+        s.block_run(run.id, "Preparing plan approval").unwrap();
+
+        // The caller may be standing in another checkout that resolves to the same plan.
+        // Plan identity, not workspace identity, keeps it from orphaning this run.
+        assert_eq!(
+            s.blocked_run_for_plan(
+                project,
+                team,
+                "shared-plan",
+                ["Plan ready for approval", "Preparing plan approval"],
+            )
+            .unwrap()
+            .map(|found| found.id),
+            Some(run.id)
+        );
+    }
+
+    #[test]
+    fn an_active_run_owns_its_plan_before_any_slice_is_claimed() {
+        let (mut s, project, team) = seeded();
+        let run = s
+            .create_run(project, "build it", RunTrigger::Manual)
+            .unwrap();
+        s.claim_run_plan(run.id, "shared-plan").unwrap();
+        s.set_run_status(run.id, RunStatus::Running).unwrap();
+        let duplicate = s
+            .create_run(project, "build it again", RunTrigger::Manual)
+            .unwrap();
+        assert!(s.claim_run_plan(duplicate.id, "shared-plan").is_err());
+        assert!(s.run(duplicate.id).unwrap().plan_slug.is_none());
+
+        assert_eq!(
+            s.active_run_for_plan(project, team, "shared-plan")
+                .unwrap()
+                .map(|found| found.id),
+            Some(run.id)
+        );
+
+        s.fail_run(run.id, "lease failed").unwrap();
+        assert!(s
+            .active_run_for_plan(project, team, "shared-plan")
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn only_one_run_can_begin_holding_one_plans_slices() {
+        let (mut s, project, _) = seeded();
+        let first = s.create_run(project, "first", RunTrigger::Manual).unwrap();
+        let second = s.create_run(project, "second", RunTrigger::Manual).unwrap();
+        for id in [first.id, second.id] {
+            s.set_run_plan(id, "shared-plan").unwrap();
+        }
+
+        s.begin_plan_hold(
+            first.id,
+            "Preparing plan approval",
+            "Plan ready for approval",
+        )
+        .unwrap();
+        assert!(s
+            .begin_plan_hold(
+                second.id,
+                "Preparing plan approval",
+                "Plan ready for approval",
+            )
+            .is_err());
+        assert_eq!(s.run(second.id).unwrap().status, RunStatus::Blocked);
+
+        s.begin_plan_approval(first.id, "Preparing plan approval", None)
+            .unwrap();
+        let third = s.create_run(project, "third", RunTrigger::Manual).unwrap();
+        s.set_run_plan(third.id, "shared-plan").unwrap();
+        assert!(s
+            .begin_plan_hold(
+                third.id,
+                "Preparing plan approval",
+                "Plan ready for approval",
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn only_one_window_can_continue_a_run_waiting_for_plan_approval() {
+        let (mut s, project, _) = seeded();
+        let run = s
+            .create_run(project, "plan it", RunTrigger::Manual)
+            .unwrap();
+        s.set_run_plan(run.id, "widget-plan").unwrap();
+        s.block_run(run.id, "Plan ready for approval").unwrap();
+
+        let continued = s
+            .begin_plan_approval(run.id, "Plan ready for approval", None)
+            .unwrap();
+        assert_eq!(continued.status, RunStatus::Running);
+        assert!(continued.blocked_reason.is_none());
+        assert_eq!(continued.plan_slug.as_deref(), Some("widget-plan"));
+        assert!(s
+            .begin_plan_approval(run.id, "Plan ready for approval", None)
+            .is_err());
+        assert_eq!(s.runs(Some(project), 10).unwrap().len(), 1);
+    }
+
+    #[test]
     fn a_project_with_no_team_cannot_start_a_run() {
         let mut s = Store::memory().unwrap();
         let p = s
@@ -545,6 +1523,35 @@ mod tests {
             s.create_run(p.id, "do a thing", RunTrigger::Manual),
             Err(Error::NoTeam(_))
         ));
+    }
+
+    #[test]
+    fn resetting_a_session_retires_its_address_without_deleting_it() {
+        let (mut s, project, team) = seeded();
+        let run = s
+            .create_run(project, "ship it", RunTrigger::Manual)
+            .unwrap();
+        let registry = ModelRegistry::local_only();
+        let node = s
+            .dispatch(run.id, backend(&s, team), Some("S1"), &registry)
+            .unwrap();
+        s.set_node_session(node.id, "session-old").unwrap();
+        s.set_node_status(node.id, NodeStatus::Running).unwrap();
+        assert!(s.claim_node_session_reset(node.id).is_err());
+        s.set_node_status(node.id, NodeStatus::Done).unwrap();
+
+        let claimed = s.claim_node_session_reset(node.id).unwrap();
+        assert!(claimed.session_resetting_at.is_some());
+        let resumed = s.set_node_session(node.id, "session-old").unwrap();
+        assert!(resumed.session_resetting_at.is_some());
+        let retired = s.retire_node_session(node.id).unwrap();
+        assert_eq!(retired.session_id.as_deref(), Some("session-old"));
+        assert!(retired.session_retired_at.is_some());
+        assert!(retired.session_resetting_at.is_none());
+
+        let fresh = s.set_node_session(node.id, "session-new").unwrap();
+        assert_eq!(fresh.session_id.as_deref(), Some("session-new"));
+        assert!(fresh.session_retired_at.is_none());
     }
 
     #[test]

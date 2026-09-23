@@ -1,8 +1,10 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 
+import { AgentActivity } from "./AgentActivity";
 import { Board } from "./Board";
 import { Crew } from "./Crew";
 import { Overview } from "./Overview";
+import { PageLayout } from "./PageLayout";
 import { Prompt, Seats } from "./Console";
 import { Review } from "./Review";
 import { Roster } from "./Roster";
@@ -17,6 +19,7 @@ import {
   type Run,
   type RunDetail,
   type RunEvent,
+  type Worktree,
 } from "./api";
 
 // Each is most of a megabyte that no other view needs (M4-S18, M4-S20).
@@ -59,14 +62,17 @@ export function workspaceViewName(view: WorkspaceView): string {
  */
 export function Workspace({
   project,
+  workspace,
   view,
   tick,
   openRun,
   onOpenedRun,
   onChanged,
   onGo,
+  onTeamStarted,
 }: {
   project: Project;
+  workspace: Worktree;
   view: WorkspaceView;
   tick: number;
   /** A run to open on arrival - how Today hands one over. */
@@ -75,6 +81,8 @@ export function Workspace({
   onChanged: () => void;
   /** Move to another view of this project - what the overview's panels link to. */
   onGo: (view: WorkspaceView) => void;
+  /** Refresh the selected workspace after its team workflow starts. */
+  onTeamStarted: () => void;
 }) {
   const [runs, setRuns] = useState<Run[]>([]);
   const [selected, setSelected] = useState<number | null>(null);
@@ -88,12 +96,12 @@ export function Workspace({
 
   const refresh = useCallback(async () => {
     try {
-      setRuns(await fetchRuns(project.id));
+      setRuns(await fetchRuns(project.id, workspace.path));
       setProblem(null);
     } catch (error: unknown) {
       setProblem(error instanceof Error ? error.message : String(error));
     }
-  }, [project.id]);
+  }, [project.id, workspace.path]);
 
   // The selected run is refetched separately: it changes far more often than the list, and
   // re-reading everything on every tick would make the dock flicker.
@@ -104,19 +112,24 @@ export function Workspace({
       return;
     }
     try {
-      const [found, log] = await Promise.all([fetchRun(selected), fetchRunEvents(selected)]);
+      const [found, log] = await Promise.all([
+        fetchRun(selected, workspace.path),
+        fetchRunEvents(selected, undefined, workspace.path),
+      ]);
       setDetail(found);
       setEvents(log);
-      // Supplementary: a bad approvals response must not blank a dock that could render
-      // everything else (M3-S12).
     } catch (error: unknown) {
       setProblem(error instanceof Error ? error.message : String(error));
     }
-  }, [selected]);
+  }, [selected, workspace.path]);
 
   useEffect(() => {
     void refresh();
   }, [refresh, tick]);
+  useEffect(() => {
+    setSelected(null);
+    setTalking(null);
+  }, [workspace.path]);
   useEffect(() => {
     void refreshSelected();
   }, [refreshSelected, tick]);
@@ -147,77 +160,151 @@ export function Workspace({
   return (
     <>
       <main className="main">
-        {view === "overview" && <Overview project={project} tick={tick} onGo={onGo} />}
+        {view === "overview" && (
+          <Overview project={project} workspace={workspace} tick={tick} onGo={onGo} />
+        )}
 
         {view === "work" && (
           <>
             <div className="main__header">
-              <h2>Work</h2>
+              <div>
+                <h2>Work</h2>
+                <span className="workspace-title mono">
+                  {workspace.main ? "main checkout" : workspace.branch ?? workspace.name}
+                </span>
+              </div>
               {problem !== null && <span className="error">{problem}</span>}
             </div>
 
-            <Prompt project={project.slug} onStarted={() => void refresh()} />
-
-            {/* The crew above the runs, because "who is doing what" is the question in the
-                chair and a list of runs is the history behind it. */}
-            <Crew
-              project={project.slug}
-              tick={tick}
-              onOpenRun={(id) => {
-                setTalking(null);
-                setSelected(id);
-              }}
-              onTalk={(member) => {
-                setSelected(null);
-                setTalking(member);
-              }}
+            <PageLayout
+              view="work"
+              panels={[
+                {
+                  id: "start",
+                  label: "Start work",
+                  span: 1,
+                  content: (
+                    <section className="block">
+                      <div className="block__head">
+                        <h3>Start a team run</h3>
+                        <span className="faint">plan, approve, dispatch, verify</span>
+                      </div>
+                      <Prompt
+                        project={project.slug}
+                        workspace={workspace}
+                        onStarted={(runId) => {
+                          if (runId !== undefined) {
+                            setTalking(null);
+                            setSelected(runId);
+                          }
+                          void refresh();
+                          onTeamStarted();
+                        }}
+                      />
+                    </section>
+                  ),
+                },
+                {
+                  id: "activity",
+                  label: "Agent activity",
+                  span: 2,
+                  content: (
+                    <AgentActivity
+                      runs={runs}
+                      workspace={workspace.path}
+                      tick={tick}
+                      onOpenRun={(id) => {
+                        setTalking(null);
+                        setSelected(id);
+                      }}
+                    />
+                  ),
+                },
+                {
+                  id: "crew",
+                  label: "Work graph",
+                  span: 2,
+                  content: (
+                    <section className="block">
+                      <Crew
+                        project={project.slug}
+                        workspace={workspace.path}
+                        tick={tick}
+                        onOpenRun={(id) => {
+                          setTalking(null);
+                          setSelected(id);
+                        }}
+                        onTalk={(member) => {
+                          setSelected(null);
+                          setTalking(member);
+                        }}
+                        showGraph
+                      />
+                    </section>
+                  ),
+                },
+                {
+                  id: "runs",
+                  label: "Runs",
+                  span: 1,
+                  content: (
+                    <section className="block">
+                      <div className="block__head">
+                        <h3>Runs</h3>
+                        <span className="faint">{runs.length} in this workspace</span>
+                      </div>
+                      {runs.length === 0 ? (
+                        <p className="empty">
+                          Nothing has run here yet. Start the team or talk directly to a maker.
+                        </p>
+                      ) : (
+                        <div className="list">
+                          {runs.map((entry) => (
+                            <button
+                              type="button"
+                              key={entry.id}
+                              className="card"
+                              onClick={() => setSelected(entry.id)}
+                            >
+                              <div className="card__row">
+                                <span className="status" data-status={entry.status}>
+                                  {entry.status}
+                                </span>
+                                <span className="faint mono">#{entry.id}</span>
+                              </div>
+                              <span>{entry.prompt}</span>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </section>
+                  ),
+                },
+              ]}
             />
-
-            <div className="main__header">
-              <h2>Runs</h2>
-            </div>
-
-            {runs.length === 0 && (
-              <p className="empty">
-                Nothing has run here yet. Say what you want built and the team will plan it.
-              </p>
-            )}
-
-            <div className="list">
-              {runs.map((entry) => (
-                <button
-                  type="button"
-                  key={entry.id}
-                  className="card"
-                  onClick={() => setSelected(entry.id)}
-                >
-                  <div className="card__row">
-                    <span className="status" data-status={entry.status}>
-                      {entry.status}
-                    </span>
-                    <span className="faint mono">#{entry.id}</span>
-                  </div>
-                  <span>{entry.prompt}</span>
-                </button>
-              ))}
-            </div>
           </>
         )}
 
-        {view === "board" && <Board project={project.slug} tick={tick} />}
-        {view === "review" && <Review tick={tick} />}
-        {view === "source" && <Source project={project.slug} node={null} />}
-        {view === "team" && <Roster onChanged={onChanged} />}
+        {view === "board" && (
+          <Board project={project.slug} workspace={workspace.path} tick={tick} />
+        )}
+        {view === "review" && (
+          <Review project={project.slug} workspace={workspace.path} tick={tick} />
+        )}
+        {view === "source" && (
+          <Source project={project.slug} workspace={workspace.path} node={null} />
+        )}
+        {view === "team" && <Roster project={project.slug} onChanged={onChanged} />}
 
         {view === "editor" && (
           <Suspense fallback={<p className="empty">Loading the editor…</p>}>
-            <Editor project={project.slug} node={null} />
+            <Editor project={project.slug} workspace={workspace.path} node={null} />
           </Suspense>
         )}
 
         {view === "terminal" && (
           <Suspense fallback={<p className="empty">Loading the terminal…</p>}>
-            <TerminalPane project={project.slug} node={null} />
+            <TerminalPane project={project.slug} workspace={workspace.path} node={null} />
           </Suspense>
         )}
       </main>
@@ -225,6 +312,7 @@ export function Workspace({
       {talking !== null && (
         <Talk
           member={talking}
+          workspace={workspace.path}
           onClose={() => setTalking(null)}
           // A started turn shows up as a run, and an interrupted one changes what its seat
           // is doing - both of which the next tick would find anyway, but waiting a second
@@ -294,7 +382,7 @@ function Events({ events }: { events: RunEvent[] }) {
       {events.map((event) => (
         <div key={event.id} className="event">
           <span className="event__kind">{event.kind}</span>
-          <span>{event.summary}</span>
+          <span>{event.message ?? event.summary}</span>
         </div>
       ))}
     </div>

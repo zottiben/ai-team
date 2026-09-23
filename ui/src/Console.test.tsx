@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, expect, it, vi } from "vitest";
 
 import { Prompt, Seats } from "./Console";
-import type { NodeRun } from "./api";
+import type { NodeRun, Worktree } from "./api";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -15,11 +15,21 @@ function stubPost() {
     "fetch",
     vi.fn((url: string, init?: RequestInit) => {
       calls.push({ url: String(url), body: JSON.parse(String(init?.body ?? "null")) });
-      return Promise.resolve({ ok: true, json: async () => ({ started: true, answered: true }) });
+      return Promise.resolve({ ok: true, json: async () => ({ started: true, run_id: 19 }) });
     }),
   );
   return calls;
 }
+
+const TASK: Worktree = {
+  name: "1",
+  path: "/tmp/widget-task",
+  status: "in-use",
+  lease_holder: null,
+  processes: [],
+  branch: "feature/task",
+  main: false,
+};
 
 const NODE: NodeRun = {
   id: 3,
@@ -29,6 +39,7 @@ const NODE: NodeRun = {
   status: "running",
   attempt: 1,
   slice_key: "S1",
+  worktree_path: "/tmp/widget",
   branch: null,
   blocked_reason: null,
 };
@@ -42,9 +53,28 @@ it("starting a run sends the prompt for the selected project", async () => {
   await user.type(screen.getByLabelText("What should the team build?"), "add subtract");
   await user.click(screen.getByText("Start"));
 
-  await waitFor(() => expect(onStarted).toHaveBeenCalled());
+  await waitFor(() => expect(onStarted).toHaveBeenCalledWith(19));
+  expect((await screen.findByRole("status")).textContent).toContain("Run #19 started");
   expect(calls[0]?.url).toBe("/api/runs");
   expect(calls[0]?.body).toMatchObject({ project: "widget", prompt: "add subtract" });
+});
+
+it("starts the full team workflow inside the selected worktree", async () => {
+  const user = userEvent.setup();
+  const calls = stubPost();
+
+  render(<Prompt project="widget" workspace={TASK} onStarted={vi.fn()} />);
+  await user.type(screen.getByLabelText("What should the team build?"), "finish this task");
+  await user.click(screen.getByText("Start"));
+
+  await waitFor(() => expect(calls).toHaveLength(1));
+  expect(calls[0]?.body).toEqual({
+    project: "widget",
+    workspace: "/tmp/widget-task",
+    prompt: "finish this task",
+    approval_required: true,
+  });
+  expect(screen.getByText(/runs in this checkout/)).toBeDefined();
 });
 
 it("an empty prompt means build what is already ready", async () => {

@@ -1,6 +1,6 @@
 import { useState } from "react";
 
-import { startRun, type NodeRun } from "./api";
+import { startRun, type NodeRun, type Worktree } from "./api";
 
 /**
  * The prompt that starts a workflow, and the run beside it.
@@ -11,13 +11,16 @@ import { startRun, type NodeRun } from "./api";
  */
 export function Prompt({
   project,
+  workspace = null,
   onStarted,
 }: {
   project: string | null;
-  onStarted: () => void;
+  workspace?: Worktree | null;
+  onStarted: (runId?: number) => void;
 }) {
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
+  const [feedback, setFeedback] = useState<string | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
 
   const start = async () => {
@@ -26,11 +29,27 @@ export function Prompt({
       return;
     }
     setBusy(true);
+    setFeedback(null);
     setProblem(null);
     try {
-      await startRun({ project, prompt: text.trim() === "" ? undefined : text.trim() });
+      const receipt = await startRun({
+        project,
+        // Start means the full team workflow rooted in the checkout being viewed. This is
+        // not just presentation context: its planner, run history, and agents must stay
+        // isolated from work started in sibling checkouts.
+        workspace: workspace?.path,
+        prompt: text.trim() === "" ? undefined : text.trim(),
+        // A new plan is reviewed before it spends maker turns. Approval resumes this
+        // exact run; an empty prompt still means build already-ready work immediately.
+        ...(text.trim() === "" ? {} : { approval_required: true }),
+      });
       setText("");
-      onStarted();
+      setFeedback(
+        receipt.run_id === undefined
+          ? "Request accepted. Checking the plan and preparing the run…"
+          : `Run #${receipt.run_id} started. Its live evidence is open now.`,
+      );
+      onStarted(receipt.run_id);
     } catch (error: unknown) {
       setProblem(error instanceof Error ? error.message : String(error));
     } finally {
@@ -71,12 +90,19 @@ export function Prompt({
         <span className="faint">
           <span className="kbd">⌘</span>
           <span className="kbd">↵</span> to start
+          {workspace !== null && !workspace.main ? " · runs in this checkout" : ""}
         </span>
         <button type="submit" className="button button--primary" disabled={busy}>
           {busy ? "Starting…" : "Start"}
         </button>
       </div>
-      {problem !== null && <span className="error">{problem}</span>}
+      {problem !== null && <span className="error" role="alert">{problem}</span>}
+      {feedback !== null && (
+        <span className="action-feedback" role="status" aria-live="polite">
+          <span className="action-feedback__pulse" aria-hidden="true" />
+          {feedback}
+        </span>
+      )}
     </form>
   );
 }

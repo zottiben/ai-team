@@ -14,8 +14,65 @@ pub struct TurnOutcome {
     pub duplicates: usize,
     pub usage: Usage,
     pub steps: i64,
+    /// The final assistant/provider diagnostic. Kept separately from the append-only
+    /// event stream so supervision can classify account availability without parsing
+    /// ai-team's own Note rows back out of the database.
+    pub provider_message: Option<String>,
     /// How the turn ended, or `None` while it is in flight.
     pub terminal: Option<TerminalState>,
+}
+
+/// A provider's subscription allowance ended, rather than the implementation failing.
+///
+/// Keep this intentionally narrower than generic 429/network matching. D19 permits an
+/// account failover for a known quota, not silently moving work after a transient fault.
+pub(crate) fn quota_exhaustion(outcome: &TurnOutcome) -> Option<String> {
+    let message = outcome.provider_message.as_deref()?.trim();
+    let lower = message.to_lowercase();
+    let known = [
+        "you've hit your session limit",
+        "you’ve hit your session limit",
+        "you have hit your session limit",
+        "you've hit your usage limit",
+        "you’ve hit your usage limit",
+        "usage limit has been reached",
+        "insufficient_quota",
+    ];
+    if !known.iter().any(|needle| lower.contains(needle)) {
+        return None;
+    }
+
+    provider_diagnostic(outcome)
+}
+
+/// The provider's useful terminal diagnostic, without adapter echo.
+///
+/// Claude's Pi adapter currently emits some error text twice. Preserve the evidence in
+/// the raw event payload, but do not make the board and notification repeat themselves.
+pub(crate) fn provider_diagnostic(outcome: &TurnOutcome) -> Option<String> {
+    let message = outcome.provider_message.as_deref()?.trim();
+    let mut unique = Vec::new();
+    for line in message
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+    {
+        if !unique.iter().any(|seen| seen == &line) {
+            unique.push(line);
+        }
+    }
+    if unique.is_empty() {
+        return None;
+    }
+    let message = unique.join("\n");
+    let lower = message.to_lowercase();
+    if lower.contains("not logged in") && lower.contains("/login") {
+        return Some(
+            "The selected provider is not signed in. Open Settings and sign in before retrying this slice."
+                .into(),
+        );
+    }
+    Some(message)
 }
 
 /// What a finished turn makes of its node.
@@ -40,6 +97,56 @@ mod tests {
         // The stream is the record. A turn that stopped without a terminal event is a
         // child that died, and reading silence as success hides exactly that.
         assert_eq!(outcome_status(&TurnOutcome::default()), NodeStatus::Failed);
+    }
+
+    #[test]
+    fn a_subscription_limit_is_account_availability_not_a_successful_turn() {
+        let outcome = TurnOutcome {
+            terminal: Some(TerminalState::Completed),
+            provider_message: Some(
+                "You've hit your session limit · resets 10:50pm (Australia/Adelaide)\n\
+                 You've hit your session limit · resets 10:50pm (Australia/Adelaide)"
+                    .into(),
+            ),
+            ..TurnOutcome::default()
+        };
+
+        let exhausted = quota_exhaustion(&outcome).expect("recognized quota");
+        assert_eq!(
+            exhausted,
+            "You've hit your session limit · resets 10:50pm (Australia/Adelaide)"
+        );
+    }
+
+    #[test]
+    fn an_ordinary_model_or_network_failure_is_not_silently_rerouted() {
+        for message in [
+            "connection reset by peer",
+            "tool call failed",
+            "429 requests are arriving too quickly",
+        ] {
+            let outcome = TurnOutcome {
+                provider_message: Some(message.into()),
+                ..TurnOutcome::default()
+            };
+            assert_eq!(quota_exhaustion(&outcome), None, "{message}");
+        }
+    }
+
+    #[test]
+    fn repeated_provider_errors_are_one_operator_diagnostic() {
+        let outcome = TurnOutcome {
+            provider_message: Some(
+                "Not logged in · Please run /login\nNot logged in · Please run /login".into(),
+            ),
+            ..TurnOutcome::default()
+        };
+        assert_eq!(
+            provider_diagnostic(&outcome).as_deref(),
+            Some(
+                "The selected provider is not signed in. Open Settings and sign in before retrying this slice."
+            )
+        );
     }
 
     #[test]

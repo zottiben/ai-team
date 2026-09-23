@@ -1,6 +1,17 @@
 import { useCallback, useEffect, useState } from "react";
 
-import { crew as fetchCrew, type Doing, type Member } from "./api";
+import {
+  approveRunPlan,
+  board as fetchBoard,
+  crew as fetchCrew,
+  deliverNode,
+  startRun,
+  type Board,
+  type BoardSlice,
+  type Doing,
+  type Member,
+} from "./api";
+import { WorkGraph } from "./TeamGraph";
 
 /** What each state means, said once, and which colour it borrows. */
 const DOING: Record<Doing, { label: string; status: string; why: string }> = {
@@ -44,33 +55,133 @@ function tokens(value: number): string {
  */
 export function Crew({
   project,
+  workspace,
   tick,
   onOpenRun,
   onTalk,
+  showGraph = false,
 }: {
   project: string;
+  workspace?: string | null;
   tick: number;
   onOpenRun: (id: number) => void;
   onTalk?: (member: Member) => void;
+  showGraph?: boolean;
 }) {
   const [crew, setCrew] = useState<Member[] | null>(null);
+  const [board, setBoard] = useState<Board | null>(null);
+  const [starting, setStarting] = useState(false);
+  const [delivering, setDelivering] = useState<string | null>(null);
+  const [feedback, setFeedback] = useState<string | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
+  const liveDelivery = board?.slices.some(
+    (slice) =>
+      slice.delivery?.pr_url != null &&
+      slice.delivery.remote?.pr_state !== "merged" &&
+      slice.delivery.remote?.pr_state !== "closed",
+  ) ?? false;
 
   const load = useCallback(async () => {
     try {
-      setCrew(await fetchCrew(project));
+      if (showGraph) {
+        const [foundCrew, foundBoard] = await Promise.all([
+          fetchCrew(project, workspace),
+          fetchBoard(project, workspace),
+        ]);
+        setCrew(foundCrew);
+        setBoard(foundBoard);
+      } else {
+        setCrew(await fetchCrew(project, workspace));
+      }
       setProblem(null);
     } catch (error: unknown) {
       setProblem(error instanceof Error ? error.message : String(error));
     }
-  }, [project]);
+  }, [project, workspace, showGraph]);
 
   useEffect(() => {
     void load();
   }, [load, tick]);
 
-  if (problem !== null) return <p className="error">{problem}</p>;
-  if (crew === null) return <p className="empty">Seeing who is about…</p>;
+  useEffect(() => {
+    if (!showGraph || !liveDelivery) return undefined;
+    const timer = window.setInterval(() => void load(), 15_000);
+    return () => window.clearInterval(timer);
+  }, [liveDelivery, load, showGraph]);
+
+  const buildReady = async (approveCurrent: boolean) => {
+    setStarting(true);
+    setFeedback(null);
+    setProblem(null);
+    try {
+      const approvalRun = crew?.find(
+        (member) => member.role === "orchestrator" && member.approval_run_id != null,
+      )?.approval_run_id;
+      const receipt = approvalRun != null
+        ? await approveRunPlan(approvalRun)
+        : await startRun({
+            project,
+            workspace,
+            ...(approveCurrent ? { action: "approve_current" as const } : {}),
+          });
+      if (receipt.run_id !== undefined) {
+        const verb = approvalRun != null || approveCurrent ? "continued" : "started";
+        setFeedback(
+          `Run #${receipt.run_id} ${verb}. Preparing worktrees and dispatching the team…`,
+        );
+        onOpenRun(receipt.run_id);
+      } else {
+        setFeedback("Request accepted. Checking the plan and preparing the run…");
+      }
+      await load();
+    } catch (error: unknown) {
+      setProblem(error instanceof Error ? error.message : String(error));
+    } finally {
+      setStarting(false);
+    }
+  };
+
+  const deliver = async (
+    delivery: NonNullable<BoardSlice["delivery"]>,
+    action: "push" | "pr" | "merge",
+  ) => {
+    if (workspace === null || workspace === undefined) {
+      setProblem("Select a checkout before publishing its branch.");
+      return;
+    }
+    const key = `${delivery.node_run_id}:${action}`;
+    setDelivering(key);
+    setFeedback(null);
+    setProblem(null);
+    try {
+      await deliverNode(
+        delivery.run_id,
+        delivery.node_run_id,
+        action,
+        project,
+        workspace,
+      );
+      setFeedback(
+        action === "push"
+          ? `${delivery.branch} pushed. Reading the next delivery boundary…`
+          : action === "pr"
+            ? `${delivery.branch} pull request opened.`
+            : `${delivery.branch} merge requested after required checks.`,
+      );
+      await load();
+    } catch (error: unknown) {
+      setProblem(error instanceof Error ? error.message : String(error));
+      await load();
+    } finally {
+      setDelivering(null);
+    }
+  };
+
+  if (crew === null) {
+    return problem !== null
+      ? <p className="error">{problem}</p>
+      : <p className="empty">Seeing who is about…</p>;
+  }
   if (crew.length === 0) {
     return <p className="empty">This project has no team yet.</p>;
   }
@@ -80,14 +191,32 @@ export function Crew({
 
   return (
     <div className="crew">
+      {problem !== null && <p className="error" role="alert">{problem}</p>}
+      {feedback !== null && (
+        <div className="action-feedback" role="status" aria-live="polite">
+          <span className="action-feedback__pulse" aria-hidden="true" />
+          <span>{feedback}</span>
+        </div>
+      )}
       <div className="main__header">
-        <h2>Crew</h2>
+        <h2>{showGraph ? "Work graph" : "Crew"}</h2>
         <span className="faint">
           {busy === 0 ? "nobody is working" : `${busy} working`}
           {waiting > 0 ? `, ${waiting} waiting on you` : ""}
         </span>
       </div>
 
+      {showGraph && board !== null ? (
+        <WorkGraph
+          members={crew}
+          board={board}
+          onTalk={onTalk}
+          onBuildReady={buildReady}
+          onDeliver={deliver}
+          starting={starting}
+          delivering={delivering}
+        />
+      ) : (
       <div className="crew__grid">
         {crew.map((member) => {
           const state = DOING[member.doing];
@@ -157,6 +286,7 @@ export function Crew({
           );
         })}
       </div>
+      )}
     </div>
   );
 }

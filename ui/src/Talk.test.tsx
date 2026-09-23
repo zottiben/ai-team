@@ -63,10 +63,51 @@ it("says the message will wait, before anything is typed", async () => {
   expect(screen.getByText("Send")).toBeDefined();
 });
 
-it("says it will start a turn when the seat is idle", async () => {
+it("says it will start a direct turn when a maker is idle", async () => {
   render(<Talk member={member({ doing: "idle" })} onClose={() => {}} onSent={() => {}} />);
-  expect(screen.getByText(/starts a turn for it in its own worktree/)).toBeDefined();
+  expect(screen.getByText(/starts a direct turn for it in its own worktree/)).toBeDefined();
   expect(screen.getByText("Start a turn")).toBeDefined();
+});
+
+it("presents an idle orchestrator as the team control plane", async () => {
+  render(
+    <Talk
+      member={member({ role: "orchestrator", name: "Orchestrator", read_only: true, doing: "idle" })}
+      workspace="/repo/task"
+      onClose={() => {}}
+      onSent={() => {}}
+    />,
+  );
+
+  expect(screen.getByText("Direct the orchestrator")).toBeDefined();
+  expect(screen.getByText(/coordinate → plan → approve → make → check/)).toBeDefined();
+  expect(screen.getByText("Start team run")).toBeDefined();
+  expect(screen.queryByText(/starts a turn for it/)).toBeNull();
+});
+
+it("shows that orchestrator direction continued the approved run", async () => {
+  const user = userEvent.setup();
+  stub({ reached: "continued", run_id: 12 });
+  render(
+    <Talk
+      member={member({
+        role: "orchestrator",
+        name: "Orchestrator",
+        read_only: true,
+        doing: "idle",
+        approval_run_id: 12,
+      })}
+      workspace="/repo/task"
+      onClose={() => {}}
+      onSent={() => {}}
+    />,
+  );
+
+  expect(screen.getByText(/Run #12 is waiting for plan approval/)).toBeDefined();
+  await user.type(screen.getByLabelText("direction for orchestrator"), "The plan looks good. Start building.");
+  await user.click(screen.getByText("Approve plan & build"));
+
+  expect(await screen.findByText(/Run #12 is continuing/)).toBeDefined();
 });
 
 it("a switched-off seat cannot be sent anything", async () => {
@@ -104,7 +145,7 @@ it("reports that a turn is starting, and where it will show up", async () => {
   await user.type(screen.getByLabelText("message for backend"), "fix the failing test");
   await user.click(screen.getByText("Start a turn"));
 
-  expect(await screen.findByText(/Starting a turn for Backend/)).toBeDefined();
+  expect(await screen.findByText(/Starting a direct turn for Backend/)).toBeDefined();
   expect(screen.getByText(/appear in the runs below/)).toBeDefined();
 });
 

@@ -29,6 +29,10 @@ struct Inner {
     /// setup page left every route answering "run `ait init`" until the process was
     /// restarted - which is a confusing way to be told that setup worked.
     store: Mutex<Option<Store>>,
+    /// Serialises run-start decisions that read and then mutate ai-planner. In particular,
+    /// two windows approving a board-owned legacy plan must not both observe its holds
+    /// before either has released them.
+    run_start: tokio::sync::Mutex<()>,
     /// Where to look for a database that is not open yet. Named rather than resolved on
     /// demand so this server knows which database it serves - and so a test can point at
     /// its own instead of the developer's home.
@@ -60,6 +64,7 @@ impl AppState {
             inner: Arc::new(Inner {
                 token: token.into(),
                 store: Mutex::new(None),
+                run_start: tokio::sync::Mutex::new(()),
                 db_path: None,
                 lsp: ai_team_core::Pool::new(),
                 terminals: ai_team_core::Terminals::new(),
@@ -75,6 +80,7 @@ impl AppState {
             inner: Arc::new(Inner {
                 token: self.inner.token.clone(),
                 store: Mutex::new(None),
+                run_start: tokio::sync::Mutex::new(()),
                 db_path: self.inner.db_path.clone(),
                 lsp: ai_team_core::Pool::new(),
                 terminals: ai_team_core::Terminals::new(),
@@ -90,6 +96,7 @@ impl AppState {
             inner: Arc::new(Inner {
                 token: self.inner.token.clone(),
                 store: Mutex::new(None),
+                run_start: tokio::sync::Mutex::new(()),
                 db_path,
                 lsp: ai_team_core::Pool::new(),
                 terminals: ai_team_core::Terminals::new(),
@@ -104,12 +111,23 @@ impl AppState {
             inner: Arc::new(Inner {
                 token: self.inner.token.clone(),
                 store: Mutex::new(Some(store)),
+                run_start: tokio::sync::Mutex::new(()),
                 db_path: self.inner.db_path.clone(),
                 lsp: ai_team_core::Pool::new(),
                 terminals: ai_team_core::Terminals::new(),
                 host: self.inner.host,
             }),
         }
+    }
+
+    pub(crate) async fn lock_run_start(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.inner.run_start.lock().await
+    }
+
+    pub(crate) fn database_path(&self) -> Result<std::path::PathBuf> {
+        let store = self.store()?;
+        let path = store.lock().path().to_path_buf();
+        Ok(path)
     }
 
     pub fn token(&self) -> &str {

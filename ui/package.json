@@ -1,7 +1,7 @@
 {
   "name": "ai-team-ui",
   "private": true,
-  "version": "0.5.0",
+  "version": "0.6.0",
   "type": "module",
   "description": "The ai-team window. Built to static assets and embedded in the ait binary.",
   "scripts": {

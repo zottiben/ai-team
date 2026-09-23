@@ -1,134 +1,273 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
-import { board as fetchBoard, BOARD_COLUMNS, moveSlice, type Board as BoardData } from "./api";
+import {
+  board as fetchBoard,
+  BOARD_COLUMNS,
+  BOARD_STATUSES,
+  moveSlice,
+  type Board as BoardData,
+  type BoardSlice,
+  type BoardStatus,
+} from "./api";
+import { BoardCard, boardStatusColor } from "./BoardCard";
+import { BoardDrawer } from "./BoardDrawer";
+
+const COLLAPSED_BY_DEFAULT: BoardStatus[] = ["draft", "done", "deferred"];
+const COLLAPSED_KEY = "ai-planner.collapsed-columns";
 
 /**
- * The plan, as ai-planner holds it.
+ * The plan, as ai-planner holds it, with ai-team's seat owner added to each card.
  *
- * Nothing here is ai-team's own copy: the slices are read from ai-planner on every load
- * and moves are written straight back, so `aip status` in a terminal and this board are
- * the same state rather than two that agree until they do not.
- *
- * The one thing ai-team adds is the owner - which seat's zone covers the paths a slice
- * declared. That is ai-team's question, not the plan's, and it is why the card can say
- * who would build it.
+ * Seven columns always exist; the three usually empty ones fold into strips. Moves are
+ * optimistic because a drag should feel immediate, and rollback is real because the
+ * board must never keep asserting a status ai-planner refused.
  */
-export function Board({ project, tick }: { project: string | null; tick: number }) {
+export function Board({
+  project,
+  workspace,
+  tick,
+}: {
+  project: string | null;
+  workspace?: string | null;
+  tick: number;
+}) {
   const [data, setData] = useState<BoardData | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
-  const [busy, setBusy] = useState<string | null>(null);
+  const [openKey, setOpenKey] = useState<string | null>(null);
+  const [dragging, setDragging] = useState<BoardSlice | null>(null);
+  const [over, setOver] = useState<BoardStatus | null>(null);
+  const [collapsed, setCollapsed] = useState<BoardStatus[]>(readCollapsed);
+  const loadRevision = useRef(0);
+  const pendingMoves = useRef(new Map<string, { status: BoardStatus; reason?: string }>());
 
   const load = useCallback(async () => {
+    const revision = ++loadRevision.current;
     if (project === null) {
       setData(null);
       return;
     }
     try {
-      setData(await fetchBoard(project));
+      const loaded = await fetchBoard(project, workspace);
+      if (revision !== loadRevision.current) return;
+      setData({
+        ...loaded,
+        slices: loaded.slices.map((slice) => {
+          const pending = pendingMoves.current.get(slice.key);
+          return pending === undefined
+            ? slice
+            : {
+                ...slice,
+                status: pending.status,
+                blocked_reason:
+                  pending.status === "blocked" ? (pending.reason ?? slice.blocked_reason) : null,
+              };
+        }),
+      });
       setProblem(null);
     } catch (error: unknown) {
+      if (revision !== loadRevision.current) return;
       setData(null);
       setProblem(error instanceof Error ? error.message : String(error));
     }
-  }, [project]);
+  }, [project, workspace]);
+
+  useEffect(() => {
+    pendingMoves.current.clear();
+    loadRevision.current += 1;
+  }, [project, workspace]);
 
   useEffect(() => {
     void load();
   }, [load, tick]);
 
-  const move = async (key: string, status: string) => {
-    if (project === null) return;
-    setBusy(key);
+  useEffect(() => {
     try {
-      // Blocking without saying why leaves the next session guessing, and ai-planner
-      // asks for a reason precisely so it does not have to.
-      const reason = status === "blocked" ? "moved on the ai-team board" : undefined;
-      await moveSlice(key, { project, status, reason });
-      await load();
+      localStorage.setItem(COLLAPSED_KEY, JSON.stringify(collapsed));
+    } catch {
+      // A disabled or full preference store is not a reason to stop using the board.
+    }
+  }, [collapsed]);
+
+  const move = async (slice: BoardSlice, status: BoardStatus) => {
+    if (project === null || slice.status === status) return;
+    let reason: string | undefined;
+    if (status === "blocked") {
+      const answer = window.prompt(`Why is ${slice.key} blocked?`);
+      if (answer === null || answer.trim() === "") return;
+      reason = answer.trim();
+    }
+
+    const before = data;
+    pendingMoves.current.set(slice.key, { status, reason });
+    loadRevision.current += 1;
+    setData((current) =>
+      current === null
+        ? null
+        : {
+            ...current,
+            slices: current.slices.map((candidate) =>
+              candidate.key === slice.key
+                ? {
+                    ...candidate,
+                    status,
+                    blocked_reason:
+                      status === "blocked" ? (reason ?? candidate.blocked_reason) : null,
+                  }
+                : candidate,
+            ),
+          },
+    );
+    try {
+      await moveSlice(slice.key, { project, workspace, status, reason });
+      // Invalidate reads that began before ai-planner committed the move. The optimistic
+      // row is already the acknowledged state; the next ordinary tick will refresh the
+      // rest of its metadata without letting an older response snap it back.
+      loadRevision.current += 1;
+      pendingMoves.current.delete(slice.key);
+      setProblem(null);
     } catch (error: unknown) {
-      setProblem(error instanceof Error ? error.message : String(error));
-    } finally {
-      setBusy(null);
+      // The server remains the truth. Put the card back before showing why.
+      loadRevision.current += 1;
+      pendingMoves.current.delete(slice.key);
+      setData(before);
+      const message = error instanceof Error ? error.message : String(error);
+      setProblem(message);
+      throw error;
     }
   };
 
-  if (project === null) {
-    return <p className="empty">Pick a project to see its plan.</p>;
-  }
-  if (problem !== null) {
-    return <p className="error">{problem}</p>;
-  }
-  if (data === null) {
-    return <p className="empty">Reading the plan…</p>;
-  }
-
-  // Every project starts here: a checkout nobody has planned in yet. Said as the next
-  // step rather than as an empty board, which reads as something having gone wrong.
+  if (project === null) return <p className="empty">Pick a project to see its plan.</p>;
+  if (problem !== null && data === null) return <p className="error">{problem}</p>;
+  if (data === null) return <p className="empty">Reading the plan…</p>;
   if (data.plan === null) {
     return <p className="empty">{data.next_step ?? "This checkout has no plan yet."}</p>;
   }
 
+  const opened = data.slices.find((slice) => slice.key === openKey) ?? null;
+  const currentSliceKey = data.plan.slice;
+
   return (
-    <div className="board">
+    <div
+      className="plan-board"
+      onMouseMove={(event) => {
+        if (dragging === null) return;
+        setOver(boardStatusAt(event.target));
+      }}
+      onMouseUp={(event) => {
+        const slice = dragging;
+        const status = boardStatusAt(event.target);
+        setDragging(null);
+        setOver(null);
+        if (slice !== null && status !== null) {
+          void move(slice, status).catch(() => undefined);
+        }
+      }}
+      onMouseLeave={() => {
+        if (dragging === null) return;
+        setOver(null);
+      }}
+    >
       <div className="main__header">
-        <h2>{data.plan.title}</h2>
-        <span className="faint mono">{data.plan.plan}</span>
+        <div>
+          <h2>{data.plan.title}</h2>
+          <span className="faint mono">{data.plan.plan}</span>
+        </div>
+        {problem !== null && <span className="error">{problem}</span>}
       </div>
 
-      <div className="board__columns">
-        {BOARD_COLUMNS.map((column) => {
-          const slices = data.slices.filter((slice) => slice.status === column);
-          // Empty columns stay: they are the shape of the workflow, and a board whose
-          // columns move about as work flows is a board you have to re-read every time.
+      <div className="plan-board__columns">
+        {BOARD_STATUSES.map((meta) => {
+          const slices = data.slices
+            .filter((slice) => slice.status === meta.value)
+            .sort((left, right) => left.ord - right.ord);
+          const isCollapsed = collapsed.includes(meta.value);
+          const isTarget = over === meta.value && dragging?.status !== meta.value;
+
           return (
-            <section key={column} className="board__column" aria-label={column}>
-              <div className="board__column-head">
-                <span className="status" data-status={column}>
-                  {column.replace("_", " ")}
-                </span>
-                <span className="nav-item__count">{slices.length || ""}</span>
-              </div>
-              {slices.map((slice) => (
-                <article key={slice.key} className="board__card">
-                  <div className="card__row">
-                    <span className="mono">{slice.key}</span>
-                    {slice.owner === null ? (
-                      // Worth saying out loud: a slice nobody owns will be reported
-                      // undone rather than handed to somebody.
-                      <span className="faint" title={slice.touches.join(", ")}>
-                        unowned
-                      </span>
-                    ) : (
-                      <span className="faint" title={slice.touches.join(", ")}>
-                        {slice.owner}
-                      </span>
-                    )}
-                  </div>
-                  <span>{slice.title}</span>
-                  {slice.claimed_by !== null && (
-                    <span className="faint mono">claimed by {slice.claimed_by}</span>
+            <section
+              key={meta.value}
+              data-board-status={meta.value}
+              className={`board-column${isCollapsed ? " is-collapsed" : ""}${isTarget ? " is-target" : ""}`}
+              aria-label={`${meta.label}, ${slices.length} slices`}
+            >
+              <header className="board-column__head">
+                <span
+                  className="board-status-dot"
+                  style={{ background: boardStatusColor(meta.value) }}
+                />
+                <span className="board-column__title">{meta.label}</span>
+                <span className="board-column__count">{slices.length}</span>
+                <button
+                  type="button"
+                  className="board-column__collapse"
+                  onClick={() =>
+                    setCollapsed((current) =>
+                      current.includes(meta.value)
+                        ? current.filter((status) => status !== meta.value)
+                        : [...current, meta.value],
+                    )
+                  }
+                  aria-label={`${isCollapsed ? "Expand" : "Collapse"} ${meta.label}`}
+                  title={isCollapsed ? "Expand" : "Collapse"}
+                >
+                  {isCollapsed ? "›" : "‹"}
+                </button>
+              </header>
+
+              {!isCollapsed && (
+                <div className="board-column__body">
+                  {slices.map((slice) => (
+                    <BoardCard
+                      key={slice.id || slice.key}
+                      slice={slice}
+                      current={slice.key === currentSliceKey}
+                      dragging={dragging?.key === slice.key}
+                      onOpen={() => setOpenKey(slice.key)}
+                      onDragStart={() => setDragging(slice)}
+                    />
+                  ))}
+                  {slices.length === 0 && (
+                    <p className="board-column__empty">
+                      {dragging === null ? "Nothing here." : "Drop here"}
+                    </p>
                   )}
-                  <label className="board__move">
-                    <span className="faint">move to</span>
-                    <select
-                      value={slice.status}
-                      disabled={busy === slice.key}
-                      aria-label={`move ${slice.key}`}
-                      onChange={(event) => void move(slice.key, event.target.value)}
-                    >
-                      {BOARD_COLUMNS.map((option) => (
-                        <option key={option} value={option}>
-                          {option.replace("_", " ")}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                </article>
-              ))}
+                </div>
+              )}
             </section>
           );
         })}
       </div>
+
+      {opened !== null && (
+        <BoardDrawer
+          project={project}
+          workspace={workspace}
+          slice={opened}
+          tick={tick}
+          onChanged={() => void load()}
+          onMove={move}
+          onClose={() => setOpenKey(null)}
+        />
+      )}
     </div>
   );
+}
+
+function boardStatusAt(target: EventTarget | null): BoardStatus | null {
+  if (!(target instanceof Element)) return null;
+  const status = target.closest<HTMLElement>("[data-board-status]")?.dataset.boardStatus;
+  return BOARD_COLUMNS.includes(status as BoardStatus) ? (status as BoardStatus) : null;
+}
+
+function readCollapsed(): BoardStatus[] {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(COLLAPSED_KEY) ?? "null") as unknown;
+    if (!Array.isArray(parsed)) return COLLAPSED_BY_DEFAULT;
+    const valid = new Set(BOARD_COLUMNS);
+    return parsed.filter((status): status is BoardStatus =>
+      typeof status === "string" && valid.has(status as BoardStatus),
+    );
+  } catch {
+    return COLLAPSED_BY_DEFAULT;
+  }
 }

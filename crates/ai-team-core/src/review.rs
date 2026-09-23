@@ -328,7 +328,7 @@ where
     Fut: std::future::Future<Output = Result<String>>,
     A: FnOnce(String, String) -> AFut,
     AFut: std::future::Future<Output = Result<()>>,
-    Q: FnMut(i64, &str) -> Result<()>,
+    Q: FnMut(i64, i64, &str) -> Result<()>,
 {
     // Approving with nothing outstanding is the one case with nobody to tell.
     if pending.open.is_empty() {
@@ -347,14 +347,15 @@ where
         if let Some(key) = slice_key {
             amend_slice(key, amendment(&pending.open)).await?;
         }
-        queue(agent_id, &pending.message)?;
+        queue(node_id, agent_id, &pending.message)?;
 
         // And the orchestrator, when it is still working. Best effort on purpose: it
         // always learns through the amended slice, so failing to reach it costs immediacy
         // rather than the correction, and an unreachable orchestrator must not make a
         // delivered review look failed.
         let told_orchestrator = match still_working(orchestrator) {
-            Some((_, orchestrator_agent)) => queue(
+            Some((orchestrator_node, orchestrator_agent)) => queue(
+                orchestrator_node,
                 orchestrator_agent,
                 &for_orchestrator(&pending.open, &pending.review),
             )

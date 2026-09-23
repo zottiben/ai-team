@@ -64,6 +64,26 @@ const WIDGET = {
 /** What the overview reads. Entering a project lands there, so every test that opens
  *  one needs these whether or not it is about them. */
 const CHECKOUT = {
+  "/worktrees": [
+    {
+      name: "main",
+      path: "/tmp/widget",
+      status: "main",
+      lease_holder: null,
+      processes: [],
+      branch: "main",
+      main: true,
+    },
+    {
+      name: "1",
+      path: "/tmp/widget-task",
+      status: "in-use",
+      lease_holder: null,
+      processes: [],
+      branch: "feature/task",
+      main: false,
+    },
+  ],
   "/map": {
     root: "widget",
     files: 0,
@@ -74,6 +94,7 @@ const CHECKOUT = {
     zones: [],
   },
   "/roster": { project: "widget", team: "Widget team", seats: [], available: [] },
+  "/models": { models: [], error: null },
   "/crew": [],
   "/analytics": [],
   "/board": { plan: null, slices: [], next_step: null },
@@ -160,7 +181,11 @@ it("selecting a project enters it, and leaves the global views alone", async () 
   working();
   render(<App />);
 
-  await user.click(await screen.findByText("Widget"));
+  await user.click(
+    within(await screen.findByRole("navigation", { name: "Projects" })).getByRole("button", {
+      name: /Widget/,
+    }),
+  );
 
   // Its own navigation replaces the global list: two lists of views is two places to look
   // for the same thing.
@@ -174,6 +199,52 @@ it("selecting a project enters it, and leaves the global views alone", async () 
   expect(await screen.findByLabelText("Everything")).toBeDefined();
 });
 
+it("shows task worktrees beneath their repository and scopes the whole workspace when selected", async () => {
+  const user = userEvent.setup();
+  working();
+  render(<App />);
+
+  const nested = within(await screen.findByLabelText("Widget workspaces"));
+  await user.click(await nested.findByText("feature/task"));
+  await screen.findByText(/every path, and the seat whose zone claims it/i);
+
+  const calls = vi.mocked(fetch).mock.calls.map(([url]) => String(url));
+  for (const route of ["/api/map?", "/api/board?", "/api/crew?", "/api/runs?"]) {
+    const call = calls.find((url) => url.startsWith(route) && url.includes("widget-task"));
+    expect(call, `${route} was not scoped to the selected checkout`).toBeDefined();
+  }
+});
+
+it("starting from a child checkout launches the team there and stays there", async () => {
+  const user = userEvent.setup();
+  working();
+  render(<App />);
+
+  const nested = within(await screen.findByLabelText("Widget workspaces"));
+  await user.click(await nested.findByText("feature/task"));
+  await user.click(within(screen.getByLabelText("Widget")).getByText("Work"));
+  await user.type(await screen.findByRole("textbox"), "build the whole feature");
+  await user.click(screen.getByRole("button", { name: "Start" }));
+
+  await waitFor(() => {
+    const call = vi
+      .mocked(fetch)
+      .mock.calls.find(
+        ([url, init]) => String(url) === "/api/runs" && init?.method === "POST",
+      );
+    expect(call).toBeDefined();
+    expect(JSON.parse(String(call?.[1]?.body))).toEqual({
+      project: "widget",
+      workspace: "/tmp/widget-task",
+      prompt: "build the whole feature",
+      approval_required: true,
+    });
+  });
+  expect(nested.getByText("feature/task").closest("button")?.getAttribute("aria-current")).toBe(
+    "true",
+  );
+});
+
 it("entering a project starts on the overview, which says what the repository is", async () => {
   // What the checkout is comes before what you were last doing to it: the landing view
   // answers "whose is this, and how much of it can the team be given".
@@ -181,7 +252,11 @@ it("entering a project starts on the overview, which says what the repository is
   working();
   render(<App />);
 
-  await user.click(await screen.findByText("Widget"));
+  await user.click(
+    within(await screen.findByRole("navigation", { name: "Projects" })).getByRole("button", {
+      name: /Widget/,
+    }),
+  );
   expect(await screen.findByText(/every path, and the seat whose zone claims it/i)).toBeDefined();
 });
 
@@ -190,7 +265,11 @@ it("Work is one click away, and still lists the runs", async () => {
   working();
   render(<App />);
 
-  await user.click(await screen.findByText("Widget"));
+  await user.click(
+    within(await screen.findByRole("navigation", { name: "Projects" })).getByRole("button", {
+      name: /Widget/,
+    }),
+  );
   await user.click(within(screen.getByLabelText("Widget")).getByText("Work"));
   expect(await screen.findByText("add subtract")).toBeDefined();
 });
@@ -202,13 +281,21 @@ it("coming back to a project keeps where you were in it", async () => {
   });
   render(<App />);
 
-  await user.click(await screen.findByText("Widget"));
+  await user.click(
+    within(await screen.findByRole("navigation", { name: "Projects" })).getByRole("button", {
+      name: /Widget/,
+    }),
+  );
   await user.click(within(screen.getByLabelText("Widget")).getByText("Board"));
   await screen.findByText(/aip new/);
 
   // Out and back in.
   await user.click(within(screen.getByLabelText("Widget")).getByText("← Everything"));
-  await user.click(await screen.findByText("Widget"));
+  await user.click(
+    within(await screen.findByRole("navigation", { name: "Projects" })).getByRole("button", {
+      name: /Widget/,
+    }),
+  );
   expect(await screen.findByText(/aip new/)).toBeDefined();
 });
 
@@ -289,7 +376,11 @@ it("re-reads when the server says something changed", async () => {
   const user = userEvent.setup();
   working();
   render(<App />);
-  await user.click(await screen.findByText("Widget"));
+  await user.click(
+    within(await screen.findByRole("navigation", { name: "Projects" })).getByRole("button", {
+      name: /Widget/,
+    }),
+  );
   // On Work, because the run list is what this is about - the overview is the landing
   // view but it is not where runs are read.
   await user.click(within(screen.getByLabelText("Widget")).getByText("Work"));

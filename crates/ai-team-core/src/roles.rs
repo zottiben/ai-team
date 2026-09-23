@@ -4,11 +4,10 @@
 //! is a read-only reviewer. These six each clear that bar and nothing else does yet:
 //! software-teams' 34-agent roster is the failure mode this list exists to avoid.
 //!
-//! The *model* each role prefers is deliberately not settled here - that is open
-//! question 10, and it depends on the machine profile (D8). Every preset ships pointing
-//! at `local`, which is free and is the only provider the default machine profile allows.
-//! A person's preferred models are team-row edits; dispatch resolves them through the
-//! current machine without rewriting the portable team.
+//! The portable presets still have no machine-specific model. Team creation combines them
+//! with exact role defaults from Pi's catalogue and writes those choices into the rows.
+//! Existing teams change only through an explicit edit or reset; dispatch resolves machine
+//! policy without rewriting the roster.
 
 use crate::model::{NewAgent, Provider, Reasoning};
 
@@ -40,9 +39,9 @@ pub const DEFAULT_ROSTER: &[RolePreset] = &[
     RolePreset {
         role: "orchestrator",
         name: "Orchestrator",
-        purpose: "Turns one prompt into a plan on the ai-planner board, leases a worktree per \
-                  ready slice, and dispatches each to the agent whose zone owns it. Never edits \
-                  code itself.",
+        purpose: "Grounds one prompt in the repository and required external context, then \
+                  delegates a precise brief to the planner. Coordinates the agent graph but \
+                  never shapes the board, dispatches processes, or edits code.",
         zone: "",
         reasoning: Reasoning::High,
         read_only: true,
@@ -50,8 +49,9 @@ pub const DEFAULT_ROSTER: &[RolePreset] = &[
     RolePreset {
         role: "planner",
         name: "Planner",
-        purpose: "Breaks intent into slices small enough to demo, with dependencies and a stated \
-                  demo for each. Owns the shape of the work, not the code.",
+        purpose: "Turns the orchestrator's grounded brief into ai-planner slices small enough to \
+                  demo, each with owned paths and acceptance evidence. Owns the shape of the work, \
+                  not the code or dispatch.",
         zone: "",
         reasoning: Reasoning::High,
         read_only: true,
@@ -105,8 +105,7 @@ impl RolePreset {
 
     /// The same, on a provider the caller chose.
     ///
-    /// Used when seeding a team, so a machine that has allowed one account gets a roster
-    /// pointing at it rather than at a local gateway it does not run.
+    /// Used when seeding or resetting a team with the exact model chosen for this role.
     pub fn to_new_agent_on(&self, provider: Provider, model: &str, ord: i64) -> NewAgent {
         NewAgent {
             role: self.role.to_string(),

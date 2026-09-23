@@ -43,7 +43,7 @@ async fn single_node(args: RunArgs, worktree: PathBuf) -> Result<()> {
         .canonicalize()
         .with_context(|| format!("{} does not exist", worktree.display()))?;
 
-    let run = store.create_run(project.id, &prompt, RunTrigger::Manual)?;
+    let run = store.create_run_in(project.id, &prompt, RunTrigger::Manual, Some(&worktree))?;
     println!("run {} in {}", run.id, worktree.display());
 
     // Nothing to generate and nothing to build (D20). The seat is a set of flags, and

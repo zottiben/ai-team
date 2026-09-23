@@ -27,6 +27,7 @@ impl IntoResponse for Error {
             // Not an internal error: the server is working, there is just nothing for it
             // to show yet, and the window can say so instead of looking broken.
             Error::NoStore => StatusCode::SERVICE_UNAVAILABLE,
+            Error::Core(ai_team_core::Error::Invalid(_)) => StatusCode::BAD_REQUEST,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };
         // A JSON body, always: the frontend reads one shape whether a call succeeded or

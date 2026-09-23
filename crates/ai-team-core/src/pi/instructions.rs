@@ -50,28 +50,57 @@ pub(super) fn for_seat(agent: &Agent, team: &Team, roster: &[Agent]) -> String {
          If something genuinely needs one of those, say so in your answer.\n\n",
     );
 
-    if plans(agent) {
+    if coordinates(agent) {
+        coordinating_section(&mut out, roster);
+    } else if plans(agent) {
         planning_section(&mut out, roster);
     } else {
         building_section(&mut out, agent);
     }
 
-    out.push_str(
-        "## When you are done\n\n\
-         Say what you changed and what you ran, in plain prose. A turn that reports done \
-         but changed no file is recorded as failed, so if you could not do the work, say \
-         that instead - it is a useful answer and a false one is not.\n",
-    );
+    if coordinates(agent) || plans(agent) {
+        out.push_str(
+            "## When you are done\n\n\
+             State the grounded brief or plan you produced and any context you could not \
+             verify. Do not build the work yourself.\n",
+        );
+    } else {
+        out.push_str(
+            "## When you are done\n\n\
+             Say what you changed and what you ran, in plain prose. A turn that reports done \
+             but changed no file is recorded as failed, so if you could not do the work, say \
+             that instead - it is a useful answer and a false one is not.\n",
+        );
+    }
     out
 }
 
 /// Which seats may shape the plan.
 ///
-/// The orchestrator and the planner, and nobody else. A maker that can add slices can
-/// give itself work, and the board a human reads stops being a plan and becomes a log of
-/// whatever the agents felt like doing.
+/// Only the planner shapes the board. The orchestrator coordinates the graph and hands
+/// the planner a grounded brief; combining those jobs is how the planner seat went unused.
 fn plans(agent: &Agent) -> bool {
-    agent.role == ROOT_ROLE || agent.role == "planner"
+    agent.role == "planner"
+}
+
+fn coordinates(agent: &Agent) -> bool {
+    agent.role == ROOT_ROLE
+}
+
+fn coordinating_section(out: &mut String, roster: &[Agent]) {
+    out.push_str(
+        "## How the work gets done\n\n\
+         **You coordinate; you do not build code and you do not shape the ai-planner \
+         board.** Ground the operator's request in the repository and in every required \
+         ClickUp or Figma source. Produce a concise delegation brief for the planner: \
+         outcome, constraints, relevant paths, acceptance evidence, and unresolved \
+         questions. ai-team passes that brief to the planner seat and Rust later leases \
+         and dispatches the approved slices.\n\n\
+         Required external context is mandatory. If its MCP tools are unavailable, say \
+         exactly which source could not be read and stop; never substitute Chrome, \
+         Playwright, a browser profile, or generic web search.\n\n",
+    );
+    roster_section(out, roster);
 }
 
 fn planning_section(out: &mut String, roster: &[Agent]) {
@@ -98,6 +127,10 @@ fn planning_section(out: &mut String, roster: &[Agent]) {
          slice small enough to demo on its own.\n\n",
     );
 
+    roster_section(out, roster);
+}
+
+fn roster_section(out: &mut String, roster: &[Agent]) {
     if roster.is_empty() {
         return;
     }
@@ -154,7 +187,7 @@ fn building_section(out: &mut String, agent: &Agent) {
     out.push_str(
         "You read the board but you do not shape it. `get_slice` tells you what you are \
          building and `append_log` records anything worth knowing later; adding or \
-         re-statusing slices is the orchestrator's job, not yours.\n\n",
+         re-statusing slices belongs to the planner and Rust control plane, not you.\n\n",
     );
 
     if agent.read_only {
@@ -204,34 +237,29 @@ mod tests {
     }
 
     #[test]
-    fn the_orchestrator_is_told_not_to_build() {
-        // The first run on Pi failed exactly here: with no instructions the orchestrator
-        // was a coding assistant with a bash tool, so it wrote the code and left the
-        // board empty.
+    fn the_orchestrator_is_told_to_ground_and_delegate_without_shaping_the_board() {
         let (agent, team, roster) = seat("orchestrator");
         let prompt = for_seat(&agent, &team, &roster);
 
-        assert!(
-            prompt.contains("do not build the slices yourself"),
-            "{prompt}"
-        );
-        assert!(prompt.contains("add_slice"), "{prompt}");
-        // Mechanical, not a vague ask: the MCP `add_slice` tool has no touches
-        // parameter, so the trailer has to be written into the scope text - and a model
-        // told only to "name the paths" writes them in prose, which routes nothing.
-        assert!(prompt.contains("`Touches:` line"), "{prompt}");
-        assert!(prompt.contains("Touches: src/lib.rs"), "{prompt}");
+        assert!(prompt.contains("You coordinate"), "{prompt}");
+        assert!(prompt.contains("delegation brief"), "{prompt}");
+        assert!(prompt.contains("do not shape the ai-planner"), "{prompt}");
+        assert!(!prompt.contains("add_slice"), "{prompt}");
+        assert!(prompt.contains("never substitute Chrome"), "{prompt}");
     }
 
     #[test]
-    fn a_planning_seat_is_told_who_is_on_the_team() {
+    fn the_planner_is_told_who_owns_paths_and_how_to_shape_the_board() {
         // Routing is by zone, so a plan written without knowing the zones is a plan
         // whose slices nobody owns.
-        let (agent, team, roster) = seat("orchestrator");
+        let (agent, team, roster) = seat("planner");
         let prompt = for_seat(&agent, &team, &roster);
         assert!(prompt.contains("## Your team"), "{prompt}");
         assert!(prompt.contains("backend"), "{prompt}");
         assert!(prompt.contains("Owns:"), "{prompt}");
+        assert!(prompt.contains("add_slice"), "{prompt}");
+        assert!(prompt.contains("`Touches:` line"), "{prompt}");
+        assert!(prompt.contains("Touches: src/lib.rs"), "{prompt}");
     }
 
     #[test]

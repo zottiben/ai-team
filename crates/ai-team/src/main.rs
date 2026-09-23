@@ -13,6 +13,12 @@ use clap::Parser;
 use cli::{Cli, Command};
 
 fn main() {
+    // Before the runtime, before any thread: `set_var` mutates process-global state that
+    // every `Command` created after it reads (D22). A no-op when `ait` was started from a
+    // shell, which is most of the time - it is here because an editor, a launch agent or
+    // `ait daemon` under launchd gets the same stripped PATH the desktop app does.
+    ai_team_core::adopt_login_path();
+
     if let Err(err) = run() {
         // `{err:#}` prints the whole `anyhow` chain on one line. The context each
         // command attaches is the difference between "permission denied" and

@@ -33,6 +33,8 @@ pub struct PiIngested {
     pub usage: Usage,
     /// Steps seen, which is what `node_run.turns` counts.
     pub steps: i64,
+    /// Latest raw provider input total, including cached tokens. A snapshot, not spend.
+    pub context_tokens: Option<i64>,
     /// The terminal state, when the turn reached one.
     pub terminal: Option<TerminalState>,
 }
@@ -100,6 +102,9 @@ impl Store {
                     continue;
                 }
                 out.recorded += 1;
+                if let Some(context) = event.context_tokens() {
+                    out.context_tokens = Some(context);
+                }
                 // Counters accumulate only for rows that were genuinely new. The unique
                 // index protects the rows; without this it would not protect the totals,
                 // and a replay would count the same step's tokens twice.
@@ -118,8 +123,9 @@ impl Store {
                         tokens_cache_read  = tokens_cache_read + ?5,
                         tokens_cache_write = tokens_cache_write + ?6,
                         turns              = turns + ?7,
+                        context_tokens     = COALESCE(?8, context_tokens),
                         rev = rev + 1,
-                        updated_at = ?8
+                        updated_at = ?9
                   WHERE id = ?1",
                 params![
                     node_run_id,
@@ -129,6 +135,7 @@ impl Store {
                     out.usage.cache_read,
                     out.usage.cache_write,
                     out.steps,
+                    out.context_tokens,
                     at,
                 ],
             )?;
@@ -217,6 +224,7 @@ mod tests {
         let stored = store.node_run(node_run).unwrap();
         assert_eq!(stored.usage.tokens_in, 100);
         assert_eq!(stored.usage.cache_read, 600);
+        assert_eq!(stored.context_tokens, Some(1_000));
     }
 
     #[test]

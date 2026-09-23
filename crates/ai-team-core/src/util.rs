@@ -169,6 +169,24 @@ fn matches_from(p: &[char], mut pi: usize, t: &[char], mut ti: usize) -> bool {
 /// Minted per process and never written down: the only thing it protects is a server on
 /// 127.0.0.1 that lives as long as that process, and a secret on disk is a secret that
 /// outlives what it protects.
+/// Whether a local process still exists.
+///
+/// A supervised run is local by design, so its pid is enough to distinguish a live
+/// owner from a desktop/CLI process that was terminated. Permission errors still mean
+/// the process exists; `test_kill_process` reports that distinction for us.
+#[cfg(unix)]
+pub fn process_is_alive(pid: i64) -> bool {
+    i32::try_from(pid)
+        .ok()
+        .and_then(rustix::process::Pid::from_raw)
+        .is_some_and(|pid| rustix::process::test_kill_process(pid).is_ok())
+}
+
+#[cfg(not(unix))]
+pub fn process_is_alive(_pid: i64) -> bool {
+    false
+}
+
 pub fn mint_token() -> String {
     // Two sources, so neither being weak on its own matters: the OS clock at nanosecond
     // resolution, and the address of a fresh heap allocation.

@@ -22,13 +22,21 @@ import {
  * server - so there is one implementation of what a hunk is and one place a line number
  * can be wrong.
  */
-export function Source({ project, node }: { project: string | null; node: number | null }) {
+export function Source({
+  project,
+  workspace = null,
+  node,
+}: {
+  project: string | null;
+  workspace?: string | null;
+  node: number | null;
+}) {
   const [data, setData] = useState<Scm | null>(null);
   const [message, setMessage] = useState("");
   const [problem, setProblem] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
 
-  const where: Where | null = project === null ? null : { project, node };
+  const where: Where | null = project === null ? null : { project, workspace, node };
 
   const load = useCallback(async () => {
     if (where === null) return;
@@ -39,7 +47,7 @@ export function Source({ project, node }: { project: string | null; node: number
       setProblem(error instanceof Error ? error.message : String(error));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [project, node]);
+  }, [project, workspace, node]);
 
   useEffect(() => {
     void load();

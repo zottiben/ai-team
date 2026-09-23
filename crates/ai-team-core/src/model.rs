@@ -112,7 +112,7 @@ sql_enum! {
         /// Claude subscription, through the OAuthed Claude Code CLI, bridged into eve
         /// as a model provider (D7).
         Claude => "claude",
-        /// ChatGPT subscription, through eve's own `/login`.
+        /// ChatGPT subscription, through the Codex CLI that Pi's `openai-codex` uses.
         #[serde(rename = "openai")]
         OpenAi => "openai",
         /// GLM Coding Plan - flat rate, openai-compatible.
@@ -141,6 +141,26 @@ sql_enum! {
         Escalate => "escalate",
         /// Give up on this branch, and let its siblings finish.
         AbortBranch => "abort_branch",
+    }
+}
+
+sql_enum! {
+    DeliveryAction {
+        Push => "push",
+        Pr => "pr",
+        Merge => "merge",
+    }
+}
+
+sql_enum! {
+    /// Who crosses one publishing boundary after verified work lands locally.
+    DeliveryPolicy {
+        /// ai-team records the branch and leaves the command to the operator.
+        Manual => "manual",
+        /// ai-team offers an explicit approval control. The safe default.
+        Ask => "ask",
+        /// ai-team proceeds after verification without another click.
+        Auto => "auto",
     }
 }
 
@@ -313,9 +333,33 @@ pub struct Team {
     pub name: String,
     pub description: String,
     pub guardrails: Guardrails,
+    pub delivery: DeliverySettings,
     pub rev: i64,
     pub created_at: String,
     pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeliverySettings {
+    pub push: DeliveryPolicy,
+    pub pr: DeliveryPolicy,
+    pub merge: DeliveryPolicy,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteDeliveryStatus {
+    pub pr_state: String,
+    pub checks: String,
+}
+
+impl Default for DeliverySettings {
+    fn default() -> Self {
+        Self {
+            push: DeliveryPolicy::Ask,
+            pr: DeliveryPolicy::Ask,
+            merge: DeliveryPolicy::Ask,
+        }
+    }
 }
 
 /// A team's policy, and the shape a run snapshots at dispatch (M2-S10).
@@ -425,6 +469,9 @@ pub struct Run {
     pub status: RunStatus,
     pub trigger: RunTrigger,
     pub plan_slug: Option<String>,
+    /// The checkout whose planner and team own this run. Maker nodes may lease sibling
+    /// worktrees without moving the run out of its initiating workspace.
+    pub workspace_path: Option<String>,
     pub parallel_width: i64,
     pub budget_tokens: Option<i64>,
     pub budget_seconds: Option<i64>,
@@ -457,7 +504,24 @@ pub struct NodeRun {
     pub worktree_path: Option<String>,
     pub branch: Option<String>,
     pub lease_id: Option<String>,
+    pub pushed_at: Option<String>,
+    pub pr_url: Option<String>,
+    pub merge_requested_at: Option<String>,
+    pub delivery_claim: Option<String>,
+    pub delivery_claimed_at: Option<String>,
+    pub delivery_error: Option<String>,
     pub session_id: Option<String>,
+    /// Set when future turns must start fresh. The id stays as transcript evidence.
+    pub session_retired_at: Option<String>,
+    /// Set while an orchestrator is writing its required handoff before retirement.
+    pub session_resetting_at: Option<String>,
+    /// The local process supervising this node. Not rendered to the browser; the API
+    /// reduces it to the useful question: can this interrupted turn be resumed?
+    #[serde(skip_serializing)]
+    pub supervisor_pid: Option<i64>,
+    /// Latest provider-reported context occupancy for this session, including caches.
+    /// Unlike `usage`, this is a snapshot rather than a cumulative spend counter.
+    pub context_tokens: Option<i64>,
     /// The loopback port this node's supervised `eve start` was given (D10), and the
     /// secret its channel checks. Recorded so the window can answer a question the
     /// terminal's agent asked - see migration 005 for why that is not a wider boundary.
@@ -554,6 +618,37 @@ impl NewEvent {
         self.payload = Some(payload);
         self
     }
+}
+
+/// One durable request to bring an authoritative state transition to the operator's
+/// attention. It is delivery state, not a copy of the run or event that caused it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Notification {
+    pub id: i64,
+    pub project_id: i64,
+    pub workspace_path: Option<String>,
+    pub run_id: Option<i64>,
+    pub node_run_id: Option<i64>,
+    pub kind: String,
+    pub title: String,
+    pub body: String,
+    pub action_path: Option<String>,
+    pub read_at: Option<String>,
+    pub delivered_at: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewNotification {
+    pub dedupe_key: String,
+    pub project_id: i64,
+    pub workspace_path: Option<String>,
+    pub run_id: Option<i64>,
+    pub node_run_id: Option<i64>,
+    pub kind: String,
+    pub title: String,
+    pub body: String,
+    pub action_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

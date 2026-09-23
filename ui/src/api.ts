@@ -69,6 +69,9 @@ export type Run = {
   prompt: string;
   status: string;
   trigger: string;
+  plan_slug?: string | null;
+  workspace_path: string | null;
+  blocked_reason?: string | null;
   created_at: string;
   started_at: string | null;
   ended_at: string | null;
@@ -82,8 +85,15 @@ export type NodeRun = {
   status: string;
   attempt: number;
   slice_key: string | null;
+  worktree_path: string | null;
   branch: string | null;
   blocked_reason: string | null;
+  session_id?: string | null;
+  session_retired_at?: string | null;
+  session_resetting_at?: string | null;
+  context_tokens?: number | null;
+  replyable?: boolean;
+  recoverable?: boolean;
 };
 
 export type Usage = {
@@ -97,9 +107,14 @@ export type RunDetail = Run & { nodes: NodeRun[]; usage: Usage };
 
 export type RunEvent = {
   id: number;
+  node_run_id: number | null;
   kind: string;
   actor: string | null;
   summary: string;
+  /** Full assistant or human prose, separated from the one-line evidence summary. */
+  message: string | null;
+  /** Provider-supplied reasoning summaries. Encrypted reasoning never crosses the API. */
+  thinking: string[];
   at: string;
 };
 
@@ -107,30 +122,150 @@ export function projects(): Promise<Project[]> {
   return api<Project[]>("/projects");
 }
 
-export function runs(project?: number): Promise<Run[]> {
-  return api<Run[]>(project === undefined ? "/runs" : `/runs?project=${project}`);
+export type Notification = {
+  id: number;
+  project_id: number;
+  workspace_path: string | null;
+  run_id: number | null;
+  node_run_id: number | null;
+  kind: "plan_ready" | "completed" | "failed" | "input_required" | "follow_up";
+  title: string;
+  body: string;
+  action_path: string | null;
+  read_at: string | null;
+  delivered_at: string | null;
+  created_at: string;
+};
+
+export function notifications(limit = 60): Promise<Notification[]> {
+  return api<Notification[]>(`/notifications?limit=${limit}`);
 }
 
-export function run(id: number): Promise<RunDetail> {
-  return api<RunDetail>(`/runs/${id}`);
+export function readNotification(id: number): Promise<Notification> {
+  return post(`/notifications/${id}/read`, {});
 }
 
-export function runEvents(id: number, after?: number): Promise<RunEvent[]> {
-  return api<RunEvent[]>(`/runs/${id}/events${after === undefined ? "" : `?after=${after}`}`);
+export function runs(project?: number, workspace?: string | null): Promise<Run[]> {
+  const params = new URLSearchParams();
+  if (project !== undefined) params.set("project", String(project));
+  if (workspace !== null && workspace !== undefined) params.set("workspace", workspace);
+  const query = params.toString();
+  return api<Run[]>(query === "" ? "/runs" : `/runs?${query}`);
 }
 
+export function run(id: number, workspace?: string | null): Promise<RunDetail> {
+  const scope = workspace === null || workspace === undefined
+    ? ""
+    : `?workspace=${encodeURIComponent(workspace)}`;
+  return api<RunDetail>(`/runs/${id}${scope}`);
+}
+
+export function runEvents(
+  id: number,
+  after?: number,
+  workspace?: string | null,
+): Promise<RunEvent[]> {
+  const params = new URLSearchParams();
+  if (after !== undefined) params.set("after", String(after));
+  if (workspace !== null && workspace !== undefined) params.set("workspace", workspace);
+  const query = params.toString();
+  return api<RunEvent[]>(`/runs/${id}/events${query === "" ? "" : `?${query}`}`);
+}
+
+export type RunReply = { reached: "queued"; waiting: number };
+
+export function replyToRun(
+  runId: number,
+  nodeId: number,
+  message: string,
+  workspace?: string | null,
+): Promise<RunReply> {
+  return post(`/runs/${runId}/nodes/${nodeId}/reply`, { message, workspace });
+}
+
+export function resumeRunNode(
+  runId: number,
+  nodeId: number,
+  workspace: string,
+): Promise<{ resumed: true; run_id: number; node_id: number }> {
+  return post(`/runs/${runId}/nodes/${nodeId}/resume`, { workspace });
+}
+
+export type RunStartReceipt = {
+  started: true;
+  run_id?: number;
+  continued?: true;
+  preparing?: true;
+};
+
+export function approveRunPlan(runId: number): Promise<RunStartReceipt> {
+  return post(`/runs/${runId}/approve-plan`, {});
+}
+
+
+export type BoardStatus =
+  | "draft"
+  | "ready"
+  | "active"
+  | "in_review"
+  | "blocked"
+  | "done"
+  | "deferred";
 
 export type BoardSlice = {
+  id: number;
+  plan_id: number;
   key: string;
   title: string;
-  status: string;
+  status: BoardStatus;
   ord: number;
   scope_md: string | null;
   demo_md: string | null;
+  estimate_files: number | null;
+  branch: string | null;
+  base_branch: string | null;
+  pr_url: string | null;
+  worktree_path: string | null;
   claimed_by: string | null;
+  claimed_at: string | null;
+  blocked_reason: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  rev: number;
+  updated_at: string | null;
+  /** ai-team's addition: the seat whose zone owns the declared paths. */
   owner: string | null;
   touches: string[];
+  /** True only for ai-team's exact plan-approval hold, not an ordinary blocker. */
+  approval_held?: boolean;
+  delivery?: {
+    run_id: number;
+    node_run_id: number;
+    branch: string;
+    pushed_at: string | null;
+    pr_url: string | null;
+    merge_requested_at: string | null;
+    delivery_claim: "push" | "pr" | "merge" | null;
+    delivery_claimed_at: string | null;
+    delivery_error: string | null;
+    policy: DeliverySettings;
+    remote: { pr_state: string; checks: string } | null;
+  } | null;
 };
+
+export type BoardLogEntry = {
+  id: number;
+  plan_id: number;
+  slice_key: string | null;
+  at: string;
+  actor: string | null;
+  kind: string;
+  branch: string | null;
+  worktree_path: string | null;
+  body: string;
+};
+
+export type BoardSliceDetail = { slice: BoardSlice; log: BoardLogEntry[] };
 
 export type Board = {
   /** Null when this checkout has no plan yet - a normal state, not a failure. */
@@ -140,7 +275,7 @@ export type Board = {
 };
 
 /** The statuses ai-planner recognises, in the order work moves through them. */
-export const BOARD_COLUMNS = [
+export const BOARD_COLUMNS: BoardStatus[] = [
   "draft",
   "ready",
   "active",
@@ -148,17 +283,75 @@ export const BOARD_COLUMNS = [
   "blocked",
   "done",
   "deferred",
-] as const;
+];
 
-export function board(project: string): Promise<Board> {
-  return api<Board>(`/board?project=${encodeURIComponent(project)}`);
+export const BOARD_STATUSES: { value: BoardStatus; label: string }[] = [
+  { value: "draft", label: "Draft" },
+  { value: "ready", label: "Ready" },
+  { value: "active", label: "Active" },
+  { value: "in_review", label: "In review" },
+  { value: "blocked", label: "Blocked" },
+  { value: "done", label: "Done" },
+  { value: "deferred", label: "Deferred" },
+];
+
+export function board(project: string, workspace?: string | null): Promise<Board> {
+  return api<Board>(`/board?${workspaceScope(project, workspace)}`);
 }
 
 export function moveSlice(
   key: string,
-  body: { project: string; status: string; reason?: string },
+  body: { project: string; workspace?: string | null; status: BoardStatus; reason?: string },
 ): Promise<{ moved: string }> {
   return post(`/board/slices/${encodeURIComponent(key)}`, body);
+}
+
+export function boardSlice(
+  project: string,
+  key: string,
+  workspace?: string | null,
+): Promise<BoardSliceDetail> {
+  return api<BoardSliceDetail>(
+    `/board/slices/${encodeURIComponent(key)}?${workspaceScope(project, workspace)}`,
+  );
+}
+
+export function claimBoardSlice(
+  project: string,
+  key: string,
+  workspace?: string | null,
+): Promise<unknown> {
+  return post(`/board/slices/${encodeURIComponent(key)}/claim`, { project, workspace });
+}
+
+export function releaseBoardSlice(
+  project: string,
+  key: string,
+  workspace?: string | null,
+): Promise<unknown> {
+  return post(`/board/slices/${encodeURIComponent(key)}/release`, { project, workspace });
+}
+
+export function editBoardSlice(
+  project: string,
+  key: string,
+  prUrl: string,
+  workspace?: string | null,
+): Promise<unknown> {
+  return request(`/board/slices/${encodeURIComponent(key)}`, "PATCH", {
+    project,
+    workspace,
+    pr_url: prUrl,
+  });
+}
+
+export function noteBoardSlice(
+  project: string,
+  key: string,
+  body: string,
+  workspace?: string | null,
+): Promise<unknown> {
+  return post(`/board/slices/${encodeURIComponent(key)}/notes`, { project, workspace, body });
 }
 
 export type TodayItem = {
@@ -234,12 +427,22 @@ export type Submitted =
   | { outcome: "planned"; slice_key: string; comments: number }
   | { outcome: "accepted" };
 
-export function reviews(openOnly = true): Promise<Review[]> {
-  return api<Review[]>(`/reviews?open_only=${openOnly}`);
+export function reviews(
+  project?: string | null,
+  workspace?: string | null,
+  openOnly = true,
+): Promise<Review[]> {
+  const params = new URLSearchParams({ open_only: String(openOnly) });
+  if (project !== null && project !== undefined) params.set("project", project);
+  if (workspace !== null && workspace !== undefined) params.set("workspace", workspace);
+  return api<Review[]>(`/reviews?${params}`);
 }
 
-export function review(id: number): Promise<ReviewDetail> {
-  return api<ReviewDetail>(`/reviews/${id}`);
+export function review(id: number, workspace?: string | null): Promise<ReviewDetail> {
+  const suffix = workspace === null || workspace === undefined
+    ? ""
+    : `?workspace=${encodeURIComponent(workspace)}`;
+  return api<ReviewDetail>(`/reviews/${id}${suffix}`);
 }
 
 export function addComment(
@@ -260,8 +463,12 @@ export function resolveComment(id: number): Promise<Comment> {
   return post(`/comments/${id}/resolve`, {});
 }
 
-export function submitReview(id: number, status: string): Promise<Submitted> {
-  return post(`/reviews/${id}/submit`, { status });
+export function submitReview(
+  id: number,
+  status: string,
+  workspace?: string | null,
+): Promise<Submitted> {
+  return post(`/reviews/${id}/submit`, { status, workspace });
 }
 
 export type AnalyticsRow = {
@@ -290,9 +497,15 @@ export type AnalyticsRow = {
 
 export type GroupBy = "agent" | "model" | "team" | "project";
 
-export function analytics(by: GroupBy, project: string | null): Promise<AnalyticsRow[]> {
-  const scope = project === null ? "" : `&project=${encodeURIComponent(project)}`;
-  return api<AnalyticsRow[]>(`/analytics?by=${by}${scope}`);
+export function analytics(
+  by: GroupBy,
+  project: string | null,
+  workspace?: string | null,
+): Promise<AnalyticsRow[]> {
+  const params = new URLSearchParams({ by });
+  if (project !== null) params.set("project", project);
+  if (workspace !== null && workspace !== undefined) params.set("workspace", workspace);
+  return api<AnalyticsRow[]>(`/analytics?${params}`);
 }
 
 export type Reminder = {
@@ -356,8 +569,8 @@ export type RepoMap = {
 };
 
 /** The checkout, and which seat's zone claims each path (D14). */
-export function repoMap(project: string): Promise<RepoMap> {
-  return api<RepoMap>(`/map?project=${encodeURIComponent(project)}`);
+export function repoMap(project: string, workspace?: string | null): Promise<RepoMap> {
+  return api<RepoMap>(`/map?${workspaceScope(project, workspace)}`);
 }
 
 export type FileBody = { path: string; text: string; editable: boolean };
@@ -374,10 +587,23 @@ export type Hit = {
 };
 
 /** Every editor call is scoped to a checkout: a project, or a node's leased worktree. */
-export type Where = { project: string; node?: number | null };
+export type Where = {
+  project: string;
+  workspace?: string | null;
+  node?: number | null;
+};
+
+function workspaceScope(project: string, workspace?: string | null): string {
+  const params = new URLSearchParams({ project });
+  if (workspace !== null && workspace !== undefined) params.set("workspace", workspace);
+  return params.toString();
+}
 
 function scope(where: Where, extra: Record<string, string> = {}): string {
   const params = new URLSearchParams({ project: where.project, ...extra });
+  if (where.workspace !== null && where.workspace !== undefined) {
+    params.set("workspace", where.workspace);
+  }
   if (where.node !== null && where.node !== undefined) params.set("node", String(where.node));
   return params.toString();
 }
@@ -553,12 +779,21 @@ export type ProviderSetting = {
   reachable: boolean;
   detail: string;
   how: string;
+  /// The command that signs it in, when there is one. Null where signing in is not a
+  /// command - a key in the environment, or a gateway on loopback with no account.
+  sign_in: string | null;
 };
 
 export type ContextSetting = {
   source: string;
   allowed: boolean;
+  /** Whether Pi already holds OAuth for this MCP server name. */
+  oauth_connected: boolean;
+  /** Optional manual-token fallback, not the normal connection path. */
   token_set: boolean;
+  /// Where the token in force came from. A variable exported into the server's own
+  /// process cannot be unset from here, so the field is read-only when it is "environment".
+  held: "environment" | "keychain" | "absent";
   token_env: string;
 };
 
@@ -585,6 +820,27 @@ export function setFallback(order: string[]): Promise<unknown> {
   return post("/settings/fallback", { order });
 }
 
+/// Keep a context source's token, or clear it with an empty string.
+///
+/// The answer says whether there is now a token, never what it is - and neither does any
+/// other route, which is why the field in the page is always blank when it loads.
+export function setToken(source: string, token: string): Promise<{ token_set: boolean }> {
+  return post("/settings/token", { source, token });
+}
+
+/// Start a provider's sign-in and get back the terminal session running it.
+///
+/// The command is not sent - the server looks it up from the provider, so the set of
+/// things this can run is fixed rather than whatever the page asks for.
+export function startSignIn(provider: string): Promise<{ id: number; command: string }> {
+  return post("/settings/sign-in", { provider });
+}
+
+/** Start Pi's own browser OAuth flow for a read-only context source. */
+export function startContextAuth(source: string): Promise<{ id: number; command: string }> {
+  return post("/settings/context-auth", { source });
+}
+
 export type Registered = {
   project: { id: number; slug: string; name: string; kind: string };
   repo_path: string | null;
@@ -605,6 +861,42 @@ export function attachRepo(id: number, path: string): Promise<{ attached: string
   return post(`/projects/${id}/repos`, { path });
 }
 
+export type Candidate = {
+  name: string;
+  path: string;
+  repo: boolean;
+};
+
+export type Listing = {
+  path: string;
+  parent: string | null;
+  entries: Candidate[];
+};
+
+/// The directories inside one. An empty path means home, which is where a person's
+/// checkouts are.
+export function browse(path = ""): Promise<Listing> {
+  return api<Listing>(`/browse?path=${encodeURIComponent(path)}`);
+}
+
+export type Worktree = {
+  name: string;
+  path: string;
+  status: string;
+  /// Who holds the lease - or, when awt has decided nobody does, why. A tree left
+  /// leased across a reboot carries a sentence here rather than a name.
+  lease_holder: string | null;
+  processes: { pid: number; name: string }[];
+  branch: string | null;
+  /** The checkout registered on the project, rather than a linked task worktree. */
+  main: boolean;
+};
+
+/// The worktrees `awt` is holding for a project, with the branch each has checked out.
+export function worktrees(project: string): Promise<Worktree[]> {
+  return api<Worktree[]>(`/worktrees?project=${encodeURIComponent(project)}`);
+}
+
 export type Seat = {
   id: number;
   role: string;
@@ -621,12 +913,39 @@ export type Seat = {
   enabled: boolean;
 };
 
+export type DeliveryPolicy = "manual" | "ask" | "auto";
+export type DeliverySettings = {
+  push: DeliveryPolicy;
+  pr: DeliveryPolicy;
+  merge: DeliveryPolicy;
+};
+
 export type Roster = {
   project: string | null;
   team: string | null;
+  delivery?: DeliverySettings;
   seats: Seat[];
   available: string[];
 };
+
+export type ModelChoice = {
+  /** ai-team's policy name, used when editing a seat. */
+  provider: string;
+  /** Pi's exact provider id, shown so subscription routing is never ambiguous. */
+  runtime_provider: string;
+  model: string;
+  context: string;
+  context_tokens?: number;
+  max_output: string;
+  thinking: boolean;
+  images: boolean;
+};
+
+export type ModelCatalog = { models: ModelChoice[]; error: string | null };
+
+export function models(): Promise<ModelCatalog> {
+  return api<ModelCatalog>("/models");
+}
 
 /** Omit the project to ask what a new one would get. */
 export function roster(project: string | null): Promise<Roster> {
@@ -641,6 +960,21 @@ export function editSeat(
   return post(`/roster/${id}`, change);
 }
 
+export function detectOwnership(project: string): Promise<{ changed: number }> {
+  return post("/roster/ownership/detect", { project });
+}
+
+export function resetRosterModels(project: string): Promise<{ changed: number }> {
+  return post("/roster/models/reset", { project });
+}
+
+export function editDelivery(
+  project: string,
+  delivery: DeliverySettings,
+): Promise<DeliverySettings> {
+  return post("/roster/delivery", { project, ...delivery });
+}
+
 export type Doing =
   | "starting"
   | "working"
@@ -649,6 +983,12 @@ export type Doing =
   | "idle"
   | "untouched"
   | "disabled";
+
+export type MemberActivity = {
+  kind: "step" | "tool_call" | "tool_result" | "cost" | "approval_request" | "approval_resolved" | "build" | "note" | "done" | "failed";
+  summary: string;
+  at: string;
+};
 
 export type Member = {
   agent_id: number;
@@ -663,26 +1003,64 @@ export type Member = {
   run_id: number | null;
   slice_key: string | null;
   branch: string | null;
+  pushed_at?: string | null;
+  pr_url?: string | null;
+  merge_requested_at?: string | null;
+  delivery_claim?: "push" | "pr" | "merge" | null;
+  delivery_error?: string | null;
+  delivery?: DeliverySettings;
   attempt: number;
   blocked_reason: string | null;
   last_said: string | null;
+  activity?: MemberActivity | null;
   reachable: boolean;
+  approval_run_id?: number | null;
+  session_active?: boolean;
+  session_resetting_at?: string | null;
+  context_tokens?: number | null;
   turns: number;
   tokens_in: number;
   tokens_out: number;
 };
 
-export function crew(project: string): Promise<Member[]> {
-  return api<Member[]>(`/crew?project=${encodeURIComponent(project)}`);
+export function crew(project: string, workspace?: string | null): Promise<Member[]> {
+  return api<Member[]>(`/crew?${workspaceScope(project, workspace)}`);
+}
+
+export function deliverNode(
+  runId: number,
+  nodeId: number,
+  action: "push" | "pr" | "merge",
+  project: string,
+  workspace: string,
+): Promise<unknown> {
+  return post(`/runs/${runId}/nodes/${nodeId}/deliver`, { action, project, workspace });
+}
+
+export function resetNodeSession(
+  runId: number,
+  nodeId: number,
+  workspace: string,
+): Promise<{ resetting: true; run_id: number; node_run_id: number }> {
+  return post(`/runs/${runId}/nodes/${nodeId}/reset-session`, { workspace });
 }
 
 export type Reached =
   | { reached: "queued"; node_run_id: number; waiting: number }
   | { reached: "started" }
+  | { reached: "coordinating" }
+  | { reached: "continued"; run_id: number }
   | { reached: "refused"; because: string };
 
-export function sayTo(agent: number, message: string): Promise<Reached> {
-  return post(`/crew/${agent}/say`, { message });
+export function sayTo(
+  agent: number,
+  message: string,
+  workspace?: string | null,
+): Promise<Reached> {
+  return post(`/crew/${agent}/say`, {
+    message,
+    ...(workspace === null || workspace === undefined ? {} : { workspace }),
+  });
 }
 
 export function post<T>(path: string, body: unknown): Promise<T> {
@@ -710,9 +1088,13 @@ export async function request<T>(path: string, method: string, body?: unknown): 
 /** Start a run. Returns once it is under way, not once it has finished. */
 export function startRun(request: {
   project: string;
+  workspace?: string | null;
   prompt?: string;
   replan?: boolean;
-}): Promise<{ started: boolean }> {
+  plan_only?: boolean;
+  approval_required?: boolean;
+  action?: "approve_current";
+}): Promise<RunStartReceipt> {
   return post("/runs", request);
 }
 

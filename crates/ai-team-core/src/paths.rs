@@ -54,9 +54,36 @@ pub fn ensure_data_dir() -> Result<PathBuf> {
     Ok(dir)
 }
 
-fn home_dir() -> Result<PathBuf> {
+/// The operator's home directory, as this machine spells it.
+///
+/// Public because a surface that has to *offer* somewhere to start browsing needs the same
+/// answer the rest of this module uses, and a second reading of `$HOME` is a second thing
+/// to keep right.
+pub fn home_dir() -> Result<PathBuf> {
     let key = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
     non_empty_env(key).map(PathBuf::from).ok_or(Error::NoHome)
+}
+
+/// Turn a path somebody typed into one the filesystem knows.
+///
+/// `~/src/nodifi-data` is a path every shell understands and no system call does: `~` is
+/// expanded by the shell before the program ever sees it. A window has no shell in front
+/// of it, so a person typing what they would type in a terminal got "the directory does
+/// not exist" naming a literal `~` directory - which is true, and useless.
+///
+/// Only a leading `~` is expanded, and only when it is the whole first component. `~other`
+/// is deliberately left alone: resolving another user's home means reading the password
+/// database, and a directory genuinely called `~backup` is a likelier thing to meet than
+/// somebody registering a checkout out of a colleague's home directory.
+pub fn expand_user(path: &std::path::Path) -> Result<PathBuf> {
+    let mut parts = path.components();
+    let Some(std::path::Component::Normal(first)) = parts.next() else {
+        return Ok(path.to_path_buf());
+    };
+    if first != "~" {
+        return Ok(path.to_path_buf());
+    }
+    Ok(home_dir()?.join(parts.as_path()))
 }
 
 /// An environment variable set to the empty string is how a shell spells "unset" by
@@ -69,40 +96,88 @@ fn non_empty_env(key: &str) -> Option<String> {
 mod tests {
     use super::*;
 
-    // These mutate process-wide environment, so they are one test rather than several:
-    // cargo runs tests in threads and two of them racing on $HOME is a flake.
     #[test]
     fn paths_follow_their_overrides() {
+        const CASE: &str = "AI_TEAM_PATHS_TEST_CASE";
+        const ROOT: &str = "AI_TEAM_PATHS_TEST_ROOT";
+
+        // Environment belongs to the whole process, while Rust tests run in parallel.
+        // Each case therefore gets a child process with its own environment rather than
+        // racing every other test by calling `set_var` here.
+        if let (Ok(case), Ok(root)) = (std::env::var(CASE), std::env::var(ROOT)) {
+            let root = std::path::PathBuf::from(root);
+            match case.as_str() {
+                "override" => {
+                    assert_eq!(data_dir().unwrap(), root);
+                    assert_eq!(default_db_path().unwrap(), root.join("team.db"));
+                }
+                "home" => {
+                    assert_eq!(data_dir().unwrap(), root.join(".ai-team"));
+                    assert_eq!(
+                        machine_profile_path().unwrap(),
+                        root.join(".config/ai-team/machine.toml")
+                    );
+                    assert!(ensure_data_dir().unwrap().is_dir());
+                    assert_eq!(
+                        expand_user(std::path::Path::new("~/src/nodifi-data")).unwrap(),
+                        root.join("src/nodifi-data")
+                    );
+                    assert_eq!(expand_user(std::path::Path::new("~")).unwrap(), root);
+                }
+                "xdg" => assert_eq!(
+                    machine_profile_path().unwrap(),
+                    root.join("ai-team/machine.toml")
+                ),
+                other => panic!("unknown child case {other}"),
+            }
+            return;
+        }
+
         let tmp = tempfile::tempdir().expect("a temp dir");
+        for case in ["override", "home", "xdg"] {
+            let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+            child
+                .arg("--exact")
+                .arg("paths::tests::paths_follow_their_overrides")
+                .arg("--nocapture")
+                .env(CASE, case)
+                .env(ROOT, tmp.path())
+                .env("HOME", tmp.path())
+                .env("USERPROFILE", tmp.path())
+                .env_remove(HOME_ENV)
+                .env_remove("XDG_CONFIG_HOME");
+            match case {
+                "override" => {
+                    child.env(HOME_ENV, tmp.path());
+                }
+                "xdg" => {
+                    child.env("XDG_CONFIG_HOME", tmp.path());
+                }
+                _ => {}
+            }
+            let status = child.status().expect("run isolated path case");
+            assert!(status.success(), "path environment case {case} failed");
+        }
+    }
 
-        // SAFETY-adjacent: single-threaded within this test, and every path this
-        // module exposes is derived fresh on each call rather than cached.
-        std::env::set_var(HOME_ENV, tmp.path());
-        assert_eq!(data_dir().unwrap(), tmp.path());
-        assert_eq!(default_db_path().unwrap(), tmp.path().join("team.db"));
-
-        std::env::set_var(HOME_ENV, "");
-        std::env::set_var("HOME", tmp.path());
-        std::env::set_var("USERPROFILE", tmp.path());
-        assert_eq!(data_dir().unwrap(), tmp.path().join(".ai-team"));
-
-        std::env::set_var("XDG_CONFIG_HOME", tmp.path());
-        assert_eq!(
-            machine_profile_path().unwrap(),
-            tmp.path().join("ai-team").join("machine.toml")
-        );
-
-        std::env::remove_var("XDG_CONFIG_HOME");
-        assert_eq!(
-            machine_profile_path().unwrap(),
-            tmp.path()
-                .join(".config")
-                .join("ai-team")
-                .join("machine.toml")
-        );
-
-        std::env::remove_var(HOME_ENV);
-        let created = ensure_data_dir().unwrap();
-        assert!(created.is_dir());
+    #[test]
+    fn expansion_leaves_alone_everything_that_is_not_a_leading_tilde() {
+        // An absolute path is already an answer; a `~` in the middle is a directory
+        // somebody named that; and `~other` would mean reading the password database to
+        // find a colleague's home, which is not a thing a checkout is registered out of.
+        for given in [
+            "/Users/x/src/thing",
+            "relative/thing",
+            "/tmp/~/thing",
+            "~other/src",
+            "./~",
+        ] {
+            let path = std::path::Path::new(given);
+            assert_eq!(
+                expand_user(path).unwrap(),
+                path,
+                "{given} should have been left as it was"
+            );
+        }
     }
 }

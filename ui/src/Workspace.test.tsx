@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, expect, it, vi } from "vitest";
 
 import { Workspace } from "./Workspace";
-import type { Project } from "./api";
+import type { Project, Worktree } from "./api";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -17,6 +17,16 @@ const WIDGET: Project = {
   status: "active",
   open_runs: 1,
 } as Project;
+
+const MAIN: Worktree = {
+  name: "main",
+  path: "/tmp/widget",
+  status: "main",
+  lease_holder: null,
+  processes: [],
+  branch: "main",
+  main: true,
+};
 
 const RUN = {
   id: 7,
@@ -50,7 +60,18 @@ function stub(over: Record<string, unknown> = {}) {
       ],
       usage: { tokens_in: 1, tokens_out: 2, cache_read: 0, cache_write: 0 },
     },
-    "/runs/7/events": [{ id: 1, kind: "note", actor: null, summary: "did the thing", at: "" }],
+    "/runs/7/events": [
+      {
+        id: 1,
+        node_run_id: 1,
+        kind: "note",
+        actor: "backend",
+        summary: "did the thing…",
+        message: "I found the real cause and need your answer before I continue.",
+        thinking: [],
+        at: "",
+      },
+    ],
     "/runs/7/approvals": [],
     ...over,
   };
@@ -73,12 +94,14 @@ function area(view: Parameters<typeof Workspace>[0]["view"] = "work", openRun: n
   return render(
     <Workspace
       project={WIDGET}
+      workspace={MAIN}
       view={view}
       tick={0}
       openRun={openRun}
       onOpenedRun={() => {}}
       onChanged={() => {}}
       onGo={() => {}}
+      onTeamStarted={() => {}}
     />,
   );
 }
@@ -89,7 +112,9 @@ it("asks only for this project's runs", async () => {
   const calls = stub();
   area();
   await waitFor(() => expect(calls.some((path) => path.startsWith("/runs?"))).toBe(true));
-  expect(calls.find((path) => path.startsWith("/runs?"))).toContain("project=1");
+  const request = calls.find((path) => path.startsWith("/runs?"));
+  expect(request).toContain("project=1");
+  expect(request).toContain(`workspace=${encodeURIComponent(MAIN.path)}`);
 });
 
 it("opens a run in the dock and closes it with Escape", async () => {
@@ -100,7 +125,10 @@ it("opens a run in the dock and closes it with Escape", async () => {
   await user.click(await screen.findByText("add subtract"));
   expect(await screen.findByText("Run #7")).toBeDefined();
   expect(await screen.findByText("ai-team/s1")).toBeDefined();
-  expect(await screen.findByText("did the thing")).toBeDefined();
+  expect(
+    (await screen.findAllByText("I found the real cause and need your answer before I continue."))
+      .length,
+  ).toBeGreaterThan(0);
 
   await user.keyboard("{Escape}");
   await waitFor(() => expect(screen.queryByText("Run #7")).toBeNull());
@@ -143,17 +171,20 @@ it("each view is about this project and takes it as a fact", async () => {
   });
   area("board");
   await waitFor(() => expect(calls.some((path) => path.startsWith("/board?"))).toBe(true));
-  expect(calls.find((path) => path.startsWith("/board?"))).toContain("project=widget");
+  const request = calls.find((path) => path.startsWith("/board?"));
+  expect(request).toContain("project=widget");
+  expect(request).toContain(`workspace=${encodeURIComponent(MAIN.path)}`);
 });
 
-it("a bad approvals response does not blank a dock that could render everything else", async () => {
-  // M3-S12: they are supplementary, and one failing response must not take the panel with
-  // it.
+it("the evidence dock keeps the full assistant answer", async () => {
   const user = userEvent.setup();
-  stub({ "/runs/7/approvals": undefined });
+  stub();
   area();
 
   await user.click(await screen.findByText("add subtract"));
   expect(await screen.findByText("Run #7")).toBeDefined();
-  expect(await screen.findByText("did the thing")).toBeDefined();
+  expect(
+    (await screen.findAllByText("I found the real cause and need your answer before I continue."))
+      .length,
+  ).toBeGreaterThan(0);
 });

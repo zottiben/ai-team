@@ -22,10 +22,25 @@ function item(over: Partial<TodayItem>): TodayItem {
   };
 }
 
-function stub(items: TodayItem[]) {
+function stub(
+  items: TodayItem[],
+  support: { projects?: unknown[]; runs?: unknown[]; analytics?: unknown[] } = {},
+) {
   vi.stubGlobal(
     "fetch",
-    vi.fn().mockResolvedValue({ ok: true, json: async () => items }),
+    vi.fn((input: string) => {
+      const url = String(input).replace(/^\/api/, "");
+      const body = url === "/today"
+        ? items
+        : url === "/projects"
+          ? (support.projects ?? [])
+          : url.startsWith("/runs")
+            ? (support.runs ?? [])
+            : url.startsWith("/analytics")
+              ? (support.analytics ?? [])
+              : [];
+      return Promise.resolve({ ok: true, json: async () => body });
+    }),
   );
 }
 
@@ -54,8 +69,8 @@ it("keeps the server's order instead of re-sorting it", async () => {
   const { container } = render(<Today tick={0} onOpenRun={() => {}} />);
   await screen.findByText("first");
 
-  const titles = [...container.querySelectorAll(".card")].map(
-    (card) => card.querySelectorAll("span")[2]?.textContent,
+  const titles = [...container.querySelectorAll(".today-row")].map(
+    (card) => card.querySelector("strong")?.textContent,
   );
   expect(titles).toEqual(["first", "second", "third"]);
 });
@@ -81,6 +96,36 @@ it("says plainly when nothing is waiting", async () => {
   stub([]);
   render(<Today tick={0} onOpenRun={() => {}} />);
   expect(await screen.findByText(/Nothing is waiting on you/)).toBeDefined();
+});
+
+it("shows live operations without changing the ranked queue", async () => {
+  stub(
+    [
+      item({ urgency: "failed", title: "fix gates", project: "widget" }),
+      item({ urgency: "review", title: "review it", project: "widget" }),
+      item({ urgency: "in_flight", title: "backend is building", project: "widget" }),
+    ],
+    {
+      projects: [
+        { id: 1, slug: "widget", name: "Widget", kind: "repo", status: "active", open_runs: 1 },
+      ],
+      runs: [
+        { id: 9, project_id: 1, prompt: "build", status: "running", trigger: "manual", created_at: "now", started_at: "now", ended_at: null },
+      ],
+      analytics: [
+        { attempts: 10, accepted: 8, gates_run: 5, gates_passed: 4 },
+      ],
+    },
+  );
+  render(<Today tick={0} onOpenRun={() => {}} />);
+
+  expect(await screen.findByText("Personal operations")).toBeDefined();
+  expect(screen.getByText("Agents working").previousElementSibling?.textContent).toBe("1");
+  expect(screen.getByText("Active runs").previousElementSibling?.textContent).toBe("1");
+  expect(screen.getByText("Widget")).toBeDefined();
+  expect(screen.getByText("Recent activity")).toBeDefined();
+  expect(screen.getByText("build")).toBeDefined();
+  expect(screen.getAllByText("80%").length).toBe(2);
 });
 
 it("labels every tier with a word, not only a colour", async () => {

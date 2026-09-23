@@ -38,17 +38,27 @@ where
 
 /// One tick: claim in a synchronous window, then act with no database open.
 pub async fn once() -> Result<Vec<Fired>> {
-    let (claimed, projects) = {
+    let (claimed, projects, notifications) = {
         let mut store = Store::open_default()?;
         let claimed = schedule::claim_due(&mut store, &now())?;
+        // Claimed in the same short synchronous window as reminders. `ait ui` and
+        // `ait daemon` may both be alive, so native delivery must have one winner.
+        let notifications = store.claim_notification_delivery(25)?;
         // Resolved now because `start` below runs with no store to ask.
         let projects: Vec<(i64, String)> = store
             .projects()?
             .into_iter()
             .map(|project| (project.id, project.slug))
             .collect();
-        (claimed, projects)
+        (claimed, projects, notifications)
     };
+
+    for notification in notifications {
+        let delivered = schedule::notify(&notification.title, &notification.body).await;
+        if let Ok(mut store) = Store::open_default() {
+            let _ = store.complete_notification_delivery(notification.id, delivered);
+        }
+    }
 
     Ok(schedule::act(claimed, move |project_id, prompt| {
         let slug = projects
@@ -62,10 +72,12 @@ pub async fn once() -> Result<Vec<Fired>> {
                 project: slug,
                 // An empty prompt means "build what is ready", as it does everywhere else.
                 prompt: (!prompt.is_empty()).then_some(prompt),
+                workspace: None,
                 plan: None,
                 width: None,
                 replan: false,
                 plan_only: false,
+                approval_required: false,
             };
 
             // Detached: a run takes minutes and the next tick is twenty seconds away, so

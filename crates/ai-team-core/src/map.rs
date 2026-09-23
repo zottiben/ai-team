@@ -33,6 +33,7 @@ const SKIP: &[&str] = &[
     ".git",
     "target",
     "node_modules",
+    "vendor",
     "dist",
     ".output",
     ".eve",
@@ -46,11 +47,16 @@ const MAX_DEPTH: usize = 7;
 
 /// How many nodes a map may carry.
 ///
-/// A bound rather than a promise: past a few hundred points the picture stops being read
-/// and starts being scrolled, and a monorepo would otherwise send a megabyte of paths to
-/// draw one panel. When it bites, [`RepoMap::truncated`] says so - a map that quietly
-/// omits half a repository is a map that lies about what nobody owns.
+/// Ownership is still counted across the larger walk below. This is only the visual sample:
+/// an alphabetically early tooling directory must not make the page claim the app is unowned.
 const MAX_NODES: usize = 700;
+
+/// A filesystem safety bound, separate from the visual bound.
+///
+/// Repositories commonly carry more than 700 source files. Walking enough to count those
+/// truthfully is cheap once dependencies/build output are skipped; shipping all of them to
+/// React is not. Hitting this larger bound is still reported as truncation.
+const MAX_FILES_WALKED: usize = 50_000;
 
 /// A seat, reduced to what ownership needs.
 ///
@@ -119,14 +125,53 @@ pub fn repo_map(worktree: &Path, owners: &[Owner]) -> Result<RepoMap> {
         |name| name.to_string_lossy().into_owned(),
     );
 
-    let mut files: Vec<(String, usize)> = Vec::new();
+    let mut walked: Vec<(String, usize)> = Vec::new();
     let mut truncated = false;
-    walk(worktree, "", 0, &mut files, &mut truncated)?;
+    walk(worktree, "", 0, &mut walked, &mut truncated)?;
 
     // Sorted so the same checkout always produces the same map. The walk takes whatever
     // order the filesystem hands back, which differs between APFS and ext4 - and a panel
     // that reshuffles itself between two machines is a panel nobody trusts (D12).
-    files.sort_by(|a, b| a.0.cmp(&b.0));
+    walked.sort_by(|a, b| a.0.cmp(&b.0));
+
+    // Count ownership over everything walked, not merely over the points that fit in the
+    // picture. The old depth-first 700-file cutoff let `.agents/` consume the entire map
+    // before `app/` was visited, reporting 0% owned for a repository with valid zones.
+    let mut zones: Vec<MapZone> = owners
+        .iter()
+        .map(|owner| MapZone {
+            role: owner.role.clone(),
+            name: owner.name.clone(),
+            zone: owner.zone.clone(),
+            owns: 0,
+        })
+        .collect();
+    let mut unowned = 0usize;
+    for (path, _) in &walked {
+        match owner_of(path, owners).as_deref() {
+            Some(role) => {
+                if let Some(zone) = zones.iter_mut().find(|zone| zone.role == role) {
+                    zone.owns += 1;
+                }
+            }
+            None => unowned += 1,
+        }
+    }
+
+    let file_count = walked.len();
+    let files = if walked.len() > MAX_NODES {
+        truncated = true;
+        // Include both ends and evenly spaced points between them. Sampling the first 700
+        // would reproduce the same alphabetical starvation as the old walk bound.
+        (0..MAX_NODES)
+            .map(|at| {
+                let index = at * (walked.len() - 1) / (MAX_NODES - 1);
+                walked[index].clone()
+            })
+            .collect()
+    } else {
+        walked
+    };
 
     let mut nodes: Vec<MapNode> = Vec::new();
     let mut index: HashMap<String, usize> = HashMap::new();
@@ -179,30 +224,9 @@ pub fn repo_map(worktree: &Path, owners: &[Owner]) -> Result<RepoMap> {
     // `crates`, not the word `crates`, so every directory would come back unowned.
     roll_up(&mut nodes, &edges);
 
-    let mut zones: Vec<MapZone> = owners
-        .iter()
-        .map(|owner| MapZone {
-            role: owner.role.clone(),
-            name: owner.name.clone(),
-            zone: owner.zone.clone(),
-            owns: 0,
-        })
-        .collect();
-    let mut unowned = 0usize;
-    for node in nodes.iter().filter(|node| !node.dir) {
-        match node.owner.as_deref() {
-            Some(role) => {
-                if let Some(zone) = zones.iter_mut().find(|zone| zone.role == role) {
-                    zone.owns += 1;
-                }
-            }
-            None => unowned += 1,
-        }
-    }
-
     Ok(RepoMap {
         root,
-        files: files.len(),
+        files: file_count,
         nodes,
         edges,
         zones,
@@ -272,7 +296,7 @@ fn walk(
         *truncated = true;
         return Ok(());
     }
-    if into.len() >= MAX_NODES {
+    if into.len() >= MAX_FILES_WALKED {
         *truncated = true;
         return Ok(());
     }
@@ -311,7 +335,7 @@ fn walk(
     here.sort();
 
     for (path, is_dir) in here {
-        if into.len() >= MAX_NODES {
+        if into.len() >= MAX_FILES_WALKED {
             *truncated = true;
             return Ok(());
         }
@@ -345,6 +369,8 @@ mod tests {
         // Build output, which must not appear.
         std::fs::create_dir_all(dir.path().join("target/debug")).unwrap();
         std::fs::write(dir.path().join("target/debug/ait"), b"x").unwrap();
+        std::fs::create_dir_all(dir.path().join("vendor/package")).unwrap();
+        std::fs::write(dir.path().join("vendor/package/library.php"), b"x").unwrap();
         dir
     }
 
@@ -465,6 +491,33 @@ mod tests {
         let mobile = map.zones.iter().find(|zone| zone.role == "mobile").unwrap();
         assert_eq!(mobile.owns, 0);
         assert_eq!(map.zones.len(), 3);
+    }
+
+    #[test]
+    fn an_early_large_tooling_directory_does_not_hide_owned_application_code() {
+        let dir = tempfile::tempdir().unwrap();
+        let noise = dir.path().join(".agents/cache");
+        std::fs::create_dir_all(&noise).unwrap();
+        for at in 0..900 {
+            std::fs::write(noise.join(format!("{at:04}.md")), b"x").unwrap();
+        }
+        std::fs::create_dir_all(dir.path().join("app")).unwrap();
+        std::fs::write(dir.path().join("app/feature.php"), b"x").unwrap();
+        let owners = [Owner {
+            role: "backend".into(),
+            name: "Backend".into(),
+            zone: "app/**".into(),
+        }];
+
+        let map = repo_map(dir.path(), &owners).unwrap();
+        assert_eq!(map.files, 901);
+        assert!(map.truncated);
+        assert_eq!(map.zones[0].owns, 1);
+        assert_eq!(map.unowned, 900);
+        assert!(
+            map.nodes.iter().any(|node| node.path == "app/feature.php"),
+            "the visual sample should span the repository rather than take its first 700 files"
+        );
     }
 
     #[test]

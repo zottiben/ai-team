@@ -8,13 +8,16 @@
 use rusqlite::{params, Row};
 
 use crate::error::{Error, Result};
-use crate::model::{Event, NewEvent};
+use crate::model::{Event, EventKind, NewEvent, NewNotification};
 use crate::store::{non_empty, Store};
 use crate::util::now;
 
 impl Store {
     pub fn append_event(&mut self, run_id: i64, new: NewEvent) -> Result<Event> {
         let at = now();
+        let requests_input = new.kind == EventKind::ApprovalRequest;
+        let request_summary = new.summary.clone();
+        let request_node = new.node_run_id;
         let payload = new
             .payload
             .as_ref()
@@ -38,7 +41,27 @@ impl Store {
             Ok(tx.last_insert_rowid())
         })?;
 
-        self.event(id)
+        let event = self.event(id)?;
+        if requests_input {
+            // An explicit approval/question is actionable as soon as it reaches the
+            // append-only stream; it should not wait for the whole turn to be parked.
+            if let Ok(run) = self.run(run_id) {
+                if let Ok(project) = self.project(run.project_id) {
+                    let _ = self.notify_once(NewNotification {
+                        dedupe_key: format!("event:{id}:input_required"),
+                        project_id: run.project_id,
+                        workspace_path: run.workspace_path,
+                        run_id: Some(run_id),
+                        node_run_id: request_node,
+                        kind: "input_required".into(),
+                        title: format!("{} · input requested", project.name),
+                        body: request_summary,
+                        action_path: None,
+                    });
+                }
+            }
+        }
+        Ok(event)
     }
 
     pub fn event(&self, id: i64) -> Result<Event> {
@@ -77,6 +100,34 @@ impl Store {
             .query_map(params![node_run_id, limit], event_from_row)?
             .collect::<rusqlite::Result<_>>()?;
         Ok(rows)
+    }
+
+    /// The newest observable activity for one node, without reading its whole transcript.
+    pub fn latest_node_event(&self, node_run_id: i64) -> Result<Option<Event>> {
+        let mut stmt = self.db().conn().prepare(&format!(
+            "{EVENT_SELECT} WHERE node_run_id = ?1 ORDER BY id DESC LIMIT 1"
+        ))?;
+        let mut rows = stmt.query_map([node_run_id], event_from_row)?;
+        Ok(rows.next().transpose()?)
+    }
+
+    /// The newest human-readable update for a node, skipping tool and accounting noise.
+    pub fn latest_node_message_event(&self, node_run_id: i64) -> Result<Option<Event>> {
+        let mut stmt = self.db().conn().prepare(&format!(
+            "{EVENT_SELECT} WHERE node_run_id = ?1 AND kind IN (?2, ?3, ?4, ?5) \
+             ORDER BY id DESC LIMIT 1"
+        ))?;
+        let mut rows = stmt.query_map(
+            params![
+                node_run_id,
+                EventKind::Note.as_str(),
+                EventKind::Step.as_str(),
+                EventKind::Done.as_str(),
+                EventKind::Failed.as_str()
+            ],
+            event_from_row,
+        )?;
+        Ok(rows.next().transpose()?)
     }
 
     /// The approvals a run is currently parked on: every request without a resolution.

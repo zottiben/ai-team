@@ -3,13 +3,28 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, expect, it, vi } from "vitest";
 
 import { Settings } from "./Settings";
-import type { Settings as SettingsData } from "./api";
+import type { ContextSetting, Settings as SettingsData } from "./api";
 
 afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-function provider(over: Partial<SettingsData["providers"][number]> = {}) {
+/// A context source, with the fields a test is not asserting on already filled.
+function source(over: Partial<ContextSetting> = {}): ContextSetting {
+  return {
+    source: "clickup",
+    allowed: false,
+    oauth_connected: false,
+    token_set: false,
+    held: "absent",
+    token_env: "AI_TEAM_CLICKUP_TOKEN",
+    ...over,
+  };
+}
+
+function provider(
+  over: Partial<SettingsData["providers"][number]> = {},
+): SettingsData["providers"][number] {
   return {
     provider: "claude",
     label: "claude",
@@ -17,6 +32,7 @@ function provider(over: Partial<SettingsData["providers"][number]> = {}) {
     reachable: false,
     detail: "denied by machine.toml",
     how: "your Claude subscription, through the Claude Code CLI",
+    sign_in: "claude auth login",
     ...over,
   };
 }
@@ -39,12 +55,15 @@ function stub(over: Partial<SettingsData> = {}) {
             profile_path: "/home/me/.config/ai-team/machine.toml",
             providers: [provider()],
             fallback: ["claude", "openai", "zai", "local"],
-            context: [{ source: "clickup", allowed: false, token_set: false, token_env: "AI_TEAM_CLICKUP_TOKEN" }],
+            context: [source()],
             ...over,
           }),
         });
       }
-      return Promise.resolve({ ok: true, json: async () => ({}) });
+      return Promise.resolve({
+        ok: true,
+        json: async () => (url === "/settings/context-auth" ? { id: 17 } : {}),
+      });
     }),
   );
   return calls;
@@ -102,13 +121,94 @@ it("the first in the fallback order cannot be moved up", async () => {
   expect((await screen.findByLabelText("move claude up")).getAttribute("disabled")).not.toBeNull();
 });
 
-it("a context source enabled without its token says so here", async () => {
+it("a context source enabled without OAuth or a fallback says so here", async () => {
   // Rather than at the first call an agent makes, which is a long way from this page.
-  stub({
-    context: [{ source: "clickup", allowed: true, token_set: false, token_env: "AI_TEAM_CLICKUP_TOKEN" }],
-  });
+  stub({ context: [source({ allowed: true })] });
   render(<Settings theme="dark" onTheme={() => {}} onChanged={() => {}} />);
-  expect(await screen.findByText(/AI_TEAM_CLICKUP_TOKEN is not set/)).toBeDefined();
+  expect(await screen.findByText("not connected")).toBeDefined();
+});
+
+it("an OAuth credential already held by Pi is the ready state", async () => {
+  stub({ context: [source({ allowed: true, oauth_connected: true })] });
+  render(<Settings theme="dark" onTheme={() => {}} onChanged={() => {}} />);
+  expect(await screen.findByText("connected with OAuth")).toBeDefined();
+  expect(screen.getByText("Reconnect")).toBeDefined();
+});
+
+it("Connect starts Pi's source-specific browser flow, not a command from the page", async () => {
+  const user = userEvent.setup();
+  const calls = stub({ context: [source({ allowed: true })] });
+  render(<Settings theme="dark" onTheme={() => {}} onChanged={() => {}} />);
+
+  await user.click(await screen.findByText("Connect in browser"));
+  await waitFor(() =>
+    expect(calls.some((call) => call.url === "/settings/context-auth")).toBe(true),
+  );
+  expect(calls.find((call) => call.url === "/settings/context-auth")?.body).toEqual({
+    source: "clickup",
+  });
+});
+
+it("the token field is blank on load, because nothing hands one back", async () => {
+  // A page that showed a masked token would be a page that had fetched one, and the
+  // settings route deliberately never produces a value (D23).
+  stub({ context: [source({ allowed: true, token_set: true, held: "keychain" })] });
+  render(<Settings theme="dark" onTheme={() => {}} onChanged={() => {}} />);
+  await userEvent.click(await screen.findByText("Manual token fallback"));
+
+  const field = (await screen.findByLabelText("clickup token")) as HTMLInputElement;
+  expect(field.value).toBe("");
+  expect(field.type, "a token typed into a visible field is a token on a screenshot").toBe(
+    "password",
+  );
+});
+
+it("a token is sent to its own route and the field is emptied after", async () => {
+  const user = userEvent.setup();
+  const calls = stub({ context: [source({ allowed: true })] });
+  render(<Settings theme="dark" onTheme={() => {}} onChanged={() => {}} />);
+  await user.click(await screen.findByText("Manual token fallback"));
+
+  const field = (await screen.findByLabelText("clickup token")) as HTMLInputElement;
+  await user.type(field, "pk_123");
+  await user.click(screen.getByText("Save"));
+
+  await waitFor(() =>
+    expect(calls.some((call) => call.url === "/settings/token")).toBe(true),
+  );
+  expect(calls.find((call) => call.url === "/settings/token")?.body).toEqual({
+    source: "clickup",
+    token: "pk_123",
+  });
+  // Emptied, so the value is not sitting in the DOM after it has been stored.
+  await waitFor(() => expect(field.value).toBe(""));
+});
+
+it("clearing sends an empty token, which is what emptying the field means", async () => {
+  const user = userEvent.setup();
+  const calls = stub({ context: [source({ allowed: true, token_set: true, held: "keychain" })] });
+  render(<Settings theme="dark" onTheme={() => {}} onChanged={() => {}} />);
+  await user.click(await screen.findByText("Manual token fallback"));
+
+  await user.click(await screen.findByText("Clear"));
+
+  await waitFor(() =>
+    expect(calls.some((call) => call.url === "/settings/token")).toBe(true),
+  );
+  expect(calls.find((call) => call.url === "/settings/token")?.body).toEqual({
+    source: "clickup",
+    token: "",
+  });
+});
+
+it("a token from the environment is shown rather than offered as editable", async () => {
+  // The window cannot unset a variable its own process was started with, so a field that
+  // looked like it could clear one would be a button that does nothing.
+  stub({ context: [source({ allowed: true, token_set: true, held: "environment" })] });
+  render(<Settings theme="dark" onTheme={() => {}} onChanged={() => {}} />);
+
+  expect(await screen.findByText(/not editable here/)).toBeDefined();
+  expect(screen.queryByLabelText("clickup token")).toBeNull();
 });
 
 it("changing a provider tells the health indicator to re-read", async () => {

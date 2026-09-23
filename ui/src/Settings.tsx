@@ -1,10 +1,14 @@
 import { useCallback, useEffect, useState } from "react";
 
+import { ContextConnect } from "./ContextConnect";
+import { SignIn } from "./SignIn";
 import {
   setContext,
   setFallback,
   setProvider,
+  setToken,
   settings as fetchSettings,
+  type ContextSetting,
   type Settings as SettingsData,
 } from "./api";
 import { type Theme } from "./theme";
@@ -75,31 +79,38 @@ export function Settings({
         </p>
 
         {data.providers.map((provider) => (
-          <div key={provider.provider} className="settings__row">
-            <label className="settings__toggle">
-              <input
-                type="checkbox"
-                aria-label={`allow ${provider.provider}`}
-                checked={provider.allowed}
-                onChange={(event) =>
-                  void act(() => setProvider(provider.provider, event.target.checked))
+          <div key={provider.provider} className="settings__source">
+            <div className="settings__row">
+              <label className="settings__toggle">
+                <input
+                  type="checkbox"
+                  aria-label={`allow ${provider.provider}`}
+                  checked={provider.allowed}
+                  onChange={(event) =>
+                    void act(() => setProvider(provider.provider, event.target.checked))
+                  }
+                />
+                <span>{provider.label}</span>
+              </label>
+
+              <span
+                className="status"
+                data-status={
+                  !provider.allowed ? "queued" : provider.reachable ? "done" : "failed"
                 }
-              />
-              <span>{provider.label}</span>
-            </label>
+              >
+                {!provider.allowed ? "off" : provider.reachable ? "ready" : "not signed in"}
+              </span>
 
-            <span
-              className="status"
-              data-status={
-                !provider.allowed ? "queued" : provider.reachable ? "done" : "failed"
-              }
-            >
-              {!provider.allowed ? "off" : provider.reachable ? "ready" : "not signed in"}
-            </span>
-
-            <span className="faint settings__detail">
-              {provider.allowed ? provider.detail : provider.how}
-            </span>
+              <span className="faint settings__detail">
+                {provider.allowed ? provider.detail : provider.how}
+              </span>
+            </div>
+            {/* Only where it is the thing standing in the way: a sign-in button beside a
+                provider that already answers has no use but to log somebody out. */}
+            {provider.allowed && !provider.reachable && (
+              <SignIn provider={provider} onDone={() => void load()} />
+            )}
           </div>
         ))}
 
@@ -140,33 +151,57 @@ export function Settings({
       <section className="settings__group">
         <h3>Context sources</h3>
         <p className="faint">
-          Read-only, and off until this machine says otherwise. A ticket reaches the seats
-          that decide what the work is; designs reach the seat that owns the UI.
+          Read-only, and off until this machine says otherwise. Connect in the browser
+          through Pi; a ticket reaches the seats that decide what the work is, and designs
+          reach the seat that owns the UI.
         </p>
         {data.context.map((source) => (
-          <div key={source.source} className="settings__row">
-            <label className="settings__toggle">
-              <input
-                type="checkbox"
-                aria-label={`allow ${source.source}`}
-                checked={source.allowed}
-                onChange={(event) =>
-                  void act(() => setContext(source.source, event.target.checked))
-                }
-              />
-              <span>{source.source}</span>
-            </label>
-            {/* Enabled without a token is worth saying here rather than at the first call
-                an agent makes. */}
-            {source.allowed && !source.token_set && (
-              <span className="status" data-status="failed">
-                {source.token_env} is not set
-              </span>
-            )}
-            {source.allowed && source.token_set && (
-              <span className="status" data-status="done">
-                ready
-              </span>
+          <div key={source.source} className="settings__source">
+            <div className="settings__row">
+              <label className="settings__toggle">
+                <input
+                  type="checkbox"
+                  aria-label={`allow ${source.source}`}
+                  checked={source.allowed}
+                  onChange={(event) =>
+                    void act(() => setContext(source.source, event.target.checked))
+                  }
+                />
+                <span>{source.source}</span>
+              </label>
+              {source.allowed && !source.oauth_connected && !source.token_set && (
+                <span className="status" data-status="failed">
+                  not connected
+                </span>
+              )}
+              {source.allowed && source.oauth_connected && (
+                <span className="status" data-status="done">
+                  connected with OAuth
+                </span>
+              )}
+              {source.allowed && !source.oauth_connected && source.token_set && (
+                <span className="status" data-status="done">
+                  ready with manual token
+                </span>
+              )}
+              {source.allowed && !source.oauth_connected && source.held === "environment" && (
+                <span className="faint settings__detail">
+                  from {source.token_env} in this process
+                </span>
+              )}
+            </div>
+            {source.allowed && (
+              <>
+                <ContextConnect source={source} onDone={() => void act(async () => {})} />
+                <details className="settings__fallback">
+                  <summary>Manual token fallback</summary>
+                  <p className="faint settings__detail">
+                    Only for a machine that cannot complete browser OAuth. OAuth remains
+                    the normal path and tokens are never returned to this page.
+                  </p>
+                  <Token source={source} onSaved={() => void act(async () => {})} />
+                </details>
+              </>
             )}
           </div>
         ))}
@@ -196,5 +231,79 @@ export function Settings({
         <p className="faint mono">{data.profile_path}</p>
       </section>
     </div>
+  );
+}
+
+/**
+ * One context source's token.
+ *
+ * The field is always blank when it loads, and that is the point: nothing on the settings
+ * route produces a stored value, so there is nothing to prefill it with. A page that
+ * showed a masked token would be a page that had fetched one.
+ *
+ * A token exported into the server's own process is shown and not edited. The window
+ * cannot unset a variable the process was started with, so offering a field that appears
+ * to clear it would be offering a button that does nothing.
+ */
+function Token({ source, onSaved }: { source: ContextSetting; onSaved: () => void }) {
+  const [value, setValue] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [said, setSaid] = useState<string | null>(null);
+
+  if (source.held === "environment") {
+    return (
+      <p className="faint settings__detail">
+        Set in the environment, so it is not editable here. Unset {source.token_env} to
+        manage it from this page instead.
+      </p>
+    );
+  }
+
+  const send = async (token: string, done: string) => {
+    setBusy(true);
+    try {
+      await setToken(source.source, token);
+      setValue("");
+      setSaid(done);
+      onSaved();
+    } catch (error: unknown) {
+      setSaid(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <form
+      className="projects__add"
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (value.trim() === "") return;
+        void send(value.trim(), "Kept on this machine.");
+      }}
+    >
+      <input
+        type="password"
+        aria-label={`${source.source} token`}
+        placeholder={source.token_set ? "replace the stored token" : "paste the token"}
+        value={value}
+        onChange={(event) => setValue(event.target.value)}
+        autoComplete="off"
+      />
+      <button type="submit" className="button" disabled={busy || value.trim() === ""}>
+        {busy ? "Saving…" : "Save"}
+      </button>
+      {source.token_set && (
+        <button
+          type="button"
+          className="button"
+          disabled={busy}
+          onClick={() => void send("", "Removed.")}
+        >
+          Clear
+        </button>
+      )}
+      {said !== null && <span className="faint settings__detail">{said}</span>}
+    </form>
   );
 }

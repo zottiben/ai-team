@@ -16,10 +16,28 @@ use tokio::process::Command;
 
 use crate::error::{Error, Result};
 
-/// One slice as ai-planner reports it. Only the fields dispatch actually reads: the plan
-/// document is the human's, and mirroring all of it here would be the copy D4 forbids.
-#[derive(Debug, Clone, Deserialize, serde::Serialize)]
+/// The one board reason Rust owns. It is used only to keep a completed plan inert until
+/// its run's human approves it; every other blocked reason belongs to the plan itself.
+const APPROVAL_HOLD: &str = "Awaiting plan approval from ai-team";
+// W7 shipped after the first installed planning run. That older orchestrator used this
+// exact visible board reason before the Rust-owned approval hold existed. Recognising the
+// precise string lets the operator finish that board without treating arbitrary blocked
+// work as approved.
+const LEGACY_APPROVAL_HOLD: &str =
+    "Awaiting human review and approval of the plan before ai-team dispatches build work.";
+
+/// One slice as ai-planner reports it.
+///
+/// This is a read-through DTO, not a second plan model: every value is deserialised from
+/// `aip slice ls --json` for the request that needs it and never stored in ai-team's
+/// database (D4). Dispatch reads only a few fields; the board needs the delivery facts
+/// ai-planner already publishes in order to open the same useful ticket drawer.
+#[derive(Debug, Clone, Default, Deserialize, serde::Serialize)]
 pub struct Slice {
+    #[serde(default)]
+    pub id: i64,
+    #[serde(default)]
+    pub plan_id: i64,
     pub key: String,
     pub title: String,
     pub status: String,
@@ -30,15 +48,62 @@ pub struct Slice {
     #[serde(default)]
     pub demo_md: Option<String>,
     #[serde(default)]
-    pub claimed_by: Option<String>,
+    pub estimate_files: Option<i64>,
+    #[serde(default)]
+    pub branch: Option<String>,
+    #[serde(default)]
+    pub base_branch: Option<String>,
+    #[serde(default)]
+    pub pr_url: Option<String>,
     #[serde(default)]
     pub worktree_path: Option<String>,
+    #[serde(default)]
+    pub claimed_by: Option<String>,
+    #[serde(default)]
+    pub claimed_at: Option<String>,
+    #[serde(default)]
+    pub blocked_reason: Option<String>,
+    #[serde(default)]
+    pub started_at: Option<String>,
+    #[serde(default)]
+    pub completed_at: Option<String>,
+    #[serde(default)]
+    pub rev: i64,
+    #[serde(default)]
+    pub updated_at: Option<String>,
+}
+
+/// One append-only progress note, again read directly from ai-planner.
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
+pub struct PlanLogEntry {
+    pub id: i64,
+    pub plan_id: i64,
+    #[serde(default)]
+    pub slice_key: Option<String>,
+    pub at: String,
+    #[serde(default)]
+    pub actor: Option<String>,
+    pub kind: String,
+    #[serde(default)]
+    pub branch: Option<String>,
+    #[serde(default)]
+    pub worktree_path: Option<String>,
+    pub body: String,
 }
 
 impl Slice {
     /// A slice nobody is building and nothing is holding.
     pub fn is_dispatchable(&self) -> bool {
         self.status == "ready" && self.claimed_by.is_none()
+    }
+
+    /// Held only for a person's approval, not blocked by a substantive failure.
+    pub fn is_approval_held(&self) -> bool {
+        self.status == "blocked"
+            && matches!(
+                self.blocked_reason.as_deref(),
+                Some(APPROVAL_HOLD | LEGACY_APPROVAL_HOLD)
+            )
     }
 
     /// The paths this slice touches, as the orchestrator declared them.
@@ -118,6 +183,10 @@ impl Planner {
         self.plan.as_deref()
     }
 
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
     /// Is `aip` installed at all? `ait doctor` asks, so the answer is a reason rather
     /// than a bool.
     pub async fn check(&self) -> std::result::Result<String, String> {
@@ -166,6 +235,58 @@ impl Planner {
         serde_json::from_str(&json).map_err(|error| {
             Error::invalid(format!("could not read `aip slice ls --json`: {error}"))
         })
+    }
+
+    pub async fn slice(&self, key: &str) -> Result<Slice> {
+        let json = self.output(&["slice", "show", key, "--json"]).await?;
+        serde_json::from_str(&json).map_err(|error| {
+            Error::invalid(format!(
+                "could not read `aip slice show {key} --json`: {error}"
+            ))
+        })
+    }
+
+    /// Hold only slices the planner actually offered for dispatch. Drafts and slices
+    /// blocked for substantive reasons stay exactly as the board says.
+    pub async fn hold_ready_for_approval(
+        &self,
+        mut heartbeat: impl FnMut() -> Result<()>,
+    ) -> Result<usize> {
+        let ready: Vec<Slice> = self
+            .slices()
+            .await?
+            .into_iter()
+            .filter(Slice::is_dispatchable)
+            .collect();
+        for slice in &ready {
+            heartbeat()?;
+            self.set_status(&slice.key, "blocked", Some(APPROVAL_HOLD))
+                .await?;
+            heartbeat()?;
+        }
+        Ok(ready.len())
+    }
+
+    /// Release precisely ai-team's approval holds; no other blocked work is advanced.
+    pub async fn approve_held(&self) -> Result<usize> {
+        let held: Vec<Slice> = self
+            .slices()
+            .await?
+            .into_iter()
+            .filter(Slice::is_approval_held)
+            .collect();
+        for slice in &held {
+            self.set_status(&slice.key, "ready", None).await?;
+        }
+        Ok(held.len())
+    }
+
+    pub async fn logs(&self, key: &str) -> Result<Vec<PlanLogEntry>> {
+        let json = self
+            .output(&["logs", "--slice", key, "--limit", "200", "--json"])
+            .await?;
+        serde_json::from_str(&json)
+            .map_err(|error| Error::invalid(format!("could not read `aip logs --json`: {error}")))
     }
 
     /// Take a slice for a worktree. `false` means somebody else holds it, which is a
@@ -247,6 +368,12 @@ impl Planner {
             .map(drop)
     }
 
+    pub async fn set_pr(&self, key: &str, url: &str) -> Result<()> {
+        self.output(&["slice", "edit", key, "--pr", url])
+            .await
+            .map(drop)
+    }
+
     pub async fn release(&self, key: &str, worktree: &Path) -> Result<()> {
         self.output_in(worktree, &["slice", "release", key])
             .await
@@ -313,6 +440,7 @@ mod tests {
             demo_md: None,
             claimed_by: None,
             worktree_path: None,
+            ..Default::default()
         }
     }
 
@@ -336,6 +464,21 @@ mod tests {
         }
         .touches()
         .is_empty());
+    }
+
+    #[test]
+    fn only_the_exact_ai_team_holds_are_plan_approval() {
+        for reason in [APPROVAL_HOLD, LEGACY_APPROVAL_HOLD] {
+            let mut held = slice("Touches: crates/**");
+            held.status = "blocked".into();
+            held.blocked_reason = Some(reason.into());
+            assert!(held.is_approval_held());
+        }
+
+        let mut failed = slice("Touches: crates/**");
+        failed.status = "blocked".into();
+        failed.blocked_reason = Some("gates failed".into());
+        assert!(!failed.is_approval_held());
     }
 
     #[test]

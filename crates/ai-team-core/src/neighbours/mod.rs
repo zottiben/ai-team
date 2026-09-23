@@ -6,6 +6,7 @@
 
 mod filesql;
 pub(crate) mod git;
+pub(crate) mod github;
 mod planner;
 mod worktree;
 
@@ -16,5 +17,5 @@ pub use git::{
     apply_cached as apply_patch_cached, branches, checkout, commit as commit_staged,
     current_branch, push, stage, staged_diff, unstage, untracked, worktree_diff,
 };
-pub use planner::{PlanSummary, Planner, Question, Slice};
-pub use worktree::{Lease, PoolEntry, Worktrees};
+pub use planner::{PlanLogEntry, PlanSummary, Planner, Question, Slice};
+pub use worktree::{same_worktree, Lease, PoolEntry, Process, Worktrees};

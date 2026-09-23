@@ -75,13 +75,26 @@ function member(over: Partial<Member> = {}): Member {
 
 function slice(key: string, touches: string[]): BoardSlice {
   return {
+    id: 1,
+    plan_id: 1,
     key,
     title: key,
     status: "active",
     ord: 1,
     scope_md: null,
     demo_md: null,
+    estimate_files: null,
+    branch: null,
+    base_branch: null,
+    pr_url: null,
+    worktree_path: null,
     claimed_by: null,
+    claimed_at: null,
+    blocked_reason: null,
+    started_at: null,
+    completed_at: null,
+    rev: 1,
+    updated_at: null,
     owner: null,
     touches,
   };

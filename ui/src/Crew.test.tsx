@@ -147,6 +147,163 @@ it("shows what a seat has sent, as the rate-limit number", async () => {
   expect(await screen.findByText(/198k in · 2k out/)).toBeDefined();
 });
 
+it("continues a coherent approval run instead of starting a replacement", async () => {
+  const calls: Array<{ path: string; method: string }> = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: string, init?: RequestInit) => {
+      const path = String(input).replace(/^\/api/, "");
+      calls.push({ path, method: init?.method ?? "GET" });
+      const json = path.startsWith("/crew")
+        ? [member({
+            agent_id: 1,
+            role: "orchestrator",
+            name: "Orchestrator",
+            read_only: true,
+            approval_run_id: 12,
+          })]
+        : path.startsWith("/board")
+          ? {
+              plan: { plan: "widget", title: "Widget", status: "active", slice: null },
+              next_step: null,
+              slices: [{
+                key: "S1",
+                title: "Build it",
+                status: "blocked",
+                claimed_by: null,
+                blocked_reason: "Awaiting plan approval from ai-team",
+                owner: "backend",
+                touches: ["src/**"],
+                approval_held: true,
+              }],
+            }
+          : { continued: true, run_id: 12 };
+      return Promise.resolve({ ok: true, json: async () => json });
+    }),
+  );
+
+  render(
+    <Crew
+      project="widget"
+      workspace="/repo/task"
+      tick={0}
+      onOpenRun={() => {}}
+      showGraph
+    />,
+  );
+  await userEvent.click(await screen.findByRole("button", { name: "Approve plan & build" }));
+  await waitFor(() =>
+    expect(calls).toContainEqual({ path: "/runs/12/approve-plan", method: "POST" }),
+  );
+  expect(calls).not.toContainEqual({ path: "/runs", method: "POST" });
+});
+
+it("acknowledges and opens the exact run started from a ready board", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: string, init?: RequestInit) => {
+      const path = String(input).replace(/^\/api/, "");
+      if (path.startsWith("/crew")) {
+        return Promise.resolve({ ok: true, json: async () => [member({ name: "Backend" })] });
+      }
+      if (path.startsWith("/board")) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            plan: { plan: "widget", title: "Widget", status: "active", slice: null },
+            next_step: null,
+            slices: [{
+              key: "S1",
+              title: "Build it",
+              status: "ready",
+              claimed_by: null,
+              blocked_reason: null,
+              owner: "backend",
+              touches: ["src/**"],
+            }],
+          }),
+        });
+      }
+      if (path === "/runs" && init?.method === "POST") {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ started: true, run_id: 13 }),
+        });
+      }
+      return Promise.resolve({ ok: false, status: 404, json: async () => ({ error: path }) });
+    }),
+  );
+  const opened: number[] = [];
+
+  render(
+    <Crew
+      project="widget"
+      workspace="/repo/task"
+      tick={0}
+      onOpenRun={(id) => opened.push(id)}
+      showGraph
+    />,
+  );
+  await userEvent.click(await screen.findByRole("button", { name: "Build 1 ready slice" }));
+
+  expect((await screen.findByRole("status")).textContent).toContain(
+    "Run #13 started. Preparing worktrees and dispatching the team",
+  );
+  expect(opened).toEqual([13]);
+});
+
+it("keeps the work graph visible when a build action is rejected", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: string, init?: RequestInit) => {
+      const path = String(input).replace(/^\/api/, "");
+      if (path.startsWith("/crew")) {
+        return Promise.resolve({ ok: true, json: async () => [member({ name: "Backend" })] });
+      }
+      if (path.startsWith("/board")) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            plan: { plan: "widget", title: "Widget", status: "active", slice: null },
+            next_step: null,
+            slices: [{
+              key: "S1",
+              title: "Build it",
+              status: "ready",
+              claimed_by: null,
+              blocked_reason: null,
+              owner: "backend",
+              touches: ["src/**"],
+            }],
+          }),
+        });
+      }
+      if (path === "/runs" && init?.method === "POST") {
+        return Promise.resolve({
+          ok: false,
+          status: 400,
+          json: async () => ({ error: "run #12 owns this plan" }),
+        });
+      }
+      return Promise.resolve({ ok: false, status: 404, json: async () => ({ error: path }) });
+    }),
+  );
+
+  render(
+    <Crew
+      project="widget"
+      workspace="/repo/task"
+      tick={0}
+      onOpenRun={() => {}}
+      showGraph
+    />,
+  );
+  await userEvent.click(await screen.findByRole("button", { name: "Build 1 ready slice" }));
+  expect((await screen.findByRole("alert")).textContent).toContain("run #12 owns this plan");
+  expect(screen.getByText("Build it")).toBeDefined();
+  expect(screen.getByRole("button", { name: "Build 1 ready slice" })).toBeDefined();
+});
+
 it("says plainly when a project has no team", async () => {
   stub([]);
   render(<Crew project="widget" tick={0} onOpenRun={() => {}} />);

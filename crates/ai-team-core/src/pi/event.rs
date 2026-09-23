@@ -69,6 +69,22 @@ impl PiEvent {
         matches!(self.kind.as_str(), "agent_error" | "turn_error")
     }
 
+    /// Whether this provider attempt ended in an error.
+    ///
+    /// Pi still emits `agent_settled` after a provider adapter returns an error. That
+    /// settles the stream, not the work: treating it as completion ran gates and spent
+    /// repairs after Claude had only said "Not logged in". `Some(false)` matters because
+    /// Pi may retry before settling and a later successful attempt supersedes the error.
+    pub(super) fn provider_turn_failed(&self) -> Option<bool> {
+        if self.kind != "turn_end" {
+            return None;
+        }
+        self.data
+            .pointer("/message/stopReason")
+            .and_then(serde_json::Value::as_str)
+            .map(|reason| reason == "error")
+    }
+
     /// The assistant's own words for this event, when it produced any.
     ///
     /// Read from `message.content`, which is where a completed assistant message puts its
@@ -124,6 +140,21 @@ impl PiEvent {
         })
     }
 
+    /// The latest raw provider input total is current context occupancy. Cache reads and
+    /// writes stay included here: unlike spend accounting, the question is how full the
+    /// session is now, not what this step newly consumed.
+    pub fn context_tokens(&self) -> Option<i64> {
+        if self.kind != "turn_end" {
+            return None;
+        }
+        self.data
+            .get("message")?
+            .get("usage")?
+            .get("input")?
+            .as_i64()
+            .map(|value| value.max(0))
+    }
+
     /// The model this step ran on, for the step summary.
     fn model(&self) -> Option<&str> {
         let direct = self
@@ -156,6 +187,32 @@ impl PiEvent {
             || result
                 .and_then(|r| r.get("error"))
                 .is_some_and(|e| !e.is_null())
+    }
+
+    /// A required planning-context call that failed. Browser and generic web fallbacks
+    /// are withheld, so this becomes a visible input-needed state rather than a cue to
+    /// route around the source the operator asked the plan to use.
+    pub fn wrote_planner_handoff(&self) -> bool {
+        self.kind == "tool_execution_end"
+            && !self.tool_failed()
+            && matches!(
+                self.tool_name(),
+                "write_handoff" | "ai-planner_write_handoff"
+            )
+    }
+
+    pub fn context_tool_failure(&self) -> Option<String> {
+        if self.kind != "tool_execution_end" || !self.tool_failed() {
+            return None;
+        }
+        let tool = self.tool_name();
+        if crate::context::CLICKUP_READ_TOOLS.contains(&tool)
+            || crate::context::FIGMA_READ_TOOLS.contains(&tool)
+        {
+            Some(format!("CONTEXT_UNAVAILABLE: {tool} failed"))
+        } else {
+            None
+        }
     }
 
     /// One line of what happened, or nothing worth a row.
@@ -200,6 +257,24 @@ impl PiEvent {
                 None => Disposition::Ignore,
             },
 
+            // Pi's JSON stream strips the growing partial message but retains the completed
+            // thinking block. Recording only its end makes reasoning visible before the
+            // following tool runs without writing one database row per streamed token.
+            "message_update"
+                if self
+                    .data
+                    .pointer("/assistantMessageEvent/type")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("thinking_end") =>
+            {
+                let thinking = self
+                    .data
+                    .pointer("/assistantMessageEvent/content")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("thinking");
+                Disposition::Record(EventKind::Cost, one_line(thinking))
+            }
+
             "agent_error" | "turn_error" => Disposition::Record(
                 EventKind::Failed,
                 self.data
@@ -208,7 +283,7 @@ impl PiEvent {
                     .unwrap_or("the turn failed")
                     .to_string(),
             ),
-            "agent_settled" => Disposition::Record(EventKind::Done, "turn completed".to_string()),
+            "agent_settled" => Disposition::Record(EventKind::Done, "turn settled".to_string()),
 
             // Everything else is transport: per-token deltas, the echo of our own prompt,
             // and the start/stop bookends that carry nothing the pair above does not.
@@ -262,6 +337,25 @@ mod tests {
     }
 
     #[test]
+    fn a_settled_provider_error_is_still_a_failed_turn() {
+        let failed = event(
+            r#"{"type":"turn_end","message":{"role":"assistant","stopReason":"error",
+                "errorMessage":"Claude Code returned an error result: Not logged in"}}"#,
+        );
+        let recovered =
+            event(r#"{"type":"turn_end","message":{"role":"assistant","stopReason":"stop"}}"#);
+
+        assert_eq!(failed.provider_turn_failed(), Some(true));
+        assert_eq!(recovered.provider_turn_failed(), Some(false));
+        let settled = event(r#"{"type":"agent_settled"}"#);
+        assert_eq!(settled.provider_turn_failed(), None);
+        assert_eq!(
+            settled.classify(),
+            Disposition::Record(EventKind::Done, "turn settled".into())
+        );
+    }
+
+    #[test]
     fn cache_reads_and_writes_come_out_of_the_input_total() {
         // Pi's `input` is a total whose cache figures are subsets of it. Storing it raw
         // charges a cached prefix twice, and every cost comparison is wrong the same way.
@@ -274,6 +368,7 @@ mod tests {
         assert_eq!(usage.tokens_out, 4);
         assert_eq!(usage.cache_read, 9_000);
         assert_eq!(usage.cache_write, 5_000);
+        assert_eq!(e.context_tokens(), Some(14_068));
     }
 
     #[test]
@@ -331,6 +426,32 @@ mod tests {
     }
 
     #[test]
+    fn only_a_successful_planner_handoff_call_counts() {
+        let written = event(
+            r#"{"type":"tool_execution_end","toolName":"write_handoff","result":{"content":[]}}"#,
+        );
+        assert!(written.wrote_planner_handoff());
+        let failed = event(
+            r#"{"type":"tool_execution_end","toolName":"write_handoff","result":{"isError":true}}"#,
+        );
+        assert!(!failed.wrote_planner_handoff());
+    }
+
+    #[test]
+    fn a_failed_required_context_tool_is_an_explicit_planning_stop() {
+        let context = event(
+            r#"{"type":"tool_execution_end","toolName":"clickup_get_task","result":{"isError":true}}"#,
+        );
+        assert_eq!(
+            context.context_tool_failure().as_deref(),
+            Some("CONTEXT_UNAVAILABLE: clickup_get_task failed")
+        );
+        let ordinary =
+            event(r#"{"type":"tool_execution_end","toolName":"bash","result":{"isError":true}}"#);
+        assert!(ordinary.context_tool_failure().is_none());
+    }
+
+    #[test]
     fn a_step_names_the_model_it_ran_on() {
         let e = event(
             r#"{"type":"turn_start","message":{"role":"assistant","model":"claude-sonnet-5"}}"#,
@@ -338,6 +459,17 @@ mod tests {
         assert_eq!(
             e.classify(),
             Disposition::Record(EventKind::Step, "step on claude-sonnet-5".into())
+        );
+    }
+
+    #[test]
+    fn completed_thinking_is_one_live_row_without_token_delta_noise() {
+        let e = event(
+            r#"{"type":"message_update","assistantMessageEvent":{"type":"thinking_end","content":"Checking the failing test"}}"#,
+        );
+        assert_eq!(
+            e.classify(),
+            Disposition::Record(EventKind::Cost, "Checking the failing test".into())
         );
     }
 

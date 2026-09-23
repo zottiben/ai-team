@@ -77,6 +77,21 @@ pub struct GateResult {
     pub output: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DependencySetup {
+    dir: String,
+    pub(crate) program: String,
+    pub(crate) args: Vec<String>,
+}
+
+impl DependencySetup {
+    fn command(&self) -> String {
+        format!("{} {}", self.program, self.args.join(" "))
+            .trim_end()
+            .to_string()
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct PackageJson {
     #[serde(default)]
@@ -88,6 +103,106 @@ struct PackageJson {
 /// A worktree with no recognised manifest yields nothing, and that is reported as "no
 /// gates" rather than as success - a verifier that finds nothing to run has verified
 /// nothing.
+pub(crate) fn discover_dependency_setup(worktree: &Path) -> Vec<DependencySetup> {
+    let mut steps = Vec::new();
+    if worktree.join("composer.json").exists()
+        && worktree.join("composer.lock").exists()
+        && !worktree.join("vendor/autoload.php").exists()
+    {
+        steps.push(DependencySetup {
+            dir: ".".into(),
+            program: "composer".into(),
+            args: [
+                "install",
+                "--no-interaction",
+                "--prefer-dist",
+                "--no-progress",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+        });
+    }
+
+    for dir in [".", "ui", "web", "frontend", "app"] {
+        let root = worktree.join(dir);
+        if !root.join("package.json").exists() || root.join("node_modules").exists() {
+            continue;
+        }
+        let command = if root.join("bun.lock").exists() || root.join("bun.lockb").exists() {
+            Some(("bun", vec!["install", "--frozen-lockfile"]))
+        } else if root.join("pnpm-lock.yaml").exists() {
+            Some(("pnpm", vec!["install", "--frozen-lockfile"]))
+        } else if root.join("yarn.lock").exists() {
+            let immutable = root.join(".yarnrc.yml").exists();
+            Some((
+                "yarn",
+                vec![
+                    "install",
+                    if immutable {
+                        "--immutable"
+                    } else {
+                        "--frozen-lockfile"
+                    },
+                ],
+            ))
+        } else if root.join("package-lock.json").exists() {
+            Some(("npm", vec!["ci"]))
+        } else {
+            None
+        };
+        if let Some((program, args)) = command {
+            steps.push(DependencySetup {
+                dir: dir.into(),
+                program: program.into(),
+                args: args.into_iter().map(str::to_string).collect(),
+            });
+        }
+    }
+    steps
+}
+
+/// Install only from committed lockfiles, before a paid model turn starts. Package
+/// managers retain their ordinary shared caches, while ignored dependency directories
+/// remain in awt's pooled checkout across `git clean -fd` returns.
+pub(crate) async fn prepare_dependencies(worktree: &Path) -> Result<Vec<String>> {
+    let steps = discover_dependency_setup(worktree);
+    let mut completed = Vec::new();
+    for step in steps {
+        let command = step.command();
+        let output = Command::new(&step.program)
+            .args(&step.args)
+            .current_dir(worktree.join(&step.dir))
+            .stdin(Stdio::null())
+            .kill_on_drop(true)
+            .output();
+        let output = match tokio::time::timeout(GATE_TIMEOUT, output).await {
+            Ok(Ok(output)) => output,
+            Ok(Err(error)) => {
+                return Err(crate::Error::invalid(format!(
+                    "could not prepare dependencies with `{command}`: {error}"
+                )))
+            }
+            Err(_) => {
+                return Err(crate::Error::invalid(format!(
+                    "dependency setup `{command}` was still running after {} minutes",
+                    GATE_TIMEOUT.as_secs() / 60
+                )))
+            }
+        };
+        if !output.status.success() {
+            let mut detail = String::from_utf8_lossy(&output.stdout).into_owned();
+            detail.push_str(&String::from_utf8_lossy(&output.stderr));
+            return Err(crate::Error::invalid(format!(
+                "dependency setup `{command}` failed:\n{}",
+                tail(&detail, 6_000)
+            )));
+        }
+        completed.push(command);
+    }
+    Ok(completed)
+}
+
 pub fn discover_gates(worktree: &Path) -> Vec<Gate> {
     let mut gates = Vec::new();
     if worktree.join("Cargo.toml").exists() {
@@ -281,6 +396,44 @@ mod tests {
             "format before lint before test, so the cheap failure reports first"
         );
         assert_eq!(gates[0].command(), "cargo fmt --all --check");
+    }
+
+    #[test]
+    fn dependency_bootstrap_is_locked_composer_first_and_skips_ready_installs() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("composer.json"), "{}").unwrap();
+        std::fs::write(dir.path().join("composer.lock"), "{}").unwrap();
+        std::fs::write(dir.path().join("package.json"), "{}").unwrap();
+        std::fs::write(dir.path().join("bun.lock"), "").unwrap();
+
+        let steps = discover_dependency_setup(dir.path());
+        assert_eq!(steps.len(), 2);
+        assert_eq!(steps[0].program, "composer");
+        assert_eq!(steps[1].program, "bun");
+        assert!(steps[0].args.contains(&"--no-interaction".into()));
+        assert!(steps[1].args.contains(&"--frozen-lockfile".into()));
+
+        std::fs::create_dir_all(dir.path().join("vendor")).unwrap();
+        std::fs::write(dir.path().join("vendor/autoload.php"), "ready").unwrap();
+        std::fs::create_dir_all(dir.path().join("node_modules")).unwrap();
+        assert!(discover_dependency_setup(dir.path()).is_empty());
+    }
+
+    #[test]
+    fn each_javascript_lockfile_uses_its_own_package_manager() {
+        for (lockfile, program, flag) in [
+            ("package-lock.json", "npm", "ci"),
+            ("pnpm-lock.yaml", "pnpm", "--frozen-lockfile"),
+            ("yarn.lock", "yarn", "--frozen-lockfile"),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join("package.json"), "{}").unwrap();
+            std::fs::write(dir.path().join(lockfile), "").unwrap();
+            let steps = discover_dependency_setup(dir.path());
+            assert_eq!(steps.len(), 1, "{lockfile}");
+            assert_eq!(steps[0].program, program, "{lockfile}");
+            assert!(steps[0].args.contains(&flag.into()), "{lockfile}");
+        }
     }
 
     #[test]

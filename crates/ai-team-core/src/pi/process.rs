@@ -79,6 +79,13 @@ pub struct PiTurn {
     /// assistant holding a `bash` tool, which is how the first Pi run had the
     /// orchestrator write the code instead of the plan.
     pub instructions: Option<String>,
+    /// Credentials this seat's own MCP servers need, as `NAME=value` pairs.
+    ///
+    /// Only ever the context tokens (D23), and only the ones this seat's sources actually
+    /// use - a seat with no ClickUp server is not handed a ClickUp token. They arrive here
+    /// rather than through the ambient environment because the window is started from
+    /// Finder, which has never read a shell profile.
+    pub environment: Vec<(String, String)>,
 }
 
 impl PiTurn {
@@ -95,6 +102,7 @@ impl PiTurn {
             session_id: None,
             guard: None,
             instructions: None,
+            environment: Vec::new(),
         }
     }
 
@@ -172,6 +180,15 @@ impl PiProcess {
             // directory. The guard reads it, and a rule that reads `cwd` is a rule a
             // `cd` changes (D10).
             .env("AI_TEAM_WORKTREE", &turn.worktree)
+            // After `env_remove`, deliberately: what this seat is *given* is the last word
+            // on its environment, and a credential removed as metered must stay removed.
+            // Nothing in `METERED_MODEL_ENV` is a name this list may carry, because these
+            // are ai-team's own `AI_TEAM_*_TOKEN` variables and nothing else.
+            .envs(
+                turn.environment
+                    .iter()
+                    .map(|(k, v)| (k.as_str(), v.as_str())),
+            )
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -220,6 +237,7 @@ impl PiProcess {
         let mut err = BufReader::new(stderr).lines();
 
         let mut outcome = TurnOutcome::default();
+        let mut latest_provider_turn_failed = false;
         let mut stderr_tail = Vec::new();
         let mut out_open = true;
         let mut err_open = true;
@@ -240,6 +258,10 @@ impl PiProcess {
                         }
                         if event.is_failure() {
                             outcome.failed = true;
+                        }
+                        if let Some(failed) = event.provider_turn_failed() {
+                            // A later provider retry may succeed before `agent_settled`.
+                            latest_provider_turn_failed = failed;
                         }
                         if event.is_terminal() {
                             outcome.settled = true;
@@ -268,6 +290,7 @@ impl PiProcess {
             .map_err(|e| Error::invalid(format!("waiting for pi: {e}")))?;
         outcome.exit_code = status.code();
         outcome.stderr = stderr_tail.join("\n");
+        outcome.failed |= latest_provider_turn_failed;
 
         // A turn that never settled is not a turn that succeeded, whatever its exit code:
         // the stream is the record, and a truncated one means the child died mid-turn.

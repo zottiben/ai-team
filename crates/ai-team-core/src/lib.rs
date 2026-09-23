@@ -14,11 +14,13 @@ mod context;
 mod crew;
 mod daemon;
 mod db;
+mod delivery;
 mod diff;
 mod error;
 mod gates;
 mod guardrails;
 mod house;
+mod launch_path;
 mod lsp;
 mod machine;
 mod map;
@@ -31,6 +33,7 @@ mod readiness;
 mod review;
 mod roles;
 mod schedule;
+mod secrets;
 mod speak;
 mod store;
 mod supervise;
@@ -40,11 +43,12 @@ mod update;
 mod util;
 mod workflow;
 
-pub use analytics::{rollup, By, Row};
+pub use analytics::{rollup, rollup_workspace, By, Row};
 pub use context::{figma_links, parse_url, Source, CLICKUP_READ_TOOLS, FIGMA_READ_TOOLS};
-pub use crew::{of_project as crew_of, Doing, Member};
+pub use crew::{of_project as crew_of, of_workspace as crew_of_workspace, Doing, Member};
 pub use daemon::{once as tick_once, serve as serve_schedule};
 pub use db::{latest_schema, Db};
+pub use delivery::{approve_delivery, delivery_status};
 pub use diff::{parse as parse_diff, patch_for, FileDiff, FileStatus, Hunk, Line, LineKind};
 pub use error::{Error, Result};
 pub use gates::{all_passed, discover_gates, evidence, run_gates, Gate, GateKind, GateResult};
@@ -54,33 +58,43 @@ pub use model::TerminalState;
 pub use house::{
     read as read_house_rules, read_for as read_house_rules_for, section as house_section, Rules,
 };
+pub use launch_path::adopt_login_path;
 pub use lsp::{
     language_for, language_id, workspace_root, Client, Diagnostic, Hover, Language, Location, Pool,
     Position, Range,
 };
 pub use machine::{
-    ensure_machine_profile, set_context, set_fallback, set_provider, ContextSource, MachineProfile,
-    ModelRegistry, ModelResolution, ProviderState, ProviderStatus, DEFAULT_MACHINE_PROFILE,
+    ensure_machine_profile, set_context, set_fallback, set_provider, sign_in_command,
+    ContextSource, MachineProfile, ModelChoice, ModelRegistry, ModelResolution, ProviderState,
+    ProviderStatus, RoleModelDefault, DEFAULT_MACHINE_PROFILE,
 };
 pub use map::{repo_map, MapEdge, MapNode, MapZone, Owner, RepoMap};
 pub use model::{
-    Agent, CommentStatus, DiffSide, Event, EventKind, Guardrails, NewAgent, NewComment, NewEvent,
-    NewProject, NewReminder, NewRepo, NodeRun, NodeStatus, OnFailure, Project, ProjectKind,
+    Agent, CommentStatus, DeliveryAction, DeliveryPolicy, DeliverySettings, DiffSide, Event,
+    EventKind, Guardrails, NewAgent, NewComment, NewEvent, NewNotification, NewProject,
+    NewReminder, NewRepo, NodeRun, NodeStatus, Notification, OnFailure, Project, ProjectKind,
     ProjectRepo, ProjectSource, ProjectStatus, Provider, Reasoning, Recur, Reminder, ReminderKind,
-    ReminderStatus, Review, ReviewComment, ReviewStatus, Run, RunStatus, RunTrigger, Team,
-    ToolEffect, ToolPolicy, Usage,
+    ReminderStatus, RemoteDeliveryStatus, Review, ReviewComment, ReviewStatus, Run, RunStatus,
+    RunTrigger, Team, ToolEffect, ToolPolicy, Usage,
 };
 pub use neighbours::{
     apply_patch_cached, branches, checkout, commit_staged, current_branch, file_sql_available,
-    list_tree, push, safe_join, stage, staged_diff, unstage, untracked, worktree_diff, Entry,
-    FileSql, Hit, Lease, PlanSummary, Planner, PoolEntry, Question, Slice, Worktrees,
+    list_tree, push, safe_join, same_worktree, stage, staged_diff, unstage, untracked,
+    worktree_diff, Entry, FileSql, Hit, Lease, PlanLogEntry, PlanSummary, Planner, PoolEntry,
+    Process, Question, Slice, Worktrees,
 };
-pub use onboard::{attach as attach_repo_at, register as register_project, Registered};
-pub use paths::{data_dir, default_db_path, ensure_data_dir, machine_profile_path, HOME_ENV};
+pub use onboard::{
+    attach as attach_repo_at, browse as browse_dir, register as register_project,
+    zones_for as suggested_zones, Candidate, Listing, Registered,
+};
+pub use paths::{
+    data_dir, default_db_path, ensure_data_dir, expand_user, home_dir, machine_profile_path,
+    HOME_ENV,
+};
 pub use pi::{
     install_guard, install_guard_at, provider_name as pi_provider, run_pi_turn,
-    thinking as pi_thinking, PiDisposition, PiEvent, PiIngested, PiOutcome, PiProcess, PiSeat,
-    PiTurn,
+    thinking as pi_thinking, write_context_oauth_config, PiDisposition, PiEvent, PiIngested,
+    PiOutcome, PiProcess, PiSeat, PiTurn,
 };
 pub use readiness::{
     apply as apply_fix, apply_at as apply_fix_at, report as readiness_report,
@@ -95,8 +109,13 @@ pub use roles::{
     preset, RolePreset, DEFAULT_LOCAL_MODEL, DEFAULT_ROSTER, ROOT_ROLE, VERIFIER_ROLE,
 };
 pub use schedule::{act, announcement, claim_due, notify, runnable, tick, Fired, TICK};
+pub use secrets::{
+    clear_token, forget_oauth, has_oauth, has_token, held as token_held, set_token,
+    token as context_token, token_env, Held,
+};
 pub use speak::{
-    queue as queue_message, start_turn, target as speak_target, Reached, Target, Would,
+    queue as queue_message, start_turn, start_turn_in, target as speak_target,
+    target_in as speak_target_in, Reached, Target, Would,
 };
 pub use store::Store;
 pub use supervise::{outcome_status, Dispatched, Orchestration, Orchestrator, Rig, TurnOutcome};
@@ -108,8 +127,16 @@ pub use update::{
     apply as apply_update, check as check_update, current_version, is_newer,
     method as install_method, Available, Host, Method, Step,
 };
-pub use util::{mint_token, normalise_remote, now, rfc3339_in, slugify, zone_matches};
-pub use workflow::{run as run_workflow, Progress, Request};
+pub use util::{
+    mint_token, normalise_remote, now, process_is_alive, rfc3339_in, slugify, zone_matches,
+};
+pub use workflow::{
+    approve_at as approve_run_at, claim_plan_approval, claim_plan_approval_with_direction,
+    claim_session_reset, continue_approved_at as continue_approved_run_at,
+    reset_claimed_session_at as reset_claimed_session,
+    resume_interrupted_node_at as resume_interrupted_node, run as run_workflow, Progress, Request,
+    PLAN_APPROVAL_PREPARING_REASON, PLAN_APPROVAL_REASON,
+};
 
 /// The workspace version, compiled in.
 ///

@@ -148,17 +148,23 @@ pub fn figma_links(text: &str) -> Vec<Source> {
 /// used precisely because that list cannot be verified without authenticating, and a
 /// wrong name here costs a capability rather than handing over a write.
 pub const CLICKUP_READ_TOOLS: &[&str] = &[
-    "search_workspace",
-    "search_tasks_by_task_type",
-    "search_tasks_by_tag",
-    "get_task",
-    "list_tasks",
-    "list_spaces",
-    "search_docs",
-    "get_doc",
-    "list_docs",
-    "get_comments",
-    "get_workspace_hierarchy",
+    "clickup_get_task",
+    "clickup_filter_tasks",
+    "clickup_search",
+    "clickup_get_workspace_hierarchy",
+    "clickup_get_task_comments",
+    "clickup_get_threaded_comments",
+    "clickup_get_custom_fields",
+    "clickup_get_folder",
+    "clickup_get_list",
+    "clickup_get_workspace_members",
+    "clickup_find_member_by_name",
+    "clickup_list_document_pages",
+    "clickup_get_document_pages",
+    "clickup_list_document_page_attachments",
+    "clickup_download_document_page_attachment",
+    "clickup_download_task_attachment",
+    "clickup_get_schema",
 ];
 
 /// The Figma MCP tools a seat may call.
@@ -291,12 +297,16 @@ mod tests {
     fn no_write_tool_is_on_either_allow_list() {
         // The D9 guarantee, asserted against the names rather than the intent. Both
         // servers grew write tools; `use_figma` is the one that reads like a read.
+        assert!(CLICKUP_READ_TOOLS
+            .iter()
+            .all(|tool| tool.starts_with("clickup_")));
         for forbidden in [
-            "create_task",
-            "update_task",
-            "delete_task",
-            "create_bulk_tasks",
-            "set_custom_fields",
+            "clickup_create_task",
+            "clickup_update_task",
+            "clickup_delete_task",
+            "clickup_create_comment",
+            "clickup_execute_operator",
+            "clickup_start_time_tracking",
         ] {
             assert!(!CLICKUP_READ_TOOLS.contains(&forbidden), "{forbidden}");
         }

@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, expect, it, vi } from "vitest";
 
 import { HealthBanner, Setup } from "./Setup";
-import type { Check } from "./api";
+import type { Check, ProviderSetting } from "./api";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -20,6 +20,20 @@ function check(over: Partial<Check> & Pick<Check, "id">): Check {
 }
 
 /** Answers /doctor and /settings, and records writes. Fixes flip the report. */
+/// A provider row, with the fields a test is not asserting on already filled.
+function provider(over: Partial<ProviderSetting> = {}): ProviderSetting {
+  return {
+    provider: "claude",
+    label: "claude",
+    allowed: false,
+    reachable: false,
+    detail: "",
+    how: "through the Claude Code CLI",
+    sign_in: "claude auth login",
+    ...over,
+  };
+}
+
 function stub(options: {
   checks?: Check[];
   providers?: unknown[];
@@ -140,22 +154,67 @@ it("marks whether a missing tool is needed or optional", async () => {
 it("asks for a provider, and says which are signed in", async () => {
   stub({
     checks: [check({ id: "providers", label: "Model providers" })],
-    providers: [
-      {
-        provider: "claude",
-        label: "claude",
-        allowed: true,
-        reachable: false,
-        detail: "",
-        how: "through the Claude Code CLI",
-      },
-    ],
+    providers: [provider({ allowed: true })],
   });
   render(<Setup onReady={() => {}} />);
 
   expect(await screen.findByText(/Pick an account/)).toBeDefined();
   // Ticked and not signed in is the commonest mistake, and it fails minutes later.
   expect(screen.getByText("not signed in")).toBeDefined();
+});
+
+it("offers to sign in the provider that is standing in the way, and shows the command", async () => {
+  // D25. The command is shown whether or not the button is pressed, because it is still
+  // the operator's command - the button only saves them opening a terminal for it.
+  stub({
+    checks: [check({ id: "providers", label: "Model providers" })],
+    providers: [provider({ allowed: true, reachable: false })],
+  });
+  render(<Setup onReady={() => {}} />);
+
+  expect(await screen.findByText("Sign in")).toBeDefined();
+  expect(screen.getByText("claude auth login")).toBeDefined();
+});
+
+it("does not offer to sign in a provider that already answers", async () => {
+  // Its only use there would be logging somebody out of an account that was working.
+  stub({
+    checks: [check({ id: "providers", label: "Model providers" })],
+    providers: [provider({ allowed: true, reachable: true })],
+  });
+  render(<Setup onReady={() => {}} />);
+
+  await screen.findByText(/Pick an account/);
+  expect(screen.queryByText("Sign in")).toBeNull();
+});
+
+it("a provider with no sign-in command is not offered one", async () => {
+  // The local gateway has no account, and a GLM plan is a key to paste rather than a flow
+  // to run. A button there would run a command that does not exist.
+  stub({
+    checks: [check({ id: "providers", label: "Model providers" })],
+    providers: [provider({ provider: "local", label: "local", allowed: true, sign_in: null })],
+  });
+  render(<Setup onReady={() => {}} />);
+
+  await screen.findByText(/Pick an account/);
+  expect(screen.queryByText("Sign in")).toBeNull();
+});
+
+it("pressing sign in names the provider, never a command line", async () => {
+  // The server looks the command up, so the set of things this route can start is fixed
+  // rather than whatever the page asks for.
+  const user = userEvent.setup();
+  const calls = stub({
+    checks: [check({ id: "providers", label: "Model providers" })],
+    providers: [provider({ allowed: true })],
+  });
+  render(<Setup onReady={() => {}} />);
+
+  await user.click(await screen.findByText("Sign in"));
+
+  await waitFor(() => expect(calls.some((c) => c.url === "/settings/sign-in")).toBe(true));
+  expect(calls.find((c) => c.url === "/settings/sign-in")?.body).toEqual({ provider: "claude" });
 });
 
 it("does not ask for a repository until there is something to think with", async () => {
@@ -191,7 +250,7 @@ it("only congratulates a machine that can actually run something", async () => {
   stub({
     checks: [],
     canRun: false,
-    providers: [{ provider: "claude", label: "claude", allowed: true, reachable: false, detail: "", how: "" }],
+    providers: [provider({ allowed: true })],
   });
   render(<Setup onReady={() => {}} />);
   await waitFor(() => expect(screen.queryByText(/That's it/)).toBeNull());

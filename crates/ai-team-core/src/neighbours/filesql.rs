@@ -194,16 +194,27 @@ pub fn safe_join(worktree: &Path, relative: &str) -> Result<PathBuf> {
     }
 
     // Lexically inside is not the same as actually inside: a symlink in the worktree can
-    // point anywhere. Checked only when the path exists, so saving a new file still works.
-    if let Ok(real) = resolved.canonicalize() {
-        if !real.starts_with(&root) {
-            return Err(Error::invalid(
-                "that path leaves the worktree through a symlink",
-            ));
+    // point anywhere. A new leaf cannot be canonicalised, so walk upward to the deepest
+    // existing ancestor; otherwise `linked-dir/new.rs` could write through an outward
+    // symlink precisely because `new.rs` does not exist yet.
+    let mut probe = resolved.as_path();
+    loop {
+        if let Ok(real) = probe.canonicalize() {
+            if !real.starts_with(&root) {
+                return Err(Error::invalid(
+                    "that path leaves the worktree through a symlink",
+                ));
+            }
+            return if probe == resolved {
+                Ok(real)
+            } else {
+                Ok(resolved)
+            };
         }
-        return Ok(real);
+        probe = probe
+            .parent()
+            .ok_or_else(|| Error::invalid("that path has no existing ancestor"))?;
     }
-    Ok(resolved)
 }
 
 #[cfg(test)]
@@ -286,6 +297,16 @@ mod tests {
         let dir = repo();
         assert!(safe_join(dir.path(), "src/new.rs").is_ok());
         assert!(safe_join(dir.path(), "src/../../escape.rs").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_new_file_below_an_outward_symlink_is_refused() {
+        let dir = repo();
+        let outside = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(outside.path(), dir.path().join("linked-dir")).unwrap();
+
+        assert!(safe_join(dir.path(), "linked-dir/new.rs").is_err());
     }
 
     #[test]

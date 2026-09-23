@@ -16,6 +16,96 @@ use crate::error::{Error, Result};
 use crate::model::{NewProject, NewRepo, Project, ProjectKind};
 use crate::store::Store;
 
+/// One directory, as something to point at.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Candidate {
+    pub name: String,
+    /// Absolute, so a surface can hand it straight back without joining anything - the
+    /// joining is where a picker gets a path subtly wrong.
+    pub path: String,
+    /// True when this directory is the top of a git checkout.
+    ///
+    /// Only the top: a subdirectory of a repository registers the root anyway, but marking
+    /// every directory inside one as a repository would make the whole tree look like a
+    /// wall of equally good answers.
+    pub repo: bool,
+}
+
+/// What is in a directory, and where it sits.
+#[derive(Debug, Clone, Serialize)]
+pub struct Listing {
+    /// Where this listing is, absolute and resolved.
+    pub path: String,
+    /// The directory above, or `None` at the root of the filesystem.
+    pub parent: Option<String>,
+    /// Subdirectories, by name.
+    pub entries: Vec<Candidate>,
+}
+
+/// List the directories inside one, so a person can find a checkout by looking.
+///
+/// Directories only, and their names only. This exists so somebody can pick a project
+/// without typing an absolute path from memory, which is not a reason to hand a window the
+/// ability to enumerate somebody's documents - so there is nothing here about files, sizes
+/// or contents.
+///
+/// An empty path means home, because that is where a person's checkouts are and `/` is a
+/// list of things none of them is.
+pub fn browse(path: &str) -> Result<Listing> {
+    let path = path.trim();
+    let dir = if path.is_empty() {
+        crate::paths::home_dir()?
+    } else {
+        crate::paths::expand_user(Path::new(path))?
+    };
+    // Resolved rather than taken as given, so `..` in a request becomes a real directory
+    // and the `parent` this hands back is the one the operating system agrees with. On
+    // macOS this is also what turns `/tmp` into `/private/tmp` (D12).
+    let dir = dir.canonicalize().map_err(|error| Error::UnusablePath {
+        path: dir.clone(),
+        reason: error.to_string(),
+    })?;
+
+    let mut entries: Vec<Candidate> = std::fs::read_dir(&dir)
+        .map_err(|error| Error::UnusablePath {
+            path: dir.clone(),
+            reason: error.to_string(),
+        })?
+        .flatten()
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            // Dotfiles are noise here - nobody keeps a checkout in `.cache` - and `.git`
+            // itself is a directory that would otherwise look like something to enter.
+            if name.starts_with('.') {
+                return None;
+            }
+            Some(Candidate {
+                repo: entry.path().join(".git").exists(),
+                path: entry.path().to_string_lossy().into_owned(),
+                name,
+            })
+        })
+        .collect();
+
+    // Checkouts first, then by name folded to lowercase: this is a list somebody is
+    // scanning for one thing they already know the name of, and the answer should be near
+    // the top when it is a repository.
+    entries.sort_by(|a, b| {
+        b.repo
+            .cmp(&a.repo)
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
+
+    Ok(Listing {
+        parent: dir
+            .parent()
+            .map(|parent| parent.to_string_lossy().into_owned()),
+        path: dir.to_string_lossy().into_owned(),
+        entries,
+    })
+}
+
 /// What a directory turned out to be.
 #[derive(Debug, Clone, Serialize)]
 pub struct Registered {
@@ -42,8 +132,9 @@ pub fn register(
     name: Option<&str>,
     kind: Option<ProjectKind>,
 ) -> Result<Registered> {
+    let dir = crate::paths::expand_user(dir)?;
     let dir = dir.canonicalize().map_err(|error| Error::UnusablePath {
-        path: dir.to_path_buf(),
+        path: dir.clone(),
         reason: error.to_string(),
     })?;
     if !dir.is_dir() {
@@ -163,8 +254,9 @@ pub fn register(
 /// A project is a container, so more than one repo is normal - a change spanning a service
 /// and its client is one piece of work.
 pub fn attach(store: &mut Store, project_id: i64, dir: &Path) -> Result<String> {
+    let dir = crate::paths::expand_user(dir)?;
     let dir = dir.canonicalize().map_err(|error| Error::UnusablePath {
-        path: dir.to_path_buf(),
+        path: dir.clone(),
         reason: error.to_string(),
     })?;
     let git = GitContext::discover(&dir).ok_or_else(|| {
@@ -237,7 +329,7 @@ fn git(dir: &Path, args: &[&str]) -> Option<String> {
 ///
 /// Returns `(backend, frontend)`. Either can be empty, which is honest - a repository with
 /// no frontend has no frontend zone, and a slice touching one would be reported undone.
-pub(crate) fn zones_for(repo: &Path) -> (String, String) {
+pub fn zones_for(repo: &Path) -> (String, String) {
     /// Directories that are somebody else's, or output rather than source.
     const SKIP: &[&str] = &[
         "target",
@@ -251,13 +343,28 @@ pub(crate) fn zones_for(repo: &Path) -> (String, String) {
         "__pycache__",
     ];
     /// What a web project is usually called.
-    const WEB: &[&str] = &[
-        "ui", "web", "frontend", "client", "app", "www", "site", "webapp",
-    ];
+    const WEB: &[&str] = &["ui", "web", "frontend", "client", "www", "site", "webapp"];
 
     let Ok(entries) = std::fs::read_dir(repo) else {
         return (String::new(), String::new());
     };
+    let root_javascript = repo.join("package.json").is_file();
+    let package = std::fs::read_to_string(repo.join("package.json"))
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let browser_stack = [
+        "\"react\"",
+        "\"next\"",
+        "\"vue\"",
+        "\"svelte\"",
+        "\"@angular/",
+        "\"vite\"",
+    ]
+    .iter()
+    .any(|dependency| package.contains(dependency));
+    let root_backend = ["composer.json", "Cargo.toml", "pyproject.toml", "go.mod"]
+        .iter()
+        .any(|manifest| repo.join(manifest).is_file());
 
     let mut backend: Vec<String> = Vec::new();
     let mut frontend: Vec<String> = Vec::new();
@@ -274,8 +381,20 @@ pub(crate) fn zones_for(repo: &Path) -> (String, String) {
         // A `package.json` inside is stronger evidence than the name: plenty of projects
         // call their frontend something unexpected, and almost none put a package.json in
         // a directory that is not one.
-        let web = WEB.contains(&name.to_lowercase().as_str())
-            || entry.path().join("package.json").is_file();
+        let lower = name.to_lowercase();
+        let web = WEB.contains(&lower.as_str())
+            || entry.path().join("package.json").is_file()
+            // `app/` is a frontend convention in Next, and the backend namespace in
+            // Laravel. The root manifests disambiguate it; the name alone did not.
+            || (lower == "app" && root_javascript && !root_backend)
+            // A root browser framework usually keeps its code directly in `src/`, while
+            // a Node service does too. Dependencies distinguish those without guessing
+            // that every package.json means frontend.
+            || (browser_stack
+                && ["src", "pages", "components", "public", "assets"]
+                    .contains(&lower.as_str()))
+            // Mixed backends commonly keep their browser source here (Laravel/Vite).
+            || (lower == "resources" && root_javascript);
         if web {
             frontend.push(format!("{name}/**"));
         } else {
@@ -286,15 +405,42 @@ pub(crate) fn zones_for(repo: &Path) -> (String, String) {
     backend.sort();
     frontend.sort();
 
-    // Root-level config belongs with the backend seat, which is where build files, lockfiles
-    // and manifests are changed. Added only when that seat owns something, so an empty zone
-    // stays empty rather than becoming "owns every toml and nothing else".
+    // Root manifests follow the stack that owns them. Broad `*.lock` used to hand a
+    // JavaScript lockfile to Backend in the same repository where Frontend owned the app.
     if !backend.is_empty() {
-        backend.push("*.toml".into());
-        backend.push("*.lock".into());
+        backend.extend(
+            [
+                "Cargo.toml",
+                "Cargo.lock",
+                "composer.json",
+                "composer.lock",
+                "pyproject.toml",
+                "uv.lock",
+                "go.mod",
+                "go.sum",
+                "*.toml",
+            ]
+            .into_iter()
+            .map(str::to_string),
+        );
     }
+    let javascript_files = [
+        "package.json",
+        "package-lock.json",
+        "pnpm-lock.yaml",
+        "yarn.lock",
+        "bun.lock*",
+        "tsconfig*.json",
+        "vite.config.*",
+    ];
     if !frontend.is_empty() {
-        frontend.push("*.css".into());
+        frontend.extend(javascript_files.into_iter().map(str::to_string));
+        frontend.push("*.css".to_string());
+    } else if root_javascript && !backend.is_empty() {
+        // A Node service owns its own package manifest and lockfile. Leaving them unowned
+        // merely because it has no browser directory makes ordinary dependency work
+        // impossible to route.
+        backend.extend(javascript_files.into_iter().map(str::to_string));
     }
 
     (backend.join("\n"), frontend.join("\n"))
@@ -405,6 +551,86 @@ mod tests {
     }
 
     #[test]
+    fn browsing_marks_the_checkouts_and_puts_them_first() {
+        // The whole point of the picker: a person is scanning for one directory they
+        // already know the name of, and the ones that are repositories are the answers.
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["zebra-service", "notes", "alpha-app"] {
+            std::fs::create_dir_all(dir.path().join(name)).unwrap();
+        }
+        repo(&dir.path().join("zebra-service"));
+        repo(&dir.path().join("alpha-app"));
+
+        let listing = browse(&dir.path().to_string_lossy()).unwrap();
+        let names: Vec<&str> = listing
+            .entries
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect();
+        assert_eq!(names, ["alpha-app", "zebra-service", "notes"]);
+        assert!(listing.entries[0].repo);
+        assert!(!listing.entries[2].repo);
+
+        // And each path is absolute, so a surface hands it straight back rather than
+        // joining it to something - which is where a picker gets a path subtly wrong.
+        for entry in &listing.entries {
+            assert!(Path::new(&entry.path).is_absolute(), "{}", entry.path);
+            assert!(Path::new(&entry.path).is_dir(), "{}", entry.path);
+        }
+    }
+
+    #[test]
+    fn browsing_shows_directories_and_nothing_else() {
+        // It exists so somebody can find a checkout by looking, which is not a reason to
+        // let a window enumerate their documents. Dotfiles go too: nobody keeps a checkout
+        // in `.cache`, and `.git` would otherwise look like somewhere to go into.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("secrets.txt"), "x").unwrap();
+        std::fs::create_dir_all(dir.path().join(".cache")).unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+
+        let names: Vec<String> = browse(&dir.path().to_string_lossy())
+            .unwrap()
+            .entries
+            .into_iter()
+            .map(|entry| entry.name)
+            .collect();
+        assert_eq!(names, ["src"]);
+    }
+
+    #[test]
+    fn browsing_resolves_where_it_actually_is() {
+        // `..` in a request has to become a real directory, and the parent handed back has
+        // to be the one the operating system agrees with - on macOS that also means `/tmp`
+        // resolving to `/private/tmp` (D12), which is exactly the kind of thing a picker
+        // gets wrong by string-joining instead of asking.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src/deep")).unwrap();
+        let resolved = dir.path().canonicalize().unwrap();
+
+        let listing = browse(&format!("{}/src/deep/..", dir.path().display())).unwrap();
+        assert_eq!(listing.path, resolved.join("src").to_string_lossy());
+        assert_eq!(
+            listing.parent.as_deref(),
+            Some(resolved.to_string_lossy().as_ref())
+        );
+    }
+
+    #[test]
+    fn browsing_nowhere_starts_at_home() {
+        // Where a person's checkouts are. `/` is a list of things none of them is.
+        let listing = browse("  ").unwrap();
+        assert_eq!(
+            listing.path,
+            crate::paths::home_dir()
+                .unwrap()
+                .canonicalize()
+                .unwrap()
+                .to_string_lossy()
+        );
+    }
+
+    #[test]
     fn a_subdirectory_registers_the_repository_root() {
         // Somebody pointing at `src/` means the project, not the subdirectory - and a repo
         // rooted at `src/` could not be leased.
@@ -479,6 +705,61 @@ mod tests {
             assert!(crate::util::zone_matches(&frontend, path), "{path}");
             assert!(!crate::util::zone_matches(&backend, path), "{path}");
         }
+    }
+
+    #[test]
+    fn a_mixed_php_javascript_repo_keeps_laravel_app_on_the_backend() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["app", "database", "resources"] {
+            std::fs::create_dir_all(dir.path().join(name)).unwrap();
+        }
+        std::fs::write(dir.path().join("composer.json"), "{}").unwrap();
+        std::fs::write(dir.path().join("package.json"), "{}").unwrap();
+
+        let (backend, frontend) = zones_for(dir.path());
+        assert!(backend.contains("app/**"), "{backend}");
+        assert!(backend.contains("database/**"), "{backend}");
+        assert!(!frontend.contains("app/**"), "{frontend}");
+        assert!(frontend.contains("resources/**"), "{frontend}");
+        assert!(frontend.contains("package.json"), "{frontend}");
+        assert!(backend.contains("composer.json"), "{backend}");
+    }
+
+    #[test]
+    fn a_javascript_app_directory_still_belongs_to_frontend() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("app")).unwrap();
+        std::fs::write(dir.path().join("package.json"), "{}").unwrap();
+
+        let (backend, frontend) = zones_for(dir.path());
+        assert!(!backend.contains("app/**"), "{backend}");
+        assert!(frontend.contains("app/**"), "{frontend}");
+    }
+
+    #[test]
+    fn root_javascript_dependencies_distinguish_a_browser_app_from_a_node_service() {
+        let browser = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(browser.path().join("src")).unwrap();
+        std::fs::write(
+            browser.path().join("package.json"),
+            r#"{"dependencies":{"react":"latest"}}"#,
+        )
+        .unwrap();
+        let (backend, frontend) = zones_for(browser.path());
+        assert!(!backend.contains("src/**"), "{backend}");
+        assert!(frontend.contains("src/**"), "{frontend}");
+
+        let service = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(service.path().join("src")).unwrap();
+        std::fs::write(
+            service.path().join("package.json"),
+            r#"{"dependencies":{"express":"latest"}}"#,
+        )
+        .unwrap();
+        let (backend, frontend) = zones_for(service.path());
+        assert!(backend.contains("src/**"), "{backend}");
+        assert!(backend.contains("package.json"), "{backend}");
+        assert!(!frontend.contains("src/**"), "{frontend}");
     }
 
     #[test]

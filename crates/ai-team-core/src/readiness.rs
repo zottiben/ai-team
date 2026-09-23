@@ -23,7 +23,7 @@
 use serde::Serialize;
 
 use crate::error::{Error, Result};
-use crate::machine::ModelRegistry;
+use crate::machine::{MachineProfile, ModelRegistry};
 use crate::store::Store;
 
 /// How much a finding matters.
@@ -206,8 +206,8 @@ pub async fn report(known: Option<&Known>) -> Report {
 pub async fn report_at(paths: &Paths, known: Option<&Known>) -> Report {
     let mut checks = vec![data_directory(paths), machine_profile(paths)];
     checks.push(database(paths, known));
-    checks.extend(providers());
-    checks.extend(context_sources());
+    checks.extend(providers(paths));
+    checks.extend(context_sources(paths));
     checks.extend(neighbours().await);
     checks.push(frontend());
     if let Some(known) = known {
@@ -337,7 +337,7 @@ fn database(paths: &Paths, known: Option<&Known>) -> Check {
         ),
         // A database a migration behind is the case that produces a baffling error later,
         // so it is called out rather than left to be discovered.
-        Ok(version) => Check {
+        Ok(version) if version < crate::db::latest_schema() => Check {
             id: "database".into(),
             label: "Database".into(),
             severity: Severity::Blocking,
@@ -348,6 +348,21 @@ fn database(paths: &Paths, known: Option<&Known>) -> Check {
             fix: Fix::Itself {
                 action: Action::Migrate,
                 describe: "Run the migrations this build carries".into(),
+            },
+        },
+        // A newer database must never be "fixed" by an older binary. It cannot downgrade
+        // a schema it does not understand, and claiming otherwise leaves Doctor red after
+        // a button that reported success.
+        Ok(version) => Check {
+            id: "database".into(),
+            label: "Database".into(),
+            severity: Severity::Blocking,
+            detail: format!(
+                "schema v{version} is newer than this build's v{}",
+                crate::db::latest_schema()
+            ),
+            fix: Fix::Human {
+                what: "Update ai-team so the app and CLI understand this database".into(),
             },
         },
         Err(()) => Check {
@@ -369,8 +384,13 @@ fn database(paths: &Paths, known: Option<&Known>) -> Check {
 ///
 /// The summary exists because "no provider is available" is a single problem with a
 /// single consequence, and four separate denials do not say it.
-fn providers() -> Vec<Check> {
-    let Ok(registry) = ModelRegistry::load() else {
+fn model_registry(paths: &Paths) -> Option<ModelRegistry> {
+    let path = paths.machine_profile.as_ref().ok()?;
+    MachineProfile::load(path).ok().map(ModelRegistry::new)
+}
+
+fn providers(paths: &Paths) -> Vec<Check> {
+    let Some(registry) = model_registry(paths) else {
         return vec![Check {
             id: "providers".into(),
             label: "Model providers".into(),
@@ -398,7 +418,8 @@ fn providers() -> Vec<Check> {
             detail: "every provider is denied or unreachable, so no agent can think".into(),
             fix: Fix::Human {
                 what: "Allow a provider you are signed into - Claude through the Claude Code \
-                       CLI, ChatGPT through eve, GLM with a coding plan, or the local gateway"
+                       CLI, ChatGPT through the Codex CLI, GLM with a coding plan, or the \
+                       local gateway"
                     .into(),
             },
         }
@@ -424,15 +445,29 @@ fn providers() -> Vec<Check> {
                 detail: status.detail,
                 fix: Fix::None,
             },
-            crate::machine::ProviderState::Unreachable => Check {
-                id,
-                label,
-                severity: Severity::Degraded,
-                detail: status.detail,
-                fix: Fix::Human {
-                    what: format!("Sign in to {} and check it responds", status.provider),
-                },
-            },
+            // Not every provider is signed in to, and telling somebody to sign in to a
+            // loopback gateway is the same kind of wrong as telling them to log in to
+            // eve: an instruction naming something that does not exist. The ones with an
+            // account carry the command; the ones without repeat what is actually the
+            // matter, which for the gateway is that nothing is listening on the port.
+            crate::machine::ProviderState::Unreachable => {
+                let fix = match status.sign_in {
+                    Some(command) => Fix::Command {
+                        run: command.to_string(),
+                        why: format!("{} signs in through its own CLI", status.provider),
+                    },
+                    None => Fix::Human {
+                        what: status.detail.clone(),
+                    },
+                };
+                Check {
+                    id,
+                    label,
+                    severity: Severity::Degraded,
+                    detail: status.detail,
+                    fix,
+                }
+            }
         });
     }
     checks
@@ -440,10 +475,11 @@ fn providers() -> Vec<Check> {
 
 /// Context sources are opt-in, so absent is never a fault (D9).
 ///
-/// Allowed but tokenless is worth saying, though: the connection gets generated and its
-/// seats fail at the first call, which is a long way from here.
-fn context_sources() -> Vec<Check> {
-    let registry = ModelRegistry::load().ok();
+/// Allowed but unauthenticated is worth saying, though: the connection gets generated
+/// and its seats fail at the first call, which is a long way from here. OAuth is checked
+/// first because it belongs to Pi and is the normal path; a manual token is the fallback.
+fn context_sources(paths: &Paths) -> Vec<Check> {
+    let registry = model_registry(paths);
     crate::machine::ContextSource::ALL
         .iter()
         .map(|source| {
@@ -455,19 +491,27 @@ fn context_sources() -> Vec<Check> {
             if !allowed {
                 return Check::fine(&id, &label, "not enabled on this machine");
             }
-            let env = format!("AI_TEAM_{}_TOKEN", source.as_str().to_uppercase());
-            if std::env::var(&env).is_ok_and(|value| !value.trim().is_empty()) {
-                Check::fine(&id, &label, format!("enabled, {env} is set"))
-            } else {
-                Check {
+            if crate::secrets::has_oauth(*source) {
+                return Check::fine(&id, &label, "enabled, connected through Pi OAuth");
+            }
+            match crate::secrets::held(*source) {
+                crate::secrets::Held::Keychain => {
+                    Check::fine(&id, &label, "enabled, using a manually stored token")
+                }
+                crate::secrets::Held::Environment => Check::fine(
+                    &id,
+                    &label,
+                    format!("enabled, {} is set", crate::secrets::token_env(*source)),
+                ),
+                crate::secrets::Held::Absent => Check {
                     id,
                     label,
                     severity: Severity::Degraded,
-                    detail: format!("enabled, but {env} is not set - its seats cannot reach it"),
+                    detail: "enabled, but not connected - its seats cannot reach it".into(),
                     fix: Fix::Human {
-                        what: format!("Set {env} in the environment ai-team runs in"),
+                        what: format!("Connect {source} in Settings"),
                     },
-                }
+                },
             }
         })
         .collect()
@@ -618,10 +662,31 @@ fn projects(known: &Known) -> Vec<Check> {
 /// directory walk, and because shelling out to `which` would itself need `which`.
 fn which(command: &str) -> Option<std::path::PathBuf> {
     let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path).find_map(|dir| {
+    std::env::split_paths(&path).find_map(|dir| command_in(&dir, command))
+}
+
+#[cfg(unix)]
+fn command_in(dir: &std::path::Path, command: &str) -> Option<std::path::PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let candidate = dir.join(command);
+    let metadata = candidate.metadata().ok()?;
+    (metadata.is_file() && metadata.permissions().mode() & 0o111 != 0).then_some(candidate)
+}
+
+#[cfg(windows)]
+fn command_in(dir: &std::path::Path, command: &str) -> Option<std::path::PathBuf> {
+    let command = std::path::Path::new(command);
+    if command.extension().is_some() {
         let candidate = dir.join(command);
-        candidate.is_file().then_some(candidate)
-    })
+        return candidate.is_file().then_some(candidate);
+    }
+    let extensions = std::env::var_os("PATHEXT").unwrap_or_else(|| ".COM;.EXE;.BAT;.CMD".into());
+    extensions
+        .to_string_lossy()
+        .split(';')
+        .map(|extension| dir.join(format!("{}{}", command.display(), extension)))
+        .find(|candidate| candidate.is_file())
 }
 
 /// Apply one of the repairs ai-team owns.
@@ -773,6 +838,33 @@ mod tests {
     }
 
     #[test]
+    fn a_database_from_a_newer_build_cannot_be_downgraded_by_the_fix_button() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("team.db"), []).unwrap();
+        let newer = crate::db::latest_schema() + 1;
+        let known = Known {
+            schema: Some(newer),
+            projects: Vec::new(),
+        };
+
+        let check = database(&Paths::under(dir.path()), Some(&known));
+        assert_eq!(check.severity, Severity::Blocking);
+        assert!(check.detail.contains("newer"), "{}", check.detail);
+        assert!(matches!(check.fix, Fix::Human { .. }), "{:?}", check.fix);
+    }
+
+    #[test]
+    fn a_custom_readiness_root_does_not_consult_the_real_machine_profile() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        let checks = providers(&paths);
+
+        assert_eq!(checks.len(), 1);
+        assert_eq!(checks[0].id, "providers");
+        assert!(checks[0].detail.contains("no machine profile"));
+    }
+
+    #[test]
     fn a_missing_machine_profile_is_reported_once_with_its_consequence() {
         // Said twice it looks like two problems. The profile is the cause and the
         // providers check is the consequence, so only one of them blocks.
@@ -819,6 +911,38 @@ mod tests {
                     }
                     other => panic!("{} should offer a command, not {other:?}", check.id),
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn a_provider_that_is_not_answering_is_told_what_to_actually_do() {
+        // The wording this replaced said "Sign in to local and check it responds" for the
+        // loopback gateway, which has no account to sign in to - the same kind of wrong as
+        // the `eve dev` sentence S4 removed, and produced the same way: one format string
+        // for four providers that do not work alike.
+        for provider in crate::model::Provider::ALL {
+            let advice = match crate::machine::sign_in_command(*provider) {
+                Some(command) => Fix::Command {
+                    run: command.to_string(),
+                    why: String::new(),
+                },
+                None => Fix::Human {
+                    what: "nothing is listening".into(),
+                },
+            };
+            match advice {
+                // Where there is an account, the advice is the command that reaches it.
+                Fix::Command { run, .. } => assert!(
+                    run.starts_with("claude") || run.starts_with("codex"),
+                    "{provider} offers {run}, which is not how it is signed in to"
+                ),
+                // Where there is not, it must not invent one.
+                Fix::Human { what } => assert!(
+                    !what.to_lowercase().contains("sign in"),
+                    "{provider} has no sign-in flow but is told to sign in: {what}"
+                ),
+                other => panic!("{provider} got {other:?}"),
             }
         }
     }

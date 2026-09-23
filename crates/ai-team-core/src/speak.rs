@@ -35,8 +35,12 @@ pub enum Would {
     /// swallows what somebody typed. It is kept and delivered next, on the same session,
     /// so it arrives with the conversation behind it.
     Queue,
-    /// Start a turn. Minutes, and a worktree.
+    /// Start a direct maker turn. Minutes, and a worktree.
     StartWork,
+    /// Start the full team workflow through the orchestrator control plane.
+    Coordinate,
+    /// Continue the exact run whose plan is waiting for this person's approval.
+    ApprovePlan,
     /// Nothing: the seat is switched off, so it would never be given the message.
     Nothing,
 }
@@ -54,6 +58,8 @@ pub struct Target {
     pub repo: Option<String>,
     /// A turn in progress, when there is one: the node run and its Pi session.
     pub live: Option<(i64, String)>,
+    /// The selected workspace's coherent approval-held run, for the orchestrator only.
+    pub approval_run_id: Option<i64>,
 }
 
 impl Target {
@@ -62,6 +68,12 @@ impl Target {
             Would::Nothing
         } else if self.live.is_some() {
             Would::Queue
+        } else if self.agent.role == crate::ROOT_ROLE {
+            if self.approval_run_id.is_some() {
+                Would::ApprovePlan
+            } else {
+                Would::Coordinate
+            }
         } else {
             Would::StartWork
         }
@@ -70,6 +82,12 @@ impl Target {
 
 /// Look up what it would take to reach a seat.
 pub fn target(store: &Store, agent_id: i64) -> Result<Target> {
+    target_in(store, agent_id, None)
+}
+
+/// Look up a seat from one workspace, so activity in a sibling checkout cannot receive
+/// a message meant for this one.
+pub fn target_in(store: &Store, agent_id: i64, worktree: Option<&Path>) -> Result<Target> {
     let agent = store.agent(agent_id)?;
     let team = store.team(agent.team_id)?;
     let project_id = team
@@ -85,7 +103,37 @@ pub fn target(store: &Store, agent_id: i64) -> Result<Target> {
     // The newest node run for this role that still looks alive. Newest first, because a
     // retry is a new row and only the latest can still be running (D2).
     let mut live = None;
-    'outer: for run in store.runs(Some(project_id), 20)? {
+    let runs = match worktree {
+        Some(worktree) => store.runs_in_workspace(project_id, worktree, 20)?,
+        None => store.runs(Some(project_id), 20)?,
+    };
+    let approval_run_id = if agent.role != crate::ROOT_ROLE {
+        None
+    } else if let Some(worktree) = worktree {
+        store
+            .blocked_run_in_workspace(
+                project_id,
+                agent.team_id,
+                worktree,
+                [
+                    crate::workflow::PLAN_APPROVAL_REASON,
+                    crate::workflow::PLAN_APPROVAL_PREPARING_REASON,
+                ],
+            )?
+            .map(|run| run.id)
+    } else {
+        store
+            .blocked_run_for_project(
+                project_id,
+                agent.team_id,
+                [
+                    crate::workflow::PLAN_APPROVAL_REASON,
+                    crate::workflow::PLAN_APPROVAL_PREPARING_REASON,
+                ],
+            )?
+            .map(|run| run.id)
+    };
+    'outer: for run in &runs {
         let mut nodes = store.node_runs(run.id)?;
         nodes.reverse();
         for node in nodes {
@@ -101,8 +149,10 @@ pub fn target(store: &Store, agent_id: i64) -> Result<Target> {
             // A session is all it takes now: there is no port to reach and no token to
             // present. A node that is running without one has not streamed its first
             // line yet, which is a turn too young to say anything to.
-            if let Some(session) = node.session_id.clone() {
-                live = Some((node.id, session));
+            if node.session_retired_at.is_none() && node.session_resetting_at.is_none() {
+                if let Some(session) = node.session_id.clone() {
+                    live = Some((node.id, session));
+                }
             }
             break 'outer;
         }
@@ -114,6 +164,7 @@ pub fn target(store: &Store, agent_id: i64) -> Result<Target> {
         project_slug: project.slug,
         repo,
         live,
+        approval_run_id,
     })
 }
 
@@ -132,6 +183,10 @@ pub enum Reached {
     /// run row exists, so any number here would be invented - and an invented id reads as
     /// a real one (M3-S17). The run appears in the window on the next tick.
     Started,
+    /// The orchestrator started a new full team workflow.
+    Coordinating,
+    /// An existing approval-held run resumed into maker dispatch.
+    Continued { run_id: i64 },
     /// Nothing was done, and why.
     Refused { because: String },
 }
@@ -145,7 +200,7 @@ pub fn queue(store: &mut Store, target: &Target, message: &str) -> Result<Reache
     let Some((node_run_id, _)) = target.live.clone() else {
         return Err(Error::invalid("that seat has no turn in progress"));
     };
-    let waiting = store.queue_message(target.agent.id, message)?;
+    let waiting = store.queue_node_message(node_run_id, target.agent.id, message)?;
     Ok(Reached::Queued {
         node_run_id,
         waiting,
@@ -181,10 +236,20 @@ pub async fn start_turn(agent_id: i64, message: String) -> Result<i64> {
             repo,
         )
     };
+    if agent.role == crate::ROOT_ROLE {
+        return Err(Error::invalid(
+            "the orchestrator coordinates team runs; it cannot start planless direct work",
+        ));
+    }
 
     // A run, so the turn is recorded like any other work rather than happening invisibly.
     // What was said is the prompt, because that is what it is.
-    let run = store.create_run(project_id, &message, RunTrigger::Manual)?;
+    let run = store.create_run_in(
+        project_id,
+        &message,
+        RunTrigger::Manual,
+        Some(Path::new(&repo)),
+    )?;
 
     // Where the guard and this seat's MCP config live. Never the lease: a guard a node can
     // edit is not a guard.
@@ -216,6 +281,64 @@ pub async fn start_turn(agent_id: i64, message: String) -> Result<i64> {
     let _ = lease.release().await;
 
     match outcome {
+        Ok(()) => {
+            store.set_run_status(run.id, RunStatus::Done)?;
+            Ok(run.id)
+        }
+        Err(error) => {
+            store.block_run(run.id, &error.to_string())?;
+            store.set_run_status(run.id, RunStatus::Failed)?;
+            Err(error)
+        }
+    }
+}
+
+/// Start one seat directly in a checkout the operator already chose.
+///
+/// Unlike [`start_turn`], this does not lease, commit, or return the worktree. A human task
+/// worktree is persistent state owned by its user; cleaning it when the turn ends would
+/// destroy exactly the work this action was asked to produce.
+pub async fn start_turn_in(
+    agent_id: i64,
+    message: String,
+    worktree: std::path::PathBuf,
+) -> Result<i64> {
+    let db = crate::default_db_path()?;
+    let mut store = Store::open(&db)?;
+    let found = target(&store, agent_id)?;
+    if !found.agent.enabled {
+        return Err(Error::invalid(format!(
+            "{} is switched off, so it will not be given work",
+            found.agent.role
+        )));
+    }
+    if found.agent.role == crate::ROOT_ROLE {
+        return Err(Error::invalid(
+            "the orchestrator coordinates team runs; it cannot start planless direct work",
+        ));
+    }
+    let repo = found.repo.as_deref().ok_or_else(|| {
+        Error::invalid("that project has no checkout, so there is nowhere to work")
+    })?;
+    let worktree = crate::Worktrees::at(repo).resolve(&worktree).await?;
+    let run = store.create_run_in(
+        found.project_id,
+        &message,
+        RunTrigger::Manual,
+        Some(&worktree),
+    )?;
+    let support = store.support_dir(&found.project_slug)?;
+
+    match drive(
+        &mut store,
+        &support,
+        &worktree,
+        run.id,
+        &found.agent,
+        &message,
+    )
+    .await
+    {
         Ok(()) => {
             store.set_run_status(run.id, RunStatus::Done)?;
             Ok(run.id)
@@ -299,8 +422,8 @@ async fn record_work(
 /// the message.
 fn as_instruction(said: &str, house: &[crate::house::Rules]) -> String {
     format!(
-        "A person is asking you directly. Do this:\n\n{}\n\nYou are in a worktree leased \
-         for you alone - work only inside it. This turn is not part of a plan, so the \
+        "A person is asking you directly. Do this:\n\n{}\n\nYou are in the selected \
+         worktree - work only inside it. This turn is not part of a plan, so the \
          planning tools are unavailable on purpose; do not look for a plan or a slice, and \
          do not try to record one. Run the project's own checks before you call it done, and \
          say plainly if they do not pass. Your work is kept for you when the turn ends, so \
@@ -332,6 +455,13 @@ async fn drive(
     store.set_run_status(run_id, RunStatus::Running)?;
     let registry = crate::machine::ModelRegistry::load()?;
     let node_run_id = store.dispatch(run_id, agent.id, None, &registry)?.id;
+    let branch = crate::current_branch(worktree).await;
+    store.attach_worktree(
+        node_run_id,
+        &worktree.to_string_lossy(),
+        branch.as_deref(),
+        None,
+    )?;
 
     // Running, not queued. The first version left it queued for the whole turn, which meant
     // the crew panel called it working (queued is about to work) while `target` refused to
@@ -342,7 +472,7 @@ async fn drive(
     // Anything said while this seat was busy goes in front of what was just said, in the
     // order it was said. Taken in the same transaction it is marked delivered in, so two
     // turns starting together cannot both act on "stop adding tests".
-    let mut said = store.take_pending(agent.id)?;
+    let mut said = store.take_pending_for(agent.id, node_run_id)?;
     said.push(message.to_string());
     let message = said.join("\n\n");
 
@@ -375,17 +505,32 @@ async fn drive(
         turn.session_id = Some(session);
     }
 
-    let result = crate::run_pi_turn(store, node_run_id, &turn, |_| {}).await;
-
-    match result {
-        Ok((_, outcome)) => {
-            store.set_node_status(node_run_id, crate::supervise::outcome_status(&outcome))?;
-            Ok(())
-        }
-        Err(error) => {
-            store.block_node(node_run_id, &error.to_string())?;
-            store.set_node_status(node_run_id, NodeStatus::Failed)?;
-            Err(error)
+    loop {
+        match crate::run_pi_turn(store, node_run_id, &turn, |_| {}).await {
+            Ok((_, outcome)) => {
+                // Replies written while this process was working belong to this exact
+                // conversation. Resume before the caller commits or returns a borrowed
+                // lease; a detached worker would otherwise race the cleanup.
+                let replies = store.take_pending_for(agent.id, node_run_id)?;
+                if !replies.is_empty() {
+                    turn.prompt = as_instruction(
+                        &format!(
+                            "A person replied in this conversation:\n\n{}\n\nContinue the same work and respond to them.",
+                            replies.join("\n\n")
+                        ),
+                        &crate::house::read_for(worktree, &[]),
+                    );
+                    turn.session_id = store.node_run(node_run_id)?.session_id;
+                    continue;
+                }
+                store.set_node_status(node_run_id, crate::supervise::outcome_status(&outcome))?;
+                return Ok(());
+            }
+            Err(error) => {
+                store.block_node(node_run_id, &error.to_string())?;
+                store.set_node_status(node_run_id, NodeStatus::Failed)?;
+                return Err(error);
+            }
         }
     }
 }
@@ -428,13 +573,46 @@ mod tests {
     }
 
     #[test]
-    fn an_idle_seat_would_start_work_rather_than_interrupt() {
-        // The distinction the whole slice is about: these are different acts and a single
-        // box that silently did either would be a surprise waiting to happen.
+    fn an_idle_maker_would_start_direct_work_rather_than_interrupt() {
+        // Direct planless work is a maker operation. The orchestrator owns the team
+        // workflow and must never enter this path.
         let (store, _, team) = seeded();
         let target = target(&store, seat(&store, team, "backend")).unwrap();
         assert_eq!(target.would(), Would::StartWork);
         assert!(target.live.is_none());
+    }
+
+    #[test]
+    fn an_idle_orchestrator_would_coordinate_the_team() {
+        let (store, _, team) = seeded();
+        let target = target(&store, seat(&store, team, "orchestrator")).unwrap();
+
+        assert_eq!(target.would(), Would::Coordinate);
+        assert!(target.live.is_none());
+    }
+
+    #[test]
+    fn an_orchestrator_with_a_plan_awaiting_approval_would_continue_that_run() {
+        let (mut store, project, team) = seeded();
+        let run = store
+            .create_run(project, "ship it", RunTrigger::Manual)
+            .unwrap();
+        store.set_run_plan(run.id, "widget-plan").unwrap();
+        store
+            .block_run(run.id, crate::workflow::PLAN_APPROVAL_REASON)
+            .unwrap();
+        let orchestrator = seat(&store, team, "orchestrator");
+        let node = store
+            .dispatch(run.id, orchestrator, None, &ModelRegistry::local_only())
+            .unwrap();
+        store
+            .set_node_session(node.id, "orchestrator-session")
+            .unwrap();
+        store.set_node_status(node.id, NodeStatus::Done).unwrap();
+
+        let target = target(&store, orchestrator).unwrap();
+        assert_eq!(target.would(), Would::ApprovePlan);
+        assert_eq!(target.approval_run_id, Some(run.id));
     }
 
     #[test]
@@ -453,6 +631,41 @@ mod tests {
         let target = target(&store, backend).unwrap();
         assert_eq!(target.would(), Would::Queue);
         assert_eq!(target.live.as_ref().map(|live| live.0), Some(node.id));
+    }
+
+    #[test]
+    fn workspace_talk_reaches_a_leased_node_from_its_initiating_checkout() {
+        let (mut store, project, team) = seeded();
+        let run = store
+            .create_run_in(
+                project,
+                "ship it",
+                RunTrigger::Manual,
+                Some(Path::new("/tmp/widget-task")),
+            )
+            .unwrap();
+        let backend = seat(&store, team, "backend");
+        let node = store
+            .dispatch(run.id, backend, Some("S1"), &ModelRegistry::local_only())
+            .unwrap();
+        store
+            .attach_worktree(node.id, "/tmp/pool/4", Some("ai-team/S1"), None)
+            .unwrap();
+        store.set_node_session(node.id, "sess-1").unwrap();
+        store.set_node_status(node.id, NodeStatus::Running).unwrap();
+
+        assert_eq!(
+            target_in(&store, backend, Some(Path::new("/tmp/widget-task")))
+                .unwrap()
+                .would(),
+            Would::Queue
+        );
+        assert_eq!(
+            target_in(&store, backend, Some(Path::new("/tmp")))
+                .unwrap()
+                .would(),
+            Would::StartWork
+        );
     }
 
     #[test]
@@ -616,20 +829,57 @@ mod tests {
     }
 
     #[test]
+    fn a_conversation_reply_is_visible_and_waits_for_the_same_seat() {
+        let (mut store, project, team) = seeded();
+        let run = store
+            .create_run(project, "ship it", RunTrigger::Manual)
+            .unwrap();
+        let backend = seat(&store, team, "backend");
+        let node = store
+            .dispatch(run.id, backend, Some("S1"), &ModelRegistry::local_only())
+            .unwrap();
+
+        let waiting = store
+            .queue_conversation(
+                node.id,
+                backend,
+                "Yes - use the smaller type.\nThen continue.",
+            )
+            .unwrap();
+        assert_eq!(waiting, 1);
+        assert_eq!(
+            store.take_pending_for(backend, node.id).unwrap(),
+            ["Yes - use the smaller type.\nThen continue."]
+        );
+
+        let event = store.events(run.id, None, 10).unwrap().pop().unwrap();
+        assert_eq!(event.actor.as_deref(), Some("human"));
+        assert_eq!(event.node_run_id, Some(node.id));
+        assert_eq!(
+            event
+                .payload
+                .unwrap()
+                .get("body")
+                .and_then(serde_json::Value::as_str),
+            Some("Yes - use the smaller type.\nThen continue.")
+        );
+    }
+
+    #[test]
     fn a_waiting_message_is_delivered_once_and_in_order() {
         // Delivered in the same transaction it is read in: two turns starting together
         // must not both act on "stop adding tests".
         let (mut store, _, team) = seeded();
         let backend = seat(&store, team, "backend");
 
-        store.queue_message(backend, "first").unwrap();
-        store.queue_message(backend, "second").unwrap();
+        store.queue_legacy_message(backend, "first").unwrap();
+        store.queue_legacy_message(backend, "second").unwrap();
         assert_eq!(store.waiting_for(backend).unwrap(), 2);
 
-        let taken = store.take_pending(backend).unwrap();
+        let taken = store.take_legacy_pending(backend).unwrap();
         assert_eq!(taken, ["first", "second"]);
         assert_eq!(store.waiting_for(backend).unwrap(), 0);
-        assert!(store.take_pending(backend).unwrap().is_empty());
+        assert!(store.take_legacy_pending(backend).unwrap().is_empty());
     }
 
     #[test]
@@ -638,9 +888,65 @@ mod tests {
         let backend = seat(&store, team, "backend");
         let frontend = seat(&store, team, "frontend");
 
-        store.queue_message(backend, "for the backend").unwrap();
-        assert!(store.take_pending(frontend).unwrap().is_empty());
-        assert_eq!(store.take_pending(backend).unwrap(), ["for the backend"]);
+        store
+            .queue_legacy_message(backend, "for the backend")
+            .unwrap();
+        assert!(store.take_legacy_pending(frontend).unwrap().is_empty());
+        assert_eq!(
+            store.take_legacy_pending(backend).unwrap(),
+            ["for the backend"]
+        );
+    }
+
+    #[test]
+    fn a_legacy_unscoped_reply_is_delivered_after_migration() {
+        let (mut store, project, team) = seeded();
+        let backend = seat(&store, team, "backend");
+        let run = store
+            .create_run(project, "ship it", RunTrigger::Manual)
+            .unwrap();
+        let node = store
+            .dispatch(run.id, backend, Some("S1"), &ModelRegistry::local_only())
+            .unwrap();
+
+        store
+            .queue_legacy_message(backend, "said before schema 11")
+            .unwrap();
+        assert_eq!(
+            store.take_pending_for(backend, node.id).unwrap(),
+            ["said before schema 11"]
+        );
+    }
+
+    #[test]
+    fn two_workspaces_cannot_take_each_others_replies() {
+        let (mut store, project, team) = seeded();
+        let backend = seat(&store, team, "backend");
+        let first_run = store
+            .create_run(project, "first", RunTrigger::Manual)
+            .unwrap();
+        let second_run = store
+            .create_run(project, "second", RunTrigger::Manual)
+            .unwrap();
+        let registry = ModelRegistry::local_only();
+        let first = store
+            .dispatch(first_run.id, backend, Some("S1"), &registry)
+            .unwrap();
+        let second = store
+            .dispatch(second_run.id, backend, Some("S2"), &registry)
+            .unwrap();
+
+        store
+            .queue_node_message(first.id, backend, "only the first")
+            .unwrap();
+        assert!(store
+            .take_pending_for(backend, second.id)
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            store.take_pending_for(backend, first.id).unwrap(),
+            ["only the first"]
+        );
     }
 
     #[test]
@@ -668,6 +974,9 @@ mod tests {
 
         // The turn ends, successfully or not. The message is still there for the next one.
         store.set_node_status(node.id, NodeStatus::Failed).unwrap();
-        assert_eq!(store.take_pending(backend).unwrap(), ["use i64"]);
+        assert_eq!(
+            store.take_pending_for(backend, node.id).unwrap(),
+            ["use i64"]
+        );
     }
 }

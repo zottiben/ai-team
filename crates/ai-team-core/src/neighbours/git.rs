@@ -16,6 +16,30 @@ use tokio::process::Command;
 
 use crate::error::{Error, Result};
 
+/// Put a leased checkout on the semantic branch it will eventually land before the
+/// model starts. Older callers use the lease's current HEAD as the base.
+pub(crate) async fn prepare_branch(worktree: &Path, branch: &str) -> Result<()> {
+    git(worktree, &["checkout", "-B", branch]).await.map(drop)
+}
+
+/// Put a leased checkout on the exact branch and base ai-planner declared.
+///
+/// A lease usually returns on the repository's default branch. Building a stacked slice
+/// from that incidental HEAD drops its predecessor, even though the plan names the
+/// dependency as `base_branch`.
+pub(crate) async fn prepare_branch_from(
+    worktree: &Path,
+    branch: &str,
+    base_branch: Option<&str>,
+) -> Result<()> {
+    match base_branch.filter(|base| !base.trim().is_empty()) {
+        Some(base) => git(worktree, &["checkout", "-B", branch, base])
+            .await
+            .map(drop),
+        None => prepare_branch(worktree, branch).await,
+    }
+}
+
 /// Commit everything in a worktree onto a branch.
 ///
 /// `None` means there was nothing to commit, which is a real outcome worth reporting:
@@ -30,9 +54,11 @@ pub(crate) async fn commit_paths(
         return Ok(None);
     }
 
-    // A fresh branch per slice, from wherever the lease was handed over. `-B` rather
-    // than `-b` so a retry of the same slice reuses the name instead of failing on it.
-    git(worktree, &["checkout", "-B", branch]).await?;
+    // Older callers may not have prepared the branch. Do not reset a prepared checkout
+    // here: it already carries the model's uncommitted edits.
+    if current_branch(worktree).await.as_deref() != Some(branch) {
+        prepare_branch(worktree, branch).await?;
+    }
     let mut add = vec!["add", "--"];
     add.extend(paths.iter().map(String::as_str));
     git(worktree, &add).await?;
@@ -116,7 +142,7 @@ pub(crate) async fn ignore_build_output(worktree: &Path) -> Result<()> {
     }
     let added = format!(
         "{existing}\n# ai-team: what running this project's checks leaves behind.\n\
-         target/\nnode_modules/\ndist/\n.output/\n.eve/\n"
+         target/\nnode_modules/\nvendor/\ndist/\n.output/\n.eve/\n"
     );
     std::fs::write(&path, added)
         .map_err(|error| Error::invalid(format!("could not write {}: {error}", path.display())))?;
@@ -334,6 +360,45 @@ pub async fn commit(worktree: &Path, message: &str) -> Result<String> {
     rev_parse(worktree, "HEAD").await
 }
 
+/// Every worktree of this repository, as `(path, branch)`.
+///
+/// `--porcelain` rather than the human listing, which aligns columns and puts the branch
+/// in square brackets - a format to parse rather than read, and one git is free to change.
+/// The porcelain form is a stanza per worktree, blank-line separated, with `worktree` and
+/// `branch` on their own lines.
+///
+/// A detached worktree is still a workspace. Its branch is absent rather than invented,
+/// but its path must remain in the result or the window would make a real checkout
+/// impossible to select.
+pub(crate) async fn worktrees(repo: &Path) -> Result<Vec<(String, Option<String>)>> {
+    let listed = git(repo, &["worktree", "list", "--porcelain"]).await?;
+    let mut found = Vec::new();
+    let mut path: Option<String> = None;
+    let mut branch: Option<String> = None;
+    for line in listed.lines().chain(std::iter::once("")) {
+        if let Some(rest) = line.strip_prefix("worktree ") {
+            if let Some(previous) = path.replace(rest.trim().to_string()) {
+                found.push((previous, branch.take()));
+            }
+        } else if let Some(rest) = line.strip_prefix("branch ") {
+            // `refs/heads/chore/review-7223` -> `chore/review-7223`. Stripped by prefix
+            // rather than by taking the last segment, which would turn a branch with a
+            // slash in it into its final word - and most branches here have one.
+            branch = Some(
+                rest.trim()
+                    .strip_prefix("refs/heads/")
+                    .unwrap_or(rest.trim())
+                    .to_string(),
+            );
+        } else if line.trim().is_empty() {
+            if let Some(path) = path.take() {
+                found.push((path, branch.take()));
+            }
+        }
+    }
+    Ok(found)
+}
+
 /// Every local branch, and which one is checked out.
 pub async fn branches(worktree: &Path) -> Result<Vec<String>> {
     Ok(git(
@@ -349,6 +414,12 @@ pub async fn branches(worktree: &Path) -> Result<Vec<String>> {
 
 pub async fn checkout(worktree: &Path, branch: &str) -> Result<()> {
     git(worktree, &["checkout", branch]).await.map(|_| ())
+}
+
+/// Push an exact accepted branch from any checkout of the repository. A returned maker
+/// lease is detached, so delivery must not depend on whichever branch that path shows.
+pub(crate) async fn push_branch(worktree: &Path, branch: &str) -> Result<String> {
+    git(worktree, &["push", "--set-upstream", "origin", branch]).await
 }
 
 /// Push the current branch, setting upstream if it has none.
@@ -399,6 +470,66 @@ mod tests {
         git(dir.path(), &["add", "-A"]).await.unwrap();
         git(dir.path(), &["commit", "-qm", "init"]).await.unwrap();
         dir
+    }
+
+    #[tokio::test]
+    async fn a_slice_has_its_meaningful_branch_before_the_agent_starts() {
+        let dir = repo().await;
+
+        prepare_branch(dir.path(), "ai-team/S1").await.unwrap();
+
+        assert_eq!(
+            current_branch(dir.path()).await.as_deref(),
+            Some("ai-team/S1")
+        );
+        std::fs::write(dir.path().join("new.txt"), "work\n").unwrap();
+        let paths = changed_paths(dir.path()).await.unwrap();
+        commit_paths(dir.path(), "ai-team/S1", "S1: work", &paths)
+            .await
+            .unwrap();
+        assert_eq!(
+            current_branch(dir.path()).await.as_deref(),
+            Some("ai-team/S1")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_stacked_slice_starts_from_its_declared_base() {
+        let dir = repo().await;
+        let original = current_branch(dir.path()).await.unwrap();
+        git(dir.path(), &["checkout", "-qb", "feature/first"])
+            .await
+            .unwrap();
+        std::fs::write(dir.path().join("first.txt"), "first\n").unwrap();
+        git(dir.path(), &["add", "first.txt"]).await.unwrap();
+        git(dir.path(), &["commit", "-qm", "first slice"])
+            .await
+            .unwrap();
+        let base = git(dir.path(), &["rev-parse", "HEAD"])
+            .await
+            .unwrap()
+            .trim()
+            .to_string();
+        git(dir.path(), &["checkout", "-q", &original])
+            .await
+            .unwrap();
+
+        prepare_branch_from(dir.path(), "feature/second", Some("feature/first"))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            current_branch(dir.path()).await.as_deref(),
+            Some("feature/second")
+        );
+        assert_eq!(
+            git(dir.path(), &["rev-parse", "HEAD"])
+                .await
+                .unwrap()
+                .trim(),
+            base
+        );
+        assert!(dir.path().join("first.txt").exists());
     }
 
     #[tokio::test]

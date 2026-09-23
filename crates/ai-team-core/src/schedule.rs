@@ -62,7 +62,7 @@ pub fn claim_due(store: &mut Store, at: &str) -> Result<Vec<Reminder>> {
 /// Shelling out rather than taking a notification crate: this is two one-line commands
 /// that ship with the operating system, and a dependency here would be a build-time cost
 /// on both platforms for something `osascript` already does.
-pub async fn notify(title: &str, body: &str) {
+pub async fn notify(title: &str, body: &str) -> bool {
     // Neither platform's notifier is worth failing a run over, so every error here is
     // swallowed on purpose - a missing notification must not stop the work it was
     // announcing.
@@ -89,11 +89,12 @@ pub async fn notify(title: &str, body: &str) {
     };
 
     let mut command = command;
-    let _ = command
+    command
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()
-        .await;
+        .await
+        .is_ok_and(|status| status.success())
 }
 
 /// What a fired reminder should say.
@@ -147,7 +148,7 @@ where
 
     for reminder in claimed {
         let (title, body) = announcement(&reminder);
-        notify(&title, &body).await;
+        let _ = notify(&title, &body).await;
 
         let (started, run_id, problem) = match runnable(&reminder) {
             Err(_) if reminder.kind != ReminderKind::ScheduledRun => (false, None, None),

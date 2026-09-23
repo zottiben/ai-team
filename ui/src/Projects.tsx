@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 
+import { Browse } from "./Browse";
 import {
   attachRepo,
   doctor,
@@ -26,6 +27,7 @@ export function Projects({ onChanged }: { onChanged: () => void }) {
   const [checks, setChecks] = useState<Check[]>([]);
   const [path, setPath] = useState("");
   const [name, setName] = useState("");
+  const [browsing, setBrowsing] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
 
@@ -80,7 +82,7 @@ export function Projects({ onChanged }: { onChanged: () => void }) {
       <form className="projects__add" onSubmit={(event) => void add(event)}>
         <input
           aria-label="path"
-          placeholder="/Users/you/Developer/your-repo"
+          placeholder="~/src/your-repo"
           value={path}
           onChange={(event) => setPath(event.target.value)}
         />
@@ -90,14 +92,32 @@ export function Projects({ onChanged }: { onChanged: () => void }) {
           value={name}
           onChange={(event) => setName(event.target.value)}
         />
+        <button
+          type="button"
+          className="button"
+          aria-expanded={browsing}
+          onClick={() => setBrowsing(!browsing)}
+        >
+          {browsing ? "Close" : "Browse…"}
+        </button>
         <button type="submit" className="button button--primary">
           Add
         </button>
       </form>
-      {/* Absolute, because a relative path would be relative to wherever the server was
-          started - which is not where the person typing is looking. */}
+      {browsing && (
+        <Browse
+          onPick={(picked) => {
+            setPath(picked);
+            setBrowsing(false);
+          }}
+        />
+      )}
+      {/* Relative is the one thing it cannot be: that would resolve against wherever the
+          server was started, which is not where the person typing is looking. `~` is fine
+          - the server expands it, because a window has no shell in front of it. */}
       <p className="faint">
-        The full path to a repository. Point at anywhere inside it and ai-team registers the
+        The path to a repository, starting with <code className="mono">/</code> or{" "}
+        <code className="mono">~</code>. Point at anywhere inside it and ai-team registers the
         repository root.
       </p>
 

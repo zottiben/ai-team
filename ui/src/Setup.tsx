@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 
+import { Browse } from "./Browse";
+import { SignIn } from "./SignIn";
 import {
   doctor,
   doctorFix,
@@ -29,6 +31,7 @@ export function Setup({ onReady }: { onReady: () => void }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const [path, setPath] = useState("");
+  const [browsing, setBrowsing] = useState(false);
   const [copied, setCopied] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -122,37 +125,45 @@ export function Setup({ onReady }: { onReady: () => void }) {
         <section className="settings__group">
           <h3>Pick an account to think with</h3>
           <p className="faint">
-            Only subscriptions and local models - never a metered API key. Tick one you are
-            already signed into.
+            Only subscriptions and local models - never a metered API key. Tick one, and
+            sign in here if it is not already.
           </p>
           {providers.map((provider) => (
-            <div key={provider.provider} className="settings__row">
-              <label className="settings__toggle">
-                <input
-                  type="checkbox"
-                  aria-label={`allow ${provider.provider}`}
-                  checked={provider.allowed}
-                  disabled={busy !== null}
-                  onChange={(event) =>
-                    void act(
-                      () => setProvider(provider.provider, event.target.checked),
-                      provider.provider,
-                    )
+            <div key={provider.provider} className="settings__source">
+              <div className="settings__row">
+                <label className="settings__toggle">
+                  <input
+                    type="checkbox"
+                    aria-label={`allow ${provider.provider}`}
+                    checked={provider.allowed}
+                    disabled={busy !== null}
+                    onChange={(event) =>
+                      void act(
+                        () => setProvider(provider.provider, event.target.checked),
+                        provider.provider,
+                      )
+                    }
+                  />
+                  <span>{provider.label}</span>
+                </label>
+                {/* Ticked and not signed in is the commonest mistake, and it fails minutes
+                    later inside a run - so it is said here. */}
+                <span
+                  className="status"
+                  data-status={
+                    !provider.allowed ? "queued" : provider.reachable ? "done" : "failed"
                   }
-                />
-                <span>{provider.label}</span>
-              </label>
-              {/* Ticked and not signed in is the commonest mistake, and it fails minutes
-                  later inside a run - so it is said here. */}
-              <span
-                className="status"
-                data-status={
-                  !provider.allowed ? "queued" : provider.reachable ? "done" : "failed"
-                }
-              >
-                {!provider.allowed ? "off" : provider.reachable ? "ready" : "not signed in"}
-              </span>
-              <span className="faint settings__detail">{provider.how}</span>
+                >
+                  {!provider.allowed ? "off" : provider.reachable ? "ready" : "not signed in"}
+                </span>
+                <span className="faint settings__detail">{provider.how}</span>
+              </div>
+              {/* Only where it is the thing standing in the way. A sign-in button beside a
+                  provider that is already answering is a button whose only use is to log
+                  somebody out of an account that was working. */}
+              {provider.allowed && !provider.reachable && (
+                <SignIn provider={provider} onDone={() => void load()} />
+              )}
             </div>
           ))}
         </section>
@@ -162,8 +173,8 @@ export function Setup({ onReady }: { onReady: () => void }) {
         <section className="settings__group">
           <h3>What are we working on?</h3>
           <p className="faint">
-            The full path to a repository. ai-team reads its shape and gives each seat the
-            part it owns.
+            The path to a repository, or find it by browsing. ai-team reads its shape and
+            gives each seat the part it owns.
           </p>
           <form
             className="projects__add"
@@ -175,14 +186,32 @@ export function Setup({ onReady }: { onReady: () => void }) {
           >
             <input
               aria-label="path"
-              placeholder="/Users/you/Developer/your-repo"
+              placeholder="~/src/your-repo"
               value={path}
               onChange={(event) => setPath(event.target.value)}
             />
+            <button
+              type="button"
+              className="button"
+              aria-expanded={browsing}
+              onClick={() => setBrowsing(!browsing)}
+            >
+              {browsing ? "Close" : "Browse…"}
+            </button>
             <button type="submit" className="button button--primary" disabled={busy !== null}>
               {busy === "project" ? "Adding…" : "Add"}
             </button>
           </form>
+          {/* Picking fills the field rather than registering directly, so what gets
+              submitted is always the path that is written down and checkable. */}
+          {browsing && (
+            <Browse
+              onPick={(picked) => {
+                setPath(picked);
+                setBrowsing(false);
+              }}
+            />
+          )}
         </section>
       )}
 

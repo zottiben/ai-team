@@ -150,6 +150,20 @@ impl Row {
 /// running them separately would let two of them disagree about which attempts existed
 /// if a run finished in between.
 pub fn rollup(store: &Store, by: By, project_id: Option<i64>) -> Result<Vec<Row>> {
+    rollup_workspace(store, by, project_id, None)
+}
+
+/// The same metrics, optionally limited to runs rooted in one checkout.
+///
+/// Maker attempts may execute in leased worktrees, so scoping by `node_run.worktree_path`
+/// would hide most of a workspace's team. The run root keeps every attempt, gate, and
+/// cycle attached to the checkout where the work was initiated.
+pub fn rollup_workspace(
+    store: &Store,
+    by: By,
+    project_id: Option<i64>,
+    worktree: Option<&str>,
+) -> Result<Vec<Row>> {
     let group = by.column();
     let sql = format!(
         "WITH maker AS (
@@ -160,6 +174,7 @@ pub fn rollup(store: &Store, by: By, project_id: Option<i64>) -> Result<Vec<Row>
               -- would dilute every rate below with work that never produced a diff.
               WHERE n.role <> 'verifier'
                 AND (?1 IS NULL OR r.project_id = ?1)
+                AND (?2 IS NULL OR r.workspace_path = ?2)
          ),
          -- One row per slice a group actually landed, with how long it took from the
          -- first attempt at it. Computed separately because a slice spans attempts and
@@ -226,7 +241,7 @@ pub fn rollup(store: &Store, by: By, project_id: Option<i64>) -> Result<Vec<Row>
     let conn = store.db().conn();
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt
-        .query_map(rusqlite::params![project_id], |row| {
+        .query_map(rusqlite::params![project_id, worktree], |row| {
             Ok(Row {
                 group: row.get(0)?,
                 attempts: row.get(1)?,
@@ -359,6 +374,47 @@ mod tests {
         rows.iter()
             .find(|row| row.group == group)
             .unwrap_or_else(|| panic!("no group {group} in {:?}", rows.iter().map(|r| &r.group)))
+    }
+
+    #[test]
+    fn workspace_analytics_follow_the_run_root_not_a_makers_lease() {
+        let (mut store, project, team, main_run) = seeded();
+        let backend = seat(&store, team, "backend");
+        attempt(
+            &mut store,
+            main_run,
+            backend,
+            "M1",
+            true,
+            ("2026-09-18T08:00:00Z", "2026-09-18T08:05:00Z"),
+            (100, 50, 0, 0),
+        );
+        let task_run = store
+            .create_run_in(
+                project,
+                "task work",
+                RunTrigger::Manual,
+                Some(std::path::Path::new("/tmp/widget-task")),
+            )
+            .unwrap();
+        let task_node = attempt(
+            &mut store,
+            task_run.id,
+            backend,
+            "T1",
+            true,
+            ("2026-09-18T09:00:00Z", "2026-09-18T09:05:00Z"),
+            (200, 75, 0, 0),
+        );
+        store
+            .attach_worktree(task_node, "/tmp/pool/7", Some("ai-team/T1"), None)
+            .unwrap();
+
+        let rows =
+            rollup_workspace(&store, By::Agent, Some(project), Some("/tmp/widget-task")).unwrap();
+        let backend = find(&rows, "backend");
+        assert_eq!(backend.attempts, 1);
+        assert_eq!(backend.tokens_in, 200);
     }
 
     #[test]

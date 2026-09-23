@@ -7,7 +7,10 @@
 use rusqlite::{params, OptionalExtension, Row};
 
 use crate::error::{Error, Result};
-use crate::model::{Agent, Guardrails, NewAgent, Provider, Team, ToolEffect, ToolPolicy};
+use crate::model::{
+    Agent, DeliveryPolicy, DeliverySettings, Guardrails, NewAgent, Provider, Team, ToolEffect,
+    ToolPolicy,
+};
 use crate::roles::DEFAULT_ROSTER;
 use crate::store::{non_empty, Store};
 use crate::util::{now, slugify, zone_matches};
@@ -75,15 +78,30 @@ impl Store {
         )?;
         // Counted as i64 from the start rather than casting an index: `ord` is a column
         // type, and the cast is the kind of thing that is correct until it is not.
-        // Seeded on whatever this machine can actually reach. A roster of six seats
-        // pointing at a provider the machine denies is a team that cannot work, and
-        // nothing says so until a run fails - which is a long way from here.
-        let (provider, model) = crate::machine::ModelRegistry::load().map_or_else(
-            |_| (crate::model::Provider::Local, "auto".to_string()),
-            |registry| registry.preferred_seat(),
-        );
-        for (ord, preset) in (0i64..).zip(DEFAULT_ROSTER) {
-            self.add_agent(team.id, preset.to_new_agent_on(provider, &model, ord))?;
+        // When Pi is available, the defaults are exact ids chosen for each job. Project
+        // creation still has a local floor when a fresh machine cannot list models yet.
+        // Either way the rows are persisted: a later catalogue change cannot silently
+        // reroute an existing team.
+        let local = || {
+            DEFAULT_ROSTER
+                .iter()
+                .map(|preset| crate::machine::RoleModelDefault {
+                    role: preset.role.to_string(),
+                    provider: crate::model::Provider::Local,
+                    model: "auto".to_string(),
+                })
+                .collect()
+        };
+        let defaults = crate::machine::ModelRegistry::load()
+            .ok()
+            .and_then(|registry| registry.role_defaults().ok())
+            .unwrap_or_else(local);
+        for ((ord, preset), choice) in (0i64..).zip(DEFAULT_ROSTER).zip(defaults) {
+            debug_assert_eq!(preset.role, choice.role);
+            self.add_agent(
+                team.id,
+                preset.to_new_agent_on(choice.provider, &choice.model, ord),
+            )?;
         }
         self.set_project_team(project_id, Some(team.id))?;
         self.team(team.id)
@@ -231,6 +249,23 @@ impl Store {
             }
             Ok(())
         })?;
+        self.team(team_id)
+    }
+
+    pub fn update_delivery(&mut self, team_id: i64, delivery: DeliverySettings) -> Result<Team> {
+        let at = now();
+        let changed = self.db_mut().write(|tx| {
+            Ok(tx.execute(
+                "UPDATE team
+                    SET push_policy = ?2, pr_policy = ?3, merge_policy = ?4,
+                        rev = rev + 1, updated_at = ?5
+                  WHERE id = ?1",
+                params![team_id, delivery.push, delivery.pr, delivery.merge, at],
+            )?)
+        })?;
+        if changed == 0 {
+            return Err(Error::NoSuchTeam(team_id.to_string()));
+        }
         self.team(team_id)
     }
 
@@ -556,6 +591,7 @@ impl Store {
                 source.guardrails,
             )?;
         }
+        clone = self.update_delivery(clone.id, source.delivery)?;
 
         for agent in agents {
             let created = self.add_agent(clone.id, NewAgent::from(&agent))?;
@@ -640,7 +676,8 @@ fn normalise_agent(agent: &mut NewAgent) -> Result<()> {
 
 const TEAM_SELECT: &str = "SELECT id, project_id, slug, name, description, parallel_width, \
      budget_tokens_run, budget_tokens_node, budget_seconds_run, budget_seconds_node, \
-     max_turns_node, max_repairs, on_failure, rev, created_at, updated_at FROM team";
+     max_turns_node, max_repairs, on_failure, push_policy, pr_policy, merge_policy, rev, \
+     created_at, updated_at FROM team";
 
 fn team_from_row(r: &Row<'_>) -> rusqlite::Result<Team> {
     Ok(Team {
@@ -659,9 +696,14 @@ fn team_from_row(r: &Row<'_>) -> rusqlite::Result<Team> {
             max_repairs: r.get(11)?,
             on_failure: r.get(12)?,
         },
-        rev: r.get(13)?,
-        created_at: r.get(14)?,
-        updated_at: r.get(15)?,
+        delivery: DeliverySettings {
+            push: r.get::<_, DeliveryPolicy>(13)?,
+            pr: r.get::<_, DeliveryPolicy>(14)?,
+            merge: r.get::<_, DeliveryPolicy>(15)?,
+        },
+        rev: r.get(16)?,
+        created_at: r.get(17)?,
+        updated_at: r.get(18)?,
     })
 }
 
@@ -754,6 +796,28 @@ mod tests {
         );
         // And the project points back, so the demo needs no query to find it.
         assert_eq!(s.project(p).unwrap().team_id, Some(team.id));
+    }
+
+    #[test]
+    fn publishing_defaults_to_asking_at_each_boundary_and_is_explicitly_editable() {
+        let mut s = Store::memory().unwrap();
+        let p = project(&mut s, "Widget");
+        let team = s.seed_default_team(p).unwrap();
+        assert_eq!(team.delivery, DeliverySettings::default());
+
+        let changed = s
+            .update_delivery(
+                team.id,
+                DeliverySettings {
+                    push: DeliveryPolicy::Auto,
+                    pr: DeliveryPolicy::Ask,
+                    merge: DeliveryPolicy::Manual,
+                },
+            )
+            .unwrap();
+        assert_eq!(changed.delivery.push, DeliveryPolicy::Auto);
+        assert_eq!(changed.delivery.pr, DeliveryPolicy::Ask);
+        assert_eq!(changed.delivery.merge, DeliveryPolicy::Manual);
     }
 
     #[test]
@@ -959,14 +1023,17 @@ mod tests {
 
         // Same account, different model: the operator's number is still theirs to keep.
         let same = s
-            .set_agent_model(agent.id, Provider::Local, "other")
+            .set_agent_model(agent.id, agent.provider, "other")
             .unwrap();
         assert_eq!(same.context_window, Some(32_768));
 
         // Another account entirely: 32k was a fact about the model left behind.
-        let moved = s
-            .set_agent_model(agent.id, Provider::Claude, "sonnet")
-            .unwrap();
+        let other = if agent.provider == Provider::Claude {
+            Provider::OpenAi
+        } else {
+            Provider::Claude
+        };
+        let moved = s.set_agent_model(agent.id, other, "other").unwrap();
         assert_eq!(moved.context_window, None);
     }
 

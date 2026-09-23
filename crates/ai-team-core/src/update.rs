@@ -505,7 +505,7 @@ fn verify(archive: &Path, sums: &Path, name: &str) -> Result<()> {
 /// Written out rather than pulled in: it is sixty lines, it has fixed test vectors, and
 /// the alternative is depending on a crate to verify the integrity of a download - which
 /// is a supply chain question answered by adding to the supply chain.
-fn sha256(data: &[u8]) -> String {
+pub(crate) fn sha256(data: &[u8]) -> String {
     const K: [u32; 64] = [
         0x428a_2f98,
         0x7137_4491,

@@ -23,6 +23,13 @@ use tauri::{WebviewUrl, WebviewWindowBuilder};
 use ai_team_ui::{ServeOptions, Server};
 
 fn main() {
+    // The first thing that happens, and the reason this app could see any of the
+    // operator's tools at all: launched from Finder or the Dock, this process inherits
+    // launchd's `PATH=/usr/bin:/bin:/usr/sbin:/sbin` and cannot find `pi`, `aip`, `awt`,
+    // `claude` or `codex` (D22). Before `run`, because that starts a runtime and
+    // `set_var` is process-global.
+    ai_team_core::adopt_login_path();
+
     if let Err(err) = run() {
         // A desktop app has nowhere to print, so a startup failure gets a dialog too.
         eprintln!("ai-team: {err:#}");

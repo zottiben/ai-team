@@ -1,12 +1,47 @@
 import { useCallback, useEffect, useState } from "react";
 
 import {
+  detectOwnership,
+  editDelivery,
   editSeat,
+  models as fetchModels,
   projects as fetchProjects,
+  resetRosterModels,
   roster as fetchRoster,
+  type DeliveryPolicy,
+  type DeliverySettings,
+  type ModelCatalog,
+  type ModelChoice,
   type Project,
   type Roster as RosterData,
 } from "./api";
+
+const DEFAULT_DELIVERY: DeliverySettings = { push: "ask", pr: "ask", merge: "ask" };
+
+function modelValue(provider: string, model: string): string {
+  return JSON.stringify([provider, model]);
+}
+
+function runtimeProvider(provider: string): string {
+  return (
+    {
+      claude: "claude-subscription",
+      openai: "openai-codex",
+      zai: "zai-coding-plan",
+      local: "llama.cpp",
+    }[provider] ?? provider
+  );
+}
+
+function groupModels(models: ModelChoice[]): Array<[string, ModelChoice[]]> {
+  const groups = new Map<string, ModelChoice[]>();
+  for (const model of models) {
+    const group = groups.get(model.runtime_provider) ?? [];
+    group.push(model);
+    groups.set(model.runtime_provider, group);
+  }
+  return [...groups.entries()];
+}
 
 /**
  * Who is working on what.
@@ -19,21 +54,44 @@ import {
  * With no project selected it shows what a *new* project would get, which is the question
  * somebody asks before creating one rather than after.
  */
-export function Roster({ onChanged }: { onChanged: () => void }) {
+export function Roster({
+  project = null,
+  onChanged,
+}: {
+  project?: string | null;
+  onChanged: () => void;
+}) {
   const [projects, setProjects] = useState<Project[]>([]);
-  const [chosen, setChosen] = useState<string | null>(null);
+  const [chosen, setChosen] = useState<string | null>(project);
   const [data, setData] = useState<RosterData | null>(null);
+  const [catalog, setCatalog] = useState<ModelCatalog | null>(null);
+  const [zones, setZones] = useState<Record<number, string>>({});
   const [problem, setProblem] = useState<string | null>(null);
+  const [confirmDetect, setConfirmDetect] = useState(false);
+  const [confirmModels, setConfirmModels] = useState(false);
+  const [detecting, setDetecting] = useState(false);
+  const [savingDelivery, setSavingDelivery] = useState(false);
 
   const load = useCallback(async () => {
     try {
-      setProjects(await fetchProjects().catch(() => []));
-      setData(await fetchRoster(chosen));
+      const [projects, roster, models] = await Promise.all([
+        fetchProjects().catch(() => []),
+        fetchRoster(chosen),
+        fetchModels(),
+      ]);
+      setProjects(projects);
+      setData(roster);
+      setCatalog(models);
+      setZones(Object.fromEntries(roster.seats.map((seat) => [seat.id, seat.zone])));
       setProblem(null);
     } catch (error: unknown) {
       setProblem(error instanceof Error ? error.message : String(error));
     }
   }, [chosen]);
+
+  useEffect(() => {
+    setChosen(project);
+  }, [project]);
 
   useEffect(() => {
     void load();
@@ -49,27 +107,109 @@ export function Roster({ onChanged }: { onChanged: () => void }) {
     }
   };
 
+  const changeDelivery = async (stage: keyof DeliverySettings, policy: DeliveryPolicy) => {
+    if (data?.project === null || data?.project === undefined) return;
+    const delivery = { ...(data.delivery ?? DEFAULT_DELIVERY), [stage]: policy };
+    setSavingDelivery(true);
+    setProblem(null);
+    try {
+      await editDelivery(data.project, delivery);
+      await load();
+      onChanged();
+    } catch (error: unknown) {
+      setProblem(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSavingDelivery(false);
+    }
+  };
+
+  const applyTeamAction = async (action: "ownership" | "models") => {
+    if (data?.project === null || data?.project === undefined) return;
+    setDetecting(true);
+    try {
+      if (action === "ownership") await detectOwnership(data.project);
+      else await resetRosterModels(data.project);
+      await load();
+      onChanged();
+      setConfirmDetect(false);
+      setConfirmModels(false);
+    } catch (error: unknown) {
+      setProblem(error instanceof Error ? error.message : String(error));
+    } finally {
+      setDetecting(false);
+    }
+  };
+
   return (
     <div className="roster">
       <div className="main__header">
         <h2>Team</h2>
-        <label className="settings__toggle">
-          <span className="faint">for</span>
-          <select
-            aria-label="project"
-            value={chosen ?? ""}
-            onChange={(event) => setChosen(event.target.value === "" ? null : event.target.value)}
-          >
-            <option value="">a new project (defaults)</option>
-            {projects.map((project) => (
-              <option key={project.id} value={project.slug}>
-                {project.name}
-              </option>
-            ))}
-          </select>
-        </label>
+        {project === null ? (
+          <label className="settings__toggle">
+            <span className="faint">for</span>
+            <select
+              aria-label="project"
+              value={chosen ?? ""}
+              onChange={(event) => setChosen(event.target.value === "" ? null : event.target.value)}
+            >
+              <option value="">a new project (defaults)</option>
+              {projects.map((entry) => (
+                <option key={entry.id} value={entry.slug}>
+                  {entry.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : (
+          <span className="faint">for this repository</span>
+        )}
         {data?.team !== null && data?.team !== undefined && (
           <span className="faint mono">{data.team}</span>
+        )}
+        {data?.project !== null &&
+          data?.project !== undefined &&
+          !confirmDetect &&
+          !confirmModels && (
+            <span className="roster__confirm">
+              <button type="button" className="button" onClick={() => setConfirmDetect(true)}>
+                Detect ownership
+              </button>
+              <button type="button" className="button" onClick={() => setConfirmModels(true)}>
+                Reset role models
+              </button>
+            </span>
+          )}
+        {data?.project !== null && data?.project !== undefined && confirmDetect && (
+          <span className="roster__confirm">
+            <span className="faint">Replace Backend and Frontend ownership?</span>
+            <button
+              type="button"
+              className="button button--primary"
+              disabled={detecting}
+              onClick={() => void applyTeamAction("ownership")}
+            >
+              {detecting ? "Detecting…" : "Replace ownership"}
+            </button>
+            <button type="button" className="button" onClick={() => setConfirmDetect(false)}>
+              Cancel
+            </button>
+          </span>
+        )}
+        {data?.project !== null && data?.project !== undefined && confirmModels && (
+          <span className="roster__confirm">
+            <span className="faint">Replace every seat's model with its role default?</span>
+            <button
+              type="button"
+              className="button button--primary"
+              disabled={detecting}
+              onClick={() => void applyTeamAction("models")}
+            >
+              {detecting ? "Reading Pi…" : "Replace models"}
+            </button>
+            <button type="button" className="button" onClick={() => setConfirmModels(false)}>
+              Cancel
+            </button>
+          </span>
         )}
       </div>
 
@@ -78,14 +218,46 @@ export function Roster({ onChanged }: { onChanged: () => void }) {
 
       {data !== null && data.project === null && (
         <p className="faint">
-          These are the seats a new project gets, on the best provider this machine can
-          reach. Change them per project once it exists.
+          These are the seats a new project gets, with an exact available model chosen for
+          each role. Change them per project once it exists.
         </p>
       )}
 
-      {data !== null && data.available.length === 0 && (
+      {data?.project !== null && data?.project !== undefined && (
+        <section className="roster__delivery" aria-label="Delivery approvals">
+          <div>
+            <strong>Delivery approvals</strong>
+            <p className="faint">
+              Commit is automatic. Choose who may cross each remote boundary after verification.
+            </p>
+          </div>
+          {(["push", "pr", "merge"] as const).map((stage) => (
+            <label key={stage}>
+              <span>{stage === "push" ? "Push" : stage === "pr" ? "Open PR" : "Merge"}</span>
+              <select
+                aria-label={`${stage} policy`}
+                disabled={savingDelivery}
+                value={(data.delivery ?? DEFAULT_DELIVERY)[stage]}
+                onChange={(event) =>
+                  void changeDelivery(stage, event.target.value as DeliveryPolicy)
+                }
+              >
+                <option value="manual">Manual</option>
+                <option value="ask">Ask me</option>
+                <option value="auto">Automatic</option>
+              </select>
+            </label>
+          ))}
+        </section>
+      )}
+
+      {catalog?.error !== null && catalog?.error !== undefined && (
+        <p className="error">Could not read Pi's model catalogue: {catalog.error}</p>
+      )}
+
+      {catalog !== null && catalog.error === null && catalog.models.length === 0 && (
         <p className="error">
-          No provider is available, so none of these seats can think. Allow one in Settings.
+          Pi reports no usable model on an allowed provider. Sign in or allow one in Settings.
         </p>
       )}
 
@@ -110,25 +282,38 @@ export function Roster({ onChanged }: { onChanged: () => void }) {
               <span className="faint">{seat.purpose}</span>
 
               <div className="card__row">
-                <label className="settings__toggle">
+                <label className="roster__model">
                   <span className="faint">model</span>
                   <select
-                    aria-label={`provider for ${seat.role}`}
-                    value={seat.provider}
-                    disabled={seat.id < 0}
-                    onChange={(event) => void change(seat.id, { provider: event.target.value })}
+                    aria-label={`model for ${seat.role}`}
+                    value={modelValue(seat.provider, seat.model)}
+                    disabled={seat.id < 0 || catalog === null}
+                    onChange={(event) => {
+                      const [provider, model] = JSON.parse(event.target.value) as [string, string];
+                      void change(seat.id, { provider, model });
+                    }}
                   >
-                    {/* The configured provider is listed even when unavailable, or the
-                        picker would silently show something the seat is not set to. */}
-                    {[...new Set([seat.provider, ...data.available])].map((name) => (
-                      <option key={name} value={name}>
-                        {name}
-                        {data.available.includes(name) ? "" : " (unavailable)"}
+                    {!catalog?.models.some(
+                      (choice) => choice.provider === seat.provider && choice.model === seat.model,
+                    ) && (
+                      <option value={modelValue(seat.provider, seat.model)}>
+                        {runtimeProvider(seat.provider)}/{seat.model} (unavailable)
                       </option>
+                    )}
+                    {groupModels(catalog?.models ?? []).map(([provider, choices]) => (
+                      <optgroup key={provider} label={provider}>
+                        {choices.map((choice) => (
+                          <option
+                            key={`${choice.provider}/${choice.model}`}
+                            value={modelValue(choice.provider, choice.model)}
+                          >
+                            {choice.model} · {choice.context} context · {choice.max_output} max
+                          </option>
+                        ))}
+                      </optgroup>
                     ))}
                   </select>
                 </label>
-                <span className="faint mono">{seat.model}</span>
               </div>
 
               {/* The whole point: what it will actually be, when that is not what it says. */}
@@ -139,16 +324,44 @@ export function Roster({ onChanged }: { onChanged: () => void }) {
                 </span>
               )}
 
-              <div className="card__row">
-                <span className="faint">owns</span>
-                <span className="mono">
-                  {seat.zone.trim() === ""
-                    ? seat.read_only
-                      ? "nothing - it does not edit"
-                      : "nothing yet"
-                    : seat.zone.split("\n").join(", ")}
-                </span>
-              </div>
+              {seat.id > 0 && !seat.read_only ? (
+                <div className="roster__ownership">
+                  <label>
+                    <span className="faint">owns · one glob per line</span>
+                    <textarea
+                      className="mono"
+                      aria-label={`ownership for ${seat.role}`}
+                      rows={Math.max(3, Math.min(4, (zones[seat.id] ?? seat.zone).split("\n").length))}
+                      value={zones[seat.id] ?? seat.zone}
+                      onChange={(event) =>
+                        setZones((current) => ({ ...current, [seat.id]: event.target.value }))
+                      }
+                    />
+                  </label>
+                  {(zones[seat.id] ?? seat.zone).trim() === "" && (
+                    <span className="faint">nothing yet</span>
+                  )}
+                  <button
+                    type="button"
+                    className="button"
+                    disabled={(zones[seat.id] ?? seat.zone) === seat.zone}
+                    onClick={() => void change(seat.id, { zone: zones[seat.id] ?? "" })}
+                  >
+                    Save ownership
+                  </button>
+                </div>
+              ) : (
+                <div className="card__row">
+                  <span className="faint">owns</span>
+                  <span className="mono">
+                    {seat.zone.trim() === ""
+                      ? seat.read_only
+                        ? "nothing - it does not edit"
+                        : "nothing yet"
+                      : seat.zone.split("\n").join(", ")}
+                  </span>
+                </div>
+              )}
 
               {seat.id > 0 && (
                 <div className="card__row">

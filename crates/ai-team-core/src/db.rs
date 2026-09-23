@@ -33,6 +33,32 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
     (5, "console", include_str!("migrations/005_console.sql")),
     (6, "schedule", include_str!("migrations/006_schedule.sql")),
     (7, "speak", include_str!("migrations/007_speak.sql")),
+    (
+        8,
+        "workspace_runs",
+        include_str!("migrations/008_workspace_runs.sql"),
+    ),
+    (
+        9,
+        "notifications",
+        include_str!("migrations/009_notifications.sql"),
+    ),
+    (
+        10,
+        "session_context",
+        include_str!("migrations/010_session_context.sql"),
+    ),
+    (
+        11,
+        "scoped_messages",
+        include_str!("migrations/011_scoped_messages.sql"),
+    ),
+    (12, "delivery", include_str!("migrations/012_delivery.sql")),
+    (
+        13,
+        "supervision",
+        include_str!("migrations/013_supervision.sql"),
+    ),
 ];
 
 /// The number of `v_` views the schema ships. Asserted in tests, because a view silently
@@ -118,6 +144,12 @@ impl Db {
             [],
             |r| r.get(0),
         )?;
+        let latest = latest_schema();
+        if applied > latest {
+            return Err(Error::invalid(format!(
+                "database schema v{applied} is newer than this ai-team build (v{latest}); update ai-team before opening it"
+            )));
+        }
 
         for (version, name, sql) in MIGRATIONS {
             if *version <= applied {
@@ -180,6 +212,25 @@ mod tests {
     }
 
     #[test]
+    fn a_database_from_a_newer_build_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("team.db");
+        let db = Db::open_or_create(&path).unwrap();
+        let newer = latest_schema() + 1;
+        db.conn()
+            .execute(
+                "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?1, 'future', ?2)",
+                rusqlite::params![newer, now()],
+            )
+            .unwrap();
+        drop(db);
+
+        let error = Db::open(&path).unwrap_err();
+        assert!(error.to_string().contains("newer"), "{error}");
+        assert!(error.to_string().contains(&format!("v{newer}")), "{error}");
+    }
+
+    #[test]
     fn migrations_are_idempotent_and_create_the_views() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("team.db");
@@ -209,6 +260,63 @@ mod tests {
             views, VIEW_COUNT,
             "the TablePlus views must ship with the schema"
         );
+    }
+
+    #[test]
+    fn workspace_migration_does_not_guess_a_home_for_old_zero_node_runs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("team.db");
+        let conn = Connection::open(&path).unwrap();
+        configure(&conn).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_migrations (
+                 version INTEGER PRIMARY KEY,
+                 name TEXT NOT NULL,
+                 applied_at TEXT NOT NULL
+             )",
+        )
+        .unwrap();
+        for (version, name, sql) in MIGRATIONS.iter().take(7) {
+            conn.execute_batch(sql).unwrap();
+            conn.execute(
+                "INSERT INTO schema_migrations (version, name, applied_at)
+                 VALUES (?1, ?2, '2026-01-01T00:00:00Z')",
+                rusqlite::params![version, name],
+            )
+            .unwrap();
+        }
+        conn.execute_batch(
+            "INSERT INTO project (id, slug, name, created_at, updated_at)
+             VALUES (1, 'p', 'P', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+             INSERT INTO project_repo
+                    (id, project_id, key, name, main_path, created_at)
+             VALUES (1, 1, 'p', 'P', '/repo/main', '2026-01-01T00:00:00Z');
+             INSERT INTO run (id, project_id, prompt, created_at, updated_at)
+             VALUES (1, 1, 'never dispatched', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'),
+                    (2, 1, 'planned in task', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+             INSERT INTO node_run
+                    (run_id, role, provider, model, worktree_path, created_at, updated_at)
+             VALUES (2, 'orchestrator', 'local', 'auto', '/repo/task',
+                     '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');",
+        )
+        .unwrap();
+        drop(conn);
+
+        let db = Db::open(&path).unwrap();
+        let unassigned: Option<String> = db
+            .conn()
+            .query_row("SELECT workspace_path FROM run WHERE id = 1", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let task: Option<String> = db
+            .conn()
+            .query_row("SELECT workspace_path FROM run WHERE id = 2", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(unassigned, None);
+        assert_eq!(task.as_deref(), Some("/repo/task"));
     }
 
     #[test]
