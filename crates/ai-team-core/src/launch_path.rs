@@ -13,11 +13,11 @@
 //! login shell and pass, which is exactly the shape of failure D12 warns about: the
 //! platform that matters is the one the author cannot hand-test.
 //!
-//! So ask the shell. `$SHELL -l -i -c env` is the operator's own answer, produced by the
-//! same startup files that produced the PATH in their terminal - whatever manages their
-//! versions has already run by the time it prints (D22). Guessing at `~/.local/bin` and
-//! `/opt/homebrew/bin` would cover this machine and quietly fail on one using nix, asdf or
-//! a custom prefix, while looking fixed.
+//! So ask the shell. `$SHELL -l -i -c 'printenv PATH'` is the operator's own answer,
+//! produced by the same startup files that produced the PATH in their terminal - whatever
+//! manages their versions has already run by the time it prints (D22). Guessing at
+//! `~/.local/bin` and `/opt/homebrew/bin` would cover this machine and quietly fail on one
+//! using nix, asdf or a custom prefix, while looking fixed.
 //!
 //! `-i` is not optional, and leaving it off is the version of this that looks correct and
 //! is not. On the reporting machine a login shell answers with `/usr/local/bin:...:
@@ -129,11 +129,13 @@ const END: &str = "__ai_team_env_end__";
 
 /// Ask the operator's shell what PATH is.
 ///
-/// Asks for `env` rather than for `$PATH` because the shells a person might have set
+/// Asks `printenv` rather than expanding `$PATH` because the shells a person might have set
 /// disagree about the variable: in fish `$PATH` is a list, and `printf '%s' $PATH` hands
 /// back every directory run together with no separator - a plausible-looking string naming
-/// nowhere. Every shell's `env` prints the same exported, colon-joined value, because that
-/// is the form the operating system holds it in.
+/// nowhere. `printenv` is a program, so every shell hands it the same exported,
+/// colon-joined value, because that is the form the operating system holds it in. And it
+/// prints that value alone - which `env` does not, and that difference is
+/// [`path_between_markers`]'s to explain.
 ///
 /// Every failure is `None` rather than an error. This runs before the process has anywhere
 /// to report to, and a machine with no usable shell is one where the inherited PATH is the
@@ -151,7 +153,7 @@ fn login_shell_path() -> Option<String> {
 }
 
 fn ask(shell: &str, flags: &[&str]) -> Option<String> {
-    let script = format!("printf '%s\\n' {BEGIN}; env; printf '%s\\n' {END}");
+    let script = format!("printf '%s\\n' {BEGIN}; printenv PATH; printf '%s\\n' {END}");
 
     // Not `/bin/sh` as a fallback: a shell that is not the operator's reads startup files
     // that are not theirs, and would answer with a PATH they have never seen.
@@ -172,19 +174,25 @@ fn ask(shell: &str, flags: &[&str]) -> Option<String> {
     path_between_markers(&String::from_utf8_lossy(&output.stdout))
 }
 
-/// Pull `PATH` out of an `env` dump that may be wrapped in greetings.
+/// Pull `PATH` out from between the markers, whatever the shell said around them.
 ///
-/// The *last* match inside the markers wins: `env` prints one line per variable, so a
-/// multi-line value earlier in the dump is the only way a line could begin with `PATH=`
-/// without being the real one.
+/// Everything between them is the value, newlines included. A line break inside PATH is
+/// a broken line in a startup file - an `export PATH="...` carried onto the next line
+/// inside its quotes - and it cost this machine far more than one directory when PATH was
+/// read a line at a time out of `env`: everything after the break went with it, which was
+/// `/opt/homebrew/bin` and `~/.local/bin`, and so `pi`, `aip`, `awt` and `claude`. So the
+/// entry the break lands in is dropped, because the shell cannot find anything there
+/// either, and every entry around it is kept.
 fn path_between_markers(output: &str) -> Option<String> {
     let body = output.split_once(BEGIN)?.1;
     let body = body.split_once(END).map_or(body, |(before, _)| before);
-    body.lines()
-        .filter_map(|line| line.strip_prefix("PATH="))
-        .map(str::trim)
-        .rfind(|path| !path.is_empty())
-        .map(str::to_string)
+    // `printf '%s\n'` ends the marker's line and `printenv` ends the value's.
+    let value = body.strip_prefix('\n').unwrap_or(body);
+    let value = value.strip_suffix('\n').unwrap_or(value);
+    let dirs = std::env::split_paths(value)
+        .filter(|dir| !dir.as_os_str().to_string_lossy().contains('\n'));
+    let path = std::env::join_paths(dirs).ok()?.into_string().ok()?;
+    (!path.is_empty()).then_some(path)
 }
 
 /// Run a command, and give up on it rather than wait forever.
@@ -287,7 +295,7 @@ mod tests {
         // one line of which could easily look like it.
         let noisy = format!(
             "Welcome to this machine\nPATH=/nonsense/from/a/banner\n\
-             {BEGIN}\nHOME=/Users/x\nPATH=/usr/bin:/bin\nSHELL=/bin/zsh\n{END}\n"
+             {BEGIN}\n/usr/bin:/bin\n{END}\nlogout\n"
         );
         assert_eq!(
             path_between_markers(&noisy).as_deref(),
@@ -296,29 +304,27 @@ mod tests {
     }
 
     #[test]
-    fn an_env_dump_with_no_path_answers_nothing_rather_than_something() {
-        assert_eq!(
-            path_between_markers(&format!("{BEGIN}\nHOME=/x\n{END}")),
-            None
-        );
-        assert_eq!(
-            path_between_markers(&format!("{BEGIN}\nPATH=\n{END}")),
-            None
-        );
+    fn a_shell_with_no_path_answers_nothing_rather_than_something() {
+        // Unset, where `printenv` prints nothing, and set to nothing.
+        assert_eq!(path_between_markers(&format!("{BEGIN}\n{END}\n")), None);
+        assert_eq!(path_between_markers(&format!("{BEGIN}\n\n{END}\n")), None);
         // No markers at all is a shell that never ran the script - a failure, not an empty
         // answer to be merged in.
-        assert_eq!(path_between_markers("PATH=/usr/bin"), None);
+        assert_eq!(path_between_markers("/usr/bin"), None);
     }
 
     #[test]
-    fn a_multi_line_value_does_not_shadow_the_real_path() {
-        // `env` prints one line per variable, so the only way an earlier line begins with
-        // `PATH=` is a variable whose value contains a newline. The dump's own is last,
-        // which is why last wins.
-        let dump = format!("{BEGIN}\nNOTE=first line\nPATH=/decoy\nPATH=/usr/bin:/bin\n{END}");
+    fn a_line_break_inside_path_costs_that_entry_and_not_the_rest() {
+        // The reporting machine's .zshrc, give or take the home directory: an `export
+        // PATH="...:$ANDROID_HOME` continued onto the next line inside its quotes. Read a
+        // line at a time, PATH ended at the break and took every tool ai-team runs with it.
+        let answer = format!(
+            "{BEGIN}\n/Users/x/.opencode/bin:/Users/x/Library/Android/sdk\n  /tools/bin:\
+             /opt/homebrew/bin:/Users/x/.local/bin:/usr/bin:/bin\n{END}\n"
+        );
         assert_eq!(
-            path_between_markers(&dump).as_deref(),
-            Some("/usr/bin:/bin")
+            path_between_markers(&answer).as_deref(),
+            Some("/Users/x/.opencode/bin:/opt/homebrew/bin:/Users/x/.local/bin:/usr/bin:/bin")
         );
     }
 
