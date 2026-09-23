@@ -637,6 +637,19 @@ button.card:hover {
   white-space: pre-wrap;
 }
 
+/* An agent's Markdown is read at the conversation's size, not the board's smaller one -
+ * or the agent's half of the conversation reads smaller than yours. A heading is its
+ * text in bold, not the board's small section label. */
+.activity-message .board-md,
+.activity-thinking .board-md {
+  font-size: inherit;
+}
+
+.activity-message .board-md :is(h3, h4, h5, h6),
+.activity-thinking .board-md :is(h3, h4, h5, h6) {
+  font-size: 1em;
+}
+
 .activity-action {
   display: grid;
   grid-template-columns: 7rem minmax(0, 1fr);

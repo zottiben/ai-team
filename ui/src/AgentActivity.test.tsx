@@ -164,6 +164,53 @@ it("shows thinking and the full answer instead of only the clipped event summary
   expect(screen.getByText("continue from the plan")).toBeDefined();
 });
 
+it("reads an agent's markdown as the formatting it is, and what you typed as you typed it", async () => {
+  stub({}, false, [
+    {
+      id: 1,
+      node_run_id: 11,
+      kind: "cost",
+      actor: "orchestrator",
+      summary: "step finished",
+      message: null,
+      thinking: ["**Checking baseline branch**"],
+      at: "",
+    },
+    {
+      id: 2,
+      node_run_id: 11,
+      kind: "note",
+      actor: "orchestrator",
+      summary: "Plan: shout",
+      message:
+        "## Grounding\n- `src/greet.sh` prints the greeting.\n\n**PR2 - Show both forms**\nOwner: frontend.",
+      thinking: [],
+      at: "",
+    },
+    {
+      id: 3,
+      node_run_id: 11,
+      kind: "note",
+      actor: "human",
+      summary: "keep *this*",
+      message: "keep *this* exactly",
+      thinking: [],
+      at: "",
+    },
+  ]);
+  render(<AgentActivity runs={[RUN]} workspace="/tmp/widget" tick={0} />);
+
+  expect(await screen.findByRole("heading", { name: "Grounding" })).toBeDefined();
+  expect(screen.getByText("src/greet.sh").tagName).toBe("CODE");
+  expect(screen.getByText("Checking baseline branch").tagName).toBe("STRONG");
+  // Its lines are its lines: the title and the owner are not run together.
+  expect(screen.getByText("PR2 - Show both forms").parentElement?.innerHTML).toBe(
+    "<strong>PR2 - Show both forms</strong><br>Owner: frontend.",
+  );
+  expect(screen.queryByText(/\*\*|##/)).toBeNull();
+  expect(screen.getByText("keep *this* exactly").tagName).toBe("P");
+});
+
 it("shows that a streamed tool call is still running while its result is pending", async () => {
   stub({}, false, [
     {

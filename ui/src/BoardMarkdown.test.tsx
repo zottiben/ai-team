@@ -29,6 +29,20 @@ it("never turns an executable markdown URL into a link", () => {
   );
 });
 
+it("keeps a single newline as a line break when asked to, the way chat is written", () => {
+  // A plan is hard-wrapped prose, and its newlines fold into the paragraph. An agent's
+  // message puts `**PR2**` on one line and `Owner: frontend.` on the next, and means it.
+  const source = "**PR2**\nOwner: frontend.";
+
+  const { container, rerender } = render(<BoardMarkdown source={source} />);
+  expect(container.querySelector("p")?.innerHTML).toBe("<strong>PR2</strong> Owner: frontend.");
+
+  rerender(<BoardMarkdown source={source} breaks />);
+  expect(container.querySelector("p")?.innerHTML).toBe(
+    "<strong>PR2</strong><br>Owner: frontend.",
+  );
+});
+
 it("reads the formatting inside a bold title, and carries on after it", () => {
   // A slice title is commonly `**PR1 - Add `--shout` support**`: code inside bold, shown
   // with its backticks when only the outer span was read.

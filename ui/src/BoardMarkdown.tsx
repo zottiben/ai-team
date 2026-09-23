@@ -10,18 +10,26 @@ const TABLE_ROW = /^\s*\|.*\|\s*$/;
 const BULLET = /^(\s*)[-*+]\s+(.*)$/;
 const NUMBERED = /^(\s*)\d+[.)]\s+(.*)$/;
 
-/** Render the subset of Markdown plans actually use without ever accepting HTML. */
+/**
+ * Render the subset of Markdown plans actually use without ever accepting HTML.
+ *
+ * `breaks` keeps a single newline as a line break. A plan is hard-wrapped prose whose
+ * newlines fold into the paragraph; an agent's message is written the way chat is, with a
+ * title on one line and what it owns on the next.
+ */
 export function BoardMarkdown({
   source,
   tight = false,
+  breaks = false,
 }: {
   source: string;
   tight?: boolean;
+  breaks?: boolean;
 }) {
-  return <div className={`board-md${tight ? " tight" : ""}`}>{blocks(source)}</div>;
+  return <div className={`board-md${tight ? " tight" : ""}`}>{blocks(source, breaks)}</div>;
 }
 
-function blocks(source: string): ReactNode[] {
+function blocks(source: string, breaks: boolean): ReactNode[] {
   const lines = source.replace(/\r\n/g, "\n").split("\n");
   const result: ReactNode[] = [];
   let index = 0;
@@ -71,7 +79,7 @@ function blocks(source: string): ReactNode[] {
         body.push((lines[index] ?? "").replace(/^\s*>\s?/, ""));
         index += 1;
       }
-      result.push(<blockquote key={key++}>{blocks(body.join("\n"))}</blockquote>);
+      result.push(<blockquote key={key++}>{blocks(body.join("\n"), breaks)}</blockquote>);
       continue;
     }
 
@@ -122,7 +130,17 @@ function blocks(source: string): ReactNode[] {
       paragraph.push(line);
       index += 1;
     }
-    result.push(<p key={key++}>{inline(paragraph.join(" "), `p${key}`)}</p>);
+    const at = key++;
+    result.push(
+      <p key={at}>
+        {breaks
+          ? paragraph.flatMap((part, line) => [
+              ...(line > 0 ? [<br key={`p${at}br${line}`} />] : []),
+              ...inline(part, `p${at}l${line}`),
+            ])
+          : inline(paragraph.join(" "), `p${at}`)}
+      </p>,
+    );
   }
 
   return result;

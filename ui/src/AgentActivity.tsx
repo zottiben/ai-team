@@ -19,6 +19,7 @@ import {
   type RunDetail,
   type RunEvent,
 } from "./api";
+import { BoardMarkdown } from "./BoardMarkdown";
 
 const ACTIVE = new Set(["queued", "planning", "running", "blocked"]);
 
@@ -423,7 +424,7 @@ function activityRows(event: RunEvent, seenThinking: Set<string>, latest: boolea
     rows.push(
       <article key={`${event.id}-thinking-${index}`} className="activity-thinking">
         <span className="activity-message__who">{event.actor ?? "agent"} is thinking</span>
-        <p>{thought}</p>
+        <BoardMarkdown source={thought} breaks />
       </article>,
     );
   }
@@ -436,7 +437,9 @@ function activityRows(event: RunEvent, seenThinking: Set<string>, latest: boolea
         className={`activity-message${human ? " activity-message--human" : ""}`}
       >
         <span className="activity-message__who">{human ? "You" : event.actor ?? "Agent"}</span>
-        <p>{event.message}</p>
+        {/* An agent writes Markdown. What a person typed is shown as they typed it: an
+            asterisk in a reply is not a request for italics. */}
+        {human ? <p>{event.message}</p> : <BoardMarkdown source={event.message} breaks />}
       </article>,
     );
     return rows;
