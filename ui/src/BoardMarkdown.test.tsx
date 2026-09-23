@@ -28,3 +28,15 @@ it("never turns an executable markdown URL into a link", () => {
     "https://example.com/docs",
   );
 });
+
+it("reads the formatting inside a bold title, and carries on after it", () => {
+  // A slice title is commonly `**PR1 - Add `--shout` support**`: code inside bold, shown
+  // with its backticks when only the outer span was read.
+  render(<BoardMarkdown source={"**PR1 - Add `--shout` support** then *soon* `done`"} />);
+
+  const option = screen.getByText("--shout");
+  expect(option.tagName).toBe("CODE");
+  expect(option.closest("strong")).not.toBeNull();
+  expect(screen.getByText("soon").tagName).toBe("EM");
+  expect(screen.getByText("done").tagName).toBe("CODE");
+});

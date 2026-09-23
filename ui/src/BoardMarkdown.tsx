@@ -131,22 +131,23 @@ function blocks(source: string): ReactNode[] {
 function inline(text: string, prefix: string): ReactNode[] {
   const result: ReactNode[] = [];
   let last = 0;
-  let match: RegExpExecArray | null;
   let count = 0;
-  INLINE.lastIndex = 0;
 
-  while ((match = INLINE.exec(text)) !== null) {
+  // `matchAll` walks its own copy of the pattern, so the text inside a bold span - code in
+  // a slice title, most often - is read by this same function without the outer walk
+  // losing its place in the shared one.
+  for (const match of text.matchAll(INLINE)) {
     if (match.index > last) result.push(text.slice(last, match.index));
     const token = match[0];
     const key = `${prefix}-${count++}`;
     if (token.startsWith("`")) {
       result.push(<code key={key}>{token.slice(1, -1)}</code>);
     } else if (token.startsWith("**") || token.startsWith("__")) {
-      result.push(<strong key={key}>{token.slice(2, -2)}</strong>);
+      result.push(<strong key={key}>{inline(token.slice(2, -2), key)}</strong>);
     } else if (token.startsWith("~~")) {
-      result.push(<del key={key}>{token.slice(2, -2)}</del>);
+      result.push(<del key={key}>{inline(token.slice(2, -2), key)}</del>);
     } else if (token.startsWith("*")) {
-      result.push(<em key={key}>{token.slice(1, -1)}</em>);
+      result.push(<em key={key}>{inline(token.slice(1, -1), key)}</em>);
     } else if (token.startsWith("[")) {
       const split = token.indexOf("](");
       const label = token.slice(1, split);
