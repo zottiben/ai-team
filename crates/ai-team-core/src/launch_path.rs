@@ -100,6 +100,7 @@ fn adopt_launchd_ssh_agent() {
 #[cfg(not(target_os = "macos"))]
 fn adopt_launchd_ssh_agent() {}
 
+#[cfg(any(target_os = "macos", test))]
 fn launchctl_value(output: &[u8]) -> Option<OsString> {
     let value = std::str::from_utf8(output).ok()?.trim();
     (!value.is_empty()).then(|| OsString::from(value))
