@@ -1016,7 +1016,7 @@ fn how_authenticated(provider: ai_team_core::Provider) -> &'static str {
     }
 }
 
-async fn settings() -> Result<Json<Settings>> {
+async fn settings(State(state): State<AppState>) -> Result<Json<Settings>> {
     let path = ai_team_core::machine_profile_path()?;
     let registry = ai_team_core::ModelRegistry::load();
 
@@ -1070,13 +1070,13 @@ async fn settings() -> Result<Json<Settings>> {
     let context = ai_team_core::ContextSource::ALL
         .iter()
         .map(|source| {
-            let held = ai_team_core::token_held(*source);
+            let held = state.credentials().held(*source);
             ContextSetting {
                 source: source.as_str().to_string(),
                 allowed: registry
                     .as_ref()
                     .is_ok_and(|registry| registry.context_sources().contains(source)),
-                oauth_connected: ai_team_core::has_oauth(*source),
+                oauth_connected: state.credentials().has_oauth(*source),
                 token_set: held != ai_team_core::Held::Absent,
                 held,
                 token_env: ai_team_core::token_env(*source),
@@ -1202,7 +1202,7 @@ async fn start_context_auth(
     state
         .terminals()
         .write(id, &format!("/mcp-auth {}\r", request.source.as_str()))?;
-    ai_team_core::forget_oauth(request.source);
+    state.credentials().forget_oauth(request.source);
 
     Ok(Json(serde_json::json!({
         "id": id,
@@ -1222,11 +1222,16 @@ struct TokenChange {
 /// The one route that receives a credential, and it never hands one back: the answer says
 /// whether there is now a token, not what it is. A route that echoed what it had just been
 /// given would put the value in a response body, a browser cache and any log in between.
-async fn set_token(JsonBody(change): JsonBody<TokenChange>) -> Result<Json<serde_json::Value>> {
-    ai_team_core::set_token(change.source, &change.token)?;
+async fn set_token(
+    State(state): State<AppState>,
+    JsonBody(change): JsonBody<TokenChange>,
+) -> Result<Json<serde_json::Value>> {
+    state
+        .credentials()
+        .set_token(change.source, &change.token)?;
     Ok(Json(serde_json::json!({
         "source": change.source.as_str(),
-        "token_set": ai_team_core::has_token(change.source),
+        "token_set": state.credentials().has_token(change.source),
     })))
 }
 
@@ -1256,7 +1261,7 @@ async fn doctor(State(state): State<AppState>) -> Json<ai_team_core::Report> {
         .store()
         .ok()
         .map(|store| ai_team_core::Known::of(&store.lock()));
-    Json(ai_team_core::readiness_report(known.as_ref()).await)
+    Json(ai_team_core::readiness_report_with(known.as_ref(), state.credentials()).await)
 }
 
 #[derive(Debug, Deserialize)]

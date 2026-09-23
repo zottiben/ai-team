@@ -44,6 +44,11 @@ struct Inner {
     /// The terminals this process has open. A session outlives the window, so it lives
     /// here rather than in a request.
     terminals: ai_team_core::Terminals,
+    /// Which credential store this surface may inspect or change.
+    ///
+    /// Production uses the operating-system store. Integration tests inject an isolated
+    /// store so merely driving an HTTP route cannot read or write the operator's keychain.
+    credentials: ai_team_core::CredentialStore,
     /// Which program is serving. The update route replaces the binary it runs in, and
     /// `ait ui` and the desktop app are two different binaries in one release.
     host: ai_team_core::Host,
@@ -68,6 +73,7 @@ impl AppState {
                 db_path: None,
                 lsp: ai_team_core::Pool::new(),
                 terminals: ai_team_core::Terminals::new(),
+                credentials: ai_team_core::CredentialStore::default(),
                 host: ai_team_core::Host::Cli,
             }),
         }
@@ -84,6 +90,7 @@ impl AppState {
                 db_path: self.inner.db_path.clone(),
                 lsp: ai_team_core::Pool::new(),
                 terminals: ai_team_core::Terminals::new(),
+                credentials: self.inner.credentials.clone(),
                 host,
             }),
         }
@@ -100,6 +107,7 @@ impl AppState {
                 db_path,
                 lsp: ai_team_core::Pool::new(),
                 terminals: ai_team_core::Terminals::new(),
+                credentials: self.inner.credentials.clone(),
                 host: self.inner.host,
             }),
         }
@@ -115,9 +123,30 @@ impl AppState {
                 db_path: self.inner.db_path.clone(),
                 lsp: ai_team_core::Pool::new(),
                 terminals: ai_team_core::Terminals::new(),
+                credentials: self.inner.credentials.clone(),
                 host: self.inner.host,
             }),
         }
+    }
+
+    #[must_use]
+    pub(crate) fn with_credentials(self, credentials: ai_team_core::CredentialStore) -> Self {
+        Self {
+            inner: Arc::new(Inner {
+                token: self.inner.token.clone(),
+                store: Mutex::new(None),
+                run_start: tokio::sync::Mutex::new(()),
+                db_path: self.inner.db_path.clone(),
+                lsp: ai_team_core::Pool::new(),
+                terminals: ai_team_core::Terminals::new(),
+                credentials,
+                host: self.inner.host,
+            }),
+        }
+    }
+
+    pub(crate) fn credentials(&self) -> &ai_team_core::CredentialStore {
+        &self.inner.credentials
     }
 
     pub(crate) async fn lock_run_start(&self) -> tokio::sync::MutexGuard<'_, ()> {

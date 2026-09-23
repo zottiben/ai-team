@@ -199,15 +199,36 @@ impl Known {
 /// database - a first run has none, and a report that could not be produced without one
 /// would be unavailable exactly when it is needed.
 pub async fn report(known: Option<&Known>) -> Report {
-    report_at(&Paths::resolve(), known).await
+    report_with_credentials(known, &crate::secrets::CredentialStore::default()).await
+}
+
+/// The same report with a caller-owned credential view.
+///
+/// The HTTP integration harness uses an isolated view so requests cannot touch the
+/// operator's keychain. The desktop and CLI use [`report`], whose default remains the
+/// platform credential store.
+pub async fn report_with_credentials(
+    known: Option<&Known>,
+    credentials: &crate::secrets::CredentialStore,
+) -> Report {
+    report_at_with_credentials(&Paths::resolve(), known, credentials).await
 }
 
 /// The same, against paths a caller chose.
 pub async fn report_at(paths: &Paths, known: Option<&Known>) -> Report {
+    report_at_with_credentials(paths, known, &crate::secrets::CredentialStore::default()).await
+}
+
+/// The same, against caller-owned paths and credentials.
+pub async fn report_at_with_credentials(
+    paths: &Paths,
+    known: Option<&Known>,
+    credentials: &crate::secrets::CredentialStore,
+) -> Report {
     let mut checks = vec![data_directory(paths), machine_profile(paths)];
     checks.push(database(paths, known));
     checks.extend(providers(paths));
-    checks.extend(context_sources(paths));
+    checks.extend(context_sources(paths, credentials));
     checks.extend(neighbours().await);
     checks.push(frontend());
     if let Some(known) = known {
@@ -478,7 +499,7 @@ fn providers(paths: &Paths) -> Vec<Check> {
 /// Allowed but unauthenticated is worth saying, though: the connection gets generated
 /// and its seats fail at the first call, which is a long way from here. OAuth is checked
 /// first because it belongs to Pi and is the normal path; a manual token is the fallback.
-fn context_sources(paths: &Paths) -> Vec<Check> {
+fn context_sources(paths: &Paths, credentials: &crate::secrets::CredentialStore) -> Vec<Check> {
     let registry = model_registry(paths);
     crate::machine::ContextSource::ALL
         .iter()
@@ -491,10 +512,10 @@ fn context_sources(paths: &Paths) -> Vec<Check> {
             if !allowed {
                 return Check::fine(&id, &label, "not enabled on this machine");
             }
-            if crate::secrets::has_oauth(*source) {
+            if credentials.has_oauth(*source) {
                 return Check::fine(&id, &label, "enabled, connected through Pi OAuth");
             }
-            match crate::secrets::held(*source) {
+            match credentials.held(*source) {
                 crate::secrets::Held::Keychain => {
                     Check::fine(&id, &label, "enabled, using a manually stored token")
                 }

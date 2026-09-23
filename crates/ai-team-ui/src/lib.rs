@@ -58,6 +58,11 @@ pub struct ServeOptions {
     /// `None` means the machine's own, which is what `ait ui` passes; a test passes its
     /// own, because a test that reaches for the real one writes to the developer's home.
     pub db_path: Option<std::path::PathBuf>,
+    /// Which credential store HTTP settings and readiness requests may inspect.
+    ///
+    /// Production keeps the platform-backed default. Integration tests replace it with
+    /// an isolated store so no request reaches the operator's login keychain.
+    pub credentials: ai_team_core::CredentialStore,
     /// Which program is serving this window.
     ///
     /// The same server runs inside `ait ui` and inside the desktop app, and the update
@@ -93,7 +98,8 @@ impl Server {
                     .db_path
                     .clone()
                     .or_else(|| ai_team_core::default_db_path().ok()),
-            );
+            )
+            .with_credentials(options.credentials);
         if let Some(store) = options.store {
             state = state.with_store(store);
         }

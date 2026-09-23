@@ -44,6 +44,7 @@ impl Harness {
         let server = runtime
             .block_on(Server::bind(ServeOptions {
                 store: Some(ai_team_core::Store::open(&path).unwrap()),
+                credentials: ai_team_core::CredentialStore::isolated(),
                 ..Default::default()
             }))
             .unwrap();
@@ -93,6 +94,7 @@ impl Harness {
         let server = runtime
             .block_on(Server::bind(ServeOptions {
                 store: Some(ai_team_core::Store::open(&path).unwrap()),
+                credentials: ai_team_core::CredentialStore::isolated(),
                 ..Default::default()
             }))
             .unwrap();
@@ -154,6 +156,12 @@ impl Harness {
             .build()
             .unwrap();
 
+        // An integration-test dependency is not compiled with `cfg(test)`. Inject the
+        // private store explicitly so no HTTP test reads or writes the login keychain.
+        let options = ServeOptions {
+            credentials: ai_team_core::CredentialStore::isolated(),
+            ..options
+        };
         let server = runtime.block_on(Server::bind(options)).unwrap();
         let addr = server.addr();
         let token = server.token().to_string();
@@ -1038,9 +1046,6 @@ fn no_route_ever_produces_a_context_token() {
 
 #[test]
 fn storing_a_token_answers_without_repeating_it() {
-    // Clearing, deliberately: an empty token is the one request that changes nothing on a
-    // machine with no token stored, so this asserts the route's shape without writing to
-    // the operator's keychain. What a successful store does is the ignored test below.
     let (harness, _dir) = Harness::with_store();
 
     let cleared = harness.post("/api/settings/token", r#"{"source":"clickup","token":""}"#);
@@ -1048,18 +1053,11 @@ fn storing_a_token_answers_without_repeating_it() {
     assert_eq!(cleared.json()["token_set"], false);
 }
 
-/// A token really going into this machine's store, through a request.
+/// A token goes through the real HTTP route and into the harness's isolated store.
 ///
-/// Ignored, and it has to stay that way: it writes to the operator's **login keychain**,
-/// which on macOS can raise an authorization dialog at whoever is using the machine. An
-/// earlier version of this ran on every `cargo test` and did exactly that. Run it by hand
-/// when the store or the route changes:
-///
-/// ```text
-/// cargo test -p ai-team-ui --test server -- --ignored --nocapture
-/// ```
+/// The platform invocation has its own ignored core test. Keeping that boundary explicit
+/// prevents an ordinary server test from opening the operator's login keychain.
 #[test]
-#[ignore = "writes to the operator's real keychain and can raise an OS dialog"]
 fn a_context_token_goes_in_and_never_comes_back() {
     const SECRET: &str = "pk_a_very_recognisable_test_token";
 
@@ -1084,7 +1082,6 @@ fn a_context_token_goes_in_and_never_comes_back() {
         settings.body
     );
 
-    // Put the machine back as it was - this runs against a developer's own keychain.
     let cleared = harness.post("/api/settings/token", r#"{"source":"clickup","token":""}"#);
     assert_eq!(cleared.status, 200, "{}", cleared.body);
 }

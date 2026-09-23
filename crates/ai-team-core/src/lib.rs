@@ -98,7 +98,9 @@ pub use pi::{
 };
 pub use readiness::{
     apply as apply_fix, apply_at as apply_fix_at, report as readiness_report,
-    report_at as readiness_report_at, Action, Check, Fix, Known, Paths, Report, Severity,
+    report_at as readiness_report_at, report_at_with_credentials as readiness_report_at_with,
+    report_with_credentials as readiness_report_with, Action, Check, Fix, Known, Paths, Report,
+    Severity,
 };
 pub use review::{
     amendment, as_instructions, conductor, deliver as deliver_review, diff_for, for_orchestrator,
@@ -111,7 +113,7 @@ pub use roles::{
 pub use schedule::{act, announcement, claim_due, notify, runnable, tick, Fired, TICK};
 pub use secrets::{
     clear_token, forget_oauth, has_oauth, has_token, held as token_held, set_token,
-    token as context_token, token_env, Held,
+    token as context_token, token_env, CredentialStore, Held,
 };
 pub use speak::{
     queue as queue_message, start_turn, start_turn_in, target as speak_target,

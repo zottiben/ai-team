@@ -168,6 +168,90 @@ pub enum Held {
     Absent,
 }
 
+/// The credential view used by a surface.
+///
+/// Production uses the platform-backed default. Tests and other isolated embeddings can
+/// ask for a private in-memory view instead, so exercising an HTTP route never reaches the
+/// operator's login keychain merely because the core crate is an integration-test
+/// dependency (where Rust does not set `cfg(test)` on the dependency).
+#[derive(Clone, Debug)]
+pub struct CredentialStore {
+    backend: CredentialBackend,
+}
+
+#[derive(Clone, Debug)]
+enum CredentialBackend {
+    Platform,
+    Isolated(std::sync::Arc<Mutex<Vec<(ContextSource, String)>>>),
+}
+
+impl Default for CredentialStore {
+    fn default() -> Self {
+        Self {
+            backend: CredentialBackend::Platform,
+        }
+    }
+}
+
+impl CredentialStore {
+    /// A process-local store that cannot read or write the operating-system keychain.
+    pub fn isolated() -> Self {
+        Self {
+            backend: CredentialBackend::Isolated(std::sync::Arc::new(Mutex::new(Vec::new()))),
+        }
+    }
+
+    pub fn held(&self, source: ContextSource) -> Held {
+        match &self.backend {
+            CredentialBackend::Platform => crate::secrets::held(source),
+            CredentialBackend::Isolated(tokens) => {
+                let tokens = tokens
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if tokens.iter().any(|(candidate, _)| *candidate == source) {
+                    Held::Keychain
+                } else {
+                    Held::Absent
+                }
+            }
+        }
+    }
+
+    pub fn has_token(&self, source: ContextSource) -> bool {
+        self.held(source) != Held::Absent
+    }
+
+    pub fn has_oauth(&self, source: ContextSource) -> bool {
+        match &self.backend {
+            CredentialBackend::Platform => crate::secrets::has_oauth(source),
+            CredentialBackend::Isolated(_) => false,
+        }
+    }
+
+    pub fn set_token(&self, source: ContextSource, value: &str) -> Result<()> {
+        match &self.backend {
+            CredentialBackend::Platform => crate::secrets::set_token(source, value),
+            CredentialBackend::Isolated(tokens) => {
+                let mut tokens = tokens
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                tokens.retain(|(candidate, _)| *candidate != source);
+                let value = value.trim();
+                if !value.is_empty() {
+                    tokens.push((source, value.to_string()));
+                }
+                Ok(())
+            }
+        }
+    }
+
+    pub fn forget_oauth(&self, source: ContextSource) {
+        if matches!(&self.backend, CredentialBackend::Platform) {
+            crate::secrets::forget_oauth(source);
+        }
+    }
+}
+
 pub fn held(source: ContextSource) -> Held {
     // The environment is free to read and always wins, so it is answered before anything
     // is cached or asked of the operating system.
