@@ -149,7 +149,7 @@ output has to be in the repo. CI asserts it is current.
 
 - `design/concept.md` - the binding concept: pillars, anti-pillars, scope tiers
 - `AGENTS.md` - what an agent working in this repo needs to know
-- The build plan is a row in ai-planner, not a file: `aip show -p ai-team`
+- The build plan is a row in ai-planner, not a file: `aip show`
 
 ## Licence
 

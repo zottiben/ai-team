@@ -12,7 +12,7 @@ Agents run as **Pi** processes (`pi`, with the operator's own extensions).
 on macOS; it is built on Linux. Both must work, and where they disagree macOS wins. The
 author cannot hand-test the primary platform, so CI's `macos-latest` leg is the real
 verification — put platform-sensitive logic behind a test that runs on **both** legs
-rather than checking it by hand. Three macOS facts bite (see the gotcha in the plan):
+rather than checking it by hand. Three macOS facts bite:
 `/tmp` and `/var` are symlinks into `/private`, APFS is case-insensitive by default, and
 the login shell is zsh.
 
@@ -58,7 +58,7 @@ There is no `BUILD_PLAN.md` or `HANDOFF.md`. The plan is a row in ai-planner:
 
 ```sh
 aip status            # where you are, what is next
-aip show -p ai-team   # the whole plan: decisions, gotchas, slices
+aip show              # the whole plan: decisions, gotchas, slices
 aip resume            # after a context clear
 ```
 
@@ -67,8 +67,10 @@ isn't covered, ask and record it with `aip decision add`.
 
 ## Hard rules
 
-Twenty-one decisions are recorded in the plan (`aip decision ls`). These thirteen are the ones
-an agent will otherwise get wrong, so they are repeated here.
+These thirteen are the rules an agent will otherwise get wrong. They were decided in the
+first build plan, retired when `1f53679` became the baseline, so the `D` and `M` tags name
+that plan's decisions and slices - not anything `aip decision ls` will find. This file is
+now their only record.
 
 ### 1. Subscription-backed models only (D8)
 The entire point is to stop managing balances across several accounts, and the work machine
