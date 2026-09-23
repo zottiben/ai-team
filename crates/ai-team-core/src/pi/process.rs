@@ -79,10 +79,11 @@ pub struct PiTurn {
     /// assistant holding a `bash` tool, which is how the first Pi run had the
     /// orchestrator write the code instead of the plan.
     pub instructions: Option<String>,
-    /// Credentials this seat's own MCP servers need, as `NAME=value` pairs.
+    /// What this seat's process is given, as `NAME=value` pairs.
     ///
-    /// Only ever the context tokens (D23), and only the ones this seat's sources actually
-    /// use - a seat with no ClickUp server is not handed a ClickUp token. They arrive here
+    /// The context tokens its own MCP servers need (D23), and only the ones its sources
+    /// actually use - a seat with no ClickUp server is not handed a ClickUp token - plus
+    /// `AI_PLANNER_PLAN`, so its own `aip` calls act on its run's plan. They arrive here
     /// rather than through the ambient environment because the window is started from
     /// Finder, which has never read a shell profile.
     pub environment: Vec<(String, String)>,
@@ -183,7 +184,7 @@ impl PiProcess {
             // After `env_remove`, deliberately: what this seat is *given* is the last word
             // on its environment, and a credential removed as metered must stay removed.
             // Nothing in `METERED_MODEL_ENV` is a name this list may carry, because these
-            // are ai-team's own `AI_TEAM_*_TOKEN` variables and nothing else.
+            // are ai-team's own `AI_TEAM_*_TOKEN` variables and the run's plan, nothing else.
             .envs(
                 turn.environment
                     .iter()

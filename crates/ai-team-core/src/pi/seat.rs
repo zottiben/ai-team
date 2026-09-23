@@ -384,6 +384,11 @@ impl Seat<'_> {
         // work is and the designs reach the seat that owns the UI (D9), so handing every
         // seat every credential would undo the scoping the MCP config just did.
         turn.environment = context_environment(self.sources);
+        // Its own `aip` calls, through `bash`, act on the run's plan as its server's do.
+        if let Some(access) = self.plan {
+            turn.environment
+                .push(("AI_PLANNER_PLAN".into(), access.plan.to_string()));
+        }
         if is_planning_role(&self.agent.role) {
             // The adapter otherwise merges repository and global MCP definitions after
             // this file. Exclusive mode makes the generated read-only definitions win;
@@ -847,6 +852,40 @@ mod tests {
             // second board beside it.
             assert!(!text.contains("create_plan"), "{text}");
         }
+    }
+
+    #[test]
+    fn a_seats_own_aip_calls_act_on_its_runs_plan_too() {
+        // Seats run `aip log` through `bash` as well as through the MCP server, and a call
+        // that names no plan is answered with whichever one the checkout resolves to.
+        let support = tempfile::tempdir().unwrap();
+        let lease = tempfile::tempdir().unwrap();
+        let (team, roster) = team_of();
+        let agent = roster.iter().find(|a| a.role == "backend").unwrap().clone();
+        let named = |plan: Option<PlanAccess<'_>>| {
+            Seat {
+                agent: &agent,
+                provider: Provider::Local,
+                model: "local",
+                worktree: lease.path(),
+                support: support.path(),
+                sources: &[],
+                plan,
+                team: &team,
+                roster: &roster,
+            }
+            .turn("build it")
+            .unwrap()
+            .environment
+            .into_iter()
+            .find(|(name, _)| name == "AI_PLANNER_PLAN")
+            .map(|(_, plan)| plan)
+        };
+        assert_eq!(
+            named(Some(access(lease.path(), false))).as_deref(),
+            Some("csv-export")
+        );
+        assert_eq!(named(None), None);
     }
 
     #[test]
