@@ -312,6 +312,28 @@ fn unknown_paths_fall_back_to_the_app() {
 }
 
 #[test]
+fn the_window_served_is_the_bundle_of_the_checkout_it_was_built_from() {
+    // Worktrees of one repository that share a CARGO_TARGET_DIR share the build script's
+    // output too: cargo names a path package's build directory by where it sits in its
+    // workspace, not by where the workspace is. A table naming its files by absolute path
+    // embedded whichever checkout last ran the script - one worktree's binary serving
+    // another's window, with nothing to say so.
+    let dist = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../ui/dist");
+    let own = std::fs::read_to_string(dist.join("app.js")).expect("ui/dist is committed");
+    let app = Harness::start();
+
+    let served = app.get_anonymous("/app.js");
+
+    assert_eq!(served.status, 200);
+    assert!(
+        served.body == own,
+        "served a {}-byte app.js, but this checkout's ui/dist/app.js is {} bytes",
+        served.body.len(),
+        own.len()
+    );
+}
+
+#[test]
 fn the_url_carries_the_token() {
     let app = Harness::start();
     let expected = format!("http://{}/?{TOKEN_QUERY}={}", app.addr, app.token);
