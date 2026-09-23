@@ -432,6 +432,8 @@ export type ReviewDetail = Review & {
   files: FileDiff[];
   comments: Comment[];
   steerable: boolean;
+  /** Its seat finished, but the pull request is still open where it was built. */
+  follows_up?: boolean;
 };
 
 export type Submitted =
@@ -442,6 +444,7 @@ export type Submitted =
       /** Whether the orchestrator was told directly as well as through the plan. */
       told_orchestrator: boolean;
     }
+  | { outcome: "followed_up"; slice_key: string; run_id: number; comments: number }
   | { outcome: "planned"; slice_key: string; comments: number }
   | { outcome: "accepted" };
 

@@ -413,6 +413,14 @@ impl Planner {
         Ok(slug)
     }
 
+    /// The branch one slice is built on and its pull request targets. Set through the CLI
+    /// because ai-planner's MCP server cannot: a planner seat says `Stacks on:` instead.
+    pub async fn set_slice_base(&self, key: &str, base: &str) -> Result<()> {
+        self.output(&["slice", "edit", key, "--base", base])
+            .await
+            .map(drop)
+    }
+
     /// Point the slice at the branch its work landed on, so review starts from the board.
     pub async fn set_branch(&self, key: &str, branch: &str) -> Result<()> {
         self.output(&["slice", "edit", key, "--branch", branch])

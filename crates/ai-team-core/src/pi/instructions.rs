@@ -141,7 +141,16 @@ fn planning_section(out: &mut String, roster: &[Agent], guide: Option<&str>) {
          tasks touch**, comma-separated:\n\n\
          ```\n\
          Touches: migrations/**, src/db/**, ui/src/Summary.tsx\n\
-         ```\n\n",
+         ```\n\n\
+         **A pull request that needs an earlier one's code stacks on it.** Say so with a \
+         line in its scope, above the `Touches:` line:\n\n\
+         ```\n\
+         Stacks on: PR1\n\
+         ```\n\n\
+         It is then built on PR1's branch, in a worktree of its own, once PR1 is built. \
+         Stack only for a real code dependency: every other pull request is built side by \
+         side from the default branch, and a fix to the bottom of a stack has to be carried \
+         up through every pull request above it.\n\n",
     );
 
     roster_section(out, roster);
@@ -296,6 +305,21 @@ mod tests {
         assert!(guided.contains("Write user stories."), "{guided}");
         // The guide may say to start a plan; ai-team already has.
         assert!(guided.contains("skip any step that starts one"), "{guided}");
+    }
+
+    #[test]
+    fn the_stack_line_the_planner_is_shown_is_the_one_the_dispatcher_reads() {
+        let (agent, team, roster) = seat("planner");
+        let prompt = for_seat(&agent, &team, &roster, None);
+        let slice = crate::neighbours::Slice {
+            key: "PR2".into(),
+            scope_md: Some(prompt),
+            ..Default::default()
+        };
+        assert_eq!(
+            crate::stack::declared_parent(&slice).as_deref(),
+            Some("PR1")
+        );
     }
 
     #[test]

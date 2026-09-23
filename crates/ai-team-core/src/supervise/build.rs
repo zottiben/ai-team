@@ -85,13 +85,26 @@ pub(super) struct PrTask {
     /// not `HEAD` - is what the whole PR is measured against.
     pub(super) base: String,
     pub(super) worktree: PathBuf,
-    pub(super) lease: Lease,
+    /// The PR's own leased worktree, or `None` when a one-PR plan builds in the run's
+    /// checkout (PW3).
+    pub(super) lease: Option<Lease>,
     pub(super) planner: Planner,
     pub(super) run_id: i64,
     pub(super) max_repairs: i64,
     pub(super) verifier: Option<VerifierSeat>,
-    /// The interrupted turn to pick up from, when this is a recovery.
-    pub(super) resume: Option<NodeRun>,
+    /// Where the build starts: its first task, an interrupted turn, or review comments.
+    pub(super) start: Start,
+}
+
+/// Where building a PR starts.
+pub(super) enum Start {
+    /// Its first task.
+    Fresh,
+    /// The turn an interrupted process left behind, which is finished first.
+    Resume(NodeRun),
+    /// Review comments on a PR already built: the seat whose work they are about takes
+    /// them, in its own conversation, and the PR is checked whole again.
+    FollowUp { node: NodeRun, comments: String },
 }
 
 /// What building one PR needs, borrowed for as long as it takes.
@@ -157,7 +170,7 @@ pub(super) async fn run_pr(task: PrTask) -> Result<Dispatched> {
         run_id,
         max_repairs,
         verifier,
-        resume,
+        start,
     } = task;
     let mut store = Store::open(&db_path)?;
     let pr = Pr {
@@ -172,9 +185,9 @@ pub(super) async fn run_pr(task: PrTask) -> Result<Dispatched> {
         max_repairs,
         verifier: verifier.as_ref(),
     };
-    let resuming = resume.is_some();
+    let resuming = matches!(start, Start::Resume(_));
     let mut rows = Rows::default();
-    let attempted = match build_pr(&mut store, &pr, &mut rows, resume).await {
+    let attempted = match build_pr(&mut store, &pr, &mut rows, start).await {
         Ok(attempted) => attempted,
         Err(error) if resuming => {
             // Recovery must be retryable too. Keep the Pi sessions and the dirty lease;
@@ -183,7 +196,9 @@ pub(super) async fn run_pr(task: PrTask) -> Result<Dispatched> {
             for row in &rows.all {
                 let _ = store.release_node_supervision(*row, pid);
             }
-            lease.preserve();
+            if let Some(lease) = lease {
+                lease.preserve();
+            }
             return Err(error);
         }
         Err(error) => {
@@ -261,10 +276,11 @@ async fn build_pr(
     store: &mut Store,
     pr: &Pr<'_>,
     rows: &mut Rows,
-    resume: Option<NodeRun>,
+    start: Start,
 ) -> Result<Attempted> {
-    let (next, repairs, mut last) = match resume {
-        Some(node) => match pick_up(store, pr, rows, node).await? {
+    let (next, repairs, mut last) = match start {
+        Start::Fresh => (0, 0, None),
+        Start::Resume(node) => match pick_up(store, pr, rows, node).await? {
             PickedUp::At {
                 next,
                 repairs,
@@ -272,7 +288,12 @@ async fn build_pr(
             } => (next, repairs, Some(*last)),
             PickedUp::Stopped(stopped) => return Ok(*stopped),
         },
-        None => (0, 0, None),
+        Start::FollowUp { node, comments } => {
+            match follow_up(store, pr, rows, node, &comments).await? {
+                Turned::Finished(finished) => (pr.crew.len(), 0, Some(*finished)),
+                Turned::Stopped(stopped) => return Ok(*stopped),
+            }
+        }
     };
 
     for assignment in &pr.crew[next..] {
@@ -307,6 +328,53 @@ async fn build_pr(
     judge(store, pr, rows, last, repairs).await
 }
 
+/// Work review comments into a PR that is already built, before it is checked again.
+///
+/// The seat whose work the comments are about takes them. Its last row is from the run
+/// that built the PR, so it is where this seat's conversation continues from - but it is
+/// that run's row, settled by that run, and never this one's to settle again.
+async fn follow_up(
+    store: &mut Store,
+    pr: &Pr<'_>,
+    rows: &mut Rows,
+    node: NodeRun,
+    comments: &str,
+) -> Result<Turned> {
+    let agent_id = node
+        .agent_id
+        .ok_or_else(|| Error::invalid("the seat that built this no longer exists"))?;
+    let task_key = node.task_key.clone();
+    rows.latest.insert(agent_id, node);
+    let label = match task_key.as_deref() {
+        Some(task) => format!("{} {task}", pr.slice.key),
+        None => pr.slice.key.clone(),
+    };
+    let before = git::snapshot(pr.worktree).await?;
+    let turned = take_task_turn(
+        store,
+        pr,
+        rows,
+        agent_id,
+        task_key.as_deref(),
+        &format!("{label} review"),
+        comments,
+    )
+    .await?;
+    if let Turned::Finished(finished) = &turned {
+        // Nothing changed is still an answer worth checking: the comments may have asked
+        // for nothing but an explanation, and the check says whether the PR stands.
+        keep(
+            store,
+            pr,
+            &finished.0,
+            &before,
+            &format!("{}: address review", pr.slice.key),
+        )
+        .await?;
+    }
+    Ok(turned)
+}
+
 enum PickedUp {
     /// Carry on from task `next`, the interrupted turn now finished and kept.
     At {
@@ -331,7 +399,7 @@ async fn pick_up(
         .ok_or_else(|| Error::invalid("the interrupted node's seat no longer exists"))?;
     // No snapshot survives an interrupted process, so the interrupted turn keeps whatever
     // the checkout holds that is not committed.
-    let before = git::Snapshot::new();
+    let before = git::Snapshot::default();
     let turn = take_replied_turn(store, pr.rig, agent_id, node.id, pr.worktree).await?;
     if outcome_status(&turn) != NodeStatus::Done {
         return Ok(PickedUp::Stopped(Box::new(failed_turn(
@@ -697,9 +765,12 @@ async fn keep(
     before: &git::Snapshot,
     subject: &str,
 ) -> Result<Option<String>> {
-    let changed = git::changed_since(pr.worktree, before).await?;
-    let Some(sha) = git::commit_paths(pr.worktree, pr.branch, subject, &changed).await? else {
-        return Ok(None);
+    let changes = git::changed_since(pr.worktree, before).await?;
+    let sha = match git::commit_paths(pr.worktree, pr.branch, subject, &changes.paths).await? {
+        Some(sha) => sha,
+        // Told not to, but committed its work itself: still built, and still this turn's.
+        None if changes.committed => git::rev_parse(pr.worktree, "HEAD").await?,
+        None => return Ok(None),
     };
     let short = &sha[..sha.len().min(7)];
     let what = subject.split(':').next().unwrap_or(subject);
@@ -713,7 +784,7 @@ async fn keep(
             .with(serde_json::json!({
                 "built": sha,
                 "task": node.task_key,
-                "paths": changed,
+                "paths": changes.paths,
             })),
     )?;
     Ok(Some(sha))
@@ -971,6 +1042,22 @@ fn verify_prompt(slice: &Slice, crew: &[Assignment], base: &str, evidence: &str)
          step made.\n",
         slice.key, slice.title
     );
+    // What it was asked to do, whole: the story and its acceptance criteria are what
+    // "done" is judged against, and review feedback is appended to the same scope. A
+    // verifier shown less judged a reviewer's own request as scope creep, and the repair
+    // it sent took the requested change back out.
+    if let Some(scope) = slice
+        .scope_md
+        .as_deref()
+        .filter(|scope| !scope.trim().is_empty())
+    {
+        let _ = write!(
+            prompt,
+            "\nWhat it was asked to do:\n{}\n\nWhere review feedback in it contradicts the \
+             text before it, the review feedback is what was asked for.\n",
+            scope.trim()
+        );
+    }
     if let Some(demo) = slice
         .demo_md
         .as_deref()
@@ -1098,7 +1185,7 @@ struct Completion {
     slice: Slice,
     branch: String,
     worktree: PathBuf,
-    lease: Lease,
+    lease: Option<Lease>,
     run_id: i64,
 }
 
@@ -1260,11 +1347,12 @@ async fn update_board(
     rejection: Option<&str>,
 ) {
     match status {
+        // The claim stays with the PR's worktree while it is in review: it is where the
+        // work is, and what the board and the window point at.
         NodeStatus::Done => {
             let _ = planner
                 .set_status(slice_key, "in_review", Some("built by ai-team"))
                 .await;
-            let _ = planner.release(slice_key, worktree).await;
         }
         // Escalated work is still somebody's, so the claim stays and the board says why
         // it is waiting rather than quietly offering it to the next run.
@@ -1334,7 +1422,7 @@ async fn release_failed(
     planner: &Planner,
     slice_key: &str,
     worktree: &Path,
-    lease: Lease,
+    lease: Option<Lease>,
     error: Error,
 ) -> Error {
     let _ = planner.release(slice_key, worktree).await;
@@ -1344,15 +1432,36 @@ async fn release_failed(
             Some(slice_key),
         )
         .await;
-    let _ = lease.release().await;
+    if let Some(lease) = lease {
+        let _ = lease.release().await;
+    }
     error
 }
 
-async fn release_and_deliver(lease: Lease, db_path: &Path, dispatched: &Dispatched) -> Result<()> {
-    // Returned explicitly so a failure to return is reported rather than swallowed by
-    // the Drop fallback. Remote delivery uses the surviving branch and never needs to
-    // hold the scarce maker lease while GitHub checks run.
-    lease.release().await?;
+/// Whether a PR keeps its worktree after this answer (PW10).
+///
+/// A built PR does: it is where review comments are worked on, and what a PR stacked on
+/// it is built beside. So does one parked for a person, whose work is still somebody's.
+/// One that stopped for good gives its worktree back - its branch keeps the commits.
+fn keeps_worktree(status: NodeStatus) -> bool {
+    matches!(status, NodeStatus::Done | NodeStatus::Parked)
+}
+
+async fn release_and_deliver(
+    lease: Option<Lease>,
+    db_path: &Path,
+    dispatched: &Dispatched,
+) -> Result<()> {
+    if let Some(lease) = lease {
+        if keeps_worktree(dispatched.status) {
+            // Held until the PR is merged or abandoned, not until this build ends.
+            lease.preserve();
+        } else {
+            // Returned explicitly so a failure to return is reported rather than
+            // swallowed by the Drop fallback.
+            lease.release().await?;
+        }
+    }
     if dispatched.status == NodeStatus::Done && dispatched.branch.is_some() {
         crate::delivery::automatic_delivery(db_path, dispatched.node_run_id).await;
     }
@@ -1448,6 +1557,11 @@ case "$prompt" in
     printf '{"type":"agent_error","error":"the model could not be reached"}\n'
     printf '{"type":"agent_settled"}\n' ;;
   *"Your task is T"*": Think"*) settle "nothing to change" ;;
+  *"Your task is T"*": Commit"*)
+    echo built > "$task.txt"
+    git add "$task.txt" && git -c user.email=seat@test -c user.name=seat -c commit.gpgsign=false commit -qm "my own commit"
+    settle "built and committed $task" ;;
+  *"A human reviewed your work"*) echo addressed > review.txt; settle "addressed the review" ;;
   *"Your task is T"*) echo built > "$task.txt"; settle "built $task" ;;
   *) settle "nothing to do" ;;
 esac
@@ -1596,7 +1710,7 @@ esac
                 verifier: Some(&self.verifier),
             };
             let mut rows = Rows::default();
-            let attempted = build_pr(&mut self.store, &pr, &mut rows, None)
+            let attempted = build_pr(&mut self.store, &pr, &mut rows, Start::Fresh)
                 .await
                 .unwrap();
             (attempted, rows)
@@ -1734,6 +1848,76 @@ esac
             Some("PR1 T1 finished without changing a file")
         );
         assert!(pr.commits().is_empty());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn review_comments_go_back_into_the_pr_in_the_seats_own_conversation() {
+        let mut pr = Fixture::new(TWO_SEATS, "true");
+        let (built, rows) = pr.build(2).await;
+        settle(&mut pr.store, pr.run_id, "PR1", &rows, &built).unwrap();
+        let t1 = pr.makers()[0].clone();
+        assert_eq!(t1.task_key.as_deref(), Some("T1"));
+
+        // A follow-up is a run of its own, starting from the seat's last row.
+        let project = pr.store.run(pr.run_id).unwrap().project_id;
+        let follow = pr
+            .store
+            .create_run(project, "address review", crate::RunTrigger::Manual)
+            .unwrap();
+        let comments = "A human reviewed your work and left comments. Name it clearly.";
+        let pr_view = Pr {
+            rig: &pr.rig,
+            registry: &pr.rig.registry,
+            run_id: follow.id,
+            slice: &pr.slice,
+            crew: &pr.crew,
+            branch: "ai-team/pr1",
+            base: &pr.base,
+            worktree: pr.repo.path(),
+            max_repairs: 2,
+            verifier: Some(&pr.verifier),
+        };
+        let mut rows = Rows::default();
+        let answered = build_pr(
+            &mut pr.store,
+            &pr_view,
+            &mut rows,
+            Start::FollowUp {
+                node: t1.clone(),
+                comments: comments.into(),
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(answered.rejection, None);
+        assert_eq!(
+            pr.commits().last().map(String::as_str),
+            Some("PR1: address review")
+        );
+        // The frontend took them, carrying on its own conversation, on this run's row -
+        // and the run that built the PR is not settled again.
+        assert_eq!(rows.all.len(), 1);
+        let row = pr.store.node_run(rows.all[0]).unwrap();
+        assert_eq!(row.run_id, follow.id);
+        assert_eq!(row.role, "frontend");
+        assert_eq!(row.session_id, t1.session_id);
+        assert_eq!(pr.store.node_run(t1.id).unwrap().status, NodeStatus::Done);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_seat_that_commits_its_own_work_still_built_it() {
+        let mut pr = Fixture::new(
+            "## Tasks\n- T1 [frontend] Commit it myself - Touches: ui/**\n",
+            "true",
+        );
+
+        let (attempted, _) = pr.build(2).await;
+
+        assert_eq!(attempted.rejection, None, "{:?}", attempted.rejection);
+        assert_eq!(pr.commits(), ["my own commit"]);
     }
 
     #[test]
@@ -2010,6 +2194,26 @@ esac
                 < with_house.find("Never use an em dash").unwrap(),
             "{with_house}"
         );
+    }
+
+    #[test]
+    fn the_verifier_judges_against_the_whole_scope_review_feedback_included() {
+        let mut slice = slice(TWO_SEATS);
+        slice.scope_md = Some(format!(
+            "{}\n## Review feedback\n\n- web/index.html:7 - Add a hint under the command.",
+            slice.scope_md.unwrap()
+        ));
+        let prompt = verify_prompt(&slice, &[], "abc123", "(gates passed)");
+        assert!(
+            prompt.contains("As an operator, I want a range."),
+            "{prompt}"
+        );
+        assert!(prompt.contains("Add a hint under the command."), "{prompt}");
+        assert!(
+            prompt.contains("the review feedback is what was asked for"),
+            "{prompt}"
+        );
+        assert!(prompt.contains("git diff abc123"), "{prompt}");
     }
 
     #[test]

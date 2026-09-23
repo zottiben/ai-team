@@ -13,7 +13,7 @@
 
 use std::path::{Path, PathBuf};
 
-use super::build::{run_pr, truncate_reason, Assignment, PrTask, VerifierSeat};
+use super::build::{run_pr, truncate_reason, Assignment, PrTask, Start, VerifierSeat};
 use crate::error::{Error, Result};
 use crate::machine::ModelRegistry;
 use crate::model::{Agent, EventKind, NewEvent, NodeStatus};
@@ -340,7 +340,14 @@ impl Orchestrator {
         }
         // This checkout's plan too, for `aip` in a terminal and the window's board: asked
         // for by name on the run's fresh branch, it is the answer that branch remembers.
-        self.planner.clone().for_plan(plan).current().await?;
+        self.planner
+            .clone()
+            .for_plan(plan.clone())
+            .current()
+            .await?;
+        // Its stack made explicit before anybody approves it: every PR's branch, and the
+        // base a `Stacks on:` line asks for.
+        crate::workspace::settle_stack(&self.planner, &plan).await?;
         Ok(planner_outcome)
     }
 
@@ -455,7 +462,10 @@ impl Orchestrator {
         slices: &[Slice],
     ) -> Result<Vec<(String, String, bool)>> {
         let roster = store.agents(self.team_id)?;
-        let mut findings = Vec::new();
+        let mut findings: Vec<(String, String, bool)> = crate::stack::problems(slices)
+            .into_iter()
+            .map(|(key, problem)| (key, problem, true))
+            .collect();
         for slice in slices
             .iter()
             .filter(|slice| !matches!(slice.status.as_str(), "done" | "deferred"))
@@ -474,10 +484,11 @@ impl Orchestrator {
 
     /// Phase two: build the ready slices, several at a time.
     ///
-    /// Each PR is built in its own lease by its crew, one seat at a time. PRs run side by
-    /// side, but one seat is never dispatched twice at once - a seat is a person-shaped
-    /// thing, and two turns writing through the same zone is the collision the roster
-    /// exists to prevent.
+    /// Each PR is built by its crew, one seat at a time, in a checkout of its own: the
+    /// run's own for a one-PR plan, a held lease otherwise (PW3). PRs run side by side up
+    /// to the run's width, and a seat may be at work in two of them at once - they are
+    /// different checkouts (PW6). The board is read again after every wave, because a
+    /// PR that stacks on another is built once that one is (PW9).
     pub async fn build_slices<F>(
         &self,
         store: &mut Store,
@@ -486,121 +497,162 @@ impl Orchestrator {
     where
         F: FnMut(&str) + Send,
     {
-        let offered = self.offered().await?;
-        let Routing {
-            routed,
-            unrouted,
-            notes,
-        } = self.routable(store, offered)?;
-        let mut out = Orchestration {
-            unrouted,
-            dispatched: Vec::new(),
-        };
-        for (key, reason) in &out.unrouted {
-            store.append_event(
-                self.run_id,
-                NewEvent::new(EventKind::Note, format!("{key} not dispatched: {reason}"))
-                    .by("orchestrator"),
-            )?;
+        if let Some(plan) = self.planner.plan_slug() {
+            crate::workspace::settle_stack(&self.planner, plan).await?;
         }
-        for (key, note) in &notes {
-            store.append_event(
-                self.run_id,
-                NewEvent::new(EventKind::Note, format!("{key}: {note}")).by("orchestrator"),
-            )?;
-        }
-        if routed.is_empty() {
-            return Ok(out);
-        }
-
+        let mut out = Orchestration::default();
+        let mut attempted: Vec<String> = Vec::new();
+        let mut reported: Vec<String> = Vec::new();
         let width = self.parallel_width.max(1);
-        let mut queue = routed.into_iter();
-        let mut wave: Vec<(Slice, Vec<Assignment>)> = Vec::new();
-        let mut busy: Vec<String> = Vec::new();
 
-        // Waves rather than a rolling pool: a wave is bounded, easy to report, and the
-        // same shape the Console will draw. Width and one-turn-per-seat both apply, and a
-        // PR holds every seat in its crew.
         loop {
-            for item in queue.by_ref() {
-                let roles = crew_roles(&item.1);
-                if roles.iter().any(|role| busy.contains(role)) {
+            let offered = self.offered().await?;
+            let in_place = offered
+                .iter()
+                .filter(|slice| slice.status != "deferred")
+                .count()
+                == 1;
+            let Routing {
+                routed,
+                unrouted,
+                notes,
+                waiting,
+            } = self.routable(store, offered)?;
+
+            // Said once per run, not once per wave.
+            for (key, reason) in unrouted {
+                if attempted.contains(&key) || reported.contains(&key) {
                     continue;
                 }
-                busy.extend(roles);
-                wave.push(item);
-                if wave.len() == width {
-                    break;
+                store.append_event(
+                    self.run_id,
+                    NewEvent::new(EventKind::Note, format!("{key} not dispatched: {reason}"))
+                        .by("orchestrator"),
+                )?;
+                reported.push(key.clone());
+                out.unrouted.push((key, reason));
+            }
+            for (key, note) in notes {
+                if !reported.contains(&format!("{key}: {note}")) {
+                    store.append_event(
+                        self.run_id,
+                        NewEvent::new(EventKind::Note, format!("{key}: {note}")).by("orchestrator"),
+                    )?;
+                    reported.push(format!("{key}: {note}"));
                 }
             }
+
+            // Anything this run already took once is not taken again: a PR that failed
+            // is blocked on the board, and one whose preparation failed is reported.
+            let wave: Vec<(Slice, Vec<Assignment>)> = routed
+                .into_iter()
+                .filter(|(slice, _)| !attempted.contains(&slice.key))
+                .take(width)
+                .collect();
             if wave.is_empty() {
+                // What is still waiting now never saw its parent built in this run.
+                for (key, reason) in waiting {
+                    store.append_event(
+                        self.run_id,
+                        NewEvent::new(EventKind::Note, format!("{key} waiting: {reason}"))
+                            .by("orchestrator"),
+                    )?;
+                    out.unrouted.push((key, reason));
+                }
                 break;
             }
 
-            let mut tasks = Vec::new();
-            for (slice, crew) in wave.drain(..) {
-                on_progress(&format!(
-                    "{} -> {}",
-                    slice.key,
-                    crew_roles(&crew).join(", ")
-                ));
-                match self.prepare(store, &slice, crew).await {
-                    Ok(pr) => tasks.push(tokio::spawn(run_pr(pr))),
-                    Err(error) => {
-                        let reason = format!("preparation failed: {error}");
-                        store.append_event(
-                            self.run_id,
-                            NewEvent::new(
-                                EventKind::Failed,
-                                format!("{} not dispatched: {reason}", slice.key),
-                            )
-                            .by("orchestrator"),
-                        )?;
-                        out.unrouted.push((slice.key, reason));
-                    }
-                }
+            for (slice, _) in &wave {
+                attempted.push(slice.key.clone());
             }
-
-            for task in tasks {
-                match task.await {
-                    Ok(Ok(done)) => out.dispatched.push(done),
-                    Ok(Err(error)) => {
-                        // One PR failing does not abandon its siblings: the others are in
-                        // their own worktrees and their work is still worth having.
-                        store.append_event(
-                            self.run_id,
-                            NewEvent::new(EventKind::Failed, format!("node failed: {error}"))
-                                .by("orchestrator"),
-                        )?;
-                    }
-                    Err(join) => {
-                        store.append_event(
-                            self.run_id,
-                            NewEvent::new(EventKind::Failed, format!("node panicked: {join}"))
-                                .by("orchestrator"),
-                        )?;
-                    }
-                }
-            }
-            busy.clear();
+            self.run_wave(store, wave, in_place, &mut out, &mut on_progress)
+                .await?;
         }
         Ok(out)
     }
 
-    /// Lease, claim and register one PR, ready to be built on its own task.
+    /// Build one wave of PRs side by side, and wait for all of them.
+    async fn run_wave<F>(
+        &self,
+        store: &mut Store,
+        wave: Vec<(Slice, Vec<Assignment>)>,
+        in_place: bool,
+        out: &mut Orchestration,
+        on_progress: &mut F,
+    ) -> Result<()>
+    where
+        F: FnMut(&str) + Send,
+    {
+        let mut tasks = Vec::new();
+        for (slice, crew) in wave {
+            on_progress(&format!(
+                "{} -> {}",
+                slice.key,
+                crew_roles(&crew).join(", ")
+            ));
+            match self.prepare(store, &slice, crew, in_place).await {
+                Ok(pr) => tasks.push(tokio::spawn(run_pr(pr))),
+                Err(error) => {
+                    let reason = format!("preparation failed: {error}");
+                    store.append_event(
+                        self.run_id,
+                        NewEvent::new(
+                            EventKind::Failed,
+                            format!("{} not dispatched: {reason}", slice.key),
+                        )
+                        .by("orchestrator"),
+                    )?;
+                    out.unrouted.push((slice.key, reason));
+                }
+            }
+        }
+
+        for task in tasks {
+            match task.await {
+                Ok(Ok(done)) => out.dispatched.push(done),
+                Ok(Err(error)) => {
+                    // One PR failing does not abandon its siblings: the others are in
+                    // their own worktrees and their work is still worth having.
+                    store.append_event(
+                        self.run_id,
+                        NewEvent::new(EventKind::Failed, format!("node failed: {error}"))
+                            .by("orchestrator"),
+                    )?;
+                }
+                Err(join) => {
+                    store.append_event(
+                        self.run_id,
+                        NewEvent::new(EventKind::Failed, format!("node panicked: {join}"))
+                            .by("orchestrator"),
+                    )?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Put one PR in its checkout, on its branch, claimed - ready to build on its own task.
+    ///
+    /// A one-PR plan builds in the run's own checkout (PW3): it is on a fresh branch off
+    /// the default one, and a lease would be a second copy of the same thing. Anything
+    /// more gives each PR a leased worktree, kept after the build - it is where review
+    /// comments are worked on and what a stacked PR builds beside - and returned when the
+    /// PR is done with (PW10).
     async fn prepare(
         &self,
         store: &mut Store,
         slice: &Slice,
         crew: Vec<Assignment>,
+        in_place: bool,
     ) -> Result<PrTask> {
         // Resolve this before claiming the slice. An error after the external claim would
         // otherwise leave work assigned to a lease that is immediately returned.
         let verifier = self.verifier(store)?;
-        let branch = slice_branch(slice);
-        // Before a lease is taken or a model started: `checkout -B main` in a lease would
-        // reset the trunk to whatever the slice was based on.
-        if let Ok(trunk) = git::trunk(&self.repo).await {
+        let branch = slice_branch(slice, self.planner.plan_slug());
+        let trunk = git::trunk(&self.repo).await.ok();
+        // Before a checkout is touched or a model started: building on the default branch
+        // is only ever the run's choice.
+        if let Some(trunk) = &trunk {
             let allowed = store.run(self.run_id)?.on_default_branch;
             if let Err(error) =
                 crate::workspace::refuse_default_branch(&branch, &trunk.name, allowed)
@@ -612,20 +664,30 @@ impl Orchestrator {
                 return Err(error);
             }
         }
-        let holder = lease_holder(self.run_id, &slice.key, &crew_roles(&crew).join("+"));
-        let lease = self.worktrees.lease(&holder).await?;
-        let worktree = lease.path().to_path_buf();
+        let start = start_point(slice.base_branch.as_deref(), trunk.as_ref());
+
+        let (worktree, lease) = if in_place {
+            // The operator's own checkout: anything they left there is theirs, not work
+            // to commit into somebody's pull request.
+            crate::workspace::ensure_clean(&self.repo).await?;
+            (self.repo.clone(), None)
+        } else {
+            let holder = lease_holder(self.run_id, &slice.key, &crew_roles(&crew).join("+"));
+            let lease = self.worktrees.lease(&holder).await?;
+            (lease.path().to_path_buf(), Some(lease))
+        };
         let prepared = async {
             // Name the checkout before the agent starts and keep gate output untracked.
-            // The plan's base is binding for stacked work; a lease's incidental HEAD is not.
             git::ignore_build_output(&worktree).await?;
-            git::prepare_branch_from(&worktree, &branch, slice.base_branch.as_deref()).await?;
-            let base = git::rev_parse(&worktree, "HEAD").await?;
+            let placed = git::put_on_branch(&worktree, &branch, &start).await?;
+            // Measured from where the branch left its base, so a PR continued after review
+            // is judged whole rather than from its latest commit.
+            let base = git::merge_base(&worktree, &start, "HEAD").await?;
             let setup = crate::gates::prepare_dependencies(&worktree).await?;
-            Ok::<_, Error>((base, setup))
+            Ok::<_, Error>((placed, base, setup))
         }
         .await;
-        let (base, setup) = match prepared {
+        let (placed, base, setup) = match prepared {
             Ok(prepared) => prepared,
             Err(error) => {
                 let reason = format!("dependency/worktree preparation failed: {error}");
@@ -633,29 +695,39 @@ impl Orchestrator {
                     .planner
                     .set_status(&slice.key, "blocked", Some(&reason))
                     .await;
-                let _ = lease.release().await;
+                if let Some(lease) = lease {
+                    let _ = lease.release().await;
+                }
                 return Err(Error::invalid(reason));
             }
         };
+        let place = if in_place {
+            "the run's own checkout".to_string()
+        } else {
+            worktree.display().to_string()
+        };
+        let how = match placed {
+            git::Placed::Started => format!("starts {branch} from {start}"),
+            git::Placed::Continued => format!("continues {branch}, which already has work"),
+        };
+        self.say(store, format!("{} {how} in {place}", slice.key))?;
         if !setup.is_empty() {
-            store.append_event(
-                self.run_id,
-                NewEvent::new(
-                    EventKind::Note,
-                    format!(
-                        "{} prepared dependencies with {}",
-                        slice.key,
-                        setup.join(", ")
-                    ),
-                )
-                .by("orchestrator"),
+            self.say(
+                store,
+                format!(
+                    "{} prepared dependencies with {}",
+                    slice.key,
+                    setup.join(", ")
+                ),
             )?;
         }
 
-        // Claim through ai-planner, in the leased worktree, so the board shows where the
+        // Claim through ai-planner, in the PR's checkout, so the board shows where the
         // work is actually happening and a second run is told the slice is taken.
         if !self.planner.claim(&slice.key, &worktree).await? {
-            let _ = lease.release().await;
+            if let Some(lease) = lease {
+                let _ = lease.release().await;
+            }
             return Err(Error::invalid(format!(
                 "{} is claimed by another worktree",
                 slice.key
@@ -678,7 +750,7 @@ impl Orchestrator {
             // to spend is a fact about this run (D2).
             max_repairs: store.run(self.run_id)?.max_repairs,
             verifier,
-            resume: None,
+            start: Start::Fresh,
         })
     }
 
@@ -746,10 +818,21 @@ impl Orchestrator {
                 store.claim_node_supervision(other.id, pid, other.supervisor_pid)?;
             }
         }
-        let branch = node.branch.clone().unwrap_or_else(|| slice_branch(&slice));
+        let branch = node
+            .branch
+            .clone()
+            .unwrap_or_else(|| slice_branch(&slice, self.planner.plan_slug()));
         let base = pr_base(&worktree, &slice).await?;
-        let holder = lease_holder(self.run_id, &slice_key, &crew_roles(&crew).join("+"));
-        let lease = self.worktrees.resume(&worktree, &holder).await?;
+        // A one-PR plan was built in the run's own checkout, which nobody leased.
+        let lease = if crate::neighbours::same_worktree(
+            &worktree.to_string_lossy(),
+            &self.repo.to_string_lossy(),
+        ) {
+            None
+        } else {
+            let holder = lease_holder(self.run_id, &slice_key, &crew_roles(&crew).join("+"));
+            Some(self.worktrees.resume(&worktree, &holder).await?)
+        };
         let verifier = self.verifier(store)?;
         store.append_event(
             self.run_id,
@@ -780,9 +863,84 @@ impl Orchestrator {
             run_id: self.run_id,
             max_repairs: store.run(self.run_id)?.max_repairs,
             verifier,
-            resume: Some(node),
+            start: Start::Resume(node),
         }))
         .await
+    }
+
+    /// Work a review's comments into a pull request where it was built (PW10).
+    ///
+    /// The PR keeps its worktree after it is built, so this goes back into it - on its
+    /// branch, continuing the conversation of the seat whose work the comments are about -
+    /// and checks the whole PR again, exactly as a build does.
+    pub async fn follow_up(
+        &self,
+        store: &mut Store,
+        target: &crate::review::FollowUp,
+        comments: String,
+    ) -> Result<Dispatched> {
+        let slice = self.planner.slice(&target.slice_key).await?;
+        let roster = store.agents(self.team_id)?;
+        let crew = match crew_for(store, self.team_id, &roster, &slice)? {
+            Crew::Seated(crew, _) => crew,
+            Crew::Unseated(reason) => {
+                return Err(Error::invalid(format!(
+                    "{} can no longer be built by this team: {reason}",
+                    target.slice_key
+                )));
+            }
+        };
+        let lease = if crate::neighbours::same_worktree(
+            &target.worktree.to_string_lossy(),
+            &self.repo.to_string_lossy(),
+        ) {
+            None
+        } else {
+            Some(self.worktrees.reattach(&target.worktree).await?)
+        };
+        let base = pr_base(&target.worktree, &slice).await?;
+        let verifier = self.verifier(store)?;
+        store.append_event(
+            self.run_id,
+            NewEvent::new(
+                EventKind::Note,
+                format!(
+                    "{} takes review comments in {}",
+                    target.slice_key,
+                    target.worktree.display()
+                ),
+            )
+            .by("ai-team"),
+        )?;
+        Box::pin(run_pr(PrTask {
+            db_path: self.db_path.clone(),
+            rig: self.rig(),
+            registry: self.registry.clone(),
+            slice,
+            crew,
+            branch: target.branch.clone(),
+            base,
+            worktree: target.worktree.clone(),
+            lease,
+            planner: self.planner.clone(),
+            run_id: self.run_id,
+            max_repairs: store.run(self.run_id)?.max_repairs,
+            verifier,
+            start: Start::FollowUp {
+                node: target.node.clone(),
+                comments,
+            },
+        }))
+        .await
+    }
+
+    /// A note from the orchestrator on this run.
+    fn say(&self, store: &mut Store, note: String) -> Result<()> {
+        store.append_event(
+            self.run_id,
+            NewEvent::new(EventKind::Note, note).by("orchestrator"),
+        )?;
+        Ok(())
     }
 
     /// Whether the verifier is a genuinely second opinion.
@@ -845,6 +1003,9 @@ pub(crate) struct Routing {
     routed: Vec<(Slice, Vec<Assignment>)>,
     unrouted: Vec<(String, String)>,
     notes: Vec<(String, String)>,
+    /// Slices that stack on one not built yet, and why. Not a failure: they build once
+    /// their parent does, in this run or a later one.
+    waiting: Vec<(String, String)>,
 }
 
 /// Decide who builds what.
@@ -858,14 +1019,30 @@ fn route(store: &Store, team_id: i64, slices: Vec<Slice>) -> Result<Routing> {
         routed: Vec::new(),
         unrouted: Vec::new(),
         notes: Vec::new(),
+        waiting: Vec::new(),
     };
+    // The whole plan, not only what is ready: whether a slice can build depends on the
+    // slice it stacks on.
+    let stack_problems = crate::stack::problems(&slices);
 
-    let mut slices: Vec<Slice> = slices.into_iter().filter(Slice::is_dispatchable).collect();
-    // `ord` is the plan's declared sequence, and ai-planner has no dependency edges - so
-    // the order a human put the slices in is the only ordering intent there is.
-    slices.sort_by_key(|slice| slice.ord);
+    let mut ready: Vec<&Slice> = slices
+        .iter()
+        .filter(|slice| slice.is_dispatchable())
+        .collect();
+    // `ord` is the plan's declared sequence - the order a human put the slices in - and
+    // the stack is the only dependency ai-planner records, so it is read from bases.
+    ready.sort_by_key(|slice| slice.ord);
 
-    for slice in slices {
+    for slice in ready {
+        if let Some((_, problem)) = stack_problems.iter().find(|(key, _)| *key == slice.key) {
+            routing.unrouted.push((slice.key.clone(), problem.clone()));
+            continue;
+        }
+        if let Some(reason) = crate::stack::waiting_on(slice, &slices) {
+            routing.waiting.push((slice.key.clone(), reason));
+            continue;
+        }
+        let slice = slice.clone();
         match crew_for(store, team_id, &roster, &slice)? {
             Crew::Seated(crew, notes) => {
                 routing
@@ -974,32 +1151,41 @@ fn crew_roles(crew: &[Assignment]) -> Vec<String> {
 
 /// The commit an interrupted PR was built on: where its branch left the one it stacks on.
 async fn pr_base(worktree: &Path, slice: &Slice) -> Result<String> {
-    let base = match slice
-        .base_branch
-        .as_deref()
-        .map(str::trim)
-        .filter(|base| !base.is_empty())
-    {
-        Some(base) => base.to_string(),
-        None => git::trunk(worktree).await?.start_point,
-    };
-    git::merge_base(worktree, &base, "HEAD").await
+    let trunk = git::trunk(worktree).await.ok();
+    let start = start_point(slice.base_branch.as_deref(), trunk.as_ref());
+    git::merge_base(worktree, &start, "HEAD").await
 }
 
 fn lease_holder(run_id: i64, slice_key: &str, role: &str) -> String {
     format!("ai-team run-{run_id} {slice_key} {role}")
 }
 
-fn slice_branch(slice: &Slice) -> String {
+/// The branch a slice builds on: the plan's name for it, or `<plan>/<key>` - settled onto
+/// the plan before a build, so this fallback is for a plan read without one.
+fn slice_branch(slice: &Slice, plan: Option<&str>) -> String {
     slice
         .branch
         .as_deref()
         .map(str::trim)
         .filter(|branch| !branch.is_empty())
         .map_or_else(
-            || format!("ai-team/{}", slice.key.to_lowercase()),
+            || match plan {
+                Some(plan) => crate::stack::default_branch(plan, &slice.key),
+                None => format!("ai-team/{}", slice.key.to_lowercase()),
+            },
             str::to_string,
         )
+}
+
+/// Where a PR's branch starts: the default branch as origin has it, since a local copy is
+/// only as current as the last pull, or the branch of the PR it stacks on, as it is.
+fn start_point(base: Option<&str>, trunk: Option<&git::Trunk>) -> String {
+    match (base.map(str::trim).filter(|base| !base.is_empty()), trunk) {
+        (Some(base), Some(trunk)) if base == trunk.name => trunk.start_point.clone(),
+        (Some(base), _) => base.to_string(),
+        (None, Some(trunk)) => trunk.start_point.clone(),
+        (None, None) => "HEAD".to_string(),
+    }
 }
 
 pub(super) struct QuotaFailover<'a> {
@@ -1274,10 +1460,13 @@ mod tests {
     fn a_slice_uses_the_branch_the_plan_declared() {
         let mut planned = slice("S1", "Touches: crates/**");
         planned.branch = Some("feature/stack-one".into());
-        assert_eq!(slice_branch(&planned), "feature/stack-one");
+        assert_eq!(slice_branch(&planned, Some("csv")), "feature/stack-one");
 
+        // Named for the plan too: every plan has an S1, and a branch two plans share is one
+        // whose review a later run would reset.
         planned.branch = None;
-        assert_eq!(slice_branch(&planned), "ai-team/s1");
+        assert_eq!(slice_branch(&planned, Some("csv")), "csv/s1");
+        assert_eq!(slice_branch(&planned, None), "ai-team/s1");
     }
 
     #[test]
@@ -1358,6 +1547,7 @@ mod tests {
             routed,
             unrouted,
             notes,
+            ..
         } = route(
             &store,
             team_id,
@@ -1388,6 +1578,71 @@ mod tests {
         // The owner stands (PW5); a path outside its zone is only pointed out.
         assert_eq!(notes.len(), 1, "{notes:?}");
         assert!(notes[0].1.contains("crates/widget/src/api.rs"), "{notes:?}");
+    }
+
+    #[test]
+    fn a_stacked_pr_waits_for_its_parent_and_a_broken_stack_is_reported() {
+        let (store, team_id) = team();
+        let stacked = |key: &str, status: &str, branch: &str, base: &str| {
+            let mut slice = slice(key, "Touches: crates/**");
+            slice.status = status.into();
+            slice.branch = Some(branch.into());
+            slice.base_branch = Some(base.into());
+            slice
+        };
+        let parent = stacked("PR1", "active", "p/pr1", "main");
+        let child = stacked("PR2", "ready", "p/pr2", "p/pr1");
+        let sibling = stacked("PR3", "ready", "p/pr3", "main");
+        let mut orphan = stacked("PR4", "ready", "p/pr4", "main");
+        orphan.scope_md = Some("Stacks on: PR9\n\nTouches: crates/**".into());
+
+        let Routing {
+            routed,
+            unrouted,
+            waiting,
+            ..
+        } = route(
+            &store,
+            team_id,
+            vec![parent.clone(), child.clone(), sibling.clone(), orphan],
+        )
+        .unwrap();
+        // The sibling builds now; the child waits for PR1 to be built, not merged.
+        assert_eq!(
+            routed
+                .iter()
+                .map(|(s, _)| s.key.as_str())
+                .collect::<Vec<_>>(),
+            ["PR3"]
+        );
+        assert_eq!(waiting[0].0, "PR2");
+        assert!(waiting[0].1.contains("stacks on PR1"), "{waiting:?}");
+        assert_eq!(unrouted[0].0, "PR4");
+        assert!(unrouted[0].1.contains("PR9"), "{unrouted:?}");
+
+        let mut built = parent;
+        built.status = "in_review".into();
+        let Routing { routed, .. } = route(&store, team_id, vec![built, child, sibling]).unwrap();
+        assert_eq!(
+            routed
+                .iter()
+                .map(|(s, _)| s.key.as_str())
+                .collect::<Vec<_>>(),
+            ["PR2", "PR3"]
+        );
+    }
+
+    #[test]
+    fn a_prs_branch_starts_from_the_default_branch_as_origin_has_it() {
+        let trunk = git::Trunk {
+            name: "main".into(),
+            start_point: "origin/main".into(),
+        };
+        assert_eq!(start_point(Some("main"), Some(&trunk)), "origin/main");
+        assert_eq!(start_point(None, Some(&trunk)), "origin/main");
+        assert_eq!(start_point(Some("p/pr1"), Some(&trunk)), "p/pr1");
+        assert_eq!(start_point(Some("main"), None), "main");
+        assert_eq!(start_point(None, None), "HEAD");
     }
 
     #[test]

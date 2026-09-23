@@ -221,6 +221,41 @@ impl Worktrees {
         })
     }
 
+    /// Take back a worktree ai-team is already holding for a pull request (PW10).
+    ///
+    /// A built PR keeps its lease until it is merged, so its review comments are worked on
+    /// where it was built. The lease is not taken again - it never went back - but it must
+    /// still be leased, and nothing may be running in it: two supervisors in one checkout
+    /// is the collision one-writer-at-a-time exists to prevent.
+    pub async fn reattach(&self, path: &Path) -> Result<Lease> {
+        let requested = path.canonicalize().map_err(|error| {
+            Error::invalid(format!("could not resolve {}: {error}", path.display()))
+        })?;
+        let pool = self.pool().await?;
+        let entry = pool
+            .iter()
+            .find(|entry| same_worktree(&entry.path, &requested.to_string_lossy()))
+            .ok_or_else(|| Error::invalid("that worktree is no longer in the awt pool"))?;
+        if entry.status != "leased" {
+            return Err(Error::invalid(format!(
+                "{} is no longer leased, so it is not the pull request's any more",
+                requested.display()
+            )));
+        }
+        if !entry.processes.is_empty() {
+            return Err(Error::invalid(format!(
+                "{} has {} live process(es) in it; refusing a second supervisor",
+                requested.display(),
+                entry.processes.len()
+            )));
+        }
+        Ok(Lease {
+            path: requested,
+            repo: self.repo.clone(),
+            returned: false,
+        })
+    }
+
     /// Every checkout of this repository, with `awt`'s lease state where it has one.
     ///
     /// Two programs are asked, because neither knows the whole answer: `awt` owns its

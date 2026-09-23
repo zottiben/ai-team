@@ -95,7 +95,9 @@ export function Review({
         <p className="faint">
           {detail.steerable
             ? "The agent that wrote this is still working - submitting sends your comments straight to it."
-            : "That agent has finished - submitting puts your comments on the plan as a new slice."}
+            : detail.follows_up
+              ? "That agent has finished, but its pull request is still open where it was built - submitting sends your comments back there, and the whole pull request is checked again."
+              : "That agent has finished - submitting puts your comments on the plan as a new slice."}
         </p>
 
         {detail.files.map((file) => (
@@ -174,6 +176,15 @@ function Outcome({ outcome }: { outcome: Submitted }) {
         {outcome.told_orchestrator
           ? "The orchestrator has it too."
           : "The plan is updated, so the orchestrator will see it next time it looks."}
+      </p>
+    );
+  }
+  if (outcome.outcome === "followed_up") {
+    return (
+      <p className="notice">
+        That agent had finished, so run #{outcome.run_id} took {outcome.comments} comment(s) back
+        into <span className="mono">{outcome.slice_key}</span>'s worktree - on its branch, in
+        the same conversation - and will check the whole pull request again.
       </p>
     );
   }

@@ -641,6 +641,23 @@ impl Store {
         })
     }
 
+    /// Record the process driving a run that does not hold its checkout: a review
+    /// follow-up works in a pull request's own worktree, and runs even while another run
+    /// is building in the checkout above it.
+    pub fn set_run_supervisor(&mut self, id: i64, pid: i64) -> Result<()> {
+        let at = now();
+        self.db_mut().write(|tx| {
+            let changed = tx.execute(
+                "UPDATE run SET supervisor_pid = ?2, rev = rev + 1, updated_at = ?3 WHERE id = ?1",
+                params![id, pid, at],
+            )?;
+            if changed == 0 {
+                return Err(Error::NoSuchRun(id.to_string()));
+            }
+            Ok(())
+        })
+    }
+
     pub fn set_run_plan(&mut self, id: i64, plan_slug: &str) -> Result<Run> {
         let at = now();
         self.db_mut().write(|tx| {
