@@ -19,6 +19,9 @@ export function Prompt({
   onStarted: (runId?: number) => void;
 }) {
   const [text, setText] = useState("");
+  // Off unless asked, and only for the run it was asked for: a run otherwise starts on a
+  // fresh branch off the default one and never lands work on main itself.
+  const [onDefaultBranch, setOnDefaultBranch] = useState(false);
   const [busy, setBusy] = useState(false);
   const [feedback, setFeedback] = useState<string | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
@@ -42,8 +45,10 @@ export function Prompt({
         // A new plan is reviewed before it spends maker turns. Approval resumes this
         // exact run; an empty prompt still means build already-ready work immediately.
         ...(text.trim() === "" ? {} : { approval_required: true }),
+        ...(onDefaultBranch ? { branching: "default_branch" as const } : {}),
       });
       setText("");
+      setOnDefaultBranch(false);
       setFeedback(
         receipt.run_id === undefined
           ? "Request accepted. Checking the plan and preparing the run…"
@@ -86,6 +91,15 @@ export function Prompt({
           }
         }}
       />
+      <label className="prompt__option faint">
+        <input
+          type="checkbox"
+          checked={onDefaultBranch}
+          disabled={busy}
+          onChange={(event) => setOnDefaultBranch(event.target.checked)}
+        />
+        <span>Work on the default branch itself</span>
+      </label>
       <div className="prompt__row">
         <span className="faint">
           <span className="kbd">⌘</span>

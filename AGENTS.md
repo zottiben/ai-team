@@ -208,6 +208,16 @@ worktree. So dispatch means *ready, claimed, and the owning seat is idle*; a dep
 slice is held back by being left `blocked` rather than `ready`. Never add a deps table
 here: that is plan structure, and copying it is what D4 forbids.
 
+**A run that plans starts on a fresh branch.** Its checkout is fetched and put on
+`ai-team/run-<id>`, cut from `origin/<default>`; a checkout with uncommitted work, or with
+another live run in it (`run.supervisor_pid`, checked with signal 0 so a crash does not hold
+it forever), is refused. Nothing lands on the default branch unless the run was started with
+`--on-default-branch`. The run's plan is the one `create_plan` answered with, never
+`aip current`: ai-planner resolves a checkout to the plan it has resolved to most often, so
+a reused branch keeps naming last week's plan. Asked for by name on the fresh branch, the
+new plan sticks - and every base pointing at the run's branch is corrected to the trunk,
+because `create_plan` and `add_slice` both default to the branch the checkout is on.
+
 Routing is by **zone**. A slice must name the paths it touches (`plan_add_slice` requires
 it, and writes them as a `Touches:` trailer on the scope); the seat whose zone owns them
 builds it. A slice nobody owns is reported undone rather than given to somebody — guessing

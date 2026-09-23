@@ -488,6 +488,12 @@ pub struct Run {
     pub rev: i64,
     pub created_at: String,
     pub updated_at: String,
+    /// Whether this run was told it may land work on the default branch itself. Off
+    /// unless the operator asked, for this run alone.
+    pub on_default_branch: bool,
+    /// The process driving the run, while one is. A second run in the same checkout is
+    /// refused only while this one is alive.
+    pub supervisor_pid: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -77,6 +77,28 @@ it("starts the full team workflow inside the selected worktree", async () => {
   expect(screen.getByText(/runs in this checkout/)).toBeDefined();
 });
 
+it("works on the default branch only when asked, and only for that run", async () => {
+  const user = userEvent.setup();
+  const calls = stubPost();
+
+  render(<Prompt project="widget" onStarted={vi.fn()} />);
+  const option = screen.getByLabelText("Work on the default branch itself");
+  expect((option as HTMLInputElement).checked).toBe(false);
+
+  await user.type(screen.getByLabelText("What should the team build?"), "first");
+  await user.click(screen.getByText("Start"));
+  await waitFor(() => expect(calls).toHaveLength(1));
+  expect(calls[0]?.body).not.toHaveProperty("branching");
+
+  await user.click(option);
+  await user.type(screen.getByLabelText("What should the team build?"), "second");
+  await user.click(screen.getByText("Start"));
+  await waitFor(() => expect(calls).toHaveLength(2));
+  expect(calls[1]?.body).toMatchObject({ prompt: "second", branching: "default_branch" });
+  // Asked for one run, so it does not carry over to the next.
+  expect((option as HTMLInputElement).checked).toBe(false);
+});
+
 it("an empty prompt means build what is already ready", async () => {
   // The same rule the CLI follows. Two surfaces disagreeing about what an empty prompt
   // means is worse than either behaviour on its own.

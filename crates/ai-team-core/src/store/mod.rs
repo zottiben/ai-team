@@ -13,6 +13,8 @@ mod reminders;
 mod reviews;
 mod runs;
 
+pub(crate) use runs::workspace_busy;
+
 use std::path::Path;
 
 use crate::db::Db;

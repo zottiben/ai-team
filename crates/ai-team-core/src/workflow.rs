@@ -37,6 +37,20 @@ pub struct Request {
     pub plan_only: bool,
     /// Stop after planning and hold its ready slices for first-class UI approval.
     pub approval_required: bool,
+    /// Which branch the run works on. A fresh one unless the operator says otherwise.
+    pub branching: Branching,
+}
+
+/// Which branch a run that plans works on (PW2).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Branching {
+    /// A new `ai-team/run-<id>` cut from origin's default branch.
+    #[default]
+    Fresh,
+    /// The default branch itself. Nothing lands on main/master unless the operator asks
+    /// for it, and then only for the run they asked for.
+    DefaultBranch,
 }
 
 /// What a caller might want to show while it happens.
@@ -57,6 +71,13 @@ pub enum Progress {
     /// The board already had work, so the prompt was not planned from.
     PlanSkipped {
         ready: usize,
+    },
+    /// The run's checkout is on its own branch, ready to plan from.
+    Branched {
+        branch: String,
+        from: String,
+        /// Why the default branch could not be fetched first, when it could not.
+        stale: Option<String>,
     },
     Planning,
     /// Something a node said or did, already classified for display.
@@ -314,6 +335,13 @@ async fn prepare(resolved: Resolved, request: &Request) -> Result<Prepared> {
         (None, false) => format!("build the {ready} ready slice(s)"),
     };
 
+    // Something new to plan puts the checkout on a fresh branch (PW2), which would carry
+    // a person's uncommitted work along into the run's pull request. Refused here, before
+    // there is a run row to explain.
+    if planning {
+        crate::workspace::ensure_clean(&repo).await?;
+    }
+
     Ok(Prepared {
         team_id,
         project_slug,
@@ -369,6 +397,81 @@ fn context_problem(required: &[ContextSource], registry: &ModelRegistry) -> Opti
         }
     }
     None
+}
+
+/// Put the run's checkout on the branch it will plan from (PW2), and say so.
+async fn branch_workspace<F>(
+    store: &mut Store,
+    run_id: i64,
+    repo: &Path,
+    request: &Request,
+    on_progress: &mut F,
+) -> Result<()>
+where
+    F: FnMut(Progress) + Send,
+{
+    let branched = if request.branching == Branching::DefaultBranch {
+        crate::workspace::stay_on_default_branch(repo).await?
+    } else {
+        crate::workspace::branch_for_run(repo, run_id).await?
+    };
+    let short = &branched.sha[..branched.sha.len().min(7)];
+    store.append_event(
+        run_id,
+        crate::NewEvent::new(
+            crate::EventKind::Note,
+            format!(
+                "{} is on {}, from {} ({short})",
+                repo.display(),
+                branched.branch,
+                branched.from
+            ),
+        )
+        .by("ai-team"),
+    )?;
+    if let Some(stale) = &branched.stale {
+        store.append_event(
+            run_id,
+            crate::NewEvent::new(
+                crate::EventKind::Note,
+                format!(
+                    "could not bring {} up to date first, so this starts from the last \
+                     fetched copy: {stale}",
+                    branched.from
+                ),
+            )
+            .by("ai-team"),
+        )?;
+    }
+    on_progress(Progress::Branched {
+        branch: branched.branch,
+        from: branched.from,
+        stale: branched.stale,
+    });
+    Ok(())
+}
+
+/// Refuse to continue a run into a checkout another live run is still working in.
+///
+/// Asked before the approval is claimed, so a refusal leaves the plan waiting for
+/// approval rather than turning it into a failed run.
+fn refuse_busy_workspace(store: &Store, run_id: i64) -> Result<()> {
+    let run = store.run(run_id)?;
+    let Some(workspace) = run.workspace_path.as_deref() else {
+        return Ok(());
+    };
+    match store.busy_run_in_workspace(
+        run.project_id,
+        Path::new(workspace),
+        crate::workspace::process_alive,
+    )? {
+        Some(busy) if busy.id != run_id => Err(Error::invalid(crate::store::workspace_busy(
+            busy.id,
+            busy.status,
+            busy.supervisor_pid.unwrap_or_default(),
+        ))),
+        _ => Ok(()),
+    }
 }
 
 fn should_plan(request: &Request, ready: usize) -> bool {
@@ -543,7 +646,7 @@ async fn stop_before_build(
 
 struct StartedExecution<'a> {
     request: &'a Request,
-    orchestrator: &'a Orchestrator,
+    orchestrator: &'a mut Orchestrator,
     run_id: i64,
     prompt: &'a str,
     planning: bool,
@@ -565,6 +668,11 @@ impl StartedExecution<'_> {
                 on_progress,
             )
             .await?;
+            // Hold and build the plan this run made, by name, rather than whichever plan
+            // the checkout happens to resolve to next.
+            if let Some(slug) = store.run(self.run_id)?.plan_slug {
+                self.orchestrator.planner = self.orchestrator.planner.clone().for_plan(slug);
+            }
         } else {
             on_progress(Progress::PlanSkipped { ready: self.ready });
         }
@@ -599,6 +707,50 @@ impl StartedExecution<'_> {
     }
 }
 
+/// Create the run's row and take its checkout.
+///
+/// One live run per checkout (PW12). Asked before the row exists, so the usual refusal
+/// leaves nothing behind; `supervise_run` then closes the race between two windows.
+fn open_run(
+    store: &mut Store,
+    request: &Request,
+    project_id: i64,
+    repo: &Path,
+    prompt: &str,
+    plan_slug: Option<&str>,
+) -> Result<crate::model::Run> {
+    if let Some(busy) =
+        store.busy_run_in_workspace(project_id, repo, crate::workspace::process_alive)?
+    {
+        return Err(Error::invalid(crate::store::workspace_busy(
+            busy.id,
+            busy.status,
+            busy.supervisor_pid.unwrap_or_default(),
+        )));
+    }
+
+    let run = store.create_run_in(project_id, prompt, RunTrigger::Manual, Some(repo))?;
+    let opened = (|| {
+        if request.branching == Branching::DefaultBranch {
+            store.set_run_on_default_branch(run.id)?;
+        }
+        store.supervise_run(
+            run.id,
+            i64::from(std::process::id()),
+            crate::workspace::process_alive,
+        )?;
+        if let Some(plan_slug) = plan_slug {
+            store.claim_run_plan(run.id, plan_slug)?;
+        }
+        Ok::<_, Error>(())
+    })();
+    if let Err(error) = opened {
+        record_workflow_failure(store, run.id, &error)?;
+        return Err(error);
+    }
+    Ok(run)
+}
+
 pub async fn run<F>(request: &Request, mut on_progress: F) -> Result<Orchestration>
 where
     F: FnMut(Progress) + Send,
@@ -622,13 +774,14 @@ where
         parallel_width: width,
     } = prepare(resolve(&store, request)?, request).await?;
 
-    let run = store.create_run_in(project_id, &prompt, RunTrigger::Manual, Some(&repo))?;
-    if let Some(plan_slug) = &plan_slug {
-        if let Err(error) = store.claim_run_plan(run.id, plan_slug) {
-            record_workflow_failure(&mut store, run.id, &error)?;
-            return Err(error);
-        }
-    }
+    let run = open_run(
+        &mut store,
+        request,
+        project_id,
+        &repo,
+        &prompt,
+        plan_slug.as_deref(),
+    )?;
     on_progress(Progress::Started {
         run_id: run.id,
         repo: repo.clone(),
@@ -644,6 +797,12 @@ where
                 &reason,
             );
             return Err(Error::invalid(reason));
+        }
+        if let Err(error) =
+            branch_workspace(&mut store, run.id, &repo, request, &mut on_progress).await
+        {
+            record_workflow_failure(&mut store, run.id, &error)?;
+            return Err(error);
         }
     }
 
@@ -679,7 +838,7 @@ where
             .collect(),
     });
 
-    let orchestrator = Orchestrator {
+    let mut orchestrator = Orchestrator {
         db_path: db.clone(),
         project_dir,
         repo,
@@ -693,7 +852,7 @@ where
 
     let result = StartedExecution {
         request,
-        orchestrator: &orchestrator,
+        orchestrator: &mut orchestrator,
         run_id: run.id,
         prompt: &prompt,
         planning,
@@ -728,6 +887,7 @@ fn claimable_approval_reason(store: &Store, run_id: i64) -> Result<(&'static str
 
 pub fn claim_plan_approval(store: &mut Store, run_id: i64) -> Result<()> {
     let (reason, cutoff) = claimable_approval_reason(store, run_id)?;
+    refuse_busy_workspace(store, run_id)?;
     match store.begin_plan_approval(run_id, reason, cutoff.as_deref()) {
         Err(Error::Invalid(_)) if cutoff.is_some() => Err(Error::invalid(
             "plan approval is still being prepared; retry in a few minutes if it does not finish",
@@ -755,6 +915,7 @@ pub fn claim_plan_approval_with_direction(
         .agent_id
         .ok_or_else(|| Error::invalid("the run's orchestrator seat no longer exists"))?;
     let (reason, cutoff) = claimable_approval_reason(store, run_id)?;
+    refuse_busy_workspace(store, run_id)?;
     let result = store.begin_plan_approval_with_direction(
         run_id,
         reason,
@@ -823,6 +984,14 @@ pub async fn continue_approved_at(db: &Path, run_id: i64) -> Result<Orchestratio
         return Err(Error::invalid(
             "that run is not an approved continuation; refresh its current state",
         ));
+    }
+    if let Err(error) = store.supervise_run(
+        run_id,
+        i64::from(std::process::id()),
+        crate::workspace::process_alive,
+    ) {
+        record_workflow_failure(&mut store, run_id, &error)?;
+        return Err(error);
     }
     let initialization = (|| {
         let team_id = run

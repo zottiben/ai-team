@@ -43,6 +43,7 @@ mod today;
 mod update;
 mod util;
 mod workflow;
+mod workspace;
 
 pub use analytics::{rollup, rollup_workspace, By, Row};
 pub use context::{figma_links, parse_url, Source, CLICKUP_READ_TOOLS, FIGMA_READ_TOOLS};
@@ -138,8 +139,8 @@ pub use workflow::{
     approve_at as approve_run_at, claim_plan_approval, claim_plan_approval_with_direction,
     claim_session_reset, continue_approved_at as continue_approved_run_at,
     reset_claimed_session_at as reset_claimed_session,
-    resume_interrupted_node_at as resume_interrupted_node, run as run_workflow, Progress, Request,
-    PLAN_APPROVAL_PREPARING_REASON, PLAN_APPROVAL_REASON,
+    resume_interrupted_node_at as resume_interrupted_node, run as run_workflow, Branching,
+    Progress, Request, PLAN_APPROVAL_PREPARING_REASON, PLAN_APPROVAL_REASON,
 };
 
 /// The workspace version, compiled in.

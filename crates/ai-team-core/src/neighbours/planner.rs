@@ -142,6 +142,15 @@ pub struct PlanSummary {
     pub slice: Option<String>,
 }
 
+/// One plan's header, as `aip ls --json` reports it. Read to check a base branch, never
+/// kept (D4).
+#[derive(Debug, Clone, Deserialize)]
+pub struct PlanHeader {
+    pub slug: String,
+    #[serde(default)]
+    pub base_branch: Option<String>,
+}
+
 /// A question ai-planner is holding for a human.
 #[derive(Debug, Clone, Deserialize, serde::Serialize)]
 pub struct Question {
@@ -163,6 +172,8 @@ pub struct Question {
 pub struct Planner {
     root: std::path::PathBuf,
     plan: Option<String>,
+    /// A database other than the operator's, for tests that drive the real `aip`.
+    db: Option<std::path::PathBuf>,
 }
 
 impl Planner {
@@ -170,7 +181,18 @@ impl Planner {
         Planner {
             root: root.into(),
             plan: None,
+            db: None,
         }
+    }
+
+    /// Point every call at a scratch database. Per call rather than through
+    /// `AI_PLANNER_DB`, because setting a variable in a process running tests on several
+    /// threads races every other thread reading one.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn with_db(mut self, db: impl Into<std::path::PathBuf>) -> Planner {
+        self.db = Some(db.into());
+        self
     }
 
     #[must_use]
@@ -361,6 +383,25 @@ impl Planner {
         self.output(&args).await.map(drop)
     }
 
+    /// The plans in this checkout's repository.
+    pub async fn plans(&self) -> Result<Vec<PlanHeader>> {
+        let json = self.output(&["ls", "--json"]).await?;
+        serde_json::from_str(&json)
+            .map_err(|error| Error::invalid(format!("could not read `aip ls --json`: {error}")))
+    }
+
+    /// The branch this plan's slices stack onto by default.
+    pub async fn set_plan_base(&self, base: &str) -> Result<()> {
+        self.output(&["edit", "--base", base]).await.map(drop)
+    }
+
+    /// The branch one slice is built on and its pull request targets.
+    pub async fn set_slice_base(&self, key: &str, base: &str) -> Result<()> {
+        self.output(&["slice", "edit", key, "--base", base])
+            .await
+            .map(drop)
+    }
+
     /// Point the slice at the branch its work landed on, so review starts from the board.
     pub async fn set_branch(&self, key: &str, branch: &str) -> Result<()> {
         self.output(&["slice", "edit", key, "--branch", branch])
@@ -397,6 +438,9 @@ impl Planner {
     async fn output_in(&self, cwd: &Path, args: &[&str]) -> Result<String> {
         let mut command = Command::new("aip");
         command.arg("-C").arg(cwd);
+        if let Some(db) = &self.db {
+            command.arg("--db").arg(db);
+        }
         if let Some(plan) = &self.plan {
             // Every call names the plan. `aip` can infer one from the worktree, but a
             // leased worktree is a copy of the repo and inference there is a guess.

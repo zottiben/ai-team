@@ -607,6 +607,42 @@ fn an_arbitrary_path_cannot_be_used_as_a_workspace() {
         "{}",
         refused_start.body
     );
+
+    // The window asks for the default branch by name. It parses, and is then held to the
+    // same workspace checks as any other start.
+    let on_default = app.post(
+        "/api/runs",
+        &serde_json::json!({
+            "project": "widget",
+            "workspace": unrelated.path(),
+            "prompt": "work on main",
+            "branching": "default_branch"
+        })
+        .to_string(),
+    );
+    assert!(
+        on_default.body.contains("is not a worktree"),
+        "{}",
+        on_default.body
+    );
+    // Anything else is refused before it can mean something by accident.
+    let sideways = app.post(
+        "/api/runs",
+        &serde_json::json!({
+            "project": "widget",
+            "workspace": repo,
+            "prompt": "work somewhere",
+            "branching": "sideways"
+        })
+        .to_string(),
+    );
+    assert!(
+        (400..500).contains(&sideways.status),
+        "{} {}",
+        sideways.status,
+        sideways.body
+    );
+    assert!(sideways.body.contains("branching"), "{}", sideways.body);
 }
 
 #[test]

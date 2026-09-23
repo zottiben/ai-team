@@ -119,14 +119,22 @@ fn grounding_prompt(prompt: &str) -> String {
     )
 }
 
-fn planner_prompt(prompt: &str, brief: &str) -> String {
+fn planner_prompt(prompt: &str, brief: &str, trunk: Option<&str>) -> String {
+    // ai-planner bases a new plan on whatever branch the checkout is on, and this one is on
+    // the run's own branch - somewhere to coordinate, not something a pull request can
+    // target. Said up front because every slice copies the plan's base as it is added.
+    let base = trunk.map_or_else(String::new, |trunk| {
+        format!(
+            " Pass `base_branch: \"{trunk}\"` to `create_plan`: pull requests target {trunk}, \
+             not the branch this checkout is on."
+        )
+    });
     format!(
-        "Create a new ai-planner plan specifically for this run and make it the \
-         current plan. Do not append this work to an unrelated existing plan. Build \
-         the slices from the orchestrator's grounded delegation brief below, and \
-         leave every buildable slice ready. Do not write source code or dispatch \
-         agents.\n\nOriginal request:\n\n{prompt}\n\n---\n\nOrchestrator delegation \
-         brief:\n\n{brief}"
+        "Create a new ai-planner plan specifically for this run with `create_plan`.{base} \
+         Do not append this work to an unrelated existing plan. Build the slices from the \
+         orchestrator's grounded delegation brief below, and leave every buildable slice \
+         ready. Do not write source code or dispatch agents.\n\nOriginal request:\n\n\
+         {prompt}\n\n---\n\nOrchestrator delegation brief:\n\n{brief}"
     )
 }
 
@@ -213,19 +221,44 @@ impl Orchestrator {
             return Err(Error::invalid(brief.trim()));
         }
 
-        let planner_prompt = planner_prompt(prompt, &brief);
+        self.delegate(store, planner.id, prompt, &brief, &mut on_event)
+            .await
+    }
+
+    /// The planner's turn: the orchestrator's brief in, this run's plan out.
+    async fn delegate<F>(
+        &self,
+        store: &mut Store,
+        planner_id: i64,
+        prompt: &str,
+        brief: &str,
+        on_event: &mut F,
+    ) -> Result<TurnOutcome>
+    where
+        F: FnMut(&crate::PiEvent) + Send,
+    {
+        let trunk = git::trunk(&self.repo).await.ok();
+        let planner_prompt = planner_prompt(
+            prompt,
+            brief,
+            trunk.as_ref().map(|trunk| trunk.name.as_str()),
+        );
         let mut context_failure = None;
+        let mut created = None;
         let (planning, planner_outcome) = match take_fresh_turn(
             store,
             &self.rig(),
             self.run_id,
-            planner.id,
+            planner_id,
             None,
             &self.repo,
             &planner_prompt,
             |event| {
                 if let Some(failure) = event.context_tool_failure() {
                     context_failure = Some(failure);
+                }
+                if let Some(slug) = event.created_plan() {
+                    created = Some(slug);
                 }
                 on_event(event);
             },
@@ -241,12 +274,43 @@ impl Orchestrator {
             store.block_node(planning.id, &failure)?;
             return Err(Error::invalid(failure));
         }
-        let planner_status = outcome_status(&planner_outcome);
-        if planner_status == NodeStatus::Done {
-            let current = self.planner.current().await?;
-            store.set_run_plan(self.run_id, &current.plan)?;
+        if outcome_status(&planner_outcome) == NodeStatus::Done {
+            self.adopt_plan(store, created, trunk.as_ref()).await?;
         }
         Ok(planner_outcome)
+    }
+
+    /// Make the plan the planner just wrote this run's plan, and this checkout's.
+    ///
+    /// Named from `create_plan`'s own answer, never from `aip current`: ai-planner
+    /// resolves a checkout to the plan it has resolved to most often, so a checkout that
+    /// planned before keeps answering with the old plan and the run would build that.
+    async fn adopt_plan(
+        &self,
+        store: &mut Store,
+        created: Option<String>,
+        trunk: Option<&git::Trunk>,
+    ) -> Result<()> {
+        let slug = if let Some(slug) = created {
+            slug
+        } else {
+            let current = self.planner.current().await?.plan;
+            store.append_event(
+                self.run_id,
+                NewEvent::new(
+                    EventKind::Note,
+                    format!(
+                        "the planner did not create a plan, so this run builds {current}, \
+                         the plan this checkout resolves to"
+                    ),
+                )
+                .by("orchestrator"),
+            )?;
+            current
+        };
+        crate::workspace::adopt_plan(&self.planner, &self.repo, &slug, trunk).await?;
+        store.set_run_plan(self.run_id, &slug)?;
+        Ok(())
     }
 
     /// Resume the exact orchestrator conversation after a human approves its planner's
@@ -457,10 +521,24 @@ impl Orchestrator {
         // Resolve this before claiming the slice. An error after the external claim would
         // otherwise leave work assigned to a lease that is immediately returned.
         let verifier = self.verifier(store)?;
+        let branch = slice_branch(slice);
+        // Before a lease is taken or a model started: `checkout -B main` in a lease would
+        // reset the trunk to whatever the slice was based on.
+        if let Ok(trunk) = git::trunk(&self.repo).await {
+            let allowed = store.run(self.run_id)?.on_default_branch;
+            if let Err(error) =
+                crate::workspace::refuse_default_branch(&branch, &trunk.name, allowed)
+            {
+                let _ = self
+                    .planner
+                    .set_status(&slice.key, "blocked", Some(&error.to_string()))
+                    .await;
+                return Err(error);
+            }
+        }
         let holder = lease_holder(self.run_id, &slice.key, role);
         let lease = self.worktrees.lease(&holder).await?;
         let worktree = lease.path().to_path_buf();
-        let branch = slice_branch(slice);
         let prepared = async {
             // Name the checkout before the agent starts and keep gate output untracked.
             // The plan's base is binding for stacked work; a lease's incidental HEAD is not.
