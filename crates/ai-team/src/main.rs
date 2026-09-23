@@ -6,6 +6,7 @@
 
 mod cli;
 mod cmd;
+mod repair;
 
 use anyhow::Result;
 use clap::Parser;
@@ -18,6 +19,12 @@ fn main() {
     // shell, which is most of the time - it is here because an editor, a launch agent or
     // `ait daemon` under launchd gets the same stripped PATH the desktop app does.
     ai_team_core::adopt_login_path();
+
+    // Before clap, which would print `--help` to nobody and exit: this is `ait` opened as
+    // `ai-team.app`, because an updater from 0.5.0 or earlier installed it there.
+    if let Some(cli) = repair::needed() {
+        std::process::exit(repair::run(&cli));
+    }
 
     if let Err(err) = run() {
         // `{err:#}` prints the whole `anyhow` chain on one line. The context each

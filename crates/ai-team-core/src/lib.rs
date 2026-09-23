@@ -15,6 +15,7 @@ mod crew;
 mod daemon;
 mod db;
 mod delivery;
+mod dialog;
 mod diff;
 mod error;
 mod gates;
@@ -49,6 +50,7 @@ pub use crew::{of_project as crew_of, of_workspace as crew_of_workspace, Doing, 
 pub use daemon::{once as tick_once, serve as serve_schedule};
 pub use db::{latest_schema, Db};
 pub use delivery::{approve_delivery, delivery_status};
+pub use dialog::alert;
 pub use diff::{parse as parse_diff, patch_for, FileDiff, FileStatus, Hunk, Line, LineKind};
 pub use error::{Error, Result};
 pub use gates::{all_passed, discover_gates, evidence, run_gates, Gate, GateKind, GateResult};
@@ -127,7 +129,7 @@ pub use today::{
 };
 pub use update::{
     apply as apply_update, check as check_update, current_version, is_newer,
-    method as install_method, Available, Host, Method, Step,
+    method as install_method, repair as repair_app, replaced_app, Available, Host, Method, Step,
 };
 pub use util::{
     mint_token, normalise_remote, now, process_is_alive, rfc3339_in, slugify, zone_matches,

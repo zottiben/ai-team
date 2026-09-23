@@ -148,6 +148,26 @@ jobs:
           tar czf "dist/ai-team-v${VERSION}-macos-universal.tar.gz" \
             -C dist ait ai-team.app
 
+      # The app has to be the app. An updater once installed `ait` into ai-team.app and it
+      # stopped opening; the same mistake made here would ship that to everybody at once.
+      # update.rs refuses such a bundle as well, but by then it has been published.
+      - name: Check the app is the app
+        run: |
+          set -eu
+          app=dist/ai-team.app
+          name="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Contents/Info.plist")"
+          exe="$app/Contents/MacOS/$name"
+          if [ ! -f "$exe" ]; then
+            echo "::error::$app names $name as its executable and does not contain it"
+            exit 1
+          fi
+          if cmp -s "$exe" dist/ait; then
+            echo "::error::$app's executable is the ait CLI, not the app"
+            exit 1
+          fi
+          # An ad-hoc signature that does not match its bundle is killed at launch.
+          codesign --verify --deep --strict --verbose=2 "$app"
+
       - uses: actions/upload-artifact@v4
         with:
           name: macos

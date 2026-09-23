@@ -13,7 +13,9 @@
 //!
 //! A release archive carries **two** programs - `ait` and the desktop app - so an update
 //! has to install the one it is replacing. Which one that is comes from the caller as a
-//! [`Host`], because the process knows what it is and a path does not.
+//! [`Host`], because the process knows what it is and a path does not. Releases that
+//! predate that still install `ait` into the app, and cannot be changed now that they have
+//! shipped - [`replaced_app`] and [`repair`] are how the `ait` they install puts it back.
 
 use std::ffi::OsStr;
 use std::fmt::Write as _;
@@ -112,6 +114,42 @@ fn bundle_of(binary: &Path) -> Option<PathBuf> {
     }
     let app = contents.parent()?;
     (app.extension() == Some(OsStr::new("app"))).then(|| app.to_path_buf())
+}
+
+/// The `.app` whose executable this CLI has been installed over, if it has been.
+///
+/// Releases up to 0.5.0 update from the window by writing `ait` over the binary that is
+/// running, and in the desktop app that binary is the app's own executable. That code has
+/// shipped and cannot be recalled: pressing Update in one of those windows installs the
+/// *next* release's `ait` into `ai-team.app`, and from then on opening the app starts the
+/// CLI - with no arguments and no terminal - which prints `--help` to nobody and exits.
+/// Being the next release's `ait` is the one thing that binary can be relied on for, so it
+/// is `ait` that has to notice.
+///
+/// `ait` under its own name inside a bundle would have been put there on purpose rather
+/// than standing in for the app, so that is not a match.
+pub fn replaced_app(cli: &Path) -> Option<PathBuf> {
+    if cli.file_name() == Some(OsStr::new(CLI)) {
+        return None;
+    }
+    bundle_of(cli)
+}
+
+/// Put back the app `cli` was installed over, and say where it is.
+///
+/// It installs the release this binary *is*, because that is the version the broken update
+/// was reaching for: the old updater downloaded the right archive and took the wrong half
+/// of it, and the other half is still in there. The rest is [`apply`] as a desktop update,
+/// checksum and whole-bundle swap included.
+pub async fn repair<F>(cli: &Path, on_step: F) -> Result<PathBuf>
+where
+    F: FnMut(Step),
+{
+    let app = replaced_app(cli).ok_or_else(|| {
+        Error::invalid(format!("{} is not standing in for an app", cli.display()))
+    })?;
+    apply(current_version(), cli, Host::Desktop, on_step).await?;
+    Ok(app)
 }
 
 /// How this copy of ai-team got here.
@@ -355,9 +393,53 @@ fn install(plan: &Replace, unpacked: &Path) -> Result<()> {
                      installed it"
                 )));
             }
+            // The bug this module exists for, arriving from the other side: an app whose
+            // executable is the CLI does not open, and `ait` repairing it would fetch the
+            // same archive again every time it was opened. Refused before anything moves,
+            // so the app that works stays where it is.
+            if same_contents(&executable_of(&fresh)?, &unpacked.join(CLI)) {
+                return Err(Error::invalid(format!(
+                    "this release's {APP} contains `ait` instead of the app - not installing it"
+                )));
+            }
             swap_bundle(&fresh, target)
         }
     }
+}
+
+/// The executable a bundle's `Info.plist` names, which the bundle must contain.
+///
+/// Read the way macOS reads it rather than assumed from the product name, so the check is
+/// made against the file that will actually be launched. Only the XML form is understood,
+/// which is what Tauri writes; anything else is refused, because an app this cannot check
+/// is not one to replace a working app with.
+fn executable_of(bundle: &Path) -> Result<PathBuf> {
+    let plist = std::fs::read_to_string(bundle.join("Contents/Info.plist")).unwrap_or_default();
+    let executable = plist
+        .split_once("<key>CFBundleExecutable</key>")
+        .and_then(|(_, rest)| rest.trim_start().strip_prefix("<string>"))
+        .and_then(|rest| rest.split_once("</string>"))
+        .map(|(name, _)| name.trim())
+        // A name, not a path: `../../ait` would be checking a file outside the bundle.
+        .filter(|name| !name.is_empty() && !name.contains('/'))
+        .map(|name| bundle.join("Contents/MacOS").join(name));
+    match executable {
+        Some(path) if path.is_file() => Ok(path),
+        _ => Err(Error::invalid(format!(
+            "this release's {APP} names no executable that it contains - not installing it"
+        ))),
+    }
+}
+
+/// Whether two files hold the same bytes. One that cannot be read matches nothing.
+fn same_contents(a: &Path, b: &Path) -> bool {
+    // Lengths first: the app and the CLI are tens of megabytes each, and almost always
+    // differ in size.
+    match (std::fs::metadata(a), std::fs::metadata(b)) {
+        (Ok(a), Ok(b)) if a.len() == b.len() => {}
+        _ => return false,
+    }
+    matches!((std::fs::read(a), std::fs::read(b)), (Ok(a), Ok(b)) if a == b)
 }
 
 /// A directory that cleans itself up, next to the binary being replaced.
@@ -674,12 +756,27 @@ mod tests {
         );
     }
 
+    /// An `Info.plist` naming `executable`, laid out the way Tauri writes one. `version`
+    /// tells one bundle's from another's.
+    fn info_plist(executable: &str, version: &str) -> String {
+        format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\">\n<dict>\n\
+             \t<key>CFBundleExecutable</key>\n\t<string>{executable}</string>\n\
+             \t<key>CFBundleShortVersionString</key>\n\t<string>{version}</string>\n\
+             </dict>\n</plist>\n"
+        )
+    }
+
     /// An unpacked release archive: the CLI and the app, side by side.
     fn unpacked(at: &Path) {
         std::fs::create_dir_all(at.join(APP).join("Contents/MacOS")).unwrap();
         std::fs::write(at.join(CLI), b"the cli").unwrap();
         std::fs::write(at.join(APP).join("Contents/MacOS/ai-team"), b"the app").unwrap();
-        std::fs::write(at.join(APP).join("Contents/Info.plist"), b"fresh").unwrap();
+        std::fs::write(
+            at.join(APP).join("Contents/Info.plist"),
+            info_plist("ai-team", "fresh"),
+        )
+        .unwrap();
     }
 
     /// An installed `.app`, one version behind. Returns its executable - the path a
@@ -688,8 +785,24 @@ mod tests {
         let app = at.join(APP);
         std::fs::create_dir_all(app.join("Contents/MacOS")).unwrap();
         std::fs::write(app.join("Contents/MacOS/ai-team"), b"the old app").unwrap();
-        std::fs::write(app.join("Contents/Info.plist"), b"stale").unwrap();
+        std::fs::write(
+            app.join("Contents/Info.plist"),
+            info_plist("ai-team", "stale"),
+        )
+        .unwrap();
         app.join("Contents/MacOS/ai-team")
+    }
+
+    /// An archive and an installed app, in a directory that outlives neither.
+    fn archive_and_app() -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let archive = dir.path().join("unpacked");
+        std::fs::create_dir_all(&archive).unwrap();
+        unpacked(&archive);
+        let applications = dir.path().join("Applications");
+        std::fs::create_dir_all(&applications).unwrap();
+        let running = installed_app(&applications);
+        (dir, archive, running)
     }
 
     #[test]
@@ -721,11 +834,84 @@ mod tests {
         // The whole bundle, not only its executable: the signature seals Info.plist and
         // Resources with it, so a half-replaced bundle is one Gatekeeper refuses.
         assert_eq!(
-            std::fs::read(applications.join(APP).join("Contents/Info.plist")).unwrap(),
-            b"fresh"
+            std::fs::read_to_string(applications.join(APP).join("Contents/Info.plist")).unwrap(),
+            info_plist("ai-team", "fresh")
         );
         // And nothing is left lying next to it.
         assert!(!applications.join(".ai-team.app.previous").exists());
+    }
+
+    #[test]
+    fn a_cli_standing_in_for_the_app_is_recognised() {
+        // What pressing Update in a 0.5.0 window leaves behind: the next release's `ait`,
+        // at the path macOS launches when the app is opened. Both CI legs (D12).
+        assert_eq!(
+            replaced_app(Path::new(
+                "/Applications/ai-team.app/Contents/MacOS/ai-team"
+            )),
+            Some(PathBuf::from("/Applications/ai-team.app"))
+        );
+        // `ait` where `ait` belongs is just the CLI.
+        assert_eq!(replaced_app(Path::new("/Users/me/.local/bin/ait")), None);
+        assert_eq!(replaced_app(Path::new("/usr/local/bin/ait")), None);
+        // And under its own name inside a bundle it was put there on purpose.
+        assert_eq!(
+            replaced_app(Path::new("/Applications/ai-team.app/Contents/MacOS/ait")),
+            None
+        );
+    }
+
+    #[test]
+    fn an_app_holding_the_cli_gets_the_whole_app_back() {
+        // `repair` without the download: the installed app's executable is `ait` and its
+        // Info.plist is the old release's, which is exactly what the old updater left.
+        let (_dir, archive, running) = archive_and_app();
+        std::fs::write(&running, b"the cli").unwrap();
+
+        let app = replaced_app(&running).expect("the CLI is standing in for the app");
+        let plan = plan(Host::Desktop, &running).unwrap();
+        assert_eq!(plan, Replace::Bundle(app.clone()));
+        install(&plan, &archive).unwrap();
+
+        assert_eq!(std::fs::read(&running).unwrap(), b"the app");
+        assert_eq!(
+            std::fs::read_to_string(app.join("Contents/Info.plist")).unwrap(),
+            info_plist("ai-team", "fresh")
+        );
+    }
+
+    #[test]
+    fn a_release_whose_app_is_the_cli_is_refused() {
+        // Installing it would brick the app from this side, and `ait` repairing it would
+        // download the same archive again every time the app was opened.
+        let (_dir, archive, running) = archive_and_app();
+        std::fs::write(archive.join(APP).join("Contents/MacOS/ai-team"), b"the cli").unwrap();
+
+        let error = install(&plan(Host::Desktop, &running).unwrap(), &archive)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("instead of the app"), "{error}");
+        assert_eq!(std::fs::read(&running).unwrap(), b"the old app");
+    }
+
+    #[test]
+    fn an_app_that_does_not_contain_what_it_launches_is_refused() {
+        // Nothing named, a name the bundle has no file for, and a name reaching out of the
+        // bundle: none of them is an app that opens, and each would replace one that does.
+        for plist in [
+            "<plist version=\"1.0\"><dict></dict></plist>".to_string(),
+            info_plist("missing", "fresh"),
+            info_plist("../../ait", "fresh"),
+        ] {
+            let (_dir, archive, running) = archive_and_app();
+            std::fs::write(archive.join(APP).join("Contents/Info.plist"), &plist).unwrap();
+
+            let error = install(&plan(Host::Desktop, &running).unwrap(), &archive)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("names no executable"), "{plist}: {error}");
+            assert_eq!(std::fs::read(&running).unwrap(), b"the old app");
+        }
     }
 
     #[test]

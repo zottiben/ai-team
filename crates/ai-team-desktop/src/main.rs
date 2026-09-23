@@ -33,7 +33,7 @@ fn main() {
     if let Err(err) = run() {
         // A desktop app has nowhere to print, so a startup failure gets a dialog too.
         eprintln!("ai-team: {err:#}");
-        alert(&format!("{err:#}"));
+        ai_team_core::alert(&format!("{err:#}"));
         std::process::exit(1);
     }
 }
@@ -95,28 +95,4 @@ fn run() -> Result<()> {
         })
         .run(tauri::generate_context!())
         .context("running the desktop app")
-}
-
-/// Tauri's dialog plugin is not loaded yet when startup fails, so this uses the
-/// platform's own facility and falls back to stderr where there is not one.
-fn alert(message: &str) {
-    #[cfg(target_os = "macos")]
-    {
-        let script = format!(
-            "display dialog {} with title \"ai-team\" buttons {{\"OK\"}} with icon caution",
-            applescript_string(message)
-        );
-        let _ = std::process::Command::new("osascript")
-            .args(["-e", &script])
-            .status();
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = message;
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn applescript_string(value: &str) -> String {
-    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
 }
