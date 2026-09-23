@@ -2297,52 +2297,18 @@ async fn submit(
 /// ai-team's own database knows, and the questions ai-planner is holding - and hands
 /// them over in one order.
 async fn today(State(state): State<AppState>) -> Result<Json<Vec<ai_team_core::Item>>> {
-    // Two passes over the store, with the lock released in between, because reading the
-    // questions means running `aip` once per checkout and no request should hold a
-    // database connection across that.
+    // Two passes, with the lock released in between, because reading the plans means
+    // running `aip` once per checkout and no request should hold a database connection
+    // across that.
     let (mut items, checkouts) = {
         let store = state.store()?;
         let store = store.lock();
-        let items = ai_team_core::today_from_store(&store)?;
-        let checkouts: Vec<(String, String)> = store
-            .projects()?
-            .into_iter()
-            .filter_map(|project| {
-                let repo = store
-                    .project_repos(project.id)
-                    .ok()?
-                    .into_iter()
-                    .find_map(|repo| repo.main_path)?;
-                Some((project.slug, repo))
-            })
-            .collect();
-        (items, checkouts)
+        (
+            ai_team_core::today_from_store(&store)?,
+            ai_team_core::today_checkouts(&store)?,
+        )
     };
-
-    for (slug, repo) in checkouts {
-        // Best effort per project: a checkout that has been deleted, or one with no plan
-        // yet, must not empty the whole list for every other project.
-        let planner = ai_team_core::Planner::at(repo);
-        let Ok(questions) = planner.open_questions().await else {
-            continue;
-        };
-        for question in questions {
-            items.push(ai_team_core::from_question(
-                &slug,
-                &question.body,
-                question.asked_at,
-            ));
-        }
-        // Work an agent finished and left `in_review` is the commonest thing waiting
-        // after a run, and it lives on the plan rather than in ai-team's own tables.
-        for slice in planner.slices().await.unwrap_or_default() {
-            if let Some(item) =
-                ai_team_core::from_slice(&slug, &slice.key, &slice.title, &slice.status)
-            {
-                items.push(item);
-            }
-        }
-    }
+    items.extend(ai_team_core::today_from_plans(checkouts).await);
 
     Ok(Json(ai_team_core::rank_today(items)))
 }

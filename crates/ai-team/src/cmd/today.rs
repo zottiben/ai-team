@@ -11,47 +11,8 @@ const LABEL: usize = 9;
 pub(crate) async fn run() -> Result<()> {
     let store = Store::open_default()?;
 
-    let (mut items, checkouts) = {
-        let from_store = ai_team_core::today_from_store(&store)?;
-        let checkouts: Vec<(String, String)> = store
-            .projects()?
-            .into_iter()
-            .filter_map(|project| {
-                let repo = store
-                    .project_repos(project.id)
-                    .ok()?
-                    .into_iter()
-                    .find_map(|repo| repo.main_path)?;
-                Some((project.slug, repo))
-            })
-            .collect();
-        (from_store, checkouts)
-    };
-
-    for (slug, repo) in checkouts {
-        // Best effort: a checkout that has moved, or one with no plan yet, must not
-        // empty the list for every other project.
-        let planner = ai_team_core::Planner::at(repo);
-        let Ok(questions) = planner.open_questions().await else {
-            continue;
-        };
-        for question in questions {
-            items.push(ai_team_core::from_question(
-                &slug,
-                &question.body,
-                question.asked_at,
-            ));
-        }
-        // Work an agent finished and left `in_review` is the commonest thing waiting
-        // after a run, and it lives on the plan rather than in ai-team's own tables.
-        for slice in planner.slices().await.unwrap_or_default() {
-            if let Some(item) =
-                ai_team_core::from_slice(&slug, &slice.key, &slice.title, &slice.status)
-            {
-                items.push(item);
-            }
-        }
-    }
+    let mut items = ai_team_core::today_from_store(&store)?;
+    items.extend(ai_team_core::today_from_plans(ai_team_core::today_checkouts(&store)?).await);
 
     let items = ai_team_core::rank_today(items);
     if items.is_empty() {

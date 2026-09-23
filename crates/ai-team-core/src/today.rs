@@ -294,8 +294,18 @@ fn slipped(due: &str, at: &str) -> i64 {
 /// run, and it lives in ai-planner rather than in ai-team's own `review` table - so
 /// without this, the most likely answer to "I just ran something, what now" was
 /// "nothing".
-pub fn from_slice(project: &str, key: &str, title: &str, status: &str) -> Option<Item> {
+///
+/// `reviewed` says the slice's branch already has an open review. That review is the same
+/// finished PR, and already listed; the slice is only listed where there is none.
+pub fn from_slice(
+    project: &str,
+    key: &str,
+    title: &str,
+    status: &str,
+    reviewed: bool,
+) -> Option<Item> {
     let (urgency, detail) = match status {
+        "in_review" if reviewed => return None,
         "in_review" => (Urgency::Review, "finished, waiting for you to look at it"),
         // Blocked work will not unblock itself, and the reason is on the slice.
         "blocked" => (Urgency::Failed, "blocked - the plan says why"),
@@ -310,6 +320,77 @@ pub fn from_slice(project: &str, key: &str, title: &str, status: &str) -> Option
         run_id: None,
         since: None,
     })
+}
+
+/// A project's checkout, and what ai-team already lists for it, read before asking its
+/// plan anything - so no database connection is held across the `aip` calls.
+#[derive(Debug, Clone)]
+pub struct Checkout {
+    slug: String,
+    repo: String,
+    /// Branches whose PR already has an open review, listed as that review.
+    reviewed: std::collections::HashSet<String>,
+}
+
+/// Every project with a checkout, as [`from_plans`] needs it.
+pub fn checkouts(store: &Store) -> Result<Vec<Checkout>> {
+    let mut found = Vec::new();
+    for project in store.projects()? {
+        let Some(repo) = store
+            .project_repos(project.id)?
+            .into_iter()
+            .find_map(|repo| repo.main_path)
+        else {
+            continue;
+        };
+        let reviewed = store
+            .reviews(Some(project.id), true)?
+            .into_iter()
+            .filter_map(|review| review.branch)
+            .collect();
+        found.push(Checkout {
+            slug: project.slug,
+            repo,
+            reviewed,
+        });
+    }
+    Ok(found)
+}
+
+/// What each project's plan is holding: open questions, and finished or blocked slices.
+///
+/// Best effort per project: a checkout that has moved, or one with no plan yet, must not
+/// empty the list for every other project.
+pub async fn from_plans(checkouts: Vec<Checkout>) -> Vec<Item> {
+    let mut items = Vec::new();
+    for Checkout {
+        slug,
+        repo,
+        reviewed,
+    } in checkouts
+    {
+        let planner = crate::neighbours::Planner::at(repo);
+        let Ok(questions) = planner.open_questions().await else {
+            continue;
+        };
+        for question in questions {
+            items.push(from_question(&slug, &question.body, question.asked_at));
+        }
+        // Work an agent finished and left `in_review` is the commonest thing waiting
+        // after a run, and it lives on the plan rather than in ai-team's own tables.
+        for slice in planner.slices().await.unwrap_or_default() {
+            let has_review = slice
+                .branch
+                .as_ref()
+                .is_some_and(|branch| reviewed.contains(branch));
+            if let Some(item) =
+                from_slice(&slug, &slice.key, &slice.title, &slice.status, has_review)
+            {
+                items.push(item);
+            }
+        }
+    }
+    items
 }
 
 /// An open question ai-planner is holding, as an item.
@@ -567,23 +648,36 @@ mod tests {
         // The commonest thing waiting after a run, and it lives in ai-planner rather than
         // in ai-team's own review table - so without it Today was empty the moment a run
         // succeeded, which is exactly when somebody looks.
-        let item = from_slice("widget", "S1", "Add subtract", "in_review").unwrap();
+        let item = from_slice("widget", "S1", "Add subtract", "in_review", false).unwrap();
         assert_eq!(item.urgency, Urgency::Review);
         assert!(item.title.contains("S1"));
 
         // Blocked work will not unblock itself.
         assert_eq!(
-            from_slice("widget", "S2", "x", "blocked").unwrap().urgency,
+            from_slice("widget", "S2", "x", "blocked", false)
+                .unwrap()
+                .urgency,
             Urgency::Failed
         );
 
         // Everything else is work in progress or work done, and neither wants a human.
         for status in ["ready", "active", "done", "draft", "deferred"] {
             assert!(
-                from_slice("widget", "S3", "x", status).is_none(),
+                from_slice("widget", "S3", "x", status, false).is_none(),
                 "{status}"
             );
         }
+    }
+
+    #[test]
+    fn a_slice_with_its_own_review_open_is_that_review_not_a_second_item() {
+        // ai-team opens a review for every PR it builds, and the plan marks the same PR
+        // `in_review`: listed both ways, two finished PRs read as four things to look at.
+        assert!(from_slice("widget", "PR1", "Shout", "in_review", true).is_none());
+        // Without a review - built by hand, say - the plan is the only place it shows.
+        assert!(from_slice("widget", "PR1", "Shout", "in_review", false).is_some());
+        // Blocked says something a review does not.
+        assert!(from_slice("widget", "PR1", "Shout", "blocked", true).is_some());
     }
 
     #[test]
