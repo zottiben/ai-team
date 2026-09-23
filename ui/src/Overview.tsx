@@ -5,6 +5,7 @@ import { activityOf, isBusy, type Activity } from "./activity";
 import { RepoGraph, zoneColour } from "./Map";
 import { PageLayout } from "./PageLayout";
 import { OrganizationGraph } from "./TeamGraph";
+import { workspaceTitle } from "./tree";
 import {
   analytics as fetchAnalytics,
   board as fetchBoard,
@@ -198,7 +199,7 @@ export function Overview({
         <div>
           <h2>{project.name}</h2>
           <span className="workspace-title mono">
-            {workspace.main ? "main checkout" : workspace.branch ?? workspace.name}
+            {workspaceTitle(workspace)}
           </span>
         </div>
         {running === null ? (

@@ -61,9 +61,12 @@ export function Crew({
   onOpenRun,
   onTalk,
   showGraph = false,
+  leaf = false,
 }: {
   project: string;
   workspace?: string | null;
+  /** A pull request's worktree: its crew builds it, and nothing here starts a run. */
+  leaf?: boolean;
   tick: number;
   onOpenRun: (id: number) => void;
   onTalk?: (member: Member) => void;
@@ -212,7 +215,9 @@ export function Crew({
           members={crew}
           board={board}
           onTalk={onTalk}
-          onBuildReady={buildReady}
+          coordinates={!leaf}
+          // Building starts a run, and a run starts from the checkout above a PR's.
+          onBuildReady={leaf ? undefined : buildReady}
           onDeliver={deliver}
           starting={starting}
           delivering={delivering}

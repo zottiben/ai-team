@@ -22,6 +22,7 @@ mod gates;
 mod guardrails;
 mod house;
 mod launch_path;
+mod layout;
 mod lsp;
 mod machine;
 mod map;
@@ -65,6 +66,9 @@ pub use house::{
     read as read_house_rules, read_for as read_house_rules_for, section as house_section, Rules,
 };
 pub use launch_path::adopt_login_path;
+pub use layout::{
+    place as place_worktrees, Kind as WorktreeKind, Placed as PlacedWorktree, PrFacts,
+};
 pub use lsp::{
     language_for, language_id, workspace_root, Client, Diagnostic, Hover, Language, Location, Pool,
     Position, Range,

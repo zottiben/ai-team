@@ -120,7 +120,13 @@ impl Store {
         Ok(rows)
     }
 
-    /// Newest runs initiated from exactly one checkout.
+    /// Newest runs that belong to one checkout: the ones started in it, and - for a pull
+    /// request's worktree - the ones that built that PR in it (PW1).
+    ///
+    /// A PR's worktree starts no runs of its own; the run that builds it is rooted in the
+    /// checkout above. Listed only by where runs started, the worktree would show nothing
+    /// of the work done in it. Only the PR it holds now, though: an `awt` slot is reused,
+    /// and the PRs it held before are other work.
     ///
     /// This filters before applying the limit. Filtering a bounded project-wide list in
     /// Rust lets a busy sibling workspace hide this one's latest run entirely.
@@ -130,16 +136,29 @@ impl Store {
         workspace: &Path,
         limit: i64,
     ) -> Result<Vec<Run>> {
-        let mut stmt = self.db().conn().prepare(&format!(
-            "{RUN_SELECT} WHERE project_id = ?1 AND workspace_path = ?2
-             ORDER BY id DESC LIMIT ?3"
-        ))?;
         let workspace = workspace
             .canonicalize()
             .unwrap_or_else(|_| workspace.to_path_buf());
         let path = workspace.to_string_lossy();
+        // The PR this worktree holds now, if it holds one.
+        let held = match self.latest_pr_node_in(&path)? {
+            Some(node) => node.slice_key.zip(self.run(node.run_id)?.plan_slug),
+            None => None,
+        };
+        let (slice, plan) = held.unzip();
+        let mut stmt = self.db().conn().prepare(&format!(
+            "{RUN_SELECT} WHERE project_id = ?1
+               AND (workspace_path = ?2
+                    OR id IN (SELECT n.run_id FROM node_run n JOIN run r ON r.id = n.run_id
+                               WHERE n.worktree_path = ?2 AND n.slice_key = ?3
+                                 AND r.plan_slug = ?4))
+             ORDER BY id DESC LIMIT ?5"
+        ))?;
         let rows = stmt
-            .query_map(params![project_id, path.as_ref(), limit], run_from_row)?
+            .query_map(
+                params![project_id, path.as_ref(), slice, plan, limit],
+                run_from_row,
+            )?
             .collect::<rusqlite::Result<_>>()?;
         Ok(rows)
     }
@@ -811,6 +830,26 @@ impl Store {
         })?;
 
         self.node_run(id)
+    }
+
+    /// The newest pull-request turn taken in a worktree, if any was.
+    ///
+    /// How the window learns which PR a leased worktree holds, and which run's checkout
+    /// it belongs under, without keeping a table of its own: the rows that did the work
+    /// already say where they did it.
+    pub fn latest_pr_node_in(&self, worktree: &str) -> Result<Option<NodeRun>> {
+        self.db()
+            .conn()
+            .query_row(
+                &format!(
+                    "{NODE_SELECT} WHERE worktree_path = ?1 AND slice_key IS NOT NULL
+                     ORDER BY id DESC LIMIT 1"
+                ),
+                params![worktree],
+                node_from_row,
+            )
+            .optional()
+            .map_err(Into::into)
     }
 
     pub fn node_run(&self, id: i64) -> Result<NodeRun> {
@@ -1561,6 +1600,51 @@ mod tests {
         let found = s.runs_in_workspace(project, task, 1).unwrap();
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].id, expected.id);
+    }
+
+    #[test]
+    fn a_pr_worktree_lists_the_runs_that_built_its_pr_and_not_its_slots_history() {
+        let (mut s, project, team) = seeded();
+        let main = Path::new("/tmp/widget-main");
+        let slot = "/tmp/awt/widget/1/widget";
+        let registry = ModelRegistry::local_only();
+        let backend = backend(&s, team);
+
+        // An earlier plan's PR built in this slot, which awt later handed out again.
+        let earlier = s
+            .create_run_in(project, "earlier", RunTrigger::Manual, Some(main))
+            .unwrap();
+        s.set_run_plan(earlier.id, "earlier-plan").unwrap();
+        let old = s
+            .dispatch_task(earlier.id, backend, "PR1", None, &registry)
+            .unwrap();
+        s.attach_worktree(old.id, slot, Some("earlier-plan/pr1"), None)
+            .unwrap();
+
+        // The PR it holds now, built by one run and followed up by another.
+        let mut now = Vec::new();
+        for prompt in ["build", "address review"] {
+            let run = s
+                .create_run_in(project, prompt, RunTrigger::Manual, Some(main))
+                .unwrap();
+            s.set_run_plan(run.id, "csv").unwrap();
+            let node = s
+                .dispatch_task(run.id, backend, "PR2", Some("T1"), &registry)
+                .unwrap();
+            s.attach_worktree(node.id, slot, Some("csv/pr2"), None)
+                .unwrap();
+            now.push(run.id);
+        }
+
+        let found: Vec<i64> = s
+            .runs_in_workspace(project, Path::new(slot), 10)
+            .unwrap()
+            .into_iter()
+            .map(|run| run.id)
+            .collect();
+        assert_eq!(found, [now[1], now[0]]);
+        // The checkout they started in still has all three.
+        assert_eq!(s.runs_in_workspace(project, main, 10).unwrap().len(), 3);
     }
 
     #[test]

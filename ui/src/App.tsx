@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type CSSProperties } from "react";
 
 import { Analytics } from "./Analytics";
 import { Notifications } from "./Notifications";
@@ -28,6 +28,7 @@ import {
   type Worktree,
 } from "./api";
 import { apply, followSystem, stored, type Theme } from "./theme";
+import { nested, workspaceDetail, workspaceName } from "./tree";
 
 /**
  * The shell, and the two levels the window has (D18).
@@ -220,9 +221,7 @@ export default function App() {
               {inside.name}
               {insideWorkspace !== undefined && (
                 <span className="sidebar__workspace-label mono">
-                  {insideWorkspace.main
-                    ? "main"
-                    : insideWorkspace.branch ?? insideWorkspace.name}
+                  {workspaceName(insideWorkspace)}
                 </span>
               )}
             </span>
@@ -278,10 +277,12 @@ export default function App() {
                 </button>
                 <div className="sidebar-project__workspaces" aria-label={`${entry.name} workspaces`}>
                   {trees === undefined && <span className="faint">reading checkouts…</span>}
-                  {trees?.map((workspace) => {
+                  {trees !== undefined &&
+                    nested(trees).map(({ tree: workspace, depth }) => {
                     const selected =
                       inside?.id === entry.id &&
                       (currentPath === workspace.path || (currentPath === null && workspace.main));
+                    const detail = workspaceDetail(workspace);
                     return (
                       <button
                         type="button"
@@ -289,6 +290,7 @@ export default function App() {
                         className="nav-item nav-item--workspace"
                         aria-current={selected}
                         title={workspace.path}
+                        style={{ "--workspace-depth": depth } as CSSProperties}
                         onClick={() => {
                           setLastWorkspace((seen) => ({
                             ...seen,
@@ -303,12 +305,17 @@ export default function App() {
                         }}
                       >
                         <span className="workspace-dot" data-status={workspace.status} />
-                        <span>{workspace.main ? "main" : workspace.branch ?? workspace.name}</span>
-                        {workspace.lease_holder !== null && (
-                          <span className="nav-item__lease" title={workspace.lease_holder}>
-                            {workspace.lease_holder.startsWith("orphaned:") ? "!" : "leased"}
-                          </span>
-                        )}
+                        <span className="nav-item__name">{workspaceName(workspace)}</span>
+                        {detail !== null && <span className="nav-item__detail">{detail}</span>}
+                        {/* A pull request's worktree is always leased, so saying so is noise; a
+                            lease left behind by a reboot is not. */}
+                        {workspace.lease_holder !== null &&
+                          (workspace.kind !== "pr" ||
+                            workspace.lease_holder.startsWith("orphaned:")) && (
+                            <span className="nav-item__lease" title={workspace.lease_holder}>
+                              {workspace.lease_holder.startsWith("orphaned:") ? "!" : "leased"}
+                            </span>
+                          )}
                       </button>
                     );
                   })}

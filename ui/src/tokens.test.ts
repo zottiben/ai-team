@@ -69,7 +69,11 @@ it("every token the shell uses actually exists", () => {
     // Set by a rule or by a component rather than defined in the palette - the
     // indirection that lets one class carry any status, or any zone's colour. They are
     // not typos, and they are listed here so a real one still fails.
-    const supplied = new Set<string | undefined>(["--status-color", "--seat-mark"]);
+    const supplied = new Set<string | undefined>([
+      "--status-color",
+      "--seat-mark",
+      "--workspace-depth",
+    ]);
     const unknown = [...new Set(used)].filter(
       (token) => !defined.has(token) && !supplied.has(token),
     );

@@ -152,18 +152,32 @@ button {
   font-size: var(--text-xs);
 }
 
+/* Indented by how deep it sits: a PR under the checkout its run started in, a stacked PR
+ * under the PR it stacks on - so the tree reads the way the work merges. */
 .nav-item--workspace {
   justify-content: flex-start;
   min-width: 0;
   padding-block: var(--space-1);
+  padding-left: calc(var(--space-2) + var(--workspace-depth, 0) * var(--space-3));
   font-family: var(--font-mono);
   font-size: var(--text-xs);
 }
 
-.nav-item--workspace > span:nth-child(2) {
+.nav-item__name {
+  flex: 0 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.nav-item__detail {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary-faint);
 }
 
 .workspace-dot {

@@ -238,6 +238,7 @@ export function WorkGraph({
   members,
   board,
   onTalk,
+  coordinates = true,
   onBuildReady,
   onDeliver,
   starting = false,
@@ -246,6 +247,11 @@ export function WorkGraph({
   members: Member[];
   board: Board;
   onTalk?: (member: Member) => void;
+  /**
+   * Whether this checkout coordinates work. A pull request's worktree does not: its
+   * orchestrator and planner work from the checkout above, so they are not offered here.
+   */
+  coordinates?: boolean;
   onBuildReady?: (approveHeld: boolean) => void | Promise<void>;
   onDeliver?: (
     delivery: NonNullable<BoardSlice["delivery"]>,
@@ -420,6 +426,10 @@ export function WorkGraph({
           )}
           {onTalk !== undefined && members
             .filter((member) => member.doing !== "disabled")
+            .filter(
+              (member) =>
+                coordinates || (member.role !== "orchestrator" && member.role !== "planner"),
+            )
             .map((member) => (
               <button
                 type="button"

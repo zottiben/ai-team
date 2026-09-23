@@ -400,6 +400,27 @@ fn context_problem(required: &[ContextSource], registry: &ModelRegistry) -> Opti
     None
 }
 
+/// Stop a run that needs a context source this machine cannot reach, before it plans.
+fn block_without_context(
+    store: &mut Store,
+    run_id: i64,
+    required: &[ContextSource],
+    registry: &ModelRegistry,
+) -> Result<()> {
+    let Some(reason) = context_problem(required, registry) else {
+        return Ok(());
+    };
+    store.block_run(run_id, &reason)?;
+    notify_run(
+        store,
+        run_id,
+        "input_required",
+        "Planning needs context",
+        &reason,
+    );
+    Err(Error::invalid(reason))
+}
+
 /// Put the run's checkout on the branch it will plan from (PW2), and say so.
 async fn branch_workspace<F>(
     store: &mut Store,
@@ -748,6 +769,45 @@ impl StartedExecution<'_> {
     }
 }
 
+/// The PR a worktree was built as, when the run that built it started somewhere else:
+/// its key, its branch, and the checkout above it.
+type HeldPr = (Option<String>, Option<String>, Option<String>);
+
+/// Read in one synchronous window, so no borrowed store is held across the git call after.
+fn pr_held_in(store: &Store, repo: &Path) -> Result<Option<HeldPr>> {
+    let path = repo.to_string_lossy();
+    let Some(node) = store.latest_pr_node_in(&path)? else {
+        return Ok(None);
+    };
+    let run = store.run(node.run_id)?;
+    let started_here = run
+        .workspace_path
+        .as_deref()
+        .is_some_and(|workspace| crate::neighbours::same_worktree(workspace, &path));
+    Ok((!started_here).then_some((node.slice_key, node.branch, run.workspace_path)))
+}
+
+/// Refuse to start a run in a pull request's worktree (PW1).
+///
+/// A PR's worktree is a leaf of the run that planned it: its crew builds it and review
+/// comments come back to it, but the orchestrator coordinates from the checkout above. A
+/// run started here would plan inside a PR and switch its branch out from under it. Only
+/// while it still holds that PR, though - a slot `awt` has taken back is nobody's.
+async fn refuse_pr_worktree(held: Option<HeldPr>, repo: &Path) -> Result<()> {
+    let Some((slice, branch, above)) = held else {
+        return Ok(());
+    };
+    if branch.is_none() || crate::neighbours::current_branch(repo).await != branch {
+        return Ok(());
+    }
+    Err(Error::invalid(format!(
+        "{} is {}'s worktree. A team run starts from the checkout above it{}.",
+        repo.display(),
+        slice.as_deref().unwrap_or("a pull request"),
+        above.map_or_else(String::new, |above| format!(" ({above})"))
+    )))
+}
+
 /// Create the run's row and take its checkout.
 ///
 /// One live run per checkout (PW12). Asked before the row exists, so the usual refusal
@@ -815,6 +875,8 @@ where
         parallel_width: width,
     } = prepare(resolve(&store, request)?, request).await?;
 
+    let held = pr_held_in(&store, &repo)?;
+    refuse_pr_worktree(held, &repo).await?;
     let run = open_run(
         &mut store,
         request,
@@ -828,17 +890,7 @@ where
         repo: repo.clone(),
     });
     if planning {
-        if let Some(reason) = context_problem(&required_context, &registry) {
-            store.block_run(run.id, &reason)?;
-            notify_run(
-                &mut store,
-                run.id,
-                "input_required",
-                "Planning needs context",
-                &reason,
-            );
-            return Err(Error::invalid(reason));
-        }
+        block_without_context(&mut store, run.id, &required_context, &registry)?;
         if let Err(error) =
             branch_workspace(&mut store, run.id, &repo, request, &mut on_progress).await
         {

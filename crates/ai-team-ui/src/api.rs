@@ -244,7 +244,7 @@ struct WorktreesQuery {
 async fn worktrees(
     State(state): State<AppState>,
     Query(query): Query<WorktreesQuery>,
-) -> Result<Json<Vec<ai_team_core::PoolEntry>>> {
+) -> Result<Json<Vec<ai_team_core::PlacedWorktree>>> {
     // Resolved and the lock dropped before awaiting: `awt` and `git` are other programs,
     // and holding the database across them would block every other request.
     let repo = {
@@ -261,7 +261,57 @@ async fn worktrees(
                 ))
             })?
     };
-    Ok(Json(ai_team_core::Worktrees::at(repo).pool().await?))
+    let entries = ai_team_core::Worktrees::at(&repo).pool().await?;
+
+    // Which pull request each worktree holds, from the rows that built in it - read in one
+    // window, and the lock let go before asking ai-planner anything.
+    let built: Vec<(String, String, String, Option<String>)> = {
+        let store = state.store()?;
+        let store = store.lock();
+        let mut built = Vec::new();
+        for entry in entries.iter().filter(|entry| !entry.main) {
+            let Some(node) = store.latest_pr_node_in(&entry.path)? else {
+                continue;
+            };
+            let run = store.run(node.run_id)?;
+            if let (Some(plan), Some(slice_key)) = (run.plan_slug, node.slice_key) {
+                built.push((entry.path.clone(), plan, slice_key, run.workspace_path));
+            }
+        }
+        built
+    };
+
+    // What each stacks on, from its plan: once per plan, and nothing when the plan cannot
+    // be read - the worktree then sits under its run's checkout rather than vanishing.
+    let mut plans: std::collections::HashMap<String, Vec<ai_team_core::Slice>> =
+        std::collections::HashMap::new();
+    for (_, plan, _, _) in &built {
+        if !plans.contains_key(plan) {
+            let slices = ai_team_core::Planner::at(&repo)
+                .for_plan(plan.clone())
+                .slices()
+                .await
+                .unwrap_or_default();
+            plans.insert(plan.clone(), slices);
+        }
+    }
+    let facts: Vec<ai_team_core::PrFacts> = built
+        .into_iter()
+        .map(|(path, plan, slice_key, workspace)| {
+            let stacked_on = plans.get(&plan).and_then(|slices| {
+                let slice = slices.iter().find(|slice| slice.key == slice_key)?;
+                ai_team_core::stacked_on(slice, slices)?.branch.clone()
+            });
+            ai_team_core::PrFacts {
+                path,
+                plan,
+                slice_key,
+                workspace,
+                stacked_on,
+            }
+        })
+        .collect();
+    Ok(Json(ai_team_core::place_worktrees(entries, &facts)))
 }
 
 async fn tree(

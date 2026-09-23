@@ -17,6 +17,8 @@ function tree(over: Partial<Worktree> = {}): Worktree {
     processes: [],
     branch: "chore/review-7223",
     main: false,
+    kind: "manual",
+    parent: "/Users/me/nodifi-data",
     ...over,
   };
 }

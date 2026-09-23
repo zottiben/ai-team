@@ -34,6 +34,8 @@ const MAIN: Worktree = {
   processes: [],
   branch: "main",
   main: true,
+  kind: "main",
+  parent: null,
 };
 
 function map(over: Partial<RepoMap> = {}): RepoMap {

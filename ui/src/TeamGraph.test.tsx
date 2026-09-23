@@ -265,6 +265,25 @@ it("offers a direct build action when the current plan already has ready work", 
   expect(build).toHaveBeenCalledWith(false);
 });
 
+it("in a pull request's worktree offers its builders, not the seats that coordinate", () => {
+  const board: Board = {
+    plan: { plan: "csv", title: "CSV", status: "active", slice: null },
+    next_step: null,
+    slices: [],
+  };
+  const crew = [
+    member({ role: "orchestrator", name: "Orchestrator", doing: "idle" }),
+    member({ agent_id: 2, role: "planner", name: "Planner", doing: "idle" }),
+    member({ agent_id: 3, role: "frontend", name: "Frontend", doing: "idle" }),
+  ];
+
+  render(<WorkGraph board={board} members={crew} onTalk={() => {}} coordinates={false} />);
+
+  expect(screen.getByRole("button", { name: "Talk to Frontend" })).toBeDefined();
+  expect(screen.queryByRole("button", { name: "Talk to Orchestrator" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Talk to Planner" })).toBeNull();
+});
+
 it("makes an approval-held board an explicit approve-and-build action", async () => {
   const build = vi.fn();
   const board: Board = {
