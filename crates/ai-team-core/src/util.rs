@@ -164,22 +164,23 @@ fn matches_from(p: &[char], mut pi: usize, t: &[char], mut ti: usize) -> bool {
     ti == t.len()
 }
 
-/// A fresh secret for a loopback surface.
-///
-/// Minted per process and never written down: the only thing it protects is a server on
-/// 127.0.0.1 that lives as long as that process, and a secret on disk is a secret that
-/// outlives what it protects.
 /// Whether a local process still exists.
 ///
 /// A supervised run is local by design, so its pid is enough to distinguish a live
-/// owner from a desktop/CLI process that was terminated. Permission errors still mean
-/// the process exists; `test_kill_process` reports that distinction for us.
+/// owner from a desktop/CLI process that was terminated. Signal 0 checks without
+/// signalling, and a refusal still means the process exists - it is only somebody
+/// else's. Zero and negative ids name process groups to `kill`, never one process, and
+/// `Pid::from_raw` asserts against them.
 #[cfg(unix)]
 pub fn process_is_alive(pid: i64) -> bool {
     i32::try_from(pid)
         .ok()
+        .filter(|raw| *raw > 0)
         .and_then(rustix::process::Pid::from_raw)
-        .is_some_and(|pid| rustix::process::test_kill_process(pid).is_ok())
+        .is_some_and(|pid| match rustix::process::test_kill_process(pid) {
+            Ok(()) => true,
+            Err(error) => error == rustix::io::Errno::PERM,
+        })
 }
 
 #[cfg(not(unix))]
@@ -187,6 +188,11 @@ pub fn process_is_alive(_pid: i64) -> bool {
     false
 }
 
+/// A fresh secret for a loopback surface.
+///
+/// Minted per process and never written down: the only thing it protects is a server on
+/// 127.0.0.1 that lives as long as that process, and a secret on disk is a secret that
+/// outlives what it protects.
 pub fn mint_token() -> String {
     // Two sources, so neither being weak on its own matters: the OS clock at nanosecond
     // resolution, and the address of a fresh heap allocation.
@@ -204,7 +210,27 @@ pub fn mint_token() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::zone_specificity;
+    use super::{process_is_alive, zone_specificity};
+
+    #[cfg(unix)]
+    #[test]
+    fn a_process_is_alive_until_it_finishes_whoever_owns_it() {
+        assert!(process_is_alive(i64::from(std::process::id())));
+        // Somebody else's process still exists: signalling it is refused, not answered
+        // with "no such process". Pid 1 is always running and never this user's.
+        assert!(process_is_alive(1));
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("--list")
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let pid = i64::from(child.id());
+        child.wait().unwrap();
+        assert!(!process_is_alive(pid));
+        // Zero and negative ids name process groups to `kill`, never one process.
+        assert!(!process_is_alive(0));
+        assert!(!process_is_alive(-1));
+    }
 
     #[test]
     fn a_more_specific_zone_outranks_a_catch_all() {

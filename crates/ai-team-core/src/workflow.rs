@@ -463,7 +463,7 @@ fn refuse_busy_workspace(store: &Store, run_id: i64) -> Result<()> {
     match store.busy_run_in_workspace(
         run.project_id,
         Path::new(workspace),
-        crate::workspace::process_alive,
+        crate::util::process_is_alive,
     )? {
         Some(busy) if busy.id != run_id => Err(Error::invalid(crate::store::workspace_busy(
             busy.id,
@@ -720,7 +720,7 @@ fn open_run(
     plan_slug: Option<&str>,
 ) -> Result<crate::model::Run> {
     if let Some(busy) =
-        store.busy_run_in_workspace(project_id, repo, crate::workspace::process_alive)?
+        store.busy_run_in_workspace(project_id, repo, crate::util::process_is_alive)?
     {
         return Err(Error::invalid(crate::store::workspace_busy(
             busy.id,
@@ -737,7 +737,7 @@ fn open_run(
         store.supervise_run(
             run.id,
             i64::from(std::process::id()),
-            crate::workspace::process_alive,
+            crate::util::process_is_alive,
         )?;
         if let Some(plan_slug) = plan_slug {
             store.claim_run_plan(run.id, plan_slug)?;
@@ -988,7 +988,7 @@ pub async fn continue_approved_at(db: &Path, run_id: i64) -> Result<Orchestratio
     if let Err(error) = store.supervise_run(
         run_id,
         i64::from(std::process::id()),
-        crate::workspace::process_alive,
+        crate::util::process_is_alive,
     ) {
         record_workflow_failure(&mut store, run_id, &error)?;
         return Err(error);

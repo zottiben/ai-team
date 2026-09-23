@@ -208,33 +208,6 @@ pub(crate) fn needs_trunk_base(base: Option<&str>, trunk: &str, run_branch: Opti
     }
 }
 
-/// Whether a process is still running.
-///
-/// Signal 0 checks without signalling. Permission denied still means it exists - it is
-/// only somebody else's. Zero and negative ids name process groups to `kill`, never one
-/// process, and `Pid::from_raw` asserts against them.
-#[cfg(unix)]
-pub(crate) fn process_alive(pid: i64) -> bool {
-    let Some(pid) = i32::try_from(pid)
-        .ok()
-        .filter(|raw| *raw > 0)
-        .and_then(rustix::process::Pid::from_raw)
-    else {
-        return false;
-    };
-    match rustix::process::test_kill_process(pid) {
-        Ok(()) => true,
-        Err(error) => error == rustix::io::Errno::PERM,
-    }
-}
-
-/// No signal 0 off Unix, so every recorded supervisor is assumed alive. Neither shipped
-/// platform takes this path.
-#[cfg(not(unix))]
-pub(crate) fn process_alive(_pid: i64) -> bool {
-    true
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -538,20 +511,5 @@ mod tests {
         assert!(!needs_trunk_base(Some("develop"), "main", run));
         // On the trunk itself there is nothing to correct.
         assert!(!needs_trunk_base(Some("main"), "main", Some("main")));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn a_live_process_is_alive_and_a_finished_one_is_not() {
-        assert!(process_alive(i64::from(std::process::id())));
-        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
-            .arg("--list")
-            .stdout(std::process::Stdio::null())
-            .spawn()
-            .unwrap();
-        let pid = i64::from(child.id());
-        child.wait().unwrap();
-        assert!(!process_alive(pid));
-        assert!(!process_alive(-1));
     }
 }
