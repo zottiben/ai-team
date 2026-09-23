@@ -116,7 +116,7 @@ export function OrganizationGraph({
   return (
     <div className="team-graph org-graph" aria-label="Organization graph">
       {problem !== null && <p className="error">{problem}</p>}
-      <div className="team-graph__flow">
+      <div className="team-graph__flow" data-stages={stages.length}>
         {stages.map((stage, index) => (
           <div className="team-graph__step" key={stage.key}>
             {index > 0 && <span className="team-graph__connector" aria-hidden="true" />}

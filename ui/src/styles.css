@@ -656,12 +656,39 @@ button.card:hover {
   container-type: inline-size;
 }
 
+/* One column per stage, 13rem at the least. Where the stages do not fit side by side they
+ * fold - four into two rows, then everything into one - rather than scroll the last ones
+ * out of sight past an edge that shows no scrollbar. A connector only draws between
+ * neighbours in one row. */
 .team-graph__flow {
   display: grid;
   grid-template-columns: repeat(4, minmax(13rem, 1fr));
   gap: var(--space-4);
-  overflow-x: auto;
   padding: var(--space-2);
+}
+
+.team-graph__flow[data-stages="2"] {
+  grid-template-columns: repeat(2, minmax(13rem, 1fr));
+}
+
+@container (max-width: 56rem) {
+  .team-graph__flow[data-stages="4"] {
+    grid-template-columns: repeat(2, minmax(13rem, 1fr));
+  }
+
+  .team-graph__flow[data-stages="4"] > .team-graph__step:nth-child(3) .team-graph__connector {
+    display: none;
+  }
+}
+
+@container (max-width: 28rem) {
+  .team-graph__flow[data-stages] {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .team-graph__flow .team-graph__connector {
+    display: none;
+  }
 }
 
 .team-graph__step {
