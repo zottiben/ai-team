@@ -97,7 +97,7 @@ pub use paths::{
 pub use pi::{
     install_guard, install_guard_at, provider_name as pi_provider, run_pi_turn,
     thinking as pi_thinking, write_context_oauth_config, PiDisposition, PiEvent, PiIngested,
-    PiOutcome, PiProcess, PiSeat, PiTurn,
+    PiOutcome, PiPlanAccess, PiProcess, PiSeat, PiTurn,
 };
 pub use readiness::{
     apply as apply_fix, apply_at as apply_fix_at, report as readiness_report,

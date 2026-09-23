@@ -142,13 +142,12 @@ pub struct PlanSummary {
     pub slice: Option<String>,
 }
 
-/// One plan's header, as `aip ls --json` reports it. Read to check a base branch, never
-/// kept (D4).
+/// One plan's header, as `aip ls --json` reports it. Read to find a free slug, never kept
+/// (D4).
 #[derive(Debug, Clone, Deserialize)]
 pub struct PlanHeader {
     pub slug: String,
-    #[serde(default)]
-    pub base_branch: Option<String>,
+    pub title: String,
 }
 
 /// A question ai-planner is holding for a human.
@@ -390,16 +389,22 @@ impl Planner {
             .map_err(|error| Error::invalid(format!("could not read `aip ls --json`: {error}")))
     }
 
-    /// The branch this plan's slices stack onto by default.
-    pub async fn set_plan_base(&self, base: &str) -> Result<()> {
-        self.output(&["edit", "--base", base]).await.map(drop)
-    }
-
-    /// The branch one slice is built on and its pull request targets.
-    pub async fn set_slice_base(&self, key: &str, base: &str) -> Result<()> {
-        self.output(&["slice", "edit", key, "--base", base])
-            .await
-            .map(drop)
+    /// Start a plan in this checkout's repository and say which slug it got.
+    ///
+    /// A run's plan is created here, by name, before any seat touches the board - so the
+    /// seats can be pointed at it rather than left to infer one (see `AI_PLANNER_PLAN`).
+    /// `base` is what its pull requests target; every slice copies it as it is added. The
+    /// slug is the title's, cut to something a branch name can carry, and chosen so that
+    /// every plan in the repository can still be named (see [`free_slug`]).
+    pub async fn create(&self, title: &str, base: Option<&str>) -> Result<String> {
+        let slug = free_slug(title, &self.plans().await?);
+        let mut args = vec!["new", title, "--slug", &slug];
+        if let Some(base) = base {
+            args.push("--base");
+            args.push(base);
+        }
+        self.output(&args).await?;
+        Ok(slug)
     }
 
     /// Point the slice at the branch its work landed on, so review starts from the board.
@@ -470,9 +475,138 @@ impl Planner {
     }
 }
 
+/// The longest slug a plan is given. A plan's slug names its pull requests' branches,
+/// `<plan>/pr1`, and a whole title there reads like a sentence.
+const SLUG_LIMIT: usize = 40;
+
+/// A slug for `title` that leaves every plan - the new one and all the repository's
+/// others - possible to name.
+///
+/// ai-planner finds a plan by matching the name against every slug and title that
+/// contains it, and refuses when more than one does: an exact slug does not win. So a new
+/// slug may not be one another plan's slug or title contains, and may not contain another
+/// plan's slug - `csv-export-2` would leave `csv-export` unnameable. Tried in order: the
+/// title's words cut at [`SLUG_LIMIT`], then numbered, then with leading words dropped.
+fn free_slug(title: &str, plans: &[PlanHeader]) -> String {
+    let words: Vec<String> = crate::util::slugify(title)
+        .split('-')
+        .filter(|word| !word.is_empty())
+        .map(str::to_string)
+        .collect();
+    let usable = |slug: &str| {
+        plans.iter().all(|plan| {
+            !plan.slug.contains(slug)
+                && !plan.title.to_lowercase().contains(slug)
+                && !slug.contains(plan.slug.as_str())
+        })
+    };
+    let bases = (0..words.len())
+        .map(|start| cut(&words[start..]))
+        .chain(std::iter::once("plan".to_string()));
+    for base in bases {
+        // Bounded: among one more number than there are plans, one is always unclaimed.
+        let numbered = (2..=plans.len() + 2).map(|n| format!("{base}-{n}"));
+        if let Some(slug) = std::iter::once(base.clone())
+            .chain(numbered)
+            .find(|slug| usable(slug))
+        {
+            return slug;
+        }
+    }
+    format!("plan-{}", plans.len() + 1)
+}
+
+/// Words joined into a slug no longer than [`SLUG_LIMIT`], cut where a word ends.
+fn cut(words: &[String]) -> String {
+    let mut slug = String::new();
+    for word in words {
+        if !slug.is_empty() && slug.len() + 1 + word.len() > SLUG_LIMIT {
+            break;
+        }
+        if !slug.is_empty() {
+            slug.push('-');
+        }
+        slug.push_str(word);
+    }
+    slug.truncate(SLUG_LIMIT);
+    slug
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn plan(slug: &str, title: &str) -> PlanHeader {
+        PlanHeader {
+            slug: slug.into(),
+            title: title.into(),
+        }
+    }
+
+    /// Whether naming `needle` to ai-planner finds exactly one of `plans`: it matches any
+    /// slug or title containing it, an exact slug included, and refuses more than one.
+    fn names_one(needle: &str, plans: &[PlanHeader]) -> bool {
+        plans
+            .iter()
+            .filter(|plan| plan.slug.contains(needle) || plan.title.to_lowercase().contains(needle))
+            .count()
+            == 1
+    }
+
+    #[test]
+    fn a_plan_slug_is_its_title_cut_at_a_word() {
+        assert_eq!(free_slug("CSV export", &[]), "csv-export");
+        // A title that runs on is cut where a word ends, not through one.
+        let long = free_slug(
+            "Let greet.sh take a --name=VALUE form as well as the positional name",
+            &[],
+        );
+        assert_eq!(long, "let-greet-sh-take-a-name-value-form-as");
+        assert!(long.len() <= SLUG_LIMIT);
+        // Nothing sluggable still names a plan.
+        assert_eq!(free_slug("!!!", &[]), "plan");
+    }
+
+    #[test]
+    fn a_new_plan_never_makes_any_plan_ambiguous_to_name() {
+        // ai-planner matches a name against every slug and title containing it and refuses
+        // more than one - an exact slug included. `greet-name-flag-web` beside
+        // `greet-name-flag` made the older plan impossible to name at all.
+        for (title, existing) in [
+            (
+                "greet.sh --name flag, advertised on the web",
+                vec![plan("greet-name-flag", "greet.sh - accept --name=VALUE")],
+            ),
+            ("CSV export", vec![plan("csv-export", "CSV export")]),
+            (
+                "CSV export",
+                vec![
+                    plan("csv-export", "CSV export"),
+                    plan("export", "Export"),
+                    plan("csv-export-2", "CSV export again"),
+                ],
+            ),
+            // A slug a title already contains.
+            ("Ledger", vec![plan("q3", "Rebuild the ledger totals")]),
+        ] {
+            let slug = free_slug(title, &existing);
+            let mut after = existing.clone();
+            after.push(plan(&slug, title));
+            assert!(names_one(&slug, &after), "{slug} is ambiguous ({title})");
+            // Every plan that could be named still can. (Some here could not to begin
+            // with: `csv-export-2` beside `csv-export`.)
+            for plan in existing
+                .iter()
+                .filter(|plan| names_one(&plan.slug, &existing))
+            {
+                assert!(
+                    names_one(&plan.slug, &after),
+                    "{slug} made {} ambiguous ({title})",
+                    plan.slug
+                );
+            }
+        }
+    }
 
     fn slice(scope: &str) -> Slice {
         Slice {

@@ -14,7 +14,7 @@ use std::fmt::Write as _;
 use std::path::Path;
 
 use crate::error::{Error, Result};
-use crate::neighbours::{git, Planner};
+use crate::neighbours::git;
 
 /// What putting a run's checkout on its own branch did, for the run to say.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -154,63 +154,10 @@ pub(crate) fn refuse_default_branch(branch: &str, trunk: &str, allowed: bool) ->
     )))
 }
 
-/// Tie this checkout to the plan a run just made, and correct its bases.
-///
-/// Asking for the plan by name records it as the checkout's answer. On the run's fresh
-/// branch that is the first answer the branch has ever had, so it sticks: the window and
-/// `aip` in a terminal both resolve to it from here on, where before they kept answering
-/// with whichever plan this checkout had resolved to most.
-///
-/// Bases are corrected while nothing has been built: a plan created on the run's branch,
-/// and every slice copied from it, would otherwise target a branch that exists only to
-/// coordinate. No trunk means nothing to correct them to, and they are left alone.
-pub(crate) async fn adopt_plan(
-    planner: &Planner,
-    repo: &Path,
-    slug: &str,
-    trunk: Option<&git::Trunk>,
-) -> Result<()> {
-    let planner = planner.clone().for_plan(slug);
-    planner.current().await?;
-    let Some(trunk) = trunk else {
-        return Ok(());
-    };
-    let run_branch = git::current_branch(repo).await;
-    let run_branch = run_branch.as_deref();
-    let base = planner
-        .plans()
-        .await?
-        .into_iter()
-        .find(|plan| plan.slug == slug)
-        .and_then(|plan| plan.base_branch);
-    if needs_trunk_base(base.as_deref(), &trunk.name, run_branch) {
-        planner.set_plan_base(&trunk.name).await?;
-    }
-    for slice in planner.slices().await? {
-        if needs_trunk_base(slice.base_branch.as_deref(), &trunk.name, run_branch) {
-            planner.set_slice_base(&slice.key, &trunk.name).await?;
-        }
-    }
-    Ok(())
-}
-
-/// Whether a base ai-planner recorded should be the default branch instead.
-///
-/// ai-planner bases a new plan, and every slice added to it, on whatever branch the
-/// checkout is on - and a run's checkout is on its own fresh branch. That branch is where
-/// the run coordinates, not something a pull request can target. An empty base means the
-/// same. Anything else - another slice's branch, for a stack, or a trunk the planner
-/// named on purpose - is the plan's to decide.
-pub(crate) fn needs_trunk_base(base: Option<&str>, trunk: &str, run_branch: Option<&str>) -> bool {
-    match base.map(str::trim).filter(|base| !base.is_empty()) {
-        None => true,
-        Some(base) => base != trunk && Some(base) == run_branch,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::neighbours::Planner;
 
     /// git with an identity and no signing, so a machine's own config cannot change what
     /// these tests see.
@@ -349,25 +296,25 @@ mod tests {
         assert!(!refused.contains(".claude"), "{refused}");
     }
 
-    /// The real `aip`, against a scratch database.
-    fn aip_in(dir: &Path, db: &Path, args: &[&str]) {
-        let output = std::process::Command::new("aip")
-            .arg("--db")
-            .arg(db)
-            .arg("-C")
-            .arg(dir)
-            .args(args)
-            .output()
-            .unwrap();
+    /// The real `aip`, against a scratch database, as a seat pointed at `plan` calls it.
+    fn aip_in(dir: &Path, db: &Path, plan: Option<&str>, args: &[&str]) -> String {
+        let mut command = std::process::Command::new("aip");
+        command.arg("--db").arg(db).arg("-C").arg(dir).args(args);
+        command.env_remove("AI_PLANNER_PLAN");
+        if let Some(plan) = plan {
+            command.env("AI_PLANNER_PLAN", plan);
+        }
+        let output = command.output().unwrap();
         assert!(
             output.status.success(),
             "aip {args:?}: {}",
             String::from_utf8_lossy(&output.stderr)
         );
+        String::from_utf8_lossy(&output.stdout).into_owned()
     }
 
     #[tokio::test]
-    async fn a_run_builds_the_plan_it_made_not_the_one_its_checkout_remembers() {
+    async fn a_run_works_on_the_plan_it_made_not_the_one_its_checkout_remembers() {
         if std::process::Command::new("aip")
             .arg("--version")
             .output()
@@ -380,78 +327,56 @@ mod tests {
         let db = dir.path().join("planner.db");
         let planner = Planner::at(&checkout).with_db(&db);
         planner.ensure().await.unwrap();
+        let current = |plan: Option<&str>| {
+            aip_in(&checkout, &db, plan, &["current", "--json"])
+                .split('"')
+                .nth(3)
+                .unwrap_or_default()
+                .to_string()
+        };
 
-        // The last run's plan, which this checkout has resolved to before.
+        // The last run's plan, which this checkout has resolved to again and again.
         aip_in(
             &checkout,
             &db,
+            None,
             &["new", "Last plan", "--slug", "last-plan", "--base", "main"],
         );
         for _ in 0..3 {
-            aip_in(&checkout, &db, &["-p", "last-plan", "current"]);
+            current(Some("last-plan"));
         }
-        // A planner in the same checkout creates a new plan. Asking the checkout which
-        // plan it is on - what a run used to do - still answers with the old one.
-        aip_in(&checkout, &db, &["new", "Stale", "--slug", "stale"]);
-        assert_eq!(planner.current().await.unwrap().plan, "last-plan");
 
-        // Now as a run does it: a fresh branch first, then the planner's plan and slices,
-        // based - as `create_plan` and `add_slice` base them - on the branch it ran from.
-        let branched = branch_for_run(&checkout, 9).await.unwrap();
-        aip_in(&checkout, &db, &["new", "This run", "--slug", "this-run"]);
-        aip_in(
-            &checkout,
-            &db,
-            &["-p", "this-run", "slice", "add", "PR1", "first"],
-        );
-        aip_in(
-            &checkout,
-            &db,
-            &[
-                "-p",
-                "this-run",
-                "slice",
-                "add",
-                "PR2",
-                "stacked",
-                "--base",
-                "ai-team/pr1",
-            ],
-        );
-        let mine = planner.clone().for_plan("this-run");
-        assert_eq!(
-            mine.slices().await.unwrap()[0].base_branch.as_deref(),
-            Some(branched.branch.as_str())
-        );
-
+        // A new run: a fresh branch, and its plan created by name, based on the trunk.
+        branch_for_run(&checkout, 9).await.unwrap();
         let trunk = git::trunk(&checkout).await.unwrap();
-        adopt_plan(&planner, &checkout, "this-run", Some(&trunk))
+        let plan = planner
+            .create("Export the ledger as CSV", Some(&trunk.name))
             .await
             .unwrap();
+        assert_eq!(plan, "export-the-ledger-as-csv");
 
-        assert_eq!(planner.current().await.unwrap().plan, "this-run");
-        let header = planner
-            .plans()
-            .await
-            .unwrap()
-            .into_iter()
-            .find(|plan| plan.slug == "this-run")
-            .unwrap();
-        assert_eq!(header.base_branch.as_deref(), Some("main"));
-        let bases: Vec<(String, Option<String>)> = mine
-            .slices()
-            .await
-            .unwrap()
-            .into_iter()
-            .map(|slice| (slice.key, slice.base_branch))
-            .collect();
-        assert_eq!(
-            bases,
-            [
-                ("PR1".to_string(), Some("main".to_string())),
-                ("PR2".to_string(), Some("ai-team/pr1".to_string())),
-            ]
+        // What went wrong before: a seat asking without naming the plan is answered with
+        // the old one, because this worktree has resolved to it most.
+        assert_eq!(current(None), "last-plan");
+
+        // A seat pointed at the run's plan - as every seat's server now is - gets it, on
+        // every call, however many it makes.
+        for _ in 0..4 {
+            assert_eq!(current(Some(&plan)), plan);
+        }
+        // And from then on the run's fresh branch remembers it, for `aip` in a terminal
+        // and for the window.
+        assert_eq!(planner.current().await.unwrap().plan, plan);
+
+        // Its slices target the trunk: each copies the plan's base as it is added.
+        aip_in(
+            &checkout,
+            &db,
+            Some(&plan),
+            &["slice", "add", "PR1", "first"],
         );
+        let slices = planner.clone().for_plan(plan).slices().await.unwrap();
+        assert_eq!(slices[0].base_branch.as_deref(), Some("main"));
     }
 
     #[tokio::test]
@@ -497,19 +422,5 @@ mod tests {
         assert!(refuse_default_branch("ai-team/pr1", "main", false).is_ok());
         // `master` is only the default branch where it is the default branch.
         assert!(refuse_default_branch("master", "main", false).is_ok());
-    }
-
-    #[test]
-    fn only_the_runs_own_branch_or_nothing_is_replaced_with_the_trunk() {
-        let run = Some("ai-team/run-7");
-        assert!(needs_trunk_base(None, "main", run));
-        assert!(needs_trunk_base(Some("  "), "main", run));
-        assert!(needs_trunk_base(Some("ai-team/run-7"), "main", run));
-        assert!(!needs_trunk_base(Some("main"), "main", run));
-        // A stack is the plan's structure, not a mistake to correct.
-        assert!(!needs_trunk_base(Some("ai-team/pr1"), "main", run));
-        assert!(!needs_trunk_base(Some("develop"), "main", run));
-        // On the trunk itself there is nothing to correct.
-        assert!(!needs_trunk_base(Some("main"), "main", Some("main")));
     }
 }

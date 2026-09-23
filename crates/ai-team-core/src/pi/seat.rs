@@ -84,7 +84,9 @@ pub(super) const PLAN_READ_TOOLS: &[&str] = &[
 /// The ai-planner tools only the planner may call.
 ///
 /// Still an allow-list rather than "everything": `delete_plan` is on the server and is
-/// not something a turn should reach for, and neither is `import_markdown`.
+/// not something a turn should reach for, and neither is `import_markdown`. Nor is
+/// `create_plan`: a run's plan is created by ai-team before the planner's turn, and the
+/// planner shapes that one.
 pub(super) const PLAN_WRITE_TOOLS: &[&str] = &[
     "get_plan",
     "get_slice",
@@ -95,7 +97,6 @@ pub(super) const PLAN_WRITE_TOOLS: &[&str] = &[
     "search_plans",
     "locate",
     "append_log",
-    "create_plan",
     "add_slice",
     "update_slice",
     "set_slice_status",
@@ -116,10 +117,16 @@ pub(super) const PLAN_WRITE_TOOLS: &[&str] = &[
 ///
 /// `--root` is the checkout, deliberately not the lease. A lease is a copy, and a plan
 /// written inside one is a plan nobody finds again.
-fn planner_server(plan_root: &Path, may_write: bool) -> Value {
+///
+/// The plan is named in the server's environment, `AI_PLANNER_PLAN`, which ai-planner
+/// treats as naming it on every call. Left to infer one, it answers with whichever plan
+/// the checkout has resolved to most - a previous run's, on a checkout that has had one -
+/// so a seat reading "the plan" read that one, and a planner once deferred a slice in it.
+fn planner_server(access: PlanAccess<'_>) -> Value {
     json!({
         "command": "aip",
-        "args": ["serve", "--root", plan_root.to_string_lossy()],
+        "args": ["serve", "--root", access.root.to_string_lossy()],
+        "env": { "AI_PLANNER_PLAN": access.plan },
         "transport": "stdio",
         // Connected up front and registered as real tools rather than reached through
         // the adapter's proxy. Both matter and the first run proved it: lazily-proxied
@@ -129,8 +136,18 @@ fn planner_server(plan_root: &Path, may_write: bool) -> Value {
         // looking for the way to do it.
         "lifecycle": "eager",
         "directTools": true,
-        "includeTools": if may_write { PLAN_WRITE_TOOLS } else { PLAN_READ_TOOLS },
+        "includeTools": if access.may_write { PLAN_WRITE_TOOLS } else { PLAN_READ_TOOLS },
     })
+}
+
+/// Which plan a seat works from, and whether it may shape it.
+#[derive(Debug, Clone, Copy)]
+pub struct PlanAccess<'a> {
+    /// The checkout whose plan it is. Never a lease.
+    pub root: &'a Path,
+    /// The plan, by slug. Named on every call the seat makes.
+    pub plan: &'a str,
+    pub may_write: bool,
 }
 
 /// The MCP config for one seat, or `None` when it has no context sources.
@@ -139,13 +156,13 @@ fn planner_server(plan_root: &Path, may_write: bool) -> Value {
 /// file with no servers is a flag that looks deliberate and does nothing. Ordinary seats
 /// let Pi merge repository servers. Planning seats run exclusive and copy safe unrelated
 /// repository servers into this config so generated context definitions have precedence.
-pub(super) fn mcp_config(sources: &[ContextSource], plan: Option<(&Path, bool)>) -> Option<Value> {
+pub(super) fn mcp_config(sources: &[ContextSource], plan: Option<PlanAccess<'_>>) -> Option<Value> {
     if sources.is_empty() && plan.is_none() {
         return None;
     }
     let mut servers = Map::new();
-    if let Some((root, may_write)) = plan {
-        servers.insert("ai-planner".to_string(), planner_server(root, may_write));
+    if let Some(access) = plan {
+        servers.insert("ai-planner".to_string(), planner_server(access));
     }
     for source in sources {
         servers.insert(source.as_str().to_string(), context_server(*source, true));
@@ -240,7 +257,7 @@ pub(super) fn write_mcp_config(
     role: &str,
     worktree: &Path,
     sources: &[ContextSource],
-    plan: Option<(&Path, bool)>,
+    plan: Option<PlanAccess<'_>>,
 ) -> Result<Option<PathBuf>> {
     let Some(mut config) = mcp_config(sources, plan) else {
         return Ok(None);
@@ -333,12 +350,13 @@ pub struct Seat<'a> {
     /// Where the guard and any MCP config live. Never the lease.
     pub support: &'a Path,
     pub sources: &'a [ContextSource],
-    /// The checkout whose plan this seat works from, and whether it may shape it.
+    /// The plan this seat works from, and whether it may shape it.
     ///
-    /// `None` for a turn with no plan behind it - a single-node run, or somebody talking
-    /// to a seat - where the planning tools stay absent rather than pointing at whichever
-    /// plan the working directory happens to resolve to.
-    pub plan: Option<(&'a Path, bool)>,
+    /// `None` for a turn with no plan behind it - a single-node run, somebody talking to a
+    /// seat, or the orchestrator grounding a request before its plan exists - where the
+    /// planning tools stay absent rather than pointing at whichever plan the working
+    /// directory happens to resolve to.
+    pub plan: Option<PlanAccess<'a>>,
     /// The team this seat sits on, and who else is on it. A planning seat is told the
     /// roster because routing is by zone; a maker is not, because it is not deciding who
     /// does what.
@@ -695,7 +713,7 @@ mod tests {
             "planner",
             checkout.path(),
             &[ContextSource::ClickUp],
-            Some((checkout.path(), true)),
+            Some(access(checkout.path(), true)),
         )
         .unwrap()
         .unwrap();
@@ -721,7 +739,7 @@ mod tests {
                 "planner",
                 checkout.path(),
                 &[],
-                Some((checkout.path(), true)),
+                Some(access(checkout.path(), true)),
             )
             .expect("an unrelated repository config is optional")
             .unwrap();
@@ -769,7 +787,7 @@ mod tests {
         // A maker that can add slices can give itself work, and the board a human reads
         // stops being a plan and becomes a log of whatever the agents felt like doing.
         let root = tempfile::tempdir().unwrap();
-        let config = mcp_config(&[], Some((root.path(), false))).expect("a config");
+        let config = mcp_config(&[], Some(access(root.path(), false))).expect("a config");
         let text = serde_json::to_string(&config).unwrap();
 
         assert!(text.contains("get_slice"), "{text}");
@@ -782,7 +800,7 @@ mod tests {
     #[test]
     fn a_planning_seat_may_shape_the_board_but_not_destroy_it() {
         let root = tempfile::tempdir().unwrap();
-        let config = mcp_config(&[], Some((root.path(), true))).expect("a config");
+        let config = mcp_config(&[], Some(access(root.path(), true))).expect("a config");
         let text = serde_json::to_string(&config).unwrap();
 
         assert!(text.contains("add_slice"), "{text}");
@@ -796,13 +814,39 @@ mod tests {
     fn the_planner_resolves_from_the_checkout_not_the_lease() {
         // A lease is a copy. A plan written inside one is a plan nobody finds again.
         let root = tempfile::tempdir().unwrap();
-        let config = mcp_config(&[], Some((root.path(), true))).expect("a config");
+        let config = mcp_config(&[], Some(access(root.path(), true))).expect("a config");
         let text = serde_json::to_string(&config).unwrap();
         assert!(text.contains("--root"), "{text}");
         assert!(
             text.contains(&root.path().to_string_lossy().to_string()),
             "{text}"
         );
+    }
+
+    fn access(root: &Path, may_write: bool) -> PlanAccess<'_> {
+        PlanAccess {
+            root,
+            plan: "csv-export",
+            may_write,
+        }
+    }
+
+    #[test]
+    fn every_seat_is_pointed_at_its_runs_plan_and_none_may_start_another() {
+        // Left to infer the plan, ai-planner answers with whichever one the checkout has
+        // resolved to most: a previous run's. Named, every call acts on this run's.
+        let root = tempfile::tempdir().unwrap();
+        for may_write in [false, true] {
+            let config = mcp_config(&[], Some(access(root.path(), may_write))).expect("a config");
+            assert_eq!(
+                config["mcpServers"]["ai-planner"]["env"]["AI_PLANNER_PLAN"],
+                "csv-export"
+            );
+            let text = serde_json::to_string(&config).unwrap();
+            // ai-team creates a run's plan; a seat that can create one can start a
+            // second board beside it.
+            assert!(!text.contains("create_plan"), "{text}");
+        }
     }
 
     #[test]
@@ -829,7 +873,7 @@ mod tests {
             worktree: checkout.path(),
             support: support.path(),
             sources: &[ContextSource::ClickUp],
-            plan: Some((checkout.path(), false)),
+            plan: Some(access(checkout.path(), false)),
             team: &team,
             roster: &roster,
         };

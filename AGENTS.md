@@ -212,11 +212,16 @@ here: that is plan structure, and copying it is what D4 forbids.
 `ai-team/run-<id>`, cut from `origin/<default>`; a checkout with uncommitted work, or with
 another live run in it (`run.supervisor_pid`, checked with signal 0 so a crash does not hold
 it forever), is refused. Nothing lands on the default branch unless the run was started with
-`--on-default-branch`. The run's plan is the one `create_plan` answered with, never
-`aip current`: ai-planner resolves a checkout to the plan it has resolved to most often, so
-a reused branch keeps naming last week's plan. Asked for by name on the fresh branch, the
-new plan sticks - and every base pointing at the run's branch is corrected to the trunk,
-because `create_plan` and `add_slice` both default to the branch the checkout is on.
+`--on-default-branch`.
+
+**ai-team never lets ai-planner infer the plan.** Asked without a name, it answers with
+whichever plan the checkout has resolved to most - branch *or worktree path* - so a
+checkout that planned before names last week's plan, and a planner reading "the board"
+once deferred a slice in it. So Rust creates the run's plan itself (`Planner::create`,
+titled by the orchestrator's `Plan:` line, based on the trunk so every slice copies that
+base) before the planner's turn, and every seat's `aip serve` runs with
+`AI_PLANNER_PLAN=<the run's plan>`. The orchestrator's grounding turn gets no planning
+tools at all: there is no plan yet, and nothing to infer.
 
 Routing is by **zone**. A slice must name the paths it touches (`plan_add_slice` requires
 it, and writes them as a `Touches:` trailer on the scope); the seat whose zone owns them

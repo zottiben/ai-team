@@ -201,32 +201,6 @@ impl PiEvent {
             )
     }
 
-    /// The slug of a plan this event created, read from `create_plan`'s own answer.
-    ///
-    /// Asked of the stream rather than of `aip current`, because ai-planner resolves a
-    /// checkout to the plan it has resolved to most often: a checkout that planned before
-    /// keeps answering with the old plan, and a run that believed it would build last
-    /// week's slices.
-    pub fn created_plan(&self) -> Option<String> {
-        if self.kind != "tool_execution_end"
-            || self.tool_failed()
-            || !matches!(self.tool_name(), "create_plan" | "ai-planner_create_plan")
-        {
-            return None;
-        }
-        self.data
-            .get("result")?
-            .get("content")?
-            .as_array()?
-            .iter()
-            .filter_map(|block| block.get("text")?.as_str())
-            .find_map(|text| {
-                let plan: serde_json::Value = serde_json::from_str(text).ok()?;
-                let slug = plan.get("slug")?.as_str()?.trim();
-                (!slug.is_empty()).then(|| slug.to_string())
-            })
-    }
-
     pub fn context_tool_failure(&self) -> Option<String> {
         if self.kind != "tool_execution_end" || !self.tool_failed() {
             return None;
@@ -461,31 +435,6 @@ mod tests {
             r#"{"type":"tool_execution_end","toolName":"write_handoff","result":{"isError":true}}"#,
         );
         assert!(!failed.wrote_planner_handoff());
-    }
-
-    #[test]
-    fn the_plan_a_run_created_is_read_from_create_plans_own_answer() {
-        // What `aip serve` returns, text-wrapped by the MCP adapter.
-        let created = event(
-            r#"{"type":"tool_execution_end","toolName":"ai-planner_create_plan","result":{"content":[{"type":"text","text":"{\n  \"id\": 3,\n  \"slug\": \"csv-export\",\n  \"base_branch\": \"main\"\n}"}],"isError":false}}"#,
-        );
-        assert_eq!(created.created_plan().as_deref(), Some("csv-export"));
-
-        let refused = event(
-            r#"{"type":"tool_execution_end","toolName":"ai-planner_create_plan","result":{"isError":true,"content":[{"type":"text","text":"{\"slug\":\"csv-export\"}"}]}}"#,
-        );
-        assert!(refused.created_plan().is_none());
-
-        // Another tool's JSON that happens to carry a slug did not create anything.
-        let read = event(
-            r#"{"type":"tool_execution_end","toolName":"ai-planner_get_plan","result":{"content":[{"type":"text","text":"{\"slug\":\"old-plan\"}"}]}}"#,
-        );
-        assert!(read.created_plan().is_none());
-
-        let prose = event(
-            r#"{"type":"tool_execution_end","toolName":"create_plan","result":{"content":[{"type":"text","text":"plan created"}]}}"#,
-        );
-        assert!(prose.created_plan().is_none());
     }
 
     #[test]
