@@ -150,8 +150,9 @@ fn planning_section(out: &mut String, roster: &[Agent], guide: Option<&str>) {
         let _ = write!(
             out,
             "## How to shape the plan\n\n\
-             Plan the way this guide says. Where it and the task format above differ, the \
-             format above wins: it is what the dispatcher reads.\n\n{}\n\n",
+             Plan the way this guide says. Where it and the instructions above differ, the \
+             instructions win: the task format is what the dispatcher reads, and this run's \
+             plan already exists - skip any step that starts one.\n\n{}\n\n",
             guide.trim()
         );
     }
@@ -293,6 +294,8 @@ mod tests {
         let guided = for_seat(&agent, &team, &roster, Some("Write user stories."));
         assert!(guided.contains("## How to shape the plan"), "{guided}");
         assert!(guided.contains("Write user stories."), "{guided}");
+        // The guide may say to start a plan; ai-team already has.
+        assert!(guided.contains("skip any step that starts one"), "{guided}");
     }
 
     #[test]
