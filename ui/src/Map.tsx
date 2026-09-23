@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useLayoutEffect, useMemo, useState } from "react";
 
 import type { Activity } from "./activity";
 import { centroid, layout, type ForceNode, type Point } from "./force";
@@ -26,10 +26,117 @@ function radius(weight: number): number {
   return Math.min(13, 2.1 + Math.sqrt(Math.max(1, weight)) * 0.85);
 }
 
-/* Close to 2:1. The panel is a band across the page, not a square canvas - and a taller
- * box makes the fitted layout leave the width empty. */
+/* The band the map is solved in when there is nothing to measure it by - a document with
+ * no layout, or a panel not on the page yet. Close to 2:1: across the page the panel is a
+ * band, not a square canvas, and a taller box makes the fitted layout leave the width
+ * empty. */
 const WIDTH = 1200;
 const HEIGHT = 520;
+
+/** How short a narrow panel's picture may get before it is a strip too thin to read. */
+const MIN_HEIGHT = 240;
+
+/** How long a width has to hold before the layout is solved for it again. */
+const SETTLE_MS = 180;
+
+/** A width change smaller than this is a scrollbar coming and going, not a new panel. */
+const SETTLE_PX = 24;
+
+/** A zone label's size: 11px, as `.map__labels text` sets it. */
+const LABEL_SIZE = 11;
+
+/** How far a monospace glyph advances, per unit of size. The label is mono, so its width is
+ * this times its length, and the plate under it can be sized without measuring. */
+const MONO_ADVANCE = 0.62;
+
+type Drawn = { width: number; maxHeight: number };
+
+type Box = { x: number; y: number; w: number; h: number };
+
+/**
+ * Where a zone's label goes: on its cluster, moved up or down half a plate at a time to
+ * the nearest place that hides none of the points - in a crowd, the fewest - and never out
+ * of the drawing.
+ *
+ * Its cluster's middle is where that cluster's hub is, so a label left there hides the one
+ * point the zone's lines all meet at.
+ */
+function placeLabel(
+  at: Point,
+  plate: { w: number; h: number },
+  view: Box,
+  points: Array<Point & { r: number }>,
+): Point {
+  const x = Math.min(Math.max(at.x, view.x + plate.w / 2), view.x + view.w - plate.w / 2);
+  const inside = (y: number) =>
+    Math.min(Math.max(y, view.y + plate.h / 2), view.y + view.h - plate.h / 2);
+  const hides = (y: number) =>
+    points.filter(
+      (p) => Math.abs(p.x - x) < plate.w / 2 + p.r && Math.abs(p.y - y) < plate.h / 2 + p.r,
+    ).length;
+  let best = { y: inside(at.y), hidden: hides(inside(at.y)) };
+  for (const step of [0.5, -0.5, 1, -1, 1.5, -1.5, 2, -2, 3, -3]) {
+    if (best.hidden === 0) break;
+    const y = inside(at.y + step * plate.h);
+    const hidden = hides(y);
+    if (hidden < best.hidden) best = { y, hidden };
+  }
+  return { x, y: best.y };
+}
+
+/**
+ * The box to solve the layout in, for a picture drawn `width` pixels wide.
+ *
+ * Solved at the size it is shown rather than for one band and scaled to fit: scaled, a
+ * band in one column of the Overview drew its labels three pixels tall and its files as
+ * specks. At one unit to the pixel a label is the size the stylesheet says. A band keeps
+ * its proportions, a column goes squarer, and neither is taller than the stylesheet lets
+ * the panel be.
+ */
+function boxFor({ width, maxHeight }: Drawn): { width: number; height: number } {
+  if (width <= 0) return { width: WIDTH, height: HEIGHT };
+  const height = Math.max(MIN_HEIGHT, (width * HEIGHT) / WIDTH);
+  return { width, height: Math.min(maxHeight, height) };
+}
+
+/**
+ * How wide `svg` is drawn, and how tall the stylesheet lets it be.
+ *
+ * Read before the first paint, so the map never flashes at the wrong scale. After that a
+ * resize is followed once it settles: solving a few hundred files takes long enough to
+ * make a dragged window stutter, and while it moves the picture it has scales instead.
+ */
+function useDrawn(svg: SVGSVGElement | null): Drawn {
+  const [drawn, setDrawn] = useState<Drawn>({ width: 0, maxHeight: Infinity });
+  useLayoutEffect(() => {
+    if (svg === null) return;
+    const read = (width: number) => {
+      // The cap is the stylesheet's - a compact layout lowers it - so it is asked for
+      // rather than repeated here. No stylesheet, no cap.
+      const cap = Number.parseFloat(getComputedStyle(svg).maxHeight);
+      const maxHeight = Number.isFinite(cap) ? cap : Infinity;
+      setDrawn((current) =>
+        Math.abs(current.width - width) < SETTLE_PX && current.maxHeight === maxHeight
+          ? current
+          : { width, maxHeight },
+      );
+    };
+    read(svg.getBoundingClientRect().width);
+    let settling: ReturnType<typeof setTimeout> | undefined;
+    const observer = new ResizeObserver((entries) => {
+      const width = entries[0]?.contentRect.width;
+      if (width === undefined) return;
+      clearTimeout(settling);
+      settling = setTimeout(() => read(width), SETTLE_MS);
+    });
+    observer.observe(svg);
+    return () => {
+      observer.disconnect();
+      clearTimeout(settling);
+    };
+  }, [svg]);
+  return drawn;
+}
 
 /**
  * The checkout as a graph: who owns each path, and what is being worked on right now.
@@ -48,6 +155,10 @@ const HEIGHT = 520;
  * it, and the repository has not changed shape just because a token arrived.
  */
 export function RepoGraph({ map, activity }: { map: RepoMap; activity: Activity }) {
+  const [svg, setSvg] = useState<SVGSVGElement | null>(null);
+  const drawn = useDrawn(svg);
+  const { width, height } = boxFor(drawn);
+
   const roles = useMemo(
     () => [...new Set(map.zones.map((zone) => zone.role))].sort(),
     [map.zones],
@@ -63,22 +174,21 @@ export function RepoGraph({ map, activity }: { map: RepoMap; activity: Activity 
       // middle and the repository reads as one thing with branches.
       group: node.path === "" ? null : node.owner,
     }));
-    return layout(nodes, map.edges, { width: WIDTH, height: HEIGHT });
-  }, [map]);
+    return layout(nodes, map.edges, { width, height });
+  }, [map, width, height]);
 
-  // The viewBox is fitted to what was actually drawn, not to the box the layout was
-  // solved in. `fit` fills one axis and centres on the other, so a wide graph in a fixed
-  // box leaves a band of empty panel above and below it that reads as a rendering fault.
-  const box = useMemo(() => {
-    if (points.length === 0) return { x: 0, y: 0, w: WIDTH, h: HEIGHT };
+  // Full width, so a unit stays a pixel, but only as tall as what was actually drawn.
+  // `fit` fills one axis and centres on the other, so a wide graph leaves a band of empty
+  // panel above and below it that reads as a rendering fault. Kept inside the solved box,
+  // which is inside the panel's cap: taller would be letterboxed back down.
+  const box = useMemo<Box>(() => {
+    if (points.length === 0) return { x: 0, y: 0, w: width, h: height };
     const pad = 22;
     const spans = points.map((p, at) => ({ p, r: radius(map.nodes[at]?.weight ?? 1) }));
-    const minX = Math.min(...spans.map(({ p, r }) => p.x - r)) - pad;
-    const maxX = Math.max(...spans.map(({ p, r }) => p.x + r)) + pad;
-    const minY = Math.min(...spans.map(({ p, r }) => p.y - r)) - pad;
-    const maxY = Math.max(...spans.map(({ p, r }) => p.y + r)) + pad;
-    return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
-  }, [points, map.nodes]);
+    const minY = Math.max(0, Math.min(...spans.map(({ p, r }) => p.y - r)) - pad);
+    const maxY = Math.min(height, Math.max(...spans.map(({ p, r }) => p.y + r)) + pad);
+    return { x: 0, y: minY, w: width, h: maxY - minY };
+  }, [points, map.nodes, width, height]);
 
   const labels = useMemo(() => {
     return roles
@@ -87,8 +197,21 @@ export function RepoGraph({ map, activity }: { map: RepoMap; activity: Activity 
         const owns = map.zones.find((zone) => zone.role === role)?.owns ?? 0;
         return { role, owns, at: centroid(mine), count: mine.length };
       })
-      .filter((label) => label.count > 0);
+      .filter((label) => label.count > 0)
+      .map((label) => {
+        const text = `${label.role} · ${label.owns}`;
+        const plate = { w: text.length * LABEL_SIZE * MONO_ADVANCE + 8, h: LABEL_SIZE + 5 };
+        return { role: label.role, text, plate, at: label.at };
+      });
   }, [roles, points, map]);
+
+  const placed = useMemo(() => {
+    const circles = points.map((p, at) => ({ ...p, r: radius(map.nodes[at]?.weight ?? 1) }));
+    return labels.map((label) => ({
+      ...label,
+      at: placeLabel(label.at, label.plate, box, circles),
+    }));
+  }, [labels, points, map.nodes, box]);
 
   if (map.nodes.length === 0) {
     return <p className="empty">Nothing to map - this checkout has no files ai-team reads.</p>;
@@ -98,6 +221,7 @@ export function RepoGraph({ map, activity }: { map: RepoMap; activity: Activity 
 
   return (
     <svg
+      ref={setSvg}
       className="map"
       viewBox={`${box.x} ${box.y} ${box.w} ${box.h}`}
       role="img"
@@ -191,18 +315,29 @@ export function RepoGraph({ map, activity }: { map: RepoMap; activity: Activity 
         })}
       </g>
 
-      {/* Labels last and on top, haloed so they stay readable over a dense cluster. */}
+      {/* Labels last and on top, each on a plate so it stays readable where it has to
+          cross the lines - or, in a crowd, the points - of a dense cluster. */}
       <g className="map__labels">
-        {labels.map((label) => (
-          <text
-            key={label.role}
-            x={label.at.x}
-            y={label.at.y}
-            textAnchor="middle"
-            data-working={activity.working.has(label.role)}
-          >
-            {label.role} · {label.owns}
-          </text>
+        {placed.map(({ role, text, plate, at }) => (
+          <g key={role}>
+            <rect
+              className="map__label-plate"
+              x={at.x - plate.w / 2}
+              y={at.y - plate.h / 2}
+              width={plate.w}
+              height={plate.h}
+              rx={3}
+            />
+            <text
+              x={at.x}
+              y={at.y}
+              textAnchor="middle"
+              dominantBaseline="central"
+              data-working={activity.working.has(role)}
+            >
+              {text}
+            </text>
+          </g>
         ))}
       </g>
     </svg>

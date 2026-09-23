@@ -3448,7 +3448,7 @@ button.card:hover {
   width: 100%;
   height: auto;
   /* Capped, or a wide repository makes a panel tall enough to push everything below it
-   * off the screen. The viewBox letterboxes inside whatever box this leaves. */
+   * off the screen. The layout is solved to fit under it, so it is read from here. */
   max-height: 32rem;
   display: block;
 }
@@ -3532,10 +3532,12 @@ button.card:hover {
   font-family: var(--font-mono);
   font-size: 11px;
   fill: var(--text-primary-muted);
-  paint-order: stroke;
-  stroke: var(--surface-panel-default);
-  stroke-width: 4px;
-  stroke-linejoin: round;
+}
+
+/* The panel's own colour: a halo the width of the whole label, gaps included. */
+.map__label-plate {
+  fill: var(--surface-panel-default);
+  opacity: 0.9;
 }
 
 .map__labels text[data-working="true"] {
