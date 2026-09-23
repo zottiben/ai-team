@@ -99,6 +99,59 @@ pub fn rank(mut items: Vec<Item>) -> Vec<Item> {
     items
 }
 
+/// The newest accepted turn on each PR, by plan and slice.
+///
+/// A rejected attempt is evidence, not work waiting on anyone, once a later turn on the
+/// same PR - in its own run or a review follow-up - was accepted.
+fn newest_accepted(
+    store: &Store,
+    runs: &[crate::model::Run],
+) -> Result<std::collections::HashMap<(Option<String>, String), i64>> {
+    let mut accepted = std::collections::HashMap::new();
+    for run in runs {
+        for node in store.node_runs(run.id)? {
+            if let (NodeStatus::Done, Some(slice)) = (node.status, node.slice_key) {
+                let newest = accepted
+                    .entry((run.plan_slug.clone(), slice))
+                    .or_insert(node.id);
+                *newest = (*newest).max(node.id);
+            }
+        }
+    }
+    Ok(accepted)
+}
+
+/// What one node run puts on the list: failed work, or work in flight.
+fn node_item(node: &crate::model::NodeRun, slug: &str, run_id: i64) -> Option<Item> {
+    let on = |joiner: &str| {
+        node.slice_key
+            .as_ref()
+            .map(|key| format!("{joiner}{key}"))
+            .unwrap_or_default()
+    };
+    match node.status {
+        NodeStatus::Failed | NodeStatus::Blocked => Some(Item {
+            urgency: Urgency::Failed,
+            kind: "node".into(),
+            title: format!("{} failed{}", node.role, on(" on ")),
+            detail: node.blocked_reason.clone(),
+            project: Some(slug.to_string()),
+            run_id: Some(run_id),
+            since: node.ended_at.clone().or(node.started_at.clone()),
+        }),
+        NodeStatus::Running => Some(Item {
+            urgency: Urgency::InFlight,
+            kind: "node".into(),
+            title: format!("{} is building{}", node.role, on(" ")),
+            detail: None,
+            project: Some(slug.to_string()),
+            run_id: Some(run_id),
+            since: node.started_at.clone(),
+        }),
+        _ => None,
+    }
+}
+
 /// Everything ai-team's own database knows about.
 ///
 /// The plan's open questions live in ai-planner and are added by the caller, which has a
@@ -111,7 +164,10 @@ pub fn from_store(store: &Store) -> Result<Vec<Item>> {
     for project in store.projects()? {
         let slug = project.slug.clone();
 
-        for run in store.runs(Some(project.id), 50)? {
+        let runs = store.runs(Some(project.id), 50)?;
+        let accepted = newest_accepted(store, &runs)?;
+
+        for run in runs {
             // A parked run is the expensive case: everything it leased is sitting idle.
             for approval in store.pending_approvals(run.id)? {
                 items.push(Item {
@@ -125,41 +181,21 @@ pub fn from_store(store: &Store) -> Result<Vec<Item>> {
                 });
             }
 
+            let superseded = |failed: &crate::model::NodeRun| {
+                failed.slice_key.as_ref().is_some_and(|slice| {
+                    accepted
+                        .get(&(run.plan_slug.clone(), slice.clone()))
+                        .is_some_and(|newest| *newest > failed.id)
+                })
+            };
             for node in store.node_runs(run.id)? {
-                match node.status {
-                    NodeStatus::Failed | NodeStatus::Blocked => items.push(Item {
-                        urgency: Urgency::Failed,
-                        kind: "node".into(),
-                        title: format!(
-                            "{} failed{}",
-                            node.role,
-                            node.slice_key
-                                .as_ref()
-                                .map(|key| format!(" on {key}"))
-                                .unwrap_or_default()
-                        ),
-                        detail: node.blocked_reason.clone(),
-                        project: Some(slug.clone()),
-                        run_id: Some(run.id),
-                        since: node.ended_at.clone().or(node.started_at.clone()),
-                    }),
-                    NodeStatus::Running => items.push(Item {
-                        urgency: Urgency::InFlight,
-                        kind: "node".into(),
-                        title: format!(
-                            "{} is building{}",
-                            node.role,
-                            node.slice_key
-                                .as_ref()
-                                .map(|key| format!(" {key}"))
-                                .unwrap_or_default()
-                        ),
-                        detail: None,
-                        project: Some(slug.clone()),
-                        run_id: Some(run.id),
-                        since: node.started_at.clone(),
-                    }),
-                    _ => {}
+                if matches!(node.status, NodeStatus::Failed | NodeStatus::Blocked)
+                    && superseded(&node)
+                {
+                    continue;
+                }
+                if let Some(item) = node_item(&node, &slug, run.id) {
+                    items.push(item);
                 }
             }
         }
@@ -274,6 +310,78 @@ mod tests {
             run_id: None,
             since: since.map(ToString::to_string),
         }
+    }
+
+    #[test]
+    fn a_rejected_attempt_whose_pr_was_then_accepted_is_not_failed_work() {
+        let mut store = Store::memory().unwrap();
+        let project = store
+            .create_project(crate::NewProject {
+                name: "Widget".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        let team = store.seed_default_team(project.id).unwrap();
+        let seat = |store: &Store, role: &str| {
+            store
+                .agents(team.id)
+                .unwrap()
+                .into_iter()
+                .find(|agent| agent.role == role)
+                .unwrap()
+                .id
+        };
+        let registry = crate::machine::ModelRegistry::local_only();
+        let run = store
+            .create_run(project.id, "build", crate::RunTrigger::Manual)
+            .unwrap();
+        let frontend = seat(&store, "frontend");
+
+        // Rejected on its first go, repaired on its second: an accepted PR.
+        let rejected = store
+            .dispatch_task(run.id, frontend, "PR1", Some("T1"), &registry)
+            .unwrap();
+        store.block_node(rejected.id, "gates failed").unwrap();
+        store
+            .set_node_status(rejected.id, NodeStatus::Failed)
+            .unwrap();
+        let repaired = store
+            .dispatch_task(run.id, frontend, "PR1", Some("T1"), &registry)
+            .unwrap();
+        store
+            .set_node_status(repaired.id, NodeStatus::Done)
+            .unwrap();
+
+        // Rejected in the run that built it, accepted by a follow-up run on the same PR.
+        store.set_run_plan(run.id, "csv").unwrap();
+        let backend = seat(&store, "backend");
+        let first = store
+            .dispatch_task(run.id, backend, "PR3", Some("T1"), &registry)
+            .unwrap();
+        store.set_node_status(first.id, NodeStatus::Failed).unwrap();
+        let follow = store
+            .create_run(project.id, "address review", crate::RunTrigger::Review)
+            .unwrap();
+        store.set_run_plan(follow.id, "csv").unwrap();
+        let later = store
+            .dispatch_task(follow.id, backend, "PR3", Some("T1"), &registry)
+            .unwrap();
+        store.set_node_status(later.id, NodeStatus::Done).unwrap();
+
+        // Rejected and never repaired: still somebody's problem.
+        let stuck = store
+            .dispatch_task(run.id, backend, "PR2", None, &registry)
+            .unwrap();
+        store.block_node(stuck.id, "out of repairs").unwrap();
+        store.set_node_status(stuck.id, NodeStatus::Failed).unwrap();
+
+        let failed: Vec<String> = from_store(&store)
+            .unwrap()
+            .into_iter()
+            .filter(|item| item.urgency == Urgency::Failed)
+            .map(|item| item.title)
+            .collect();
+        assert_eq!(failed, ["backend failed on PR2"]);
     }
 
     #[test]
