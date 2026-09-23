@@ -524,8 +524,17 @@ button.card:hover {
   background: transparent;
   font: inherit;
   font-size: var(--text-xs);
+  /* Fixed rather than `normal`, which is the font's own: a pill carrying a mono label would
+   * otherwise stand a pixel taller than one carrying only a role. */
+  line-height: 1.5;
   color: var(--text-primary-muted);
   cursor: pointer;
+}
+
+/* The PR and task a turn was on: mono so `PR1 T2` reads as an identifier, at the pill's
+ * own size rather than `.mono`'s. */
+.agent-activity__work {
+  font-family: var(--font-mono);
 }
 
 .agent-activity__seat:hover,

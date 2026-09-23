@@ -14,6 +14,7 @@ import {
   resumeRunNode,
   run as fetchRun,
   runEvents as fetchEvents,
+  workLabel,
   type Run,
   type RunDetail,
   type RunEvent,
@@ -246,6 +247,24 @@ export function AgentActivity({
               >
                 <span className="workspace-dot" data-status={node.status} />
                 {node.role}
+                {/* Spaced in the text as well as by the row's gap, so the button is named
+                    "frontend PR1 T2", not "frontendPR1 T2". */}
+                {node.slice_key !== null && (
+                  <>
+                    {" "}
+                    <span className="agent-activity__work">
+                      {workLabel(node.slice_key, node.task_key)}
+                    </span>
+                  </>
+                )}
+                {/* A repair is a new turn on the same task, and reads differently from
+                    progress. */}
+                {node.attempt > 1 && (
+                  <>
+                    {" "}
+                    <span className="faint">try {node.attempt}</span>
+                  </>
+                )}
               </button>
             ))}
           </div>

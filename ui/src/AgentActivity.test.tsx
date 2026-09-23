@@ -98,8 +98,9 @@ function stub(run: Partial<Run> = {}, recoverable = false, events?: unknown[]) {
                 provider: "openai",
                 model: "gpt",
                 status: "running",
-                attempt: 1,
+                attempt: 2,
                 slice_key: "W2",
+                task_key: "T2",
                 worktree_path: "/tmp/widget",
                 branch: "task",
                 blocked_reason: null,
@@ -300,7 +301,10 @@ it("keeps concurrent agents in separate selectable conversations", async () => {
 
   expect(await screen.findByText("I need an answer before I can continue.")).toBeDefined();
   expect(screen.queryByText("I am checking the visual state.")).toBeNull();
-  await user.click(screen.getByRole("button", { name: "frontend" }));
+  // Each seat says what it is on: a PR's seats take several turns, and two that read
+  // "frontend" cannot be told apart.
+  expect(screen.getByRole("button", { name: "orchestrator" })).toBeDefined();
+  await user.click(screen.getByRole("button", { name: "frontend W2 T2 try 2" }));
   expect(await screen.findByText("I am checking the visual state.")).toBeDefined();
   expect(screen.queryByText("I need an answer before I can continue.")).toBeNull();
 
