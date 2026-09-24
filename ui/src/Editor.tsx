@@ -99,45 +99,52 @@ export function Editor({
       </div>
 
       <div className="editor__main">
-        <div className="editor__tabs">
-          {open.map((buffer) => (
-            <button
-              type="button"
-              key={buffer.path}
-              className="editor__tab"
-              aria-current={buffer.path === active}
-              onClick={() => setActive(buffer.path)}
-            >
-              <span>{buffer.path.slice(buffer.path.lastIndexOf("/") + 1)}</span>
-              {/* A dot, not a word: it has to be readable at a glance across a row of
-                  tabs, and "modified" is four times the width of the filename. */}
-              {buffer.text !== buffer.saved && <span className="editor__dirty">●</span>}
-              <span
-                className="editor__close"
-                role="button"
-                tabIndex={-1}
-                aria-label={`close ${buffer.path}`}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  setOpen((buffers) => buffers.filter((entry) => entry.path !== buffer.path));
-                  if (active === buffer.path) setActive(null);
-                }}
+        {open.length > 0 && (
+          <div className="editor__tabs">
+            {open.map((buffer) => (
+              <button
+                type="button"
+                key={buffer.path}
+                className="editor__tab"
+                aria-current={buffer.path === active}
+                onClick={() => setActive(buffer.path)}
               >
-                ×
-              </span>
-            </button>
-          ))}
-          {current !== null && (
-            <button
-              type="button"
-              className="button button--primary editor__save"
-              disabled={current.text === current.saved}
-              onClick={() => void save()}
-            >
-              Save
-            </button>
-          )}
-        </div>
+                <span>{buffer.path.slice(buffer.path.lastIndexOf("/") + 1)}</span>
+                {/* A dot, not a word: it has to be readable at a glance across a row of
+                    tabs, and "modified" is four times the width of the filename. */}
+                {buffer.text !== buffer.saved && <span className="editor__dirty">●</span>}
+                <span
+                  className="editor__close"
+                  role="button"
+                  tabIndex={-1}
+                  aria-label={`close ${buffer.path}`}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setOpen((buffers) => buffers.filter((entry) => entry.path !== buffer.path));
+                    // A neighbour takes the closed file's place - the next tab, else the
+                    // one before - rather than an empty pane beside tabs still open.
+                    if (active === buffer.path) {
+                      const index = open.findIndex((entry) => entry.path === buffer.path);
+                      setActive((open[index + 1] ?? open[index - 1])?.path ?? null);
+                    }
+                  }}
+                >
+                  ×
+                </span>
+              </button>
+            ))}
+            {current !== null && (
+              <button
+                type="button"
+                className="button button--primary editor__save"
+                disabled={current.text === current.saved}
+                onClick={() => void save()}
+              >
+                Save
+              </button>
+            )}
+          </div>
+        )}
 
         {problem !== null && <p className="error">{problem}</p>}
 
@@ -256,7 +263,9 @@ function Tree({ where, onOpen }: { where: Where; onOpen: (path: string) => void 
             });
           }}
         >
-          <span className="faint">{entry.dir ? (entry.path in expanded ? "▾" : "▸") : " "}</span>
+          <span className="tree__caret faint" aria-hidden="true">
+            {entry.dir ? (entry.path in expanded ? "▾" : "▸") : ""}
+          </span>
           <span>{entry.name}</span>
         </button>
         {entry.dir && entry.path in expanded && draw(entry.path, depth + 1)}

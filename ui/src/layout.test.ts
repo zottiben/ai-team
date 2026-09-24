@@ -61,3 +61,10 @@ it("a board card's facts wrap rather than all being cut short", () => {
   expect(rule(".board-chip")).toMatch(/flex:\s*none/);
   expect(rule(".board-chip")).toMatch(/max-width:\s*100%/);
 });
+
+// The editor tree's caret slot is as wide for a file, which has no caret, as for a folder,
+// so every name in a level starts at the same place.
+it("a tree row's caret slot has one width, caret or not", () => {
+  expect(rule(".tree__caret")).toMatch(/flex:\s*none/);
+  expect(rule(".tree__caret")).toMatch(/\bwidth:/);
+});

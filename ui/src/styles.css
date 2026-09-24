@@ -2619,6 +2619,14 @@ button.card:hover {
   background: var(--surface-panel-hover);
 }
 
+/* One width whether it holds a caret or, for a file, nothing - so every name in a level
+   starts at the same place. */
+.tree__caret {
+  flex: none;
+  width: 0.75em;
+  text-align: center;
+}
+
 .editor__tabs {
   display: flex;
   align-items: center;
