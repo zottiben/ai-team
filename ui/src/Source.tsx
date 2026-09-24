@@ -75,22 +75,24 @@ export function Source({
   return (
     <div className="source">
       <div className="main__header">
-        <h2>Source control</h2>
-        <label className="source__branch">
-          <span className="faint">on</span>
-          <select
-            aria-label="branch"
-            value={data.branch ?? ""}
-            onChange={(event) => void act(() => scmBranch(where, event.target.value))}
-          >
-            {data.branch === null && <option value="">detached</option>}
-            {data.branches.map((name) => (
-              <option key={name} value={name}>
-                {name}
-              </option>
-            ))}
-          </select>
-        </label>
+        <div className="source__title">
+          <h2>Source control</h2>
+          <label className="source__branch">
+            <span className="faint">on</span>
+            <select
+              aria-label="branch"
+              value={data.branch ?? ""}
+              onChange={(event) => void act(() => scmBranch(where, event.target.value))}
+            >
+              {data.branch === null && <option value="">detached</option>}
+              {data.branches.map((name) => (
+                <option key={name} value={name}>
+                  {name}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
         <button type="button" className="button" onClick={() => void act(() => scmPush(where), "Pushed.")}>
           Push
         </button>
