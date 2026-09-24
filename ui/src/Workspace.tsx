@@ -68,6 +68,8 @@ export function Workspace({
   tick,
   openRun,
   onOpenedRun,
+  openReview = null,
+  onOpenedReview,
   onChanged,
   onGo,
   onTeamStarted,
@@ -79,6 +81,9 @@ export function Workspace({
   /** A run to open on arrival - how Today hands one over. */
   openRun: number | null;
   onOpenedRun: () => void;
+  /** A review to open on arrival, the same way. */
+  openReview?: number | null;
+  onOpenedReview?: () => void;
   onChanged: () => void;
   /** Move to another view of this project - what the overview's panels link to. */
   onGo: (view: WorkspaceView) => void;
@@ -310,7 +315,13 @@ export function Workspace({
           <Board project={project.slug} workspace={workspace.path} tick={tick} />
         )}
         {view === "review" && (
-          <Review project={project.slug} workspace={workspace.path} tick={tick} />
+          <Review
+            project={project.slug}
+            workspace={workspace.path}
+            tick={tick}
+            initial={openReview}
+            onOpenedInitial={onOpenedReview}
+          />
         )}
         {view === "source" && (
           <Source project={project.slug} workspace={workspace.path} node={null} />

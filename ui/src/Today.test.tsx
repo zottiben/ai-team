@@ -92,6 +92,28 @@ it("an item pointing at a run can be followed; one that does not, cannot", async
   expect(screen.getByText("stand-up").closest("button")).toBeNull();
 });
 
+it("a review waiting on you opens that review, not the run that built it", async () => {
+  // Following it used to open the run - a page of agent activity - and the review had to
+  // be found again under Review.
+  const user = userEvent.setup();
+  const runs: number[] = [];
+  const reviews: Array<[number, string | null, number | null]> = [];
+  stub([
+    item({ urgency: "review", kind: "review", title: "PR1: subtract", run_id: 7, review_id: 3 }),
+  ]);
+  render(
+    <Today
+      tick={0}
+      onOpenRun={(id) => runs.push(id)}
+      onOpenReview={(id, project, run) => reviews.push([id, project, run])}
+    />,
+  );
+
+  await user.click(await screen.findByText("PR1: subtract"));
+  expect(reviews).toEqual([[3, "widget", 7]]);
+  expect(runs).toEqual([]);
+});
+
 it("says plainly when nothing is waiting", async () => {
   stub([]);
   render(<Today tick={0} onOpenRun={() => {}} />);

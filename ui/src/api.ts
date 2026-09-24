@@ -382,6 +382,8 @@ export type TodayItem = {
   detail: string | null;
   project: string | null;
   run_id: number | null;
+  /** The review, for a review waiting on you: following it opens the review itself. */
+  review_id?: number | null;
   since: string | null;
 };
 

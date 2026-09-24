@@ -262,3 +262,12 @@ it("starts a minified file's diff collapsed, says why, and shows it on request",
   await user.click(screen.getByRole("button", { name: "Show diff" }));
   expect(screen.getByText(bundle)).toBeDefined();
 });
+
+it("opens the review it was handed, as Today hands one over", async () => {
+  stub();
+  const opened: number[] = [];
+  render(<Review tick={0} initial={3} onOpenedInitial={() => opened.push(3)} />);
+
+  expect(await screen.findByText("fn two(x: i32) {}")).toBeDefined();
+  expect(opened).toEqual([3]);
+});

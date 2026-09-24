@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
   addComment,
@@ -26,13 +26,28 @@ export function Review({
   project = null,
   workspace = null,
   tick,
+  initial = null,
+  onOpenedInitial,
 }: {
   project?: string | null;
   workspace?: string | null;
   tick: number;
+  /** A review to open on arrival - how Today hands one over. */
+  initial?: number | null;
+  onOpenedInitial?: () => void;
 }) {
   const [list, setList] = useState<ReviewSummary[]>([]);
-  const [open, setOpen] = useState<number | null>(null);
+  const [open, setOpen] = useState<number | null>(initial);
+
+  // Handed over once: a later tick must not drag the view back to it.
+  const handed = useRef<number | null>(null);
+  useEffect(() => {
+    if (initial !== null && handed.current !== initial) {
+      handed.current = initial;
+      setOpen(initial);
+      onOpenedInitial?.();
+    }
+  }, [initial, onOpenedInitial]);
   const [detail, setDetail] = useState<ReviewDetail | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const [outcome, setOutcome] = useState<Submitted | null>(null);

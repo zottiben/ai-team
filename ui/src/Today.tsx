@@ -45,9 +45,12 @@ type Operations = {
 export function Today({
   tick,
   onOpenRun,
+  onOpenReview,
 }: {
   tick: number;
   onOpenRun: (id: number, project: string | null) => void;
+  /** A review waiting on you opens as itself, in the checkout its run belongs to. */
+  onOpenReview?: (id: number, project: string | null, run: number | null) => void;
 }) {
   const [operations, setOperations] = useState<Operations | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
@@ -125,7 +128,7 @@ export function Today({
                 </div>
                 <span className="today__rank">#1</span>
               </div>
-              <Row item={top} onOpenRun={onOpenRun} priority />
+              <Row item={top} onOpenRun={onOpenRun} onOpenReview={onOpenReview} priority />
             </section>
           )}
 
@@ -145,6 +148,7 @@ export function Today({
                     item={item}
                     rank={index + 2}
                     onOpenRun={onOpenRun}
+                    onOpenReview={onOpenReview}
                   />
                 ))}
               </div>
@@ -334,12 +338,21 @@ function Row({
   rank,
   priority = false,
   onOpenRun,
+  onOpenReview,
 }: {
   item: TodayItem;
   rank?: number;
   priority?: boolean;
   onOpenRun: (id: number, project: string | null) => void;
+  onOpenReview?: (id: number, project: string | null, run: number | null) => void;
 }) {
+  const review = item.review_id ?? null;
+  const open =
+    review !== null && onOpenReview !== undefined
+      ? () => onOpenReview(review, item.project, item.run_id)
+      : item.run_id !== null
+        ? () => onOpenRun(item.run_id ?? 0, item.project)
+        : null;
   const tier = URGENCY[item.urgency];
   const body = (
     <>
@@ -353,15 +366,15 @@ function Row({
         <strong>{item.title}</strong>
         {item.detail !== null && <span className="faint">{item.detail}</span>}
       </div>
-      {item.run_id !== null && <span className="today-row__open" aria-hidden="true">→</span>}
+      {open !== null && <span className="today-row__open" aria-hidden="true">→</span>}
     </>
   );
   const className = priority ? "card today-row today-row--priority" : "card today-row";
 
-  return item.run_id === null ? (
+  return open === null ? (
     <div className={className}>{body}</div>
   ) : (
-    <button type="button" className={className} onClick={() => onOpenRun(item.run_id ?? 0, item.project)}>
+    <button type="button" className={className} onClick={open}>
       {body}
     </button>
   );
