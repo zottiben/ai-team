@@ -166,7 +166,9 @@ checkout on a branch made for it - the worktree is a lease nobody else works in.
 
 `read_only` seats pass `--exclude-tools write,edit` and keep `bash`, so the guarantee is
 "cannot edit source through its tools", not "cannot write a byte" - the verifier has to
-be able to run the project's checks.
+be able to run the project's checks. The one exception is a restack turn (rule 7): the
+orchestrator gets `write` and `edit` to resolve a conflict, under the same guard, with
+instructions that replace its coordinating ones rather than contradict them.
 
 The guard is `node --test`ed on **both** CI legs, because its macOS behaviour is what the
 author cannot see (D12): `/tmp` is a symlink, APFS folds case, and a path that does not
@@ -260,6 +262,24 @@ already has work rather than `checkout -B`-resetting it to the base, and a base 
 the default branch starts from `origin/<default>`. A turn that reports done but changed
 no file is recorded as **failed**, not done - unless it committed its work itself, which
 the snapshot's `HEAD` shows.
+
+**A stack is kept on its parents (PW11, D14, D15).** A parent that moves after its child
+was built on it - review follow-ups, or a merge - leaves the child on commits that are not
+its parent any more. `ait ui` and `ait daemon` both run the watch (`restack.rs`, every two
+minutes): it starts from the leases ai-team holds for PRs, asks `gh` about those only, and
+for a child whose parent merged, or whose parent's branch on origin is no longer in it,
+opens a **restack** - a run triggered by `review` whose one orchestrator turn runs in the
+child's worktree, parents first, never while a node is queued, running or parked there.
+ai-team chooses the commits (`--fork-point`, so a parent rewritten since still gives the
+commit the child sat on) and the orchestrator runs the exact `git rebase --onto`; then Rust
+reads the result from git and the gates, never from the answer, and undoes a rebase left
+part-way. The restack's node becomes the slice's delivery node: its push is pinned with
+`--force-with-lease=<ref>:<sha>` to the commit origin had before - the watch's own fetches
+would disarm the implicit form - and adopting the PR points it at the plan's base, after
+the push. One attempt per branch and onto-commit (three if the turn could not run at all),
+so one that needed a person does not ask again every pass. A merged PR gives back its lease
+and claim, and its slice is done. A merged parent is no base for what is still to build,
+and not the plan's to move under what is built (`stack::edits`).
 
 **Review comments go back where the PR was built.** A finished seat's review, while its
 PR is still in review and its worktree still on its branch, starts a follow-up run there

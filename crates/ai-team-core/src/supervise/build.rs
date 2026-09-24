@@ -911,34 +911,7 @@ async fn check(
 
     let results = crate::gates::run_gates(pr.worktree, &gates).await?;
     let evidence = crate::gates::evidence(&results);
-    for result in &results {
-        store.append_event(
-            pr.run_id,
-            NewEvent::new(
-                if result.passed {
-                    EventKind::Note
-                } else {
-                    EventKind::Failed
-                },
-                format!(
-                    "gate {} `{}` {}",
-                    result.gate.kind.as_str(),
-                    result.gate.command(),
-                    if result.passed { "passed" } else { "failed" }
-                ),
-            )
-            .on_node(node_run_id)
-            // Structured, not only prose. Analytics reads `passed` and `gate` from
-            // here; a rate computed by matching English in `summary` breaks the first
-            // time somebody improves the wording (rule 8).
-            .with(serde_json::json!({
-                "gate": result.gate.kind.as_str(),
-                "command": result.gate.command(),
-                "passed": result.passed,
-                "output": result.output,
-            })),
-        )?;
-    }
+    record_gates(store, pr.run_id, node_run_id, &results)?;
 
     if let Some(failed) = results.iter().find(|result| !result.passed) {
         // A failing gate is already a rejection with evidence attached. Asking a model to
@@ -989,6 +962,44 @@ async fn check(
             None,
         ),
     })
+}
+
+/// Put each gate's result on the node that ran it.
+pub(super) fn record_gates(
+    store: &mut Store,
+    run_id: i64,
+    node_run_id: i64,
+    results: &[crate::gates::GateResult],
+) -> Result<()> {
+    for result in results {
+        store.append_event(
+            run_id,
+            NewEvent::new(
+                if result.passed {
+                    EventKind::Note
+                } else {
+                    EventKind::Failed
+                },
+                format!(
+                    "gate {} `{}` {}",
+                    result.gate.kind.as_str(),
+                    result.gate.command(),
+                    if result.passed { "passed" } else { "failed" }
+                ),
+            )
+            .on_node(node_run_id)
+            // Structured, not only prose. Analytics reads `passed` and `gate` from
+            // here; a rate computed by matching English in `summary` breaks the first
+            // time somebody improves the wording (rule 8).
+            .with(serde_json::json!({
+                "gate": result.gate.kind.as_str(),
+                "command": result.gate.command(),
+                "passed": result.passed,
+                "output": result.output,
+            })),
+        )?;
+    }
+    Ok(())
 }
 
 /// The file a gate answers for: the manifest it was discovered from.

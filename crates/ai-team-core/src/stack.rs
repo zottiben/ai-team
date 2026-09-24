@@ -99,7 +99,21 @@ pub(crate) fn edits(plan: &str, slices: &[Slice], names: Names) -> Vec<Edit> {
         else {
             continue;
         };
-        let (base, _) = settled_branch(plan, parent, names);
+        let base = if parent.status == "done" {
+            // Merged, so its branch is history. What is still to build starts where the
+            // parent landed. What is already built sits on the parent's commits, and moving
+            // it is the restack's (PW11) - it rebases first; the plan saying otherwise under
+            // it would show the parent's commits in its review as its own.
+            if matches!(slice.status.as_str(), "active" | "in_review" | "done") {
+                continue;
+            }
+            match parent.base_branch.as_deref().map(str::trim) {
+                Some(landed) if !landed.is_empty() => landed.to_string(),
+                _ => continue,
+            }
+        } else {
+            settled_branch(plan, parent, names).0
+        };
         if slice.base_branch.as_deref().map(str::trim) != Some(base.as_str()) {
             edits.push(Edit::Base {
                 key: slice.key.clone(),
@@ -284,6 +298,34 @@ mod tests {
             slice("PR1", "", Some("p/pr1"), Some("main")),
             slice("PR2", "Stacks on: `PR1`", Some("p/pr2"), Some("p/pr1")),
         ];
+        assert!(edits("p", &slices, Names::Keep).is_empty());
+    }
+
+    #[test]
+    fn a_merged_parent_is_no_base_for_what_is_still_to_build_and_not_the_plans_to_move() {
+        let mut slices = vec![
+            slice("PR1", "", Some("p/pr1"), Some("main")),
+            slice("PR2", "Stacks on: PR1", Some("p/pr2"), Some("p/pr1")),
+        ];
+        slices[0].status = "done".into();
+
+        // Not built yet: it starts where PR1 landed, not from a branch that is history.
+        assert_eq!(
+            edits("p", &slices, Names::Keep),
+            [Edit::Base {
+                key: "PR2".into(),
+                base: "main".into()
+            }]
+        );
+
+        // Built, on PR1's branch: moving it is the restack's, which rebases it first. The
+        // plan saying `main` under a branch still on PR1's commits would show them in its
+        // review as its own.
+        slices[1].status = "in_review".into();
+        assert!(edits("p", &slices, Names::Keep).is_empty());
+
+        // Restacked onto main, its `Stacks on: PR1` does not pull it back.
+        slices[1].base_branch = Some("main".into());
         assert!(edits("p", &slices, Names::Keep).is_empty());
     }
 

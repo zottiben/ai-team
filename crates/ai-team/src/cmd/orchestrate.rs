@@ -27,6 +27,7 @@ pub(crate) async fn run(args: RunArgs) -> Result<()> {
         } else {
             core::Branching::Fresh
         },
+        trigger: None,
     };
 
     let done = core::run_workflow(&request, report)

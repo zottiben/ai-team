@@ -481,6 +481,73 @@ pub(crate) async fn rev_parse(worktree: &Path, rev: &str) -> Result<String> {
     Ok(git(worktree, &["rev-parse", rev]).await?.trim().to_string())
 }
 
+/// Whether `ancestor` is in `descendant`'s history.
+pub(crate) async fn is_ancestor(worktree: &Path, ancestor: &str, descendant: &str) -> Result<bool> {
+    let args = ["merge-base", "--is-ancestor", ancestor, descendant];
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(worktree)
+        .stdin(Stdio::null())
+        .kill_on_drop(true)
+        .output()
+        .await
+        .map_err(|error| Error::invalid(format!("could not run git: {error}")))?;
+    // 1 is git's "no"; anything else that is not 0 is git failing to answer.
+    match output.status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        _ => Err(Error::invalid(format!(
+            "`git {}` failed in {}: {}",
+            args.join(" "),
+            worktree.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        ))),
+    }
+}
+
+/// The commit of `parent` that `branch` was built on: where its own work begins.
+///
+/// `--fork-point` reads the parent's reflog, so a parent rewritten since - restacked in
+/// its turn, or amended - still gives the commit this branch sits on. A plain merge-base
+/// would reach back past the parent's old commits to where the two last agreed, and a
+/// rebase from there replays those old commits as this branch's own. A parent with no
+/// reflog entry to go on falls back to the merge-base, which is right for any parent
+/// that only ever moved forward.
+pub(crate) async fn fork_point(worktree: &Path, parent: &str, branch: &str) -> Result<String> {
+    match git(worktree, &["merge-base", "--fork-point", parent, branch]).await {
+        Ok(found) if !found.trim().is_empty() => Ok(found.trim().to_string()),
+        _ => merge_base(worktree, parent, branch).await,
+    }
+}
+
+/// How many commits `to` has that `from` does not.
+pub(crate) async fn commits_between(worktree: &Path, from: &str, to: &str) -> Result<u64> {
+    let count = git(worktree, &["rev-list", "--count", &format!("{from}..{to}")]).await?;
+    count
+        .trim()
+        .parse()
+        .map_err(|_| Error::invalid(format!("git counted `{}` commits", count.trim())))
+}
+
+/// Whether a rebase stopped part-way in this checkout, on a conflict or a question.
+///
+/// Asked of git rather than of a path: a linked worktree keeps its rebase state under the
+/// main repository's `.git/worktrees/<name>`, not beside its files.
+pub(crate) async fn rebase_in_progress(worktree: &Path) -> Result<bool> {
+    for state in ["rebase-merge", "rebase-apply"] {
+        let path = git(worktree, &["rev-parse", "--git-path", state]).await?;
+        if worktree.join(path.trim()).exists() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Put a checkout back as it was before a rebase that did not finish.
+pub(crate) async fn abort_rebase(worktree: &Path) -> Result<()> {
+    git(worktree, &["rebase", "--abort"]).await.map(drop)
+}
+
 /// The branch work is cut from, as this repository actually names it.
 ///
 /// Tried in order rather than assumed: `origin/HEAD` is what the remote says, and the two
@@ -735,8 +802,22 @@ pub async fn checkout(worktree: &Path, branch: &str) -> Result<()> {
 
 /// Push an exact accepted branch from any checkout of the repository. A returned maker
 /// lease is detached, so delivery must not depend on whichever branch that path shows.
-pub(crate) async fn push_branch(worktree: &Path, branch: &str) -> Result<String> {
-    git(worktree, &["push", "--set-upstream", "origin", branch]).await
+///
+/// `replaces` is for a branch that was rewritten - restacked onto a moved parent - and so
+/// cannot fast-forward: the remote commit it was rewritten from, and the only one it may
+/// replace. Pinned to that commit rather than left to `origin/<branch>`, because fetching
+/// moves `origin/<branch>`, and a lease checked against it would agree to replace a commit
+/// somebody pushed since.
+pub(crate) async fn push_branch(
+    worktree: &Path,
+    branch: &str,
+    replaces: Option<&str>,
+) -> Result<String> {
+    let lease = replaces.map(|sha| format!("--force-with-lease=refs/heads/{branch}:{sha}"));
+    let mut args = vec!["push", "--set-upstream"];
+    args.extend(lease.as_deref());
+    args.extend(["origin", branch]);
+    git(worktree, &args).await
 }
 
 /// Push the current branch, setting upstream if it has none.
@@ -1011,6 +1092,146 @@ mod tests {
         assert!(
             !files.contains("target/"),
             "build output leaked in: {files}"
+        );
+    }
+
+    /// Commit `file` with `text` on whatever `dir` has checked out, and say which commit.
+    async fn commit_file(dir: &Path, file: &str, text: &str) -> String {
+        std::fs::write(dir.join(file), text).unwrap();
+        git(dir, &["add", file]).await.unwrap();
+        git(dir, &["commit", "-qm", file]).await.unwrap();
+        rev_parse(dir, "HEAD").await.unwrap()
+    }
+
+    /// `main` with PR1 on it, and PR2 built on PR1: the stack a restack starts from.
+    async fn stack() -> (tempfile::TempDir, String) {
+        let dir = repo().await;
+        git(dir.path(), &["branch", "-M", "main"]).await.unwrap();
+        git(dir.path(), &["checkout", "-qb", "p/pr1"])
+            .await
+            .unwrap();
+        let built_on = commit_file(dir.path(), "one.txt", "one\n").await;
+        git(dir.path(), &["checkout", "-qb", "p/pr2"])
+            .await
+            .unwrap();
+        commit_file(dir.path(), "two.txt", "two\n").await;
+        (dir, built_on)
+    }
+
+    #[tokio::test]
+    async fn a_stacked_branch_knows_the_parent_commit_it_was_built_on_after_the_parent_moves() {
+        let (dir, built_on) = stack().await;
+        let dir = dir.path();
+
+        // Moved on: review follow-ups on PR1.
+        git(dir, &["checkout", "-q", "p/pr1"]).await.unwrap();
+        let moved = commit_file(dir, "one-more.txt", "more\n").await;
+        assert_eq!(fork_point(dir, "p/pr1", "p/pr2").await.unwrap(), built_on);
+        assert!(!is_ancestor(dir, &moved, "p/pr2").await.unwrap());
+        assert!(is_ancestor(dir, &built_on, "p/pr2").await.unwrap());
+
+        // Rewritten: main moved and PR1 was rebased onto it, the commit PR2 sits on
+        // included. A plain merge-base now reaches back to main, and a rebase from there
+        // would replay PR1's old commits into PR2 as though they were its own.
+        git(dir, &["checkout", "-q", "main"]).await.unwrap();
+        let trunk = commit_file(dir, "main.txt", "main moved\n").await;
+        git(dir, &["checkout", "-q", "p/pr1"]).await.unwrap();
+        git(dir, &["rebase", "-q", "main"]).await.unwrap();
+        assert!(!is_ancestor(dir, &built_on, "p/pr1").await.unwrap());
+        assert_ne!(merge_base(dir, "p/pr1", "p/pr2").await.unwrap(), built_on);
+        assert_eq!(fork_point(dir, "p/pr1", "p/pr2").await.unwrap(), built_on);
+        assert!(is_ancestor(dir, &trunk, "p/pr1").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn a_rebase_left_part_way_is_seen_and_undone() {
+        let (dir, _) = stack().await;
+        let dir = dir.path();
+        git(dir, &["checkout", "-q", "main"]).await.unwrap();
+        commit_file(dir, "two.txt", "main's two\n").await;
+        git(dir, &["checkout", "-q", "p/pr2"]).await.unwrap();
+        let before = rev_parse(dir, "HEAD").await.unwrap();
+        assert!(!rebase_in_progress(dir).await.unwrap());
+
+        // Both sides wrote two.txt: git stops on it.
+        assert!(git(dir, &["rebase", "main"]).await.is_err());
+        assert!(rebase_in_progress(dir).await.unwrap());
+
+        abort_rebase(dir).await.unwrap();
+        assert!(!rebase_in_progress(dir).await.unwrap());
+        assert_eq!(rev_parse(dir, "HEAD").await.unwrap(), before);
+        assert_eq!(current_branch(dir).await.as_deref(), Some("p/pr2"));
+    }
+
+    #[tokio::test]
+    async fn a_rewritten_branch_replaces_only_the_remote_commit_it_was_rewritten_from() {
+        let (dir, _) = stack().await;
+        let dir = dir.path();
+        let origin = tempfile::tempdir().unwrap();
+        git(origin.path(), &["init", "-q", "--bare", "."])
+            .await
+            .unwrap();
+        git(
+            dir,
+            &["remote", "add", "origin", &origin.path().to_string_lossy()],
+        )
+        .await
+        .unwrap();
+        push_branch(dir, "p/pr2", None).await.unwrap();
+        let published = rev_parse(dir, "origin/p/pr2").await.unwrap();
+
+        // Restacked: the same work on a new base, so not a fast-forward.
+        git(dir, &["rebase", "-q", "--onto", "main", "p/pr1"])
+            .await
+            .unwrap();
+        push_branch(dir, "p/pr2", Some(&published)).await.unwrap();
+        let restacked = rev_parse(dir, "HEAD").await.unwrap();
+        assert_eq!(rev_parse(dir, "origin/p/pr2").await.unwrap(), restacked);
+
+        // Somebody pushed since the commit this rewrite was pinned to. Theirs survives.
+        let theirs = tempfile::tempdir().unwrap();
+        git(
+            theirs.path(),
+            &[
+                "clone",
+                "-q",
+                "--branch",
+                "p/pr2",
+                &origin.path().to_string_lossy(),
+                ".",
+            ],
+        )
+        .await
+        .unwrap();
+        git(theirs.path(), &["config", "user.email", "o@o"])
+            .await
+            .unwrap();
+        git(theirs.path(), &["config", "user.name", "o"])
+            .await
+            .unwrap();
+        let their_commit = commit_file(theirs.path(), "theirs.txt", "theirs\n").await;
+        git(theirs.path(), &["push", "-q", "origin", "p/pr2"])
+            .await
+            .unwrap();
+        git(dir, &["commit", "-q", "--amend", "-m", "rewritten again"])
+            .await
+            .unwrap();
+        // The fetch a watch does moves origin/p/pr2 to theirs, which is exactly what an
+        // unpinned lease would then have agreed to replace.
+        fetch(dir, "p/pr2").await.unwrap();
+
+        let refused = push_branch(dir, "p/pr2", Some(&restacked)).await;
+
+        assert!(
+            refused.is_err(),
+            "a push over somebody else's commit went through"
+        );
+        git(theirs.path(), &["fetch", "-q", "origin"])
+            .await
+            .unwrap();
+        assert_eq!(
+            rev_parse(theirs.path(), "origin/p/pr2").await.unwrap(),
+            their_commit
         );
     }
 

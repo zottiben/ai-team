@@ -10,6 +10,7 @@ mod events;
 mod notifications;
 mod projects;
 mod reminders;
+mod restacks;
 mod reviews;
 mod runs;
 

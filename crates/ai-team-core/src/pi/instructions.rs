@@ -27,6 +27,69 @@ pub(super) fn for_seat(
     roster: &[Agent],
     guide: Option<&str>,
 ) -> String {
+    let mut out = preamble(agent, team);
+
+    if coordinates(agent) {
+        coordinating_section(&mut out, roster);
+    } else if plans(agent) {
+        planning_section(&mut out, roster, guide);
+    } else {
+        building_section(&mut out, agent);
+    }
+
+    if coordinates(agent) || plans(agent) {
+        out.push_str(
+            "## When you are done\n\n\
+             State the grounded brief or plan you produced and any context you could not \
+             verify. Do not build the work yourself.\n",
+        );
+    } else {
+        out.push_str(
+            "## When you are done\n\n\
+             Say what you changed and what you ran, in plain prose. A turn that reports done \
+             but changed no file is recorded as failed, so if you could not do the work, say \
+             that instead - it is a useful answer and a false one is not.\n",
+        );
+    }
+    out
+}
+
+/// The system prompt for the coordinating seat restacking a pull request (PW11).
+///
+/// Instead of its coordinating rules, not beside them: those say it does not build code,
+/// and a conflict is resolved by editing the file it is in. Told to ask rather than guess,
+/// because a wrong resolution merges cleanly and reads like the right one.
+pub(super) fn for_restack(agent: &Agent, team: &Team) -> String {
+    let mut out = preamble(agent, team);
+    out.push_str(
+        "## This turn: restacking a pull request\n\n\
+         This turn is not coordination. A pull request in this plan is stacked on another, \
+         and the one it stacks on has moved - merged, or changed since this one was built on \
+         it - so this one has to be rebased onto where its parent is now. ai-team chose the \
+         commits, and the message says exactly which rebase to run. You can write this turn, \
+         because a conflict is resolved by editing the files it is in.\n\n\
+         - Run the rebase you are given. When git stops on a conflict, read both sides and \
+         resolve it so both survive: what the parent changed, and what this pull request set \
+         out to do. Stage the files and `git rebase --continue`.\n\
+         - Keep this pull request's commits: do not squash, reorder or reword them, and do \
+         not change what a conflict does not touch.\n\
+         - When the rebase is done, run the project's own checks. If the new base broke \
+         something this pull request relies on, fix it in a commit of its own on this \
+         branch.\n\
+         - If you cannot tell how a conflict should be resolved, or the checks fail in a way \
+         you cannot fix without guessing what somebody meant, run `git rebase --abort` and \
+         stop. Name the files and what each side wanted: a person decides.\n\n\
+         Leave the pull request on GitHub alone and do not push: ai-team publishes the \
+         result, under the team's delivery policy, once it has checked it.\n\n\
+         ## When you are done\n\n\
+         Say what you did: the rebase, each conflict and how you resolved it, and the checks \
+         you ran with what they said. If you stopped, say why and what needs deciding.\n",
+    );
+    out
+}
+
+/// Who the seat is, anything its operator told it, and where it is working.
+fn preamble(agent: &Agent, team: &Team) -> String {
     let mut out = String::new();
     let _ = write!(
         out,
@@ -56,29 +119,6 @@ pub(super) fn for_seat(
          human decides whether it goes anywhere, so do not push, tag, merge or release. \
          If something genuinely needs one of those, say so in your answer.\n\n",
     );
-
-    if coordinates(agent) {
-        coordinating_section(&mut out, roster);
-    } else if plans(agent) {
-        planning_section(&mut out, roster, guide);
-    } else {
-        building_section(&mut out, agent);
-    }
-
-    if coordinates(agent) || plans(agent) {
-        out.push_str(
-            "## When you are done\n\n\
-             State the grounded brief or plan you produced and any context you could not \
-             verify. Do not build the work yourself.\n",
-        );
-    } else {
-        out.push_str(
-            "## When you are done\n\n\
-             Say what you changed and what you ran, in plain prose. A turn that reports done \
-             but changed no file is recorded as failed, so if you could not do the work, say \
-             that instead - it is a useful answer and a false one is not.\n",
-        );
-    }
     out
 }
 
@@ -283,6 +323,22 @@ mod tests {
         assert!(prompt.contains("do not shape the ai-planner"), "{prompt}");
         assert!(!prompt.contains("add_slice"), "{prompt}");
         assert!(prompt.contains("never substitute Chrome"), "{prompt}");
+    }
+
+    #[test]
+    fn a_restacking_orchestrator_is_told_to_rebase_keep_both_sides_and_ask_rather_than_guess() {
+        let (agent, team, _) = seat("orchestrator");
+        let prompt = for_restack(&agent, &team);
+
+        assert!(prompt.contains("restacking a pull request"), "{prompt}");
+        assert!(prompt.contains("git rebase --continue"), "{prompt}");
+        assert!(prompt.contains("git rebase --abort"), "{prompt}");
+        assert!(prompt.contains("project's own checks"), "{prompt}");
+        // Publishing is ai-team's, after it has checked the result.
+        assert!(prompt.contains("do not push"), "{prompt}");
+        // Not the coordinating seat's rules, which forbid the very edit a conflict needs.
+        assert!(!prompt.contains("You coordinate"), "{prompt}");
+        assert!(!prompt.contains("delegation brief"), "{prompt}");
     }
 
     #[test]

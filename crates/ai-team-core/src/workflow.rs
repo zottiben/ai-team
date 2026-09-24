@@ -40,6 +40,9 @@ pub struct Request {
     pub approval_required: bool,
     /// Which branch the run works on. A fresh one unless the operator says otherwise.
     pub branching: Branching,
+    /// What started it, when that was not the operator: a schedule. Kept on the run, so the
+    /// window says who asked rather than assuming it was whoever is looking.
+    pub trigger: Option<RunTrigger>,
 }
 
 /// Which branch a run that plans works on (PW2).
@@ -830,7 +833,8 @@ fn open_run(
         )));
     }
 
-    let run = store.create_run_in(project_id, prompt, RunTrigger::Manual, Some(repo))?;
+    let trigger = request.trigger.unwrap_or(RunTrigger::Manual);
+    let run = store.create_run_in(project_id, prompt, trigger, Some(repo))?;
     let opened = (|| {
         if request.branching == Branching::DefaultBranch {
             store.set_run_on_default_branch(run.id)?;
@@ -1266,6 +1270,70 @@ pub async fn follow_up_at(
     result
 }
 
+/// Restack one stacked pull request, on the run and node the watch opened for it (PW11).
+///
+/// Like a follow-up it works in the PR's own worktree and holds nothing above it, so it
+/// goes ahead while another run builds in the checkout it was started from.
+pub(crate) async fn restack_at(
+    db: &Path,
+    run_id: i64,
+    node_id: i64,
+    restack: crate::restack::Restack,
+) -> Result<Orchestration> {
+    let mut store = Store::open(db)?;
+    let initialization = (|| {
+        store.set_run_supervisor(run_id, i64::from(std::process::id()))?;
+        let run = store.set_run_status(run_id, RunStatus::Running)?;
+        let repo = run
+            .workspace_path
+            .as_deref()
+            .map(PathBuf::from)
+            .ok_or_else(|| Error::invalid("the restack has no checkout"))?
+            .canonicalize()
+            .map_err(|_| Error::invalid("the checkout that built this no longer exists"))?;
+        let team_id = run
+            .team_id
+            .ok_or_else(|| Error::invalid("the project has no team"))?;
+        let project = store.project(run.project_id)?;
+        Ok::<_, Error>(Orchestrator {
+            db_path: db.to_path_buf(),
+            project_dir: store.support_dir(&project.slug)?,
+            planner: Planner::at(&repo).for_plan(restack.plan.clone()),
+            worktrees: Worktrees::at(&repo),
+            repo,
+            run_id,
+            team_id,
+            registry: ModelRegistry::load()?,
+            parallel_width: 1,
+        })
+    })();
+    let result = match initialization {
+        Ok(orchestrator) => match orchestrator.restack(&mut store, &restack, node_id).await {
+            Ok(dispatched) => finish_run(
+                &mut store,
+                run_id,
+                Orchestration {
+                    unrouted: Vec::new(),
+                    dispatched: vec![dispatched],
+                },
+            ),
+            Err(error) => Err(error),
+        },
+        Err(error) => Err(error),
+    };
+    if let Err(error) = &result {
+        // Not left queued: a restack that never ran would hold the PR's worktree as busy
+        // until the process that opened it exited.
+        let node = store.node_run(node_id)?;
+        if matches!(node.status, NodeStatus::Queued | NodeStatus::Running) {
+            store.block_node(node_id, &error.to_string())?;
+            store.set_node_status(node_id, NodeStatus::Failed)?;
+        }
+        record_workflow_failure(&mut store, run_id, error)?;
+    }
+    result
+}
+
 /// Reattach an interrupted maker to the same run, Pi session and awt lease.
 ///
 /// The caller claims `node_run.supervisor_pid` before spawning this future. Failure leaves
@@ -1461,6 +1529,55 @@ fn notify_run(store: &mut Store, run_id: i64, kind: &str, title: &str, body: &st
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_run_the_schedule_starts_is_the_schedules_not_the_operators() {
+        let checkout = tempfile::tempdir().unwrap();
+        let mut store = Store::memory().unwrap();
+        let project = store
+            .create_project(crate::NewProject {
+                name: "Widget".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        store.seed_default_team(project.id).unwrap();
+        let fired = Request {
+            project: "widget".into(),
+            trigger: Some(RunTrigger::Scheduled),
+            ..Request::default()
+        };
+
+        let run = open_run(
+            &mut store,
+            &fired,
+            project.id,
+            checkout.path(),
+            "nightly",
+            None,
+        )
+        .unwrap();
+        assert_eq!(run.trigger, RunTrigger::Scheduled);
+        assert_eq!(
+            store.run_origin(&run).unwrap(),
+            crate::model::RunOrigin::Schedule
+        );
+
+        store.set_run_status(run.id, RunStatus::Done).unwrap();
+        let asked = Request {
+            project: "widget".into(),
+            ..Request::default()
+        };
+        let run = open_run(
+            &mut store,
+            &asked,
+            project.id,
+            checkout.path(),
+            "build it",
+            None,
+        )
+        .unwrap();
+        assert_eq!(run.trigger, RunTrigger::Manual);
+    }
 
     #[test]
     fn a_review_follow_up_is_a_run_of_its_own_triggered_by_the_review() {

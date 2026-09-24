@@ -8,7 +8,9 @@
 mod build;
 mod orchestrate;
 mod outcome;
+mod restack;
 
+pub(crate) use orchestrate::held_by;
 pub use orchestrate::{Dispatched, Orchestration, Orchestrator, Rig};
 pub(crate) use outcome::quota_exhaustion;
 pub use outcome::{outcome_status, TurnOutcome};

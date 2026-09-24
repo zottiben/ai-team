@@ -12,25 +12,99 @@ use tokio::process::Command;
 use crate::error::{Error, Result};
 use crate::model::RemoteDeliveryStatus;
 
+/// What a pull request is on GitHub now.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PullRequest {
+    pub url: String,
+    pub state: PrState,
+    /// The branch it would merge into.
+    pub base: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PrState {
+    Open,
+    Merged,
+    Closed,
+}
+
+const PULL_REQUEST_FIELDS: &str = "url,state,baseRefName";
+
+/// A pull request's state and base, by URL or by head branch.
+pub(crate) async fn pull_request(repo: &Path, which: &str) -> Result<PullRequest> {
+    let output = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        gh(repo, &["pr", "view", which, "--json", PULL_REQUEST_FIELDS]),
+    )
+    .await
+    .map_err(|_| Error::invalid("timed out reading a GitHub pull request"))??;
+    read_pull_request(&output)
+}
+
+fn read_pull_request(json: &str) -> Result<PullRequest> {
+    let value: serde_json::Value = serde_json::from_str(json)
+        .map_err(|error| Error::invalid(format!("could not read gh's pull request: {error}")))?;
+    let field = |name: &str| {
+        value
+            .get(name)
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+            .ok_or_else(|| Error::invalid(format!("gh's pull request has no {name}")))
+    };
+    let state = match field("state")?.as_str() {
+        "OPEN" => PrState::Open,
+        "MERGED" => PrState::Merged,
+        "CLOSED" => PrState::Closed,
+        other => {
+            return Err(Error::invalid(format!(
+                "a pull request in a state ai-team does not know: {other}"
+            )))
+        }
+    };
+    Ok(PullRequest {
+        url: field("url")?,
+        state,
+        base: field("baseRefName")?,
+    })
+}
+
+/// Point a pull request at another base branch.
+pub(crate) async fn retarget(repo: &Path, url: &str, base: &str) -> Result<()> {
+    gh(repo, &["pr", "edit", url, "--base", base])
+        .await
+        .map(drop)
+}
+
+/// What asking for a branch's pull request came to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Opened {
+    New,
+    /// The branch had one already. `was_based_on` is where it merged into before it was
+    /// pointed at the plan's base, when that moved it.
+    Existing {
+        was_based_on: Option<String>,
+    },
+}
+
 pub(crate) async fn create_pr(
     repo: &Path,
     branch: &str,
     base: &str,
     title: &str,
     body: &str,
-) -> Result<String> {
+) -> Result<(String, Opened)> {
     // A retry after the CLI succeeded but the database write failed must adopt the PR,
-    // not create a duplicate.
-    if let Ok(url) = gh(
-        repo,
-        &["pr", "view", branch, "--json", "url", "--jq", ".url"],
-    )
-    .await
-    {
-        let url = url.trim();
-        if !url.is_empty() {
-            return Ok(url.to_string());
+    // not create a duplicate. So must a branch rewritten onto a new base - a restack - whose
+    // PR is still the one it had: adopted, and pointed where the plan now bases it (PW11).
+    // That happens here, after the push that must come first, because a PR retargeted
+    // while its branch still sits on the old parent shows that parent's commits as its own.
+    if let Ok(found) = pull_request(repo, branch).await {
+        let moved = found.state == PrState::Open && found.base != base;
+        if moved {
+            retarget(repo, &found.url, base).await?;
         }
+        let was_based_on = moved.then_some(found.base);
+        return Ok((found.url, Opened::Existing { was_based_on }));
     }
     let output = gh(
         repo,
@@ -45,7 +119,7 @@ pub(crate) async fn create_pr(
         .find(|line| line.trim().starts_with("https://"))
         .map(str::trim)
         .ok_or_else(|| Error::invalid("`gh pr create` succeeded without returning a PR URL"))?;
-    Ok(url.to_string())
+    Ok((url.to_string(), Opened::New))
 }
 
 pub(crate) async fn pr_status(repo: &Path, pr_url: &str) -> Result<RemoteDeliveryStatus> {
@@ -183,7 +257,35 @@ async fn gh(repo: &Path, args: &[&str]) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{auto_merge_unavailable, check_state, no_checks_reported};
+    use super::{
+        auto_merge_unavailable, check_state, no_checks_reported, read_pull_request, PrState,
+        PullRequest,
+    };
+
+    #[test]
+    fn a_pull_request_reads_as_open_merged_or_closed_with_its_base() {
+        let read = |json: &str| read_pull_request(json).unwrap();
+        assert_eq!(
+            read(r#"{"url":"https://x/pull/2","state":"OPEN","baseRefName":"p/pr1"}"#),
+            PullRequest {
+                url: "https://x/pull/2".into(),
+                state: PrState::Open,
+                base: "p/pr1".into()
+            }
+        );
+        assert_eq!(
+            read(r#"{"url":"u","state":"MERGED","baseRefName":"main"}"#).state,
+            PrState::Merged
+        );
+        assert_eq!(
+            read(r#"{"url":"u","state":"CLOSED","baseRefName":"main"}"#).state,
+            PrState::Closed
+        );
+        // Not a state to guess at: acting on a PR whose state is unknown is how a merged
+        // one's worktree goes back while it is still open.
+        assert!(read_pull_request(r#"{"url":"u","state":"DRAFTY","baseRefName":"main"}"#).is_err());
+        assert!(read_pull_request(r#"{"url":"u","state":"OPEN"}"#).is_err());
+    }
 
     #[test]
     fn falls_back_only_for_githubs_explicit_auto_merge_configuration_errors() {

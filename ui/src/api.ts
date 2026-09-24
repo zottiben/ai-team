@@ -119,7 +119,10 @@ export type Usage = {
   cache_write: number;
 };
 
-export type RunDetail = Run & { nodes: NodeRun[]; usage: Usage };
+/** Who started a run: the operator, a review they submitted, a schedule, or the watch. */
+export type RunOrigin = "operator" | "review" | "schedule" | "watch";
+
+export type RunDetail = Run & { started_by?: RunOrigin; nodes: NodeRun[]; usage: Usage };
 
 export type RunEvent = {
   id: number;

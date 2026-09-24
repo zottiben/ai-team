@@ -18,10 +18,19 @@ import {
   type Run,
   type RunDetail,
   type RunEvent,
+  type RunOrigin,
 } from "./api";
 import { BoardMarkdown } from "./BoardMarkdown";
 
 const ACTIVE = new Set(["queued", "planning", "running", "blocked"]);
+
+/** Who started a run, said so rather than assumed: a restack's prompt is ai-team's own. */
+const STARTED_BY: Record<RunOrigin, string> = {
+  operator: "You started the run",
+  review: "Your review started the run",
+  schedule: "A schedule started the run",
+  watch: "The pull-request watch started the run",
+};
 
 function firstRun(runs: Run[]): number | null {
   return runs.find((run) => ACTIVE.has(run.status))?.id ?? runs[0]?.id ?? null;
@@ -349,8 +358,15 @@ export function AgentActivity({
               setFollowing(atLiveEdge);
             }}
           >
-            <article className="activity-message activity-message--human">
-              <span className="activity-message__who">You started the run</span>
+            {/* Only words the operator typed sit in their bubble. */}
+            <article
+              className={`activity-message${
+                (detail.started_by ?? "operator") === "operator" ? " activity-message--human" : ""
+              }`}
+            >
+              <span className="activity-message__who">
+                {STARTED_BY[detail.started_by ?? "operator"]}
+              </span>
               <p>{detail.prompt}</p>
             </article>
             {conversationRows(conversation, selectedNode?.status === "running")}

@@ -32,6 +32,7 @@ mod onboard;
 mod paths;
 mod pi;
 mod readiness;
+mod restack;
 mod review;
 mod roles;
 mod schedule;
@@ -84,8 +85,8 @@ pub use model::{
     EventKind, Guardrails, NewAgent, NewComment, NewEvent, NewNotification, NewProject,
     NewReminder, NewRepo, NodeRun, NodeStatus, Notification, OnFailure, Project, ProjectKind,
     ProjectRepo, ProjectSource, ProjectStatus, Provider, Reasoning, Recur, Reminder, ReminderKind,
-    ReminderStatus, RemoteDeliveryStatus, Review, ReviewComment, ReviewStatus, Run, RunStatus,
-    RunTrigger, Team, ToolEffect, ToolPolicy, Usage,
+    ReminderStatus, RemoteDeliveryStatus, Review, ReviewComment, ReviewStatus, Run, RunOrigin,
+    RunStatus, RunTrigger, Team, ToolEffect, ToolPolicy, Usage,
 };
 pub use neighbours::{
     apply_patch_cached, branches, checkout, commit_staged, current_branch, file_sql_available,

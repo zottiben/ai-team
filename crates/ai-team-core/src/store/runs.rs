@@ -1323,7 +1323,7 @@ impl Store {
 }
 
 /// A checkout path as the filesystem resolves it, or as written when it does not exist.
-fn resolved(path: &Path) -> String {
+pub(crate) fn resolved(path: &Path) -> String {
     path.canonicalize()
         .unwrap_or_else(|_| path.to_path_buf())
         .to_string_lossy()
@@ -1449,7 +1449,7 @@ const NODE_SELECT: &str = "SELECT id, run_id, agent_id, role, provider, model, s
      tokens_in, tokens_out, tokens_cache_read, tokens_cache_write, turns, blocked_reason, \
      started_at, ended_at, rev, created_at, updated_at, context_tokens, session_retired_at, \
      session_resetting_at, pushed_at, pr_url, merge_requested_at, delivery_claim, \
-     delivery_claimed_at, delivery_error, supervisor_pid, task_key FROM node_run";
+     delivery_claimed_at, delivery_error, supervisor_pid, task_key, push_replaces FROM node_run";
 
 fn node_from_row(r: &Row<'_>) -> rusqlite::Result<NodeRun> {
     Ok(NodeRun {
@@ -1471,6 +1471,7 @@ fn node_from_row(r: &Row<'_>) -> rusqlite::Result<NodeRun> {
         delivery_claim: non_empty(r.get(33)?),
         delivery_claimed_at: non_empty(r.get(34)?),
         delivery_error: non_empty(r.get(35)?),
+        push_replaces: non_empty(r.get(38)?),
         session_id: non_empty(r.get(12)?),
         session_retired_at: non_empty(r.get(28)?),
         session_resetting_at: non_empty(r.get(29)?),

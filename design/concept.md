@@ -1,6 +1,6 @@
 # ai-team — Concept
 
-> Status: draft · Author: zottiben · Last updated: 2026-09-23
+> Status: draft · Author: zottiben · Last updated: 2026-09-24
 
 ## Elevator pitch
 
@@ -41,7 +41,8 @@ to extend. Everything runs locally on the machine it is installed on.
 pull request → each PR is built in its own worktree, its tasks taken in turn by the seats
 that own them → a verifier on a different model checks the whole PR → a diff arrives in
 your review queue → you comment → the responsible agent picks the comments up, in that
-PR's worktree.
+PR's worktree → when the PR a stacked one sits on moves or merges, the orchestrator rebases
+the stacked one onto it there, and ai-team publishes the result.
 
 **Session:** open Today, see the one right next thing across every project, unblock it.
 

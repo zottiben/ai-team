@@ -78,6 +78,34 @@ impl Rig {
         worktree: &Path,
         prompt: &str,
     ) -> Result<crate::PiTurn> {
+        self.seated(store, agent_id, node_run_id, worktree, |seat| {
+            seat.turn(prompt)
+        })
+    }
+
+    /// The turn the coordinating seat takes to restack a pull request (PW11): the same
+    /// seat, writing this once.
+    pub(super) fn restack_seat(
+        &self,
+        store: &Store,
+        agent_id: i64,
+        node_run_id: i64,
+        worktree: &Path,
+        prompt: &str,
+    ) -> Result<crate::PiTurn> {
+        self.seated(store, agent_id, node_run_id, worktree, |seat| {
+            seat.restack_turn(prompt)
+        })
+    }
+
+    fn seated(
+        &self,
+        store: &Store,
+        agent_id: i64,
+        node_run_id: i64,
+        worktree: &Path,
+        take: impl FnOnce(&crate::PiSeat<'_>) -> Result<crate::PiTurn>,
+    ) -> Result<crate::PiTurn> {
         let agent = store.agent(agent_id)?;
         let node = store.node_run(node_run_id)?;
         let team = store.team(agent.team_id)?;
@@ -85,7 +113,7 @@ impl Rig {
         // Only the seats that may shape the plan get the tools that shape it. A maker
         // that can add slices can give itself work.
         let may_plan = agent.role == "planner";
-        let mut turn = crate::PiSeat {
+        let mut turn = take(&crate::PiSeat {
             agent: &agent,
             provider: node.provider,
             model: &node.model,
@@ -99,8 +127,7 @@ impl Rig {
             }),
             team: &team,
             roster: &roster,
-        }
-        .turn(prompt)?;
+        })?;
         turn.program.clone_from(&self.pi);
         Ok(turn)
     }
@@ -1160,6 +1187,14 @@ fn lease_holder(run_id: i64, slice_key: &str, role: &str) -> String {
     format!("ai-team run-{run_id} {slice_key} {role}")
 }
 
+/// The run and slice a lease was taken for, when ai-team took it for a pull request.
+pub(crate) fn held_by(holder: &str) -> Option<(i64, String)> {
+    let mut words = holder.strip_prefix("ai-team run-")?.split_whitespace();
+    let run_id = words.next()?.parse().ok()?;
+    let slice_key = words.next()?.to_string();
+    Some((run_id, slice_key))
+}
+
 /// The branch a slice builds on: the plan's name for it, or `<plan>/<key>` - settled onto
 /// the plan before a build, so this fallback is for a plan read without one.
 fn slice_branch(slice: &Slice, plan: Option<&str>) -> String {
@@ -1446,6 +1481,16 @@ mod tests {
         let long = plan_title("", &"word ".repeat(40));
         assert!(long.chars().count() <= 80, "{long}");
         assert!(long.ends_with("word…"), "{long}");
+    }
+
+    #[test]
+    fn a_lease_says_which_run_and_pull_request_it_is_held_for() {
+        let holder = lease_holder(12, "PR2", "frontend+backend");
+        assert_eq!(held_by(&holder), Some((12, "PR2".to_string())));
+        // Somebody else's lease, or a sentence where a holder would be.
+        assert_eq!(held_by("medusa"), None);
+        assert_eq!(held_by("orphaned: machine restarted while in use"), None);
+        assert_eq!(held_by("ai-team run-x PR2 backend"), None);
     }
 
     #[test]

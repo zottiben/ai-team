@@ -419,6 +419,18 @@ impl Seat<'_> {
         ));
         Ok(turn)
     }
+
+    /// The turn a coordinating seat takes to restack a pull request (PW11): the one turn
+    /// it writes in, because a conflict is resolved by editing the file it is in. Held to
+    /// the PR's worktree by the same guard, which still refuses publishing - ai-team pushes
+    /// the result once it has checked it.
+    pub fn restack_turn(&self, prompt: impl Into<String>) -> Result<PiTurn> {
+        let mut turn = self.turn(prompt)?;
+        turn.exclude_tools
+            .retain(|tool| tool != "write" && tool != "edit");
+        turn.instructions = Some(super::instructions::for_restack(self.agent, self.team));
+        Ok(turn)
+    }
 }
 
 #[cfg(test)]
@@ -791,6 +803,44 @@ mod tests {
         // filesystem access, which is the one thing Pi gives away (M9-S39).
         assert!(turn.guard.is_some());
         assert!(turn.mcp_config.is_none());
+    }
+
+    #[test]
+    fn the_orchestrator_writes_only_when_it_restacks_and_is_told_that_is_what_it_is_doing() {
+        let support = tempfile::tempdir().unwrap();
+        let lease = tempfile::tempdir().unwrap();
+        let (team, roster) = team_of();
+        let agent = roster
+            .iter()
+            .find(|a| a.role == "orchestrator")
+            .unwrap()
+            .clone();
+        let seat = Seat {
+            agent: &agent,
+            provider: Provider::Claude,
+            model: "claude-opus-5",
+            worktree: lease.path(),
+            support: support.path(),
+            sources: &[],
+            plan: None,
+            team: &team,
+            roster: &roster,
+        };
+
+        let coordinating = seat.turn("ground it").unwrap();
+        assert!(coordinating.exclude_tools.iter().any(|tool| tool == "edit"));
+
+        // A conflict is resolved by editing the file it is in (PW11).
+        let restacking = seat.restack_turn("rebase it").unwrap();
+        assert!(!restacking
+            .exclude_tools
+            .iter()
+            .any(|tool| tool == "write" || tool == "edit"));
+        // Held to the PR's worktree like every turn: the guard still refuses publishing.
+        assert!(restacking.guard.is_some());
+        let told = restacking.instructions.unwrap();
+        assert!(told.contains("restacking a pull request"), "{told}");
+        assert!(!told.contains("you do not build code"), "{told}");
     }
 
     #[test]
