@@ -53,6 +53,16 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "sig
 # of being an exception nobody notices. `unwrap`/`expect` are warnings, not errors: they
 # are legitimate in tests and in `build.rs`, and a hard deny would only teach people to
 # write `#[allow]`.
+# A dev build is for running and testing, not for stepping through with a debugger, and
+# full debug info is most of what it writes: every test binary carries its own copy of
+# every dependency's. Line tables keep file and line in a panic and a backtrace. For a
+# debugger session, set `CARGO_PROFILE_DEV_DEBUG=true` for that build.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
 [workspace.lints.clippy]
 all = { level = "deny", priority = -1 }
 pedantic = { level = "warn", priority = -1 }
