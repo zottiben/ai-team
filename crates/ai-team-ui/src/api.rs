@@ -2845,6 +2845,8 @@ async fn start(
         plan_only: request.plan_only,
         approval_required: request.approval_required,
         branching: request.branching,
+        // The window's Start: the operator asked.
+        trigger: None,
     };
     let (signal, started) = tokio::sync::oneshot::channel();
     tokio::spawn(async move {

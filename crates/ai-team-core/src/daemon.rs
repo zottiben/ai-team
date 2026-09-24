@@ -102,6 +102,7 @@ pub async fn once() -> Result<Vec<Fired>> {
                 approval_required: false,
                 // Nobody is there to have asked for the default branch.
                 branching: workflow::Branching::Fresh,
+                trigger: Some(crate::model::RunTrigger::Scheduled),
             };
 
             // Detached: a run takes minutes and the next tick is twenty seconds away, so

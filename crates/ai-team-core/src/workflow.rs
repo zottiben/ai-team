@@ -40,6 +40,9 @@ pub struct Request {
     pub approval_required: bool,
     /// Which branch the run works on. A fresh one unless the operator says otherwise.
     pub branching: Branching,
+    /// What started it, when that was not the operator: a schedule. Kept on the run, so the
+    /// window says who asked rather than assuming it was whoever is looking.
+    pub trigger: Option<RunTrigger>,
 }
 
 /// Which branch a run that plans works on (PW2).
@@ -830,7 +833,8 @@ fn open_run(
         )));
     }
 
-    let run = store.create_run_in(project_id, prompt, RunTrigger::Manual, Some(repo))?;
+    let trigger = request.trigger.unwrap_or(RunTrigger::Manual);
+    let run = store.create_run_in(project_id, prompt, trigger, Some(repo))?;
     let opened = (|| {
         if request.branching == Branching::DefaultBranch {
             store.set_run_on_default_branch(run.id)?;
@@ -1525,6 +1529,55 @@ fn notify_run(store: &mut Store, run_id: i64, kind: &str, title: &str, body: &st
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_run_the_schedule_starts_is_the_schedules_not_the_operators() {
+        let checkout = tempfile::tempdir().unwrap();
+        let mut store = Store::memory().unwrap();
+        let project = store
+            .create_project(crate::NewProject {
+                name: "Widget".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        store.seed_default_team(project.id).unwrap();
+        let fired = Request {
+            project: "widget".into(),
+            trigger: Some(RunTrigger::Scheduled),
+            ..Request::default()
+        };
+
+        let run = open_run(
+            &mut store,
+            &fired,
+            project.id,
+            checkout.path(),
+            "nightly",
+            None,
+        )
+        .unwrap();
+        assert_eq!(run.trigger, RunTrigger::Scheduled);
+        assert_eq!(
+            store.run_origin(&run).unwrap(),
+            crate::model::RunOrigin::Schedule
+        );
+
+        store.set_run_status(run.id, RunStatus::Done).unwrap();
+        let asked = Request {
+            project: "widget".into(),
+            ..Request::default()
+        };
+        let run = open_run(
+            &mut store,
+            &asked,
+            project.id,
+            checkout.path(),
+            "build it",
+            None,
+        )
+        .unwrap();
+        assert_eq!(run.trigger, RunTrigger::Manual);
+    }
 
     #[test]
     fn a_review_follow_up_is_a_run_of_its_own_triggered_by_the_review() {
