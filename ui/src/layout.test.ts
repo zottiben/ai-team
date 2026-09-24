@@ -24,3 +24,20 @@ it("a file in a review keeps its height, however many files there are", () => {
 it("a Today row lays its rank, item and arrow out in a row", () => {
   expect(rule(".today-row")).toMatch(/flex-direction:\s*row/);
 });
+
+// Thirty-odd buttons are disabled while their action runs or when it cannot apply, and
+// `.button` had no disabled state: they looked pressable and lit up on hover all the same.
+it("a disabled button looks it, and does not answer the pointer", () => {
+  expect(rule(".button:disabled")).toMatch(/opacity:/);
+  expect(rule(".button:disabled")).toMatch(/cursor:\s*not-allowed/);
+  expect(rule(".button:hover")).toBe("");
+  expect(rule(".button:hover:not(:disabled)")).toMatch(/background:/);
+  expect(rule(".button--primary:hover")).toBe("");
+  expect(rule(".button--primary:hover:not(:disabled)")).toMatch(/background:/);
+});
+
+// A row of buttons choosing one option - Settings' appearance - marks the chosen one with
+// aria-current, which `.button` never drew, so nothing said which theme was in force.
+it("the chosen button of a set is drawn as chosen", () => {
+  expect(rule('.button[aria-current="true"]')).toMatch(/background:/);
+});

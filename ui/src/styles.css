@@ -404,8 +404,15 @@ button.card:hover {
   transition: background var(--motion-fast), color var(--motion-fast);
 }
 
-.button:hover {
+.button:hover:not(:disabled) {
   background: var(--surface-panel-hover);
+  color: var(--text-primary-default);
+}
+
+/* The chosen one of a set of buttons, such as the appearance in Settings. */
+.button[aria-current="true"] {
+  background: var(--surface-panel-selected);
+  border-color: var(--border-strong-default);
   color: var(--text-primary-default);
 }
 
@@ -415,10 +422,17 @@ button.card:hover {
   color: var(--text-inverse-default);
 }
 
-.button--primary:hover {
+.button--primary:hover:not(:disabled) {
   background: var(--accent-action-hover);
   border-color: var(--accent-action-hover);
   color: var(--text-inverse-default);
+}
+
+/* A button that cannot be pressed - its action running, or not applying here - says so,
+   and does not light up under the pointer as if it could. */
+.button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .error {
