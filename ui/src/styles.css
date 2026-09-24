@@ -658,6 +658,12 @@ button.card:hover {
   font-size: var(--text-sm);
 }
 
+/* A turn that failed is the line that says why the run stopped, and it must not read as
+ * one more tool call. */
+.activity-action[data-kind="failed"] {
+  color: var(--status-failed-default);
+}
+
 .agent-activity__reply {
   display: flex;
   flex-direction: column;

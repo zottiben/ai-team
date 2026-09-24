@@ -1341,7 +1341,12 @@ where
         };
 
         let Some(quota) = crate::supervise::quota_exhaustion(&outcome) else {
-            store.set_node_status(node.id, outcome_status(&outcome))?;
+            match outcome_status(&outcome) {
+                NodeStatus::Failed => record_failed_turn(store, run_id, &node, &outcome)?,
+                status => {
+                    store.set_node_status(node.id, status)?;
+                }
+            }
             return Ok(FreshTurn::Finished(Box::new((node, outcome))));
         };
         resolution = record_quota_and_resolve(
@@ -1364,6 +1369,40 @@ where
             });
         }
     }
+}
+
+/// Settle a turn that did not finish as what it was: which seat, on which model, and
+/// what Pi said - on its row and as an event the window shows. Everything Pi wrote goes in
+/// the event's payload, because a reason is one line and the evidence is not.
+fn record_failed_turn(
+    store: &mut Store,
+    run_id: i64,
+    node: &crate::model::NodeRun,
+    outcome: &TurnOutcome,
+) -> Result<()> {
+    let said = crate::supervise::outcome::provider_diagnostic(outcome)
+        .unwrap_or_else(|| "Pi said nothing about why".to_string());
+    // Nothing streamed means Pi stopped before the model was reached.
+    let how = if outcome.recorded == 0 {
+        "could not run"
+    } else {
+        "stopped before finishing"
+    };
+    let reason = super::build::truncate_reason(&format!(
+        "{} on {}/{} {how}: {said}",
+        node.role,
+        node.provider.as_str(),
+        node.model
+    ));
+    store.fail_node(node.id, &reason)?;
+    store.append_event(
+        run_id,
+        NewEvent::new(EventKind::Failed, &reason)
+            .on_node(node.id)
+            .by(&node.role)
+            .with(serde_json::json!({ "pi": outcome.provider_message })),
+    )?;
+    Ok(())
 }
 
 pub(super) async fn take_replied_turn(
@@ -1465,6 +1504,80 @@ mod tests {
             .unwrap();
         let team = store.seed_default_team(project.id).unwrap();
         (store, team.id)
+    }
+
+    /// A Pi that cannot start the seat's provider, as Pi 0.87 says so: an extension's
+    /// warning, then its own `Error:` line, on stderr, and nothing on stdout.
+    const PI_WITHOUT_THE_PROVIDER: &str = r#"#!/bin/sh
+echo '[pi-web-access] Dynamic tool activation requires Pi 0.86.1 or newer.' >&2
+echo 'Error: Unknown provider "llama.cpp". Use --list-models to see available providers/models.' >&2
+exit 1
+"#;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_turn_pi_could_not_start_says_what_pi_said_and_on_which_model() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let (mut store, team) = team();
+        let project = store.team(team).unwrap().project_id.unwrap();
+        let run = store
+            .create_run(project, "add a --loud option", crate::RunTrigger::Manual)
+            .unwrap();
+        let orchestrator = store
+            .agents(team)
+            .unwrap()
+            .into_iter()
+            .find(|agent| agent.role == ROOT_ROLE)
+            .unwrap();
+        let support = tempfile::tempdir().unwrap();
+        let pi = support.path().join("pi");
+        std::fs::write(&pi, PI_WITHOUT_THE_PROVIDER).unwrap();
+        std::fs::set_permissions(&pi, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let rig = Rig {
+            support: support.path().into(),
+            plan_root: support.path().into(),
+            plan: None,
+            sources: Vec::new(),
+            registry: ModelRegistry::local_only(),
+            pi: Some(pi),
+        };
+
+        let FreshTurn::Finished(finished) = take_fresh_turn(
+            &mut store,
+            &rig,
+            run.id,
+            orchestrator.id,
+            None,
+            support.path(),
+            "ground it",
+            |_| {},
+        )
+        .await
+        .unwrap() else {
+            panic!("a turn that failed to start is not a quota to fail over");
+        };
+        let (node, _) = *finished;
+
+        let node = store.node_run(node.id).unwrap();
+        assert_eq!(node.status, NodeStatus::Failed);
+        let reason = node.blocked_reason.unwrap();
+        // Pi's own error leads, and the seat's model is named: that is what says why.
+        assert_eq!(
+            reason,
+            "orchestrator on local/auto could not run: Error: Unknown provider \"llama.cpp\". \
+             Use --list-models to see available providers/models."
+        );
+        let failed = store
+            .node_events(node.id, 50)
+            .unwrap()
+            .into_iter()
+            .find(|event| event.kind == EventKind::Failed)
+            .expect("the failure is on the turn's own record");
+        assert_eq!(failed.summary, reason);
+        // Everything Pi wrote is kept as evidence, the extension's line included.
+        let payload = failed.payload.unwrap().to_string();
+        assert!(payload.contains("[pi-web-access]"), "{payload}");
     }
 
     #[test]
