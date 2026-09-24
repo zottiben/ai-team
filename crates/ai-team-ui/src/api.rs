@@ -79,6 +79,7 @@ pub(crate) fn routes() -> Router<AppState> {
             axum::routing::post(detect_ownership),
         )
         .route("/roster/models/reset", axum::routing::post(reset_models))
+        .route("/roster/models/reseat", axum::routing::post(reseat_models))
         .route("/roster/delivery", axum::routing::post(edit_delivery))
         .route("/roster/{id}", axum::routing::post(edit_seat))
         .route("/settings", get(settings))
@@ -869,15 +870,50 @@ async fn reset_models(
         let Some(choice) = defaults.iter().find(|choice| choice.role == agent.role) else {
             continue;
         };
-        let mut update = ai_team_core::NewAgent::from(&agent);
-        update.provider = choice.provider;
-        update.model.clone_from(&choice.model);
-        update.context_window = None;
-        store.update_agent(agent.id, update)?;
+        store.move_seat(agent.id, choice.provider, &choice.model)?;
         changed += 1;
     }
 
     Ok(Json(serde_json::json!({ "changed": changed })))
+}
+
+/// Move only this project's seats that cannot run on this machine - the repair doctor
+/// offers, for one project. Seats Pi can run are left as the operator set them, which is
+/// the difference from a reset.
+async fn reseat_models(
+    State(state): State<AppState>,
+    JsonBody(request): JsonBody<TeamAction>,
+) -> Result<Json<serde_json::Value>> {
+    // Pi first, with no connection held: a second or two of subprocesses.
+    let (registry, survey) = tokio::task::spawn_blocking(|| {
+        let registry = ai_team_core::ModelRegistry::load()?;
+        let survey = ai_team_core::Survey::read(&registry)?;
+        Ok::<_, ai_team_core::Error>((registry, survey))
+    })
+    .await
+    .map_err(|error| ai_team_core::Error::invalid(format!("model detection failed: {error}")))??;
+
+    let store = state.store()?;
+    let mut store = store.lock();
+    let project = store.find_project(&request.project)?;
+    let reseated = ai_team_core::reseat_stranded(&mut store, &registry, &survey, Some(project.id))?;
+    // One project's seats, so each is named by its role alone.
+    let moved: Vec<serde_json::Value> = reseated
+        .moved
+        .iter()
+        .map(|moved| {
+            serde_json::json!({
+                "role": moved.role,
+                "to": format!("{}/{}", moved.to.0.as_str(), moved.to.1),
+            })
+        })
+        .collect();
+    let left: Vec<serde_json::Value> = reseated
+        .left
+        .iter()
+        .map(|(_, seat)| serde_json::json!({ "role": seat.role, "why": seat.why }))
+        .collect();
+    Ok(Json(serde_json::json!({ "moved": moved, "left": left })))
 }
 
 #[derive(Debug, Deserialize)]

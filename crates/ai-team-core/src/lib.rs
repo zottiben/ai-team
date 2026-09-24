@@ -36,6 +36,7 @@ mod restack;
 mod review;
 mod roles;
 mod schedule;
+mod seats;
 mod secrets;
 mod skills;
 mod speak;
@@ -77,7 +78,7 @@ pub use lsp::{
 pub use machine::{
     ensure_machine_profile, set_context, set_fallback, set_provider, sign_in_command,
     ContextSource, MachineProfile, ModelChoice, ModelRegistry, ModelResolution, ProviderState,
-    ProviderStatus, RoleModelDefault, DEFAULT_MACHINE_PROFILE,
+    ProviderStatus, RoleModelDefault, Stranded, DEFAULT_MACHINE_PROFILE,
 };
 pub use map::{repo_map, MapEdge, MapNode, MapZone, Owner, RepoMap};
 pub use model::{
@@ -122,6 +123,7 @@ pub use roles::{
     preset, RolePreset, DEFAULT_LOCAL_MODEL, DEFAULT_ROSTER, ROOT_ROLE, VERIFIER_ROLE,
 };
 pub use schedule::{act, announcement, claim_due, notify, runnable, tick, Fired, TICK};
+pub use seats::{describe as describe_stranded, reseat_stranded, Moved, Reseated, Survey};
 pub use secrets::{
     clear_token, forget_oauth, has_oauth, has_token, held as token_held, set_token,
     token as context_token, token_env, CredentialStore, Held,

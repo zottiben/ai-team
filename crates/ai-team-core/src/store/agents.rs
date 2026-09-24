@@ -347,6 +347,22 @@ impl Store {
     }
 
     /// Replace the configurable part of a seat while keeping its identity and history.
+    /// Put a seat on another model and nothing else: its zone, instructions and tools
+    /// stay, and the old model's context window goes, because it says nothing about the new
+    /// one's.
+    pub fn move_seat(
+        &mut self,
+        agent_id: i64,
+        provider: crate::model::Provider,
+        model: &str,
+    ) -> Result<Agent> {
+        let mut update = NewAgent::from(&self.agent(agent_id)?);
+        update.provider = provider;
+        update.model = model.to_string();
+        update.context_window = None;
+        self.update_agent(agent_id, update)
+    }
+
     pub fn update_agent(&mut self, agent_id: i64, mut update: NewAgent) -> Result<Agent> {
         normalise_agent(&mut update)?;
         let at = now();

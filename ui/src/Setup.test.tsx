@@ -282,23 +282,51 @@ it("the health banner shows only what is blocking", async () => {
   unmount();
 
   stub({ checks: [check({ id: "file_sql", severity: "degraded" })] });
-  const degraded = render(<HealthBanner tick={0} onOpen={() => {}} />);
+  const degraded = render(<HealthBanner recheck={0} onOpen={() => {}} />);
   await waitFor(() => expect(degraded.container.querySelector(".health")).toBeNull());
   degraded.unmount();
 
   vi.unstubAllGlobals();
   stub({ checks: [DB] });
-  const blocking = render(<HealthBanner tick={0} onOpen={() => {}} />);
+  const blocking = render(<HealthBanner recheck={0} onOpen={() => {}} />);
   await waitFor(() => expect(blocking.container.querySelector(".health")).not.toBeNull());
   expect(blocking.getByText("Database")).toBeDefined();
   expect(container).toBeDefined();
+});
+
+it("the banner re-reads the machine when its configuration changes, not per event", async () => {
+  // A doctor report is a handful of subprocesses. Asked on every database tick, a turn in
+  // flight had the window spawning them several times a second, for an answer that only
+  // changes when somebody changes the machine.
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  try {
+    const calls = stub({ checks: [DB] });
+    const doctorCalls = () => calls.filter((call) => call.url === "/doctor").length;
+    const { rerender } = render(<HealthBanner recheck={0} onOpen={() => {}} />);
+    await waitFor(() => expect(doctorCalls()).toBe(1));
+
+    rerender(<HealthBanner recheck={0} onOpen={() => {}} />);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(doctorCalls()).toBe(1);
+
+    // Something was changed - a seat moved, a provider allowed.
+    rerender(<HealthBanner recheck={1} onOpen={() => {}} />);
+    await waitFor(() => expect(doctorCalls()).toBe(2));
+
+    // And on a human-scale clock, for what changes outside the window: a sign-in in a
+    // terminal, a gateway started.
+    await vi.advanceTimersByTimeAsync(60_000);
+    await waitFor(() => expect(doctorCalls()).toBe(3));
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 it("the banner opens setup when clicked", async () => {
   const user = userEvent.setup();
   stub({ checks: [DB] });
   const opened: number[] = [];
-  render(<HealthBanner tick={0} onOpen={() => opened.push(1)} />);
+  render(<HealthBanner recheck={0} onOpen={() => opened.push(1)} />);
 
   await user.click(await screen.findByText("Database"));
   expect(opened.length).toBe(1);
@@ -306,7 +334,7 @@ it("the banner opens setup when clicked", async () => {
 
 it("a report it cannot fetch is silence, not a broken banner", async () => {
   vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("down")));
-  const { container } = render(<HealthBanner tick={0} onOpen={() => {}} />);
+  const { container } = render(<HealthBanner recheck={0} onOpen={() => {}} />);
   await waitFor(() => expect(container.querySelector(".health")).toBeNull());
   expect(container.querySelector(".error")).toBeNull();
 });

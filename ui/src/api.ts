@@ -999,6 +999,17 @@ export function resetRosterModels(project: string): Promise<{ changed: number }>
   return post("/roster/models/reset", { project });
 }
 
+/** What moving a project's stranded seats did: each seat moved, and each left where it was. */
+export type Reseated = {
+  moved: Array<{ role: string; to: string }>;
+  left: Array<{ role: string; why: string }>;
+};
+
+/** Move only the seats Pi cannot run on this machine to what a new team here gets. */
+export function reseatRosterModels(project: string): Promise<Reseated> {
+  return post("/roster/models/reseat", { project });
+}
+
 export function editDelivery(
   project: string,
   delivery: DeliverySettings,

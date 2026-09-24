@@ -92,6 +92,17 @@ send work to a different account. Every child process must also remove inherited
 credentials and cloud-Claude routing flags; not emitting `ANTHROPIC_API_KEY` is
 insufficient if the operator's shell already exported it.
 
+**A seat that cannot run here is said, and moved on request - never at dispatch**
+(`seats.rs`). `ait init` seeds a team against the profile it just wrote, which allows only
+local, so the first project on a machine without ailocal is stranded the moment Claude or
+ChatGPT is allowed instead. "Cannot run" is Pi's catalogue not listing the model a seat
+will be dispatched as, because that is what a turn dies on (`Unknown provider`); a
+provider's own probe only says why. Doctor blocks on a stranded orchestrator or planner and
+offers `reseat_stranded` - each stranded seat to what a new team here gets, if Pi can run
+it (`ait team reseat`, the Team page's Move) - and a planning run with one is refused before
+it writes a row or switches a branch. Moving it at dispatch would be the silent rerouting
+this rule forbids.
+
 ### 2. One runtime: Pi (D20)
 Every agent is a `pi --mode json --print` child process, one per leased worktree. There
 is no project to generate, no npm install, no build, no port and no token: stdout is the

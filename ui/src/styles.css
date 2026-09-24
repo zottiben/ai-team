@@ -3036,6 +3036,11 @@ button.card:hover {
   margin-left: auto;
 }
 
+.roster__reseated ul {
+  margin: var(--space-2) 0 0;
+  padding-left: 1.1875rem;
+}
+
 .roster__ownership {
   align-items: flex-end;
 }
@@ -3130,6 +3135,8 @@ button.card:hover {
   color: inherit;
   font: inherit;
   font-size: var(--text-xs);
+  /* A detail is often a path, one word the width of the sidebar and more. */
+  overflow-wrap: anywhere;
   cursor: pointer;
 }
 

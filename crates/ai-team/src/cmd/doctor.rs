@@ -40,11 +40,11 @@ pub(crate) async fn run() {
     println!("\nWhat to do:");
     for check in problems {
         match &check.fix {
-            Fix::Itself { describe, .. } => {
-                // Named as something ai-team will do, and `ait init` is how to ask for it
+            Fix::Itself { action, describe } => {
+                // Named as something ai-team will do, and the command that asks for it
                 // from here - the window has a button.
                 println!("  {}: {describe}", check.label);
-                println!("    run `ait init`");
+                println!("    run `{}`", action.command());
             }
             Fix::Command { run, why } => {
                 println!("  {}: {why}", check.label);

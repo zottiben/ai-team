@@ -163,6 +163,49 @@ where
     Ok(())
 }
 
+/// Pi's catalogue as it is now, when `wanted`, read off this thread because it is a
+/// subprocess. `None` when it cannot be read.
+async fn pi_catalog(registry: &ModelRegistry, wanted: bool) -> Option<Vec<crate::ModelChoice>> {
+    if !wanted {
+        return None;
+    }
+    let listing = registry.clone();
+    tokio::task::spawn_blocking(move || listing.models())
+        .await
+        .ok()
+        .and_then(Result::ok)
+}
+
+/// Refuse a planning run whose orchestrator or planner cannot run on this machine.
+///
+/// Every planning run starts with those two, so one that cannot run them would only switch
+/// the checkout's branch, record a run, and fail two seconds in. A team seeded before the
+/// operator allowed an account is exactly this, and is moved with one command (`seats.rs`).
+/// Makers are left to their own PRs, which say why when they are built.
+fn refuse_stranded_planners(
+    store: &Store,
+    team_id: i64,
+    registry: &ModelRegistry,
+    catalog: &[crate::ModelChoice],
+    status: impl Fn(crate::model::Provider) -> Option<crate::machine::ProviderStatus>,
+) -> Result<()> {
+    let planners: Vec<crate::Agent> = store
+        .agents(team_id)?
+        .into_iter()
+        .filter(|seat| seat.role == crate::ROOT_ROLE || seat.role == "planner")
+        .collect();
+    let stranded = registry.stranded(&planners, catalog, status);
+    if stranded.is_empty() {
+        return Ok(());
+    }
+    let them = if stranded.len() == 1 { "it" } else { "them" };
+    Err(Error::invalid(format!(
+        "{}. Nothing was started. Move {them} to models this machine can run with `ait team \
+         reseat`, or choose {them} on the Team page",
+        crate::seats::describe(&stranded)
+    )))
+}
+
 /// Fail a run whose planning turn did not finish, saying why wherever it will be read:
 /// the run, its notification, and the error the caller prints.
 ///
@@ -889,6 +932,13 @@ where
         parallel_width: width,
     } = prepare(resolve(&store, request)?, request).await?;
 
+    // Before anything is written or a branch switched: a run that cannot plan has no
+    // business moving the operator's checkout. A catalogue that cannot be read judges nothing.
+    if let Some(catalog) = pi_catalog(&registry, planning).await {
+        refuse_stranded_planners(&store, team_id, &registry, &catalog, |provider| {
+            Some(registry.status(provider))
+        })?;
+    }
     let held = pr_held_in(&store, &repo)?;
     refuse_pr_worktree(held, &repo).await?;
     let run = open_run(
@@ -1624,6 +1674,67 @@ fn notify_run(store: &mut Store, run_id: i64, kind: &str, title: &str, body: &st
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_planning_run_whose_planners_cannot_run_here_is_refused_before_it_starts() {
+        use crate::model::Provider;
+
+        let mut store = Store::memory().unwrap();
+        let project = store
+            .create_project(crate::NewProject {
+                name: "Widget".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        let team = store.seed_default_team(project.id).unwrap();
+        for seat in store.agents(team.id).unwrap() {
+            store.move_seat(seat.id, Provider::Local, "auto").unwrap();
+        }
+        let registry = ModelRegistry::local_only();
+        let status = |provider| {
+            Some(crate::machine::ProviderStatus {
+                provider,
+                state: crate::machine::ProviderState::Unreachable,
+                detail: "ailocal is not set up".into(),
+                sign_in: None,
+            })
+        };
+
+        let refused = refuse_stranded_planners(&store, team.id, &registry, &[], status)
+            .unwrap_err()
+            .to_string();
+
+        assert_eq!(
+            refused,
+            "orchestrator, planner use local/auto, which cannot run here: ailocal is not set \
+             up. Nothing was started. Move them to models this machine can run with `ait team \
+             reseat`, or choose them on the Team page"
+        );
+        // Nothing written: the refusal comes before the run row and the branch.
+        assert!(store.runs(Some(project.id), 10).unwrap().is_empty());
+
+        // Makers stranded alone do not stop planning: their PRs say so when they are built.
+        let catalog = [crate::ModelChoice {
+            provider: Provider::Local,
+            runtime_provider: "llama.cpp".into(),
+            model: "auto".into(),
+            context: "32K".into(),
+            context_tokens: 32_768,
+            max_output: "8K".into(),
+            thinking: false,
+            images: false,
+        }];
+        let backend = store
+            .agents(team.id)
+            .unwrap()
+            .into_iter()
+            .find(|seat| seat.role == "backend")
+            .unwrap();
+        store
+            .move_seat(backend.id, Provider::Local, "gone")
+            .unwrap();
+        refuse_stranded_planners(&store, team.id, &registry, &catalog, status).unwrap();
+    }
 
     #[test]
     fn planning_that_stopped_says_why_on_the_run_in_its_notification_and_to_the_caller() {

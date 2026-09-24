@@ -13,7 +13,7 @@ mod probe;
 mod profile;
 
 use ailocal::{non_empty_env, AilocalSettings};
-pub use catalog::{ModelChoice, RoleModelDefault};
+pub use catalog::{ModelChoice, RoleModelDefault, Stranded};
 pub(crate) use probe::provider_default;
 use probe::{implemented, probe};
 pub use probe::{sign_in as sign_in_command, ProviderState, ProviderStatus};
@@ -239,25 +239,28 @@ impl ModelRegistry {
             .collect()
     }
 
+    /// One provider's status, as [`ModelRegistry::statuses`] reports it.
+    pub fn status(&self, provider: Provider) -> ProviderStatus {
+        if self.profile.allowed(provider) {
+            probe(provider, &self.ailocal)
+        } else {
+            ProviderStatus {
+                provider,
+                state: ProviderState::Denied,
+                detail: "blocked by machine.toml".into(),
+                // Carried even here: ticking a denied provider is the commonest way
+                // somebody arrives at needing to sign in, and the page would otherwise
+                // have nothing to offer until the next poll.
+                sign_in: probe::sign_in(provider),
+            }
+        }
+    }
+
     pub fn statuses(&self) -> Vec<ProviderStatus> {
         Provider::ALL
             .iter()
             .copied()
-            .map(|provider| {
-                if self.profile.allowed(provider) {
-                    probe(provider, &self.ailocal)
-                } else {
-                    ProviderStatus {
-                        provider,
-                        state: ProviderState::Denied,
-                        detail: "blocked by machine.toml".into(),
-                        // Carried even here: ticking a denied provider is the commonest
-                        // way somebody arrives at needing to sign in, and the page would
-                        // otherwise have nothing to offer until the next poll.
-                        sign_in: probe::sign_in(provider),
-                    }
-                }
-            })
+            .map(|provider| self.status(provider))
             .collect()
     }
 }
@@ -300,6 +303,109 @@ mod tests {
         let (provider, model) = local_only.preferred_seat();
         assert_eq!(provider, Provider::Local);
         assert_eq!(model, "auto");
+    }
+
+    /// `role` on `provider`/`model`, as the row would say.
+    fn seat(id: i64, role: &str, provider: Provider, model: &str) -> Agent {
+        Agent {
+            id,
+            role: role.into(),
+            ..agent(provider, model)
+        }
+    }
+
+    /// A model Pi lists.
+    fn listed(provider: Provider, model: &str) -> ModelChoice {
+        ModelChoice {
+            provider,
+            runtime_provider: crate::pi_provider(provider).to_string(),
+            model: model.into(),
+            context: "1M".into(),
+            context_tokens: 1_000_000,
+            max_output: "128K".into(),
+            thinking: true,
+            images: true,
+        }
+    }
+
+    fn unreachable(provider: Provider, detail: &str) -> ProviderStatus {
+        ProviderStatus {
+            provider,
+            state: ProviderState::Unreachable,
+            detail: detail.into(),
+            sign_in: None,
+        }
+    }
+
+    #[test]
+    fn a_seat_pi_has_no_model_for_cannot_run_here_and_says_why() {
+        // Seeded while only the local gateway was allowed, and Claude and ChatGPT allowed
+        // since: the orchestrator still points at a gateway this machine does not run.
+        let registry = registry_allowing(
+            &[Provider::Claude, Provider::OpenAi, Provider::Local],
+            Provider::ALL,
+        );
+        let seats = [
+            seat(1, "orchestrator", Provider::Local, "auto"),
+            seat(2, "planner", Provider::Claude, "claude-opus-5"),
+            seat(3, "backend", Provider::OpenAi, "gpt-9"),
+        ];
+        let catalog = [
+            listed(Provider::Claude, "claude-opus-5"),
+            listed(Provider::OpenAi, "gpt-6-astra"),
+        ];
+        let status = |provider| {
+            (provider == Provider::Local).then(|| unreachable(provider, "ailocal is not set up"))
+        };
+
+        assert_eq!(
+            registry.stranded(&seats, &catalog, status),
+            [
+                // The provider's own trouble, when it has one, is the better reason.
+                Stranded {
+                    agent_id: 1,
+                    role: "orchestrator".into(),
+                    provider: Provider::Local,
+                    model: "auto".into(),
+                    why: "ailocal is not set up".into(),
+                },
+                Stranded {
+                    agent_id: 3,
+                    role: "backend".into(),
+                    provider: Provider::OpenAi,
+                    model: "gpt-9".into(),
+                    why: "Pi has no openai-codex/gpt-9 on this machine".into(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_gateway_that_answers_is_no_help_if_pi_cannot_run_its_model() {
+        // What a turn fails on is Pi not knowing the model, whatever the provider's own
+        // health check says - so that is the rule, and a healthy probe does not excuse it.
+        let registry = registry_allowing(&[Provider::Local], Provider::ALL);
+        let seats = [seat(1, "orchestrator", Provider::Local, "auto")];
+
+        let found = registry.stranded(&seats, &[], |_| None);
+
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].why, "Pi has no llama.cpp/auto on this machine");
+    }
+
+    #[test]
+    fn a_seat_is_judged_by_what_it_will_run_as_and_only_while_it_is_switched_on() {
+        // Local is denied here, so the seat runs on Claude's default (D13) - and Pi has
+        // that, so it can run. A seat switched off runs nowhere and is nobody's problem.
+        let registry = registry_allowing(&[Provider::Claude], Provider::ALL);
+        let fallback = ModelRegistry::default_model(Provider::Claude);
+        let mut off = seat(2, "reviewer", Provider::OpenAi, "gpt-9");
+        off.enabled = false;
+        let seats = [seat(1, "orchestrator", Provider::Local, "auto"), off];
+
+        let found = registry.stranded(&seats, &[listed(Provider::Claude, fallback)], |_| None);
+
+        assert!(found.is_empty(), "{found:?}");
     }
 
     #[test]

@@ -85,8 +85,8 @@ pub(crate) fn run(command: AgentsCommand) -> Result<()> {
                 store.set_agent_context_window(updated.id, Some(tokens))?;
             }
             println!("{role}: {before} -> {provider}/{model}");
-            // The generated project is now stale, and the next run regenerates it - say
-            // so rather than leaving someone wondering why nothing changed yet.
+            // Say when it takes effect, rather than leaving someone wondering why a turn
+            // already running did not change.
             crate::cmd::team::stale_notice();
         }
     }
