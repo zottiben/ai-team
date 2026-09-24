@@ -680,20 +680,10 @@ async fn roster(
     // No project named: describe what a new one would get, which is the question somebody
     // asks before creating one rather than after.
     let Some(slug) = query.project else {
-        let local = || {
-            ai_team_core::DEFAULT_ROSTER
-                .iter()
-                .map(|preset| ai_team_core::RoleModelDefault {
-                    role: preset.role.to_string(),
-                    provider: ai_team_core::Provider::Local,
-                    model: "auto".to_string(),
-                })
-                .collect()
-        };
         let defaults = registry
             .as_ref()
             .and_then(|registry| registry.role_defaults().ok())
-            .unwrap_or_else(local);
+            .unwrap_or_else(ai_team_core::RoleModelDefault::local_floor);
         return Ok(Json(Roster {
             project: None,
             team: None,
@@ -1003,6 +993,7 @@ async fn register_project(
         std::path::Path::new(&request.path),
         request.name.as_deref(),
         request.kind,
+        ai_team_core::RoleModelDefault::for_this_machine,
     )?))
 }
 

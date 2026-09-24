@@ -297,7 +297,9 @@ mod tests {
                 ..Default::default()
             })
             .unwrap();
-        let team = store.seed_default_team(project.id).unwrap();
+        let team = store
+            .seed_default_team(project.id, &crate::RoleModelDefault::local_floor())
+            .unwrap();
         let run = store
             .create_run(project.id, "ship it", RunTrigger::Manual)
             .unwrap();
@@ -691,7 +693,9 @@ mod tests {
                 ..Default::default()
             })
             .unwrap();
-        let other_team = store.seed_default_team(other.id).unwrap();
+        let other_team = store
+            .seed_default_team(other.id, &crate::RoleModelDefault::local_floor())
+            .unwrap();
         let other_run = store
             .create_run(other.id, "something else", RunTrigger::Manual)
             .unwrap();

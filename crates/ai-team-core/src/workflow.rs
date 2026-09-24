@@ -1686,7 +1686,9 @@ mod tests {
                 ..Default::default()
             })
             .unwrap();
-        let team = store.seed_default_team(project.id).unwrap();
+        let team = store
+            .seed_default_team(project.id, &crate::RoleModelDefault::local_floor())
+            .unwrap();
         for seat in store.agents(team.id).unwrap() {
             store.move_seat(seat.id, Provider::Local, "auto").unwrap();
         }
@@ -1745,7 +1747,9 @@ mod tests {
                 ..Default::default()
             })
             .unwrap();
-        let team = store.seed_default_team(project.id).unwrap();
+        let team = store
+            .seed_default_team(project.id, &crate::RoleModelDefault::local_floor())
+            .unwrap();
         let orchestrator = store
             .agents(team.id)
             .unwrap()
@@ -1793,7 +1797,9 @@ mod tests {
                 ..Default::default()
             })
             .unwrap();
-        store.seed_default_team(project.id).unwrap();
+        store
+            .seed_default_team(project.id, &crate::RoleModelDefault::local_floor())
+            .unwrap();
         let fired = Request {
             project: "widget".into(),
             trigger: Some(RunTrigger::Scheduled),
@@ -1842,7 +1848,9 @@ mod tests {
                 ..Default::default()
             })
             .unwrap();
-        let team = store.seed_default_team(project.id).unwrap();
+        let team = store
+            .seed_default_team(project.id, &crate::RoleModelDefault::local_floor())
+            .unwrap();
         let built = store
             .create_run_in(
                 project.id,
@@ -1933,7 +1941,9 @@ mod tests {
                 ..Default::default()
             })
             .unwrap();
-        store.seed_default_team(project.id).unwrap();
+        store
+            .seed_default_team(project.id, &crate::RoleModelDefault::local_floor())
+            .unwrap();
         let run = store
             .create_run(project.id, "build it", RunTrigger::Manual)
             .unwrap();
@@ -1969,7 +1979,9 @@ mod tests {
                 ..Default::default()
             })
             .unwrap();
-        store.seed_default_team(project.id).unwrap();
+        store
+            .seed_default_team(project.id, &crate::RoleModelDefault::local_floor())
+            .unwrap();
         let run = store
             .create_run(project.id, "build it", RunTrigger::Manual)
             .unwrap();
@@ -2007,7 +2019,9 @@ mod tests {
                 ..Default::default()
             })
             .unwrap();
-        let team = store.seed_default_team(project.id).unwrap();
+        let team = store
+            .seed_default_team(project.id, &crate::RoleModelDefault::local_floor())
+            .unwrap();
         let orchestrator = store
             .agents(team.id)
             .unwrap()
@@ -2052,7 +2066,9 @@ mod tests {
                 ..Default::default()
             })
             .unwrap();
-        store.seed_default_team(project.id).unwrap();
+        store
+            .seed_default_team(project.id, &crate::RoleModelDefault::local_floor())
+            .unwrap();
         let run = store
             .create_run(project.id, "ship it", RunTrigger::Manual)
             .unwrap();
@@ -2085,7 +2101,9 @@ mod tests {
                 ..Default::default()
             })
             .unwrap();
-        let team = store.seed_default_team(project.id).unwrap();
+        let team = store
+            .seed_default_team(project.id, &crate::RoleModelDefault::local_floor())
+            .unwrap();
         let orchestrator = store
             .agents(team.id)
             .unwrap()

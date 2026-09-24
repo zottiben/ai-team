@@ -31,7 +31,9 @@ impl Harness {
                 ..Default::default()
             })
             .unwrap();
-        store.seed_default_team(project.id).unwrap();
+        store
+            .seed_default_team(project.id, &ai_team_core::RoleModelDefault::local_floor())
+            .unwrap();
         store
             .create_run(project.id, "add subtract", ai_team_core::RunTrigger::Manual)
             .unwrap();
@@ -84,7 +86,9 @@ impl Harness {
                 },
             )
             .unwrap();
-        store.seed_default_team(project.id).unwrap();
+        store
+            .seed_default_team(project.id, &ai_team_core::RoleModelDefault::local_floor())
+            .unwrap();
         drop(store);
 
         let runtime = tokio::runtime::Builder::new_multi_thread()

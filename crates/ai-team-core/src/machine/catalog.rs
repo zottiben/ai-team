@@ -39,6 +39,33 @@ pub struct RoleModelDefault {
     pub model: String,
 }
 
+impl RoleModelDefault {
+    /// Every seat on the local gateway: the one provider that needs no account, so the
+    /// floor a new team stands on when this machine's catalogue cannot be read.
+    pub fn local_floor() -> Vec<Self> {
+        crate::DEFAULT_ROSTER
+            .iter()
+            .map(|preset| RoleModelDefault {
+                role: preset.role.to_string(),
+                provider: Provider::Local,
+                model: ModelRegistry::default_model(Provider::Local).to_string(),
+            })
+            .collect()
+    }
+
+    /// What a team created on this machine starts with: the role defaults its profile
+    /// and Pi's catalogue give, or the local floor when either cannot be read.
+    ///
+    /// Asked by whoever creates the team and handed to the store, never asked by the
+    /// store itself - it runs Pi several times, and a store that did so made every test
+    /// seeding a team slow and gave it whatever roster the machine running it allowed.
+    pub fn for_this_machine() -> Vec<Self> {
+        ModelRegistry::load()
+            .and_then(|registry| registry.role_defaults())
+            .unwrap_or_else(|_| Self::local_floor())
+    }
+}
+
 /// A seat that cannot think on this machine.
 ///
 /// Judged by Pi's own catalogue, because that is what a turn fails on: a model Pi does not

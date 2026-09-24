@@ -69,7 +69,33 @@ impl Store {
     ///
     /// This is what makes a fresh database explain itself: `ait init` leaves behind a
     /// project with a real roster rather than empty tables.
-    pub fn seed_default_team(&mut self, project_id: i64) -> Result<Team> {
+    ///
+    /// `models` names each role's provider and model -
+    /// [`RoleModelDefault::for_this_machine`] for a real team. They are persisted, so a
+    /// later catalogue change cannot silently reroute an existing team. The store does not
+    /// work them out itself: that means asking Pi, and the store asks nothing of the
+    /// machine it runs on.
+    ///
+    /// [`RoleModelDefault::for_this_machine`]: crate::RoleModelDefault::for_this_machine
+    pub fn seed_default_team(
+        &mut self,
+        project_id: i64,
+        models: &[crate::machine::RoleModelDefault],
+    ) -> Result<Team> {
+        // Every seat's model is found before anything is written, so a list missing a
+        // role is an error rather than half a team.
+        let seats = DEFAULT_ROSTER
+            .iter()
+            .map(|preset| {
+                models
+                    .iter()
+                    .find(|choice| choice.role == preset.role)
+                    .map(|choice| (preset, choice))
+                    .ok_or_else(|| {
+                        Error::invalid(format!("no model named for the {} seat", preset.role))
+                    })
+            })
+            .collect::<Result<Vec<_>>>()?;
         let project = self.project(project_id)?;
         let team = self.create_team(
             Some(project_id),
@@ -78,26 +104,7 @@ impl Store {
         )?;
         // Counted as i64 from the start rather than casting an index: `ord` is a column
         // type, and the cast is the kind of thing that is correct until it is not.
-        // When Pi is available, the defaults are exact ids chosen for each job. Project
-        // creation still has a local floor when a fresh machine cannot list models yet.
-        // Either way the rows are persisted: a later catalogue change cannot silently
-        // reroute an existing team.
-        let local = || {
-            DEFAULT_ROSTER
-                .iter()
-                .map(|preset| crate::machine::RoleModelDefault {
-                    role: preset.role.to_string(),
-                    provider: crate::model::Provider::Local,
-                    model: "auto".to_string(),
-                })
-                .collect()
-        };
-        let defaults = crate::machine::ModelRegistry::load()
-            .ok()
-            .and_then(|registry| registry.role_defaults().ok())
-            .unwrap_or_else(local);
-        for ((ord, preset), choice) in (0i64..).zip(DEFAULT_ROSTER).zip(defaults) {
-            debug_assert_eq!(preset.role, choice.role);
+        for (ord, (preset, choice)) in (0i64..).zip(seats) {
             self.add_agent(
                 team.id,
                 preset.to_new_agent_on(choice.provider, &choice.model, ord),
@@ -795,7 +802,9 @@ mod tests {
     fn seeding_gives_a_project_a_team_of_six() {
         let mut s = Store::memory().unwrap();
         let p = project(&mut s, "Widget");
-        let team = s.seed_default_team(p).unwrap();
+        let team = s
+            .seed_default_team(p, &crate::RoleModelDefault::local_floor())
+            .unwrap();
 
         let agents = s.agents(team.id).unwrap();
         assert_eq!(agents.len(), 6);
@@ -815,10 +824,58 @@ mod tests {
     }
 
     #[test]
+    fn each_seat_gets_the_model_named_for_its_role() {
+        // Matched by role, not by position: a list in another order still puts each model
+        // on the seat it was chosen for.
+        let mut s = Store::memory().unwrap();
+        let p = project(&mut s, "Widget");
+        let mut models = crate::RoleModelDefault::local_floor();
+        models.reverse();
+        let verifier = models
+            .iter_mut()
+            .find(|choice| choice.role == "verifier")
+            .unwrap();
+        verifier.provider = Provider::Claude;
+        verifier.model = "claude-sonnet-5".into();
+        let team = s.seed_default_team(p, &models).unwrap();
+
+        for agent in s.agents(team.id).unwrap() {
+            let expected = if agent.role == "verifier" {
+                (Provider::Claude, "claude-sonnet-5")
+            } else {
+                (Provider::Local, "auto")
+            };
+            assert_eq!(
+                (agent.provider, agent.model.as_str()),
+                expected,
+                "{}",
+                agent.role
+            );
+        }
+    }
+
+    #[test]
+    fn a_seat_with_no_model_named_seeds_no_team_at_all() {
+        // Not five seats and a missing reviewer: half a team looks like a team, and
+        // nothing would say the sixth seat was never made.
+        let mut s = Store::memory().unwrap();
+        let p = project(&mut s, "Widget");
+        let mut models = crate::RoleModelDefault::local_floor();
+        models.retain(|choice| choice.role != "reviewer");
+
+        let error = s.seed_default_team(p, &models).unwrap_err().to_string();
+        assert!(error.contains("reviewer"), "{error}");
+        assert!(s.teams(Some(p)).unwrap().is_empty());
+        assert_eq!(s.project(p).unwrap().team_id, None);
+    }
+
+    #[test]
     fn publishing_defaults_to_asking_at_each_boundary_and_is_explicitly_editable() {
         let mut s = Store::memory().unwrap();
         let p = project(&mut s, "Widget");
-        let team = s.seed_default_team(p).unwrap();
+        let team = s
+            .seed_default_team(p, &crate::RoleModelDefault::local_floor())
+            .unwrap();
         assert_eq!(team.delivery, DeliverySettings::default());
 
         let changed = s
@@ -840,7 +897,9 @@ mod tests {
     fn one_role_per_team() {
         let mut s = Store::memory().unwrap();
         let p = project(&mut s, "Widget");
-        let team = s.seed_default_team(p).unwrap();
+        let team = s
+            .seed_default_team(p, &crate::RoleModelDefault::local_floor())
+            .unwrap();
 
         let again = s.add_agent(
             team.id,
@@ -853,7 +912,9 @@ mod tests {
     fn teams_and_agents_can_be_updated_and_deleted_without_orphans() {
         let mut s = Store::memory().unwrap();
         let p = project(&mut s, "Widget");
-        let team = s.seed_default_team(p).unwrap();
+        let team = s
+            .seed_default_team(p, &crate::RoleModelDefault::local_floor())
+            .unwrap();
         let updated_team = s
             .update_team(team.id, "Delivery crew", "Ships widgets.", team.guardrails)
             .unwrap();
@@ -897,7 +958,9 @@ mod tests {
 
         let mut s = Store::memory().unwrap();
         let p = project(&mut s, "Widget");
-        let team = s.seed_default_team(p).unwrap();
+        let team = s
+            .seed_default_team(p, &crate::RoleModelDefault::local_floor())
+            .unwrap();
         let backend = s
             .agents(team.id)
             .unwrap()
@@ -962,7 +1025,9 @@ mod tests {
     fn dispatch_finds_the_seat_that_owns_the_path() {
         let mut s = Store::memory().unwrap();
         let p = project(&mut s, "Widget");
-        let team = s.seed_default_team(p).unwrap();
+        let team = s
+            .seed_default_team(p, &crate::RoleModelDefault::local_floor())
+            .unwrap();
 
         let backend = s
             .agent_for_path(team.id, "crates/ai-team-core/src/db.rs")
@@ -981,7 +1046,9 @@ mod tests {
     fn a_read_only_seat_is_never_dispatched_work() {
         let mut s = Store::memory().unwrap();
         let p = project(&mut s, "Widget");
-        let team = s.seed_default_team(p).unwrap();
+        let team = s
+            .seed_default_team(p, &crate::RoleModelDefault::local_floor())
+            .unwrap();
 
         // Give the verifier the backend's zone. It still must not be picked: a checker
         // that edits the thing it is checking is just a second maker.
@@ -1012,7 +1079,9 @@ mod tests {
     fn a_disabled_seat_is_skipped() {
         let mut s = Store::memory().unwrap();
         let p = project(&mut s, "Widget");
-        let team = s.seed_default_team(p).unwrap();
+        let team = s
+            .seed_default_team(p, &crate::RoleModelDefault::local_floor())
+            .unwrap();
         let backend = s
             .agents(team.id)
             .unwrap()
@@ -1033,7 +1102,9 @@ mod tests {
     fn changing_account_drops_a_context_window_that_described_the_old_model() {
         let mut s = Store::memory().unwrap();
         let p = project(&mut s, "Widget");
-        let team = s.seed_default_team(p).unwrap();
+        let team = s
+            .seed_default_team(p, &crate::RoleModelDefault::local_floor())
+            .unwrap();
         let agent = s.agents(team.id).unwrap().into_iter().next().unwrap();
         s.set_agent_context_window(agent.id, Some(32_768)).unwrap();
 
@@ -1057,7 +1128,9 @@ mod tests {
     fn deny_beats_allow_and_an_unmatched_tool_falls_back() {
         let mut s = Store::memory().unwrap();
         let p = project(&mut s, "Widget");
-        let team = s.seed_default_team(p).unwrap();
+        let team = s
+            .seed_default_team(p, &crate::RoleModelDefault::local_floor())
+            .unwrap();
         let agent = s.agents(team.id).unwrap().into_iter().next().unwrap();
 
         s.set_tool_policy(agent.id, "bash*", ToolEffect::Allow, None)
@@ -1081,7 +1154,9 @@ mod tests {
         let mut s = Store::memory().unwrap();
         let from = project(&mut s, "Widget");
         let onto = project(&mut s, "Gadget");
-        let mut source = s.seed_default_team(from).unwrap();
+        let mut source = s
+            .seed_default_team(from, &crate::RoleModelDefault::local_floor())
+            .unwrap();
         source = s
             .update_team(
                 source.id,

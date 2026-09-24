@@ -28,7 +28,19 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.98.1
         with:
           components: rustfmt, clippy
+      # rust-cache keys on each crate's manifest and on Cargo.lock, but not on this
+      # workspace's root manifest, where the dev profile and the workspace dependencies'
+      # features live. Changing either restored a target/ built the old way, rebuilt every
+      # dependency, and never saved the result - an exact key hit is not saved again. The
+      # version line is left out, as rust-cache leaves out a crate's, so a release does
+      # not start a cold cache.
+      - name: root manifest key
+        id: root-manifest
+        shell: bash
+        run: echo "hash=$(grep -v '^version = ' Cargo.toml | shasum -a 256 | cut -c1-12)" >> "$GITHUB_OUTPUT"
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ steps.root-manifest.outputs.hash }}
 
       - uses: actions/setup-node@v4
         with:

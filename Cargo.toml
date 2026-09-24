@@ -37,7 +37,11 @@ toml = "0.9"
 clap = { version = "4", features = ["derive", "env"] }
 axum = "0.8"
 getrandom = "0.3"
-rustix = { version = "1", features = ["process"] }
+# `fs` is not used here, but `tempfile` - a dev-dependency - turns it on. Features differ
+# between a build and a test build, so without it `cargo build` and `cargo test` each
+# compile their own rustix and then their own copy of every crate above it: the whole
+# workspace twice, in time and in `target/`.
+rustix = { version = "1", features = ["process", "fs"] }
 # `bundled` on purpose: the whole point of the install story is a Rust toolchain and
 # nothing else, and a system libsqlite3 of unknown vintage is exactly the kind of
 # per-machine difference that produces a bug report nobody can reproduce.
@@ -49,6 +53,16 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "sig
 # of being an exception nobody notices. `unwrap`/`expect` are warnings, not errors: they
 # are legitimate in tests and in `build.rs`, and a hard deny would only teach people to
 # write `#[allow]`.
+# A dev build is for running and testing, not for stepping through with a debugger, and
+# full debug info is most of what it writes: every test binary carries its own copy of
+# every dependency's. Line tables keep file and line in a panic and a backtrace. For a
+# debugger session, set `CARGO_PROFILE_DEV_DEBUG=true` for that build.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
 [workspace.lints.clippy]
 all = { level = "deny", priority = -1 }
 pedantic = { level = "warn", priority = -1 }

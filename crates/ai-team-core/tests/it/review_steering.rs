@@ -26,7 +26,9 @@ fn fixture() -> (Store, i64, i64) {
             ..Default::default()
         })
         .unwrap();
-    let team = store.seed_default_team(project.id).unwrap();
+    let team = store
+        .seed_default_team(project.id, &ai_team_core::RoleModelDefault::local_floor())
+        .unwrap();
     let run = store
         .create_run(project.id, "add sub", RunTrigger::Manual)
         .unwrap();

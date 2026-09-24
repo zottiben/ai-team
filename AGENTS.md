@@ -52,6 +52,12 @@ The root `cargo` commands skip `ai-team-desktop` on purpose — it pulls in Taur
 platform webview. CI compiles it separately so it cannot rot. On Linux it needs the
 webview headers listed in `.github/workflows/ci.yml`.
 
+**A test never reaches the operator's machine.** No real `pi`, no typing into `$SHELL`,
+no `machine.toml`: seed teams with `RoleModelDefault::local_floor()` and drive terminals
+with `open_program`. A test that needs the machine (`launch_path`) says so and skips
+cleanly. The other way cost a second a test in Pi calls, tested a different roster on
+every machine, and wrote into the operator's shell history.
+
 ## Plan and design
 
 There is no `BUILD_PLAN.md` or `HANDOFF.md`. The plan is a row in ai-planner:
@@ -146,9 +152,9 @@ delete silently compares one row to itself; and `project.team_id` has no FK (it 
 creation-time cycle with `team.project_id`), so deleting a team has to clear it by hand.
 
 The store (`ai-team-core`) is the **only** place that writes SQL — the CLI, the server and
-the desktop shell all go through it. The schema is one file, `migrations/001_core.sql`,
-`include_str!`d so a `cargo install`ed binary carries it. Two properties it enforces that
-are easy to undo by accident:
+the desktop shell all go through it. The schema is the numbered files in
+`src/migrations/`, each `include_str!`d by `db.rs` so a `cargo install`ed binary carries
+it. Two properties it enforces that are easy to undo by accident:
 
 - **`event` is append-only**, by trigger. It is the only record of what happened inside a
   turn, so there is no `update_event` and there must never be one.

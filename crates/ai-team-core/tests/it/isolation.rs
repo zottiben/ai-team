@@ -17,7 +17,9 @@ fn seeded() -> (Store, i64, i64) {
             ..Default::default()
         })
         .unwrap();
-    let team = store.seed_default_team(project.id).unwrap();
+    let team = store
+        .seed_default_team(project.id, &ai_team_core::RoleModelDefault::local_floor())
+        .unwrap();
     (store, project.id, team.id)
 }
 

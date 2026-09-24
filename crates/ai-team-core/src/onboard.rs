@@ -126,11 +126,18 @@ pub struct Registered {
 /// an error (D6): a triage session across four services and a one-file chore are both
 /// projects, and refusing the ones that are not checkouts would rule out half of what
 /// ai-team is for.
+///
+/// `models` gives a new team its seats' models - [`RoleModelDefault::for_this_machine`]
+/// for a real one - and is called only when a team is seeded, because working them out
+/// runs Pi and a project that already has a team needs none.
+///
+/// [`RoleModelDefault::for_this_machine`]: crate::RoleModelDefault::for_this_machine
 pub fn register(
     store: &mut Store,
     dir: &Path,
     name: Option<&str>,
     kind: Option<ProjectKind>,
+    models: impl FnOnce() -> Vec<crate::machine::RoleModelDefault>,
 ) -> Result<Registered> {
     let dir = crate::paths::expand_user(dir)?;
     let dir = dir.canonicalize().map_err(|error| Error::UnusablePath {
@@ -200,7 +207,7 @@ pub fn register(
         (id, false)
     } else {
         {
-            let team = store.seed_default_team(project.id)?;
+            let team = store.seed_default_team(project.id, &models())?;
             // Zones from the repository rather than from the presets, which name *this*
             // project's directories. Only on a fresh team: a roster somebody has edited is
             // their configuration, and overwriting it because a directory appeared would be
@@ -449,6 +456,17 @@ pub fn zones_for(repo: &Path) -> (String, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `register` with the local floor for a new team's models, so no test here asks Pi
+    /// what this machine allows.
+    fn register(
+        store: &mut Store,
+        dir: &Path,
+        name: Option<&str>,
+        kind: Option<ProjectKind>,
+    ) -> Result<Registered> {
+        super::register(store, dir, name, kind, crate::RoleModelDefault::local_floor)
+    }
 
     fn repo(dir: &Path) {
         for args in [

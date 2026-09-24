@@ -7,7 +7,9 @@
 
 use anyhow::{Context, Result};
 
-use ai_team_core::{figma_links, parse_url, NewProject, ProjectKind, ProjectSource, Source, Store};
+use ai_team_core::{
+    figma_links, parse_url, NewProject, ProjectKind, ProjectSource, RoleModelDefault, Source, Store,
+};
 
 use crate::cli::IngestArgs;
 
@@ -43,7 +45,7 @@ pub(crate) fn run(args: IngestArgs) -> Result<()> {
         source_url: Some(args.url.clone()),
         ..Default::default()
     })?;
-    let team = store.seed_default_team(project.id)?;
+    let team = store.seed_default_team(project.id, &RoleModelDefault::for_this_machine())?;
 
     println!("{} ({}) from {}", project.slug, project.kind, source.key());
     println!(

@@ -447,7 +447,9 @@ mod tests {
                 ..Default::default()
             })
             .unwrap();
-        let team = store.seed_default_team(project.id).unwrap();
+        let team = store
+            .seed_default_team(project.id, &crate::RoleModelDefault::local_floor())
+            .unwrap();
         let agents = store.agents(team.id).unwrap();
         (team, agents)
     }
@@ -460,7 +462,9 @@ mod tests {
                 ..Default::default()
             })
             .unwrap();
-        let team = store.seed_default_team(project.id).unwrap();
+        let team = store
+            .seed_default_team(project.id, &crate::RoleModelDefault::local_floor())
+            .unwrap();
         store
             .agents(team.id)
             .unwrap()

@@ -256,7 +256,8 @@ mod tests {
                 ..Default::default()
             })
             .unwrap();
-        s.seed_default_team(p.id).unwrap();
+        s.seed_default_team(p.id, &crate::RoleModelDefault::local_floor())
+            .unwrap();
         let run = s.create_run(p.id, "ship it", RunTrigger::Manual).unwrap();
         (s, run.id)
     }

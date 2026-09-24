@@ -344,7 +344,9 @@ mod tests {
                 },
             )
             .unwrap();
-        let team = store.seed_default_team(project.id).unwrap();
+        let team = store
+            .seed_default_team(project.id, &crate::RoleModelDefault::local_floor())
+            .unwrap();
         let orchestrator = store
             .agents(team.id)
             .unwrap()
