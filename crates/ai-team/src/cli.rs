@@ -184,6 +184,15 @@ pub(crate) struct RunArgs {
     #[arg(long)]
     pub(crate) replan: bool,
 
+    /// Work on the default branch itself instead of a fresh branch off it.
+    ///
+    /// A run normally puts its checkout on a new `ai-team/run-<id>` branch cut from
+    /// origin's default branch, and never lands work on main/master. This is the one way
+    /// past that, for this run only, from a checkout that has the default branch checked
+    /// out.
+    #[arg(long)]
+    pub(crate) on_default_branch: bool,
+
     /// What to ask it to do. Leave it out to build whatever the plan already has ready.
     pub(crate) prompt: Option<String>,
 }

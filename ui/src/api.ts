@@ -1093,6 +1093,8 @@ export function startRun(request: {
   replan?: boolean;
   plan_only?: boolean;
   approval_required?: boolean;
+  /** A fresh branch off the default one unless the operator asks for the default itself. */
+  branching?: "fresh" | "default_branch";
   action?: "approve_current";
 }): Promise<RunStartReceipt> {
   return post("/runs", request);

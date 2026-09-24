@@ -54,6 +54,9 @@ pub struct Rig {
     /// The checkout whose plan this run works from. Never a lease: a plan written inside
     /// a copy is a plan nobody finds again.
     pub plan_root: PathBuf,
+    /// The run's plan, named to every seat's ai-planner server. `None` before it exists,
+    /// when no seat gets the planning tools at all.
+    pub plan: Option<String>,
     pub sources: Vec<crate::ContextSource>,
     pub registry: ModelRegistry,
 }
@@ -85,7 +88,11 @@ impl Rig {
             worktree,
             support: &self.support,
             sources: &self.sources,
-            plan: Some((self.plan_root.as_path(), may_plan)),
+            plan: self.plan.as_deref().map(|plan| crate::PiPlanAccess {
+                root: &self.plan_root,
+                plan,
+                may_write: may_plan,
+            }),
             team: &team,
             roster: &roster,
         }
@@ -115,18 +122,44 @@ fn grounding_prompt(prompt: &str) -> String {
          required ClickUp or Figma source before writing a delegation brief. If a \
          required context server or tool is unavailable, answer with \
          `CONTEXT_UNAVAILABLE:` followed by the source and reason; do not use a \
-         browser or generic web search instead.\n\nOperator request:\n\n{prompt}"
+         browser or generic web search instead.\n\n\
+         Begin the brief with one line naming the work, which becomes the title of the \
+         plan the planner writes:\n\n```\nPlan: <a short title for this work>\n```\n\n\
+         Operator request:\n\n{prompt}"
     )
 }
 
-fn planner_prompt(prompt: &str, brief: &str) -> String {
+/// The title the orchestrator gave the work in its brief (`Plan: ...`), or the first line
+/// of the request when it gave none.
+fn plan_title(brief: &str, prompt: &str) -> String {
+    const LIMIT: usize = 80;
+    let named = brief.lines().find_map(|line| {
+        let line = line.trim().trim_matches(['*', '#', '`', ' ']);
+        let (label, title) = line.split_once(':')?;
+        label
+            .trim_matches(['*', '`', ' '])
+            .eq_ignore_ascii_case("plan")
+            .then(|| title.trim().trim_matches(['*', '`', '"', ' ']).to_string())
+    });
+    let title = named
+        .filter(|title| !title.is_empty())
+        .unwrap_or_else(|| prompt.lines().next().unwrap_or(prompt).trim().to_string());
+    if title.chars().count() <= LIMIT {
+        return title;
+    }
+    let clipped: String = title.chars().take(LIMIT - 1).collect();
+    let cut = clipped.rfind(' ').unwrap_or(clipped.len());
+    format!("{}…", clipped[..cut].trim_end())
+}
+
+fn planner_prompt(prompt: &str, brief: &str, plan: &str, title: &str) -> String {
     format!(
-        "Create a new ai-planner plan specifically for this run and make it the \
-         current plan. Do not append this work to an unrelated existing plan. Build \
-         the slices from the orchestrator's grounded delegation brief below, and \
-         leave every buildable slice ready. Do not write source code or dispatch \
-         agents.\n\nOriginal request:\n\n{prompt}\n\n---\n\nOrchestrator delegation \
-         brief:\n\n{brief}"
+        "This run's plan is `{plan}` - \"{title}\" - and ai-team has already created it. \
+         Every ai-planner call you make acts on it; shape it, and do not start another or \
+         touch any other plan. Write its sections, decisions and slices from the \
+         orchestrator's grounded delegation brief below, and leave every buildable slice \
+         ready. Do not write source code or dispatch agents.\n\nOriginal request:\n\n\
+         {prompt}\n\n---\n\nOrchestrator delegation brief:\n\n{brief}"
     )
 }
 
@@ -136,8 +169,17 @@ impl Orchestrator {
         Rig {
             support: self.project_dir.clone(),
             plan_root: self.repo.clone(),
+            plan: self.planner.plan_slug().map(str::to_string),
             sources: self.registry.context_sources(),
             registry: self.registry.clone(),
+        }
+    }
+
+    /// The same, for a run whose plan is `plan` - or, `None`, has none yet.
+    fn rig_for(&self, plan: Option<&str>) -> Rig {
+        Rig {
+            plan: plan.map(str::to_string),
+            ..self.rig()
         }
     }
 
@@ -166,9 +208,11 @@ impl Orchestrator {
         let grounding_prompt = grounding_prompt(prompt);
         let mut brief = String::new();
         let mut context_failure = None;
+        // No plan yet, so no planning tools: the orchestrator grounds the request in the
+        // repository and its context, and the board is the planner's.
         let (coordinator, coordinator_outcome) = match take_fresh_turn(
             store,
-            &self.rig(),
+            &self.rig_for(None),
             self.run_id,
             orchestrator.id,
             None,
@@ -213,13 +257,45 @@ impl Orchestrator {
             return Err(Error::invalid(brief.trim()));
         }
 
-        let planner_prompt = planner_prompt(prompt, &brief);
+        self.delegate(store, planner.id, prompt, &brief, &mut on_event)
+            .await
+    }
+
+    /// The planner's turn: the orchestrator's brief in, this run's plan out.
+    ///
+    /// The plan is created here, before the turn, so the planner can be pointed at it by
+    /// name (`AI_PLANNER_PLAN`) rather than left to create one and hope later calls find
+    /// it. Based on the default branch: every slice copies the plan's base as it is added,
+    /// and pull requests target the trunk, not the branch this checkout coordinates on.
+    async fn delegate<F>(
+        &self,
+        store: &mut Store,
+        planner_id: i64,
+        prompt: &str,
+        brief: &str,
+        on_event: &mut F,
+    ) -> Result<TurnOutcome>
+    where
+        F: FnMut(&crate::PiEvent) + Send,
+    {
+        let trunk = git::trunk(&self.repo).await.ok();
+        let title = plan_title(brief, prompt);
+        let plan = self
+            .planner
+            .create(&title, trunk.as_ref().map(|trunk| trunk.name.as_str()))
+            .await?;
+        store.set_run_plan(self.run_id, &plan)?;
+        store.append_event(
+            self.run_id,
+            NewEvent::new(EventKind::Note, format!("this run's plan is {plan}")).by("orchestrator"),
+        )?;
+        let planner_prompt = planner_prompt(prompt, brief, &plan, &title);
         let mut context_failure = None;
         let (planning, planner_outcome) = match take_fresh_turn(
             store,
-            &self.rig(),
+            &self.rig_for(Some(&plan)),
             self.run_id,
-            planner.id,
+            planner_id,
             None,
             &self.repo,
             &planner_prompt,
@@ -241,11 +317,9 @@ impl Orchestrator {
             store.block_node(planning.id, &failure)?;
             return Err(Error::invalid(failure));
         }
-        let planner_status = outcome_status(&planner_outcome);
-        if planner_status == NodeStatus::Done {
-            let current = self.planner.current().await?;
-            store.set_run_plan(self.run_id, &current.plan)?;
-        }
+        // This checkout's plan too, for `aip` in a terminal and the window's board: asked
+        // for by name on the run's fresh branch, it is the answer that branch remembers.
+        self.planner.clone().for_plan(plan).current().await?;
         Ok(planner_outcome)
     }
 
@@ -457,10 +531,24 @@ impl Orchestrator {
         // Resolve this before claiming the slice. An error after the external claim would
         // otherwise leave work assigned to a lease that is immediately returned.
         let verifier = self.verifier(store)?;
+        let branch = slice_branch(slice);
+        // Before a lease is taken or a model started: `checkout -B main` in a lease would
+        // reset the trunk to whatever the slice was based on.
+        if let Ok(trunk) = git::trunk(&self.repo).await {
+            let allowed = store.run(self.run_id)?.on_default_branch;
+            if let Err(error) =
+                crate::workspace::refuse_default_branch(&branch, &trunk.name, allowed)
+            {
+                let _ = self
+                    .planner
+                    .set_status(&slice.key, "blocked", Some(&error.to_string()))
+                    .await;
+                return Err(error);
+            }
+        }
         let holder = lease_holder(self.run_id, &slice.key, role);
         let lease = self.worktrees.lease(&holder).await?;
         let worktree = lease.path().to_path_buf();
-        let branch = slice_branch(slice);
         let prepared = async {
             // Name the checkout before the agent starts and keep gate output untracked.
             // The plan's base is binding for stacked work; a lease's incidental HEAD is not.
@@ -2162,6 +2250,22 @@ mod tests {
     }
 
     #[test]
+    fn a_plan_is_titled_by_the_orchestrator_or_else_by_the_request() {
+        let brief = "**Plan:** Export the ledger as CSV\n\nOutcome: ...";
+        assert_eq!(plan_title(brief, "whatever"), "Export the ledger as CSV");
+        assert_eq!(plan_title("plan: `Nest worktrees`", "x"), "Nest worktrees");
+        // No title line: the request's first line names it.
+        assert_eq!(
+            plan_title("Outcome: a thing", "Add a --shout flag\nand a test"),
+            "Add a --shout flag"
+        );
+        // A long one is clipped at a word.
+        let long = plan_title("", &"word ".repeat(40));
+        assert!(long.chars().count() <= 80, "{long}");
+        assert!(long.ends_with("word…"), "{long}");
+    }
+
+    #[test]
     fn a_lease_holder_names_the_run_slice_and_role() {
         assert_eq!(
             lease_holder(7, "S1", "frontend"),
@@ -2284,6 +2388,7 @@ mod tests {
         let rig = Rig {
             support: repo.path().into(),
             plan_root: repo.path().into(),
+            plan: None,
             sources: Vec::new(),
             registry,
         };

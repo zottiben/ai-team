@@ -208,6 +208,21 @@ worktree. So dispatch means *ready, claimed, and the owning seat is idle*; a dep
 slice is held back by being left `blocked` rather than `ready`. Never add a deps table
 here: that is plan structure, and copying it is what D4 forbids.
 
+**A run that plans starts on a fresh branch.** Its checkout is fetched and put on
+`ai-team/run-<id>`, cut from `origin/<default>`; a checkout with uncommitted work, or with
+another live run in it (`run.supervisor_pid`, checked with signal 0 so a crash does not hold
+it forever), is refused. Nothing lands on the default branch unless the run was started with
+`--on-default-branch`.
+
+**ai-team never lets ai-planner infer the plan.** Asked without a name, it answers with
+whichever plan the checkout has resolved to most - branch *or worktree path* - so a
+checkout that planned before names last week's plan, and a planner reading "the board"
+once deferred a slice in it. So Rust creates the run's plan itself (`Planner::create`,
+titled by the orchestrator's `Plan:` line, based on the trunk so every slice copies that
+base) before the planner's turn, and every seat's `aip serve` runs with
+`AI_PLANNER_PLAN=<the run's plan>`. The orchestrator's grounding turn gets no planning
+tools at all: there is no plan yet, and nothing to infer.
+
 Routing is by **zone**. A slice must name the paths it touches (`plan_add_slice` requires
 it, and writes them as a `Touches:` trailer on the scope); the seat whose zone owns them
 builds it. A slice nobody owns is reported undone rather than given to somebody — guessing

@@ -22,6 +22,11 @@ pub(crate) async fn run(args: RunArgs) -> Result<()> {
         replan: args.replan,
         plan_only: args.plan_only,
         approval_required: false,
+        branching: if args.on_default_branch {
+            core::Branching::DefaultBranch
+        } else {
+            core::Branching::Fresh
+        },
     };
 
     let done = core::run_workflow(&request, report)
@@ -42,6 +47,16 @@ fn report(progress: core::Progress) {
     match progress {
         core::Progress::Started { run_id, repo } => {
             println!("run {run_id} on {}", repo.display());
+        }
+        core::Progress::Branched {
+            branch,
+            from,
+            stale,
+        } => {
+            println!("on {branch}, from {from}");
+            if let Some(stale) = stale {
+                println!("  could not bring {from} up to date first: {stale}");
+            }
         }
         core::Progress::Planning => {
             println!("\nplanning");

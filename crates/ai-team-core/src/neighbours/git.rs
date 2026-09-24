@@ -100,8 +100,12 @@ pub(crate) async fn commit_paths(
 /// branch carrying a hundred files of build output. What ai-team commits is what the
 /// agent did, not what checking it produced.
 pub(crate) async fn changed_paths(worktree: &Path) -> Result<Vec<String>> {
-    Ok(porcelain(worktree)
-        .await?
+    Ok(porcelain_paths(&porcelain(worktree).await?))
+}
+
+/// The paths in `git status --porcelain` output.
+fn porcelain_paths(status: &str) -> Vec<String> {
+    status
         .lines()
         .filter_map(|line| {
             // `XY path`, and for a rename `XY old -> new`; the new name is what to add.
@@ -110,7 +114,162 @@ pub(crate) async fn changed_paths(worktree: &Path) -> Result<Vec<String>> {
             let path = path.trim_matches('"');
             (!path.is_empty()).then(|| path.to_string())
         })
+        .collect()
+}
+
+/// What a person has changed and not committed, untracked files included.
+///
+/// A run starts its checkout on a fresh branch, and the agents commit whatever changed:
+/// anything left here would be switched along with the branch and then committed into
+/// somebody's pull request as if an agent had written it. Untracked files are listed one
+/// by one, so a linked worktree kept inside this checkout - `.claude/worktrees/<name>`
+/// is where Claude Code puts them - is recognised as a checkout rather than as work.
+pub(crate) async fn uncommitted(worktree: &Path) -> Result<Vec<String>> {
+    let status = git(
+        worktree,
+        &["status", "--porcelain", "--untracked-files=all"],
+    )
+    .await?;
+    let here = worktree
+        .canonicalize()
+        .unwrap_or_else(|_| worktree.to_path_buf());
+    let nested: Vec<String> = worktrees(worktree)
+        .await?
+        .into_iter()
+        .filter_map(|(path, _)| {
+            let path = Path::new(&path).canonicalize().ok()?;
+            let inside = path.strip_prefix(&here).ok()?;
+            (!inside.as_os_str().is_empty()).then(|| format!("{}/", inside.to_string_lossy()))
+        })
+        .collect();
+    Ok(porcelain_paths(&status)
+        .into_iter()
+        .filter(|path| !nested.contains(path))
         .collect())
+}
+
+/// A repository's trunk: what plans and pull requests are based on, and where new work
+/// is cut from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Trunk {
+    /// The short name, `main`. What a plan's base and a pull request's base are called.
+    pub name: String,
+    /// What a fresh branch starts from: `origin/main` once the remote has one, because a
+    /// local `main` is only as current as the last time somebody pulled it.
+    pub start_point: String,
+}
+
+pub(crate) async fn trunk(worktree: &Path) -> Result<Trunk> {
+    let found = default_branch(worktree).await.ok_or_else(|| {
+        Error::invalid(format!(
+            "could not tell which branch is the default in {}: there is no origin/HEAD, \
+             main or master",
+            worktree.display()
+        ))
+    })?;
+    let name = found.strip_prefix("origin/").unwrap_or(&found).to_string();
+    let remote = format!("origin/{name}");
+    let start_point = if git(
+        worktree,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("refs/remotes/{remote}"),
+        ],
+    )
+    .await
+    .is_ok_and(|sha| !sha.trim().is_empty())
+    {
+        remote
+    } else {
+        name.clone()
+    };
+    Ok(Trunk { name, start_point })
+}
+
+/// How long a fetch may take before the run goes ahead without it.
+const FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Bring `origin/<branch>` up to date. `Ok(false)` means there is no `origin` to ask.
+///
+/// Never prompts: a credential or passphrase prompt would wait on a terminal nobody is
+/// watching, which for a scheduled run is forever. A slow network gets a minute.
+pub(crate) async fn fetch(worktree: &Path, branch: &str) -> Result<bool> {
+    if git(worktree, &["remote", "get-url", "origin"])
+        .await
+        .is_err()
+    {
+        return Ok(false);
+    }
+    let fetched = Command::new("git")
+        .args(["fetch", "--quiet", "origin", branch])
+        .current_dir(worktree)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdin(Stdio::null())
+        .kill_on_drop(true)
+        .output();
+    let output = tokio::time::timeout(FETCH_TIMEOUT, fetched)
+        .await
+        .map_err(|_| {
+            Error::invalid(format!(
+                "`git fetch origin {branch}` took longer than {}s",
+                FETCH_TIMEOUT.as_secs()
+            ))
+        })?
+        .map_err(|error| Error::invalid(format!("could not run git: {error}")))?;
+    if !output.status.success() {
+        return Err(Error::invalid(format!(
+            "`git fetch origin {branch}` failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    Ok(true)
+}
+
+pub(crate) async fn branch_exists(worktree: &Path, branch: &str) -> bool {
+    git(
+        worktree,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/{branch}"),
+        ],
+    )
+    .await
+    .is_ok_and(|sha| !sha.trim().is_empty())
+}
+
+/// Move the checked-out branch forward to `target`, refusing anything but a fast-forward.
+pub(crate) async fn fast_forward(worktree: &Path, target: &str) -> Result<()> {
+    git(worktree, &["merge", "--ff-only", "--quiet", target])
+        .await
+        .map(drop)
+}
+
+/// Put a checkout on a new branch cut from `start_point`, and say which commit that is.
+///
+/// `--no-track`, because a branch cut from `origin/main` would otherwise take `main` as
+/// its upstream, and a bare `git push` from it would then be aimed at the trunk.
+pub(crate) async fn start_branch(
+    worktree: &Path,
+    branch: &str,
+    start_point: &str,
+) -> Result<String> {
+    git(
+        worktree,
+        &[
+            "checkout",
+            "--quiet",
+            "--no-track",
+            "-b",
+            branch,
+            start_point,
+        ],
+    )
+    .await?;
+    rev_parse(worktree, "HEAD").await
 }
 
 /// What changed, in `git status --porcelain` form. Empty means a clean tree.

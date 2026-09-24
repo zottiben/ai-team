@@ -2588,6 +2588,10 @@ struct StartRequest {
     plan_only: bool,
     #[serde(default)]
     approval_required: bool,
+    /// Which branch the run works on: a fresh one unless the operator asks, for this run,
+    /// for the default branch itself.
+    #[serde(default)]
+    branching: ai_team_core::Branching,
     /// Continue a current approval board, adopting the originating legacy orchestrator
     /// run first when it predates run/session-owned approval.
     #[serde(default)]
@@ -2605,6 +2609,7 @@ async fn continue_current_approval(
         || request.replan
         || request.plan_only
         || request.approval_required
+        || request.branching != ai_team_core::Branching::Fresh
     {
         return Err(crate::error::Error::Core(ai_team_core::Error::invalid(
             "approving the current plan cannot also change how a run starts",
@@ -2732,6 +2737,7 @@ async fn start(
         replan: request.replan,
         plan_only: request.plan_only,
         approval_required: request.approval_required,
+        branching: request.branching,
     };
     let (signal, started) = tokio::sync::oneshot::channel();
     tokio::spawn(async move {

@@ -552,6 +552,95 @@ impl Store {
         self.run(id)
     }
 
+    /// Let this run land work on the default branch itself (PW2). Only ever switched on,
+    /// at creation, because the operator asked for it for this run.
+    pub fn set_run_on_default_branch(&mut self, id: i64) -> Result<Run> {
+        let at = now();
+        self.db_mut().write(|tx| {
+            let changed = tx.execute(
+                "UPDATE run SET on_default_branch = 1, rev = rev + 1, updated_at = ?2
+                  WHERE id = ?1",
+                params![id, at],
+            )?;
+            if changed == 0 {
+                return Err(Error::NoSuchRun(id.to_string()));
+            }
+            Ok(())
+        })?;
+        self.run(id)
+    }
+
+    /// A run still coordinating or building in this checkout, driven by a live process.
+    ///
+    /// Asked before a run row exists, so a refusal leaves nothing behind to explain.
+    /// `alive` decides whether a recorded supervisor is still running: a crashed run never
+    /// marks itself finished, and must not hold the checkout forever.
+    pub fn busy_run_in_workspace(
+        &self,
+        project_id: i64,
+        workspace: &Path,
+        alive: impl Fn(i64) -> bool,
+    ) -> Result<Option<Run>> {
+        let workspace = workspace
+            .canonicalize()
+            .unwrap_or_else(|_| workspace.to_path_buf());
+        let path = workspace.to_string_lossy();
+        let mut stmt = self.db().conn().prepare(&format!(
+            "{RUN_SELECT} WHERE project_id = ?1 AND workspace_path = ?2
+               AND status IN ('queued', 'planning', 'running')
+               AND supervisor_pid IS NOT NULL
+             ORDER BY id DESC"
+        ))?;
+        let runs = stmt
+            .query_map(params![project_id, path.as_ref()], run_from_row)?
+            .collect::<rusqlite::Result<Vec<Run>>>()?;
+        Ok(runs
+            .into_iter()
+            .find(|run| run.supervisor_pid.is_some_and(&alive)))
+    }
+
+    /// Record this process as the one driving a run, unless another live run already
+    /// holds the same checkout.
+    ///
+    /// One transaction, so two windows starting a run in one checkout at the same moment
+    /// cannot both win: the second waits on the write lock and then sees the first.
+    pub fn supervise_run(&mut self, id: i64, pid: i64, alive: impl Fn(i64) -> bool) -> Result<()> {
+        let at = now();
+        self.db_mut().write(|tx| {
+            let (project_id, workspace): (i64, Option<String>) = tx
+                .query_row(
+                    "SELECT project_id, workspace_path FROM run WHERE id = ?1",
+                    params![id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()?
+                .ok_or_else(|| Error::NoSuchRun(id.to_string()))?;
+            if let Some(workspace) = workspace {
+                let mut stmt = tx.prepare(
+                    "SELECT id, status, supervisor_pid FROM run
+                      WHERE project_id = ?1 AND workspace_path = ?2 AND id != ?3
+                        AND status IN ('queued', 'planning', 'running')
+                        AND supervisor_pid IS NOT NULL",
+                )?;
+                let holders = stmt
+                    .query_map(params![project_id, workspace, id], |row| {
+                        Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                    })?
+                    .collect::<rusqlite::Result<Vec<(i64, RunStatus, i64)>>>()?;
+                if let Some((other, status, other_pid)) =
+                    holders.into_iter().find(|(_, _, pid)| alive(*pid))
+                {
+                    return Err(Error::invalid(workspace_busy(other, status, other_pid)));
+                }
+            }
+            tx.execute(
+                "UPDATE run SET supervisor_pid = ?2, rev = rev + 1, updated_at = ?3 WHERE id = ?1",
+                params![id, pid, at],
+            )?;
+            Ok(())
+        })
+    }
+
     pub fn set_run_plan(&mut self, id: i64, plan_slug: &str) -> Result<Run> {
         let at = now();
         self.db_mut().write(|tx| {
@@ -1089,10 +1178,21 @@ impl Store {
     }
 }
 
+/// Why a checkout cannot take a second run yet. Shared by the check made before a run row
+/// exists and the one that closes the race after.
+pub(crate) fn workspace_busy(run_id: i64, status: RunStatus, pid: i64) -> String {
+    format!(
+        "run #{run_id} is still {} in this checkout (process {pid}). Starting another here \
+         would switch its branch underneath it; let it finish, or stop that process first.",
+        status.as_str()
+    )
+}
+
 const RUN_SELECT: &str = "SELECT id, project_id, team_id, prompt, status, trigger, plan_slug, \
      workspace_path, parallel_width, budget_tokens, budget_seconds, max_repairs, \
      budget_tokens_node, budget_seconds_node, max_turns_node, on_failure, blocked_reason, \
-     started_at, ended_at, rev, created_at, updated_at FROM run";
+     started_at, ended_at, rev, created_at, updated_at, on_default_branch, supervisor_pid \
+     FROM run";
 
 fn run_from_row(r: &Row<'_>) -> rusqlite::Result<Run> {
     Ok(Run {
@@ -1118,6 +1218,8 @@ fn run_from_row(r: &Row<'_>) -> rusqlite::Result<Run> {
         rev: r.get(19)?,
         created_at: r.get(20)?,
         updated_at: r.get(21)?,
+        on_default_branch: r.get(22)?,
+        supervisor_pid: r.get(23)?,
     })
 }
 
@@ -1842,5 +1944,93 @@ mod tests {
             .unwrap();
         assert_eq!(attached.worktree_path.as_deref(), Some("/tmp/wt/PR1"));
         assert_eq!(attached.lease_id.as_deref(), Some("lease-7"));
+    }
+
+    #[test]
+    fn one_live_run_holds_a_checkout_and_a_dead_one_does_not() {
+        let (mut s, project, _) = seeded();
+        let checkout = tempfile::tempdir().unwrap();
+        let first = s
+            .create_run_in(
+                project,
+                "plan it",
+                RunTrigger::Manual,
+                Some(checkout.path()),
+            )
+            .unwrap();
+        s.set_run_status(first.id, RunStatus::Planning).unwrap();
+        s.supervise_run(first.id, 4242, |_| true).unwrap();
+        assert_eq!(s.run(first.id).unwrap().supervisor_pid, Some(4242));
+
+        let alive = |pid: i64| pid == 4242;
+        let busy = s
+            .busy_run_in_workspace(project, checkout.path(), alive)
+            .unwrap()
+            .expect("the planning run holds its checkout");
+        assert_eq!(busy.id, first.id);
+
+        // The race a pre-check cannot close: a second run already created in the same
+        // checkout is refused when it tries to take it.
+        let second = s
+            .create_run_in(
+                project,
+                "another",
+                RunTrigger::Manual,
+                Some(checkout.path()),
+            )
+            .unwrap();
+        let refused = s.supervise_run(second.id, 5151, alive).unwrap_err();
+        assert!(
+            refused.to_string().contains(&format!("run #{}", first.id)),
+            "{refused}"
+        );
+        assert_eq!(s.run(second.id).unwrap().supervisor_pid, None);
+
+        // A crashed run never marks itself finished. Once its process is gone it holds
+        // nothing, or one crash would lock the checkout for good.
+        assert!(s
+            .busy_run_in_workspace(project, checkout.path(), |_| false)
+            .unwrap()
+            .is_none());
+        s.supervise_run(second.id, 5151, |_| false).unwrap();
+
+        // A finished run holds nothing either, whatever its process is doing.
+        s.set_run_status(first.id, RunStatus::Done).unwrap();
+        s.set_run_status(second.id, RunStatus::Done).unwrap();
+        assert!(s
+            .busy_run_in_workspace(project, checkout.path(), |_| true)
+            .unwrap()
+            .is_none());
+
+        // Another checkout of the same project is somebody else's to hold.
+        let elsewhere = tempfile::tempdir().unwrap();
+        let third = s
+            .create_run_in(
+                project,
+                "elsewhere",
+                RunTrigger::Manual,
+                Some(elsewhere.path()),
+            )
+            .unwrap();
+        s.set_run_status(third.id, RunStatus::Running).unwrap();
+        s.supervise_run(third.id, 6161, |_| true).unwrap();
+        assert!(s
+            .busy_run_in_workspace(project, checkout.path(), |_| true)
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn working_on_the_default_branch_is_the_runs_own_flag_and_off_by_default() {
+        let (mut s, project, _) = seeded();
+        let run = s
+            .create_run(project, "ship it", RunTrigger::Manual)
+            .unwrap();
+        assert!(!run.on_default_branch);
+        assert!(
+            s.set_run_on_default_branch(run.id)
+                .unwrap()
+                .on_default_branch
+        );
     }
 }
