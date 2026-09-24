@@ -51,3 +51,13 @@ it("a select looks like the window's other controls wherever it is", () => {
   expect(base).toMatch(/border:\s*1px solid var\(--border-subtle-default\)/);
   expect(base).toMatch(/border-radius:\s*var\(--radius-sm\)/);
 });
+
+// A board card's foot - who holds it, where, which seats, how big - was one row whose
+// chips could each shrink to nothing, so in a board column every one was cut to an
+// ellipsis: "me…  …/1/ai…  backend + …  ~…". It wraps instead, and a chip gives up
+// width only when it alone is wider than the card.
+it("a board card's facts wrap rather than all being cut short", () => {
+  expect(rule(".board-card__foot")).toMatch(/flex-wrap:\s*wrap/);
+  expect(rule(".board-chip")).toMatch(/flex:\s*none/);
+  expect(rule(".board-chip")).toMatch(/max-width:\s*100%/);
+});
