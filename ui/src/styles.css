@@ -2091,8 +2091,11 @@ button.card:hover {
   font-weight: 800;
 }
 
+/* A row, said explicitly: a Today row is also a `.card`, which is a column, and without
+   its own direction the rank sat centred above the item and the arrow centred below it. */
 .today-row {
   display: flex;
+  flex-direction: row;
   align-items: center;
   gap: var(--space-3);
   width: 100%;
@@ -2120,6 +2123,7 @@ button.card:hover {
 }
 
 .today-row__open {
+  flex: none;
   color: var(--accent-action-default);
   font-size: var(--text-lg);
 }
