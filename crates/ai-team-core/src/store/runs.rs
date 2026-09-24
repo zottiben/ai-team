@@ -1163,6 +1163,25 @@ impl Store {
         self.node_run(node_run_id)
     }
 
+    /// Settle a node as failed, saying why. `blocked_reason` is what every surface reads
+    /// for why a turn did not finish; a failed row without one is a failure nobody can act on.
+    pub fn fail_node(&mut self, node_run_id: i64, reason: &str) -> Result<NodeRun> {
+        let at = now();
+        self.db_mut().write(|tx| {
+            let changed = tx.execute(
+                "UPDATE node_run SET status = 'failed', blocked_reason = ?2, ended_at = ?3,
+                                     supervisor_pid = NULL, rev = rev + 1, updated_at = ?3
+                  WHERE id = ?1",
+                params![node_run_id, reason, at],
+            )?;
+            if changed == 0 {
+                return Err(Error::NoSuchNodeRun(node_run_id.to_string()));
+            }
+            Ok(())
+        })?;
+        self.node_run(node_run_id)
+    }
+
     /// Claim supervision of one running node with a compare-and-swap on its previous
     /// owner. A restarted app passes the dead pid it observed; two windows cannot both
     /// turn that observation into a live continuation.

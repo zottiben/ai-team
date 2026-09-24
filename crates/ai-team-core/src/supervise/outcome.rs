@@ -49,6 +49,10 @@ pub(crate) fn quota_exhaustion(outcome: &TurnOutcome) -> Option<String> {
 ///
 /// Claude's Pi adapter currently emits some error text twice. Preserve the evidence in
 /// the raw event payload, but do not make the board and notification repeat themselves.
+///
+/// Pi prints a fatal error as `Error: ...`, after whatever its extensions said while it
+/// started. When it did, that line leads: a reason is read by its first line, and an
+/// extension's warning there hid why the turn failed.
 pub(crate) fn provider_diagnostic(outcome: &TurnOutcome) -> Option<String> {
     let message = outcome.provider_message.as_deref()?.trim();
     let mut unique = Vec::new();
@@ -60,6 +64,9 @@ pub(crate) fn provider_diagnostic(outcome: &TurnOutcome) -> Option<String> {
         if !unique.iter().any(|seen| seen == &line) {
             unique.push(line);
         }
+    }
+    if let Some(error) = unique.iter().position(|line| line.starts_with("Error:")) {
+        unique.drain(..error);
     }
     if unique.is_empty() {
         return None;
@@ -146,6 +153,38 @@ mod tests {
             Some(
                 "The selected provider is not signed in. Open Settings and sign in before retrying this slice."
             )
+        );
+    }
+
+    #[test]
+    fn pis_own_error_leads_rather_than_an_extensions_warning_before_it() {
+        // Extensions print to stderr as Pi starts, and a reason read by its first line - a
+        // table cell, a notification - showed the warning and hid why the turn failed.
+        let outcome = TurnOutcome {
+            provider_message: Some(
+                "[pi-web-access] Dynamic tool activation requires Pi 0.86.1 or newer.\n\
+                 Error: Unknown provider \"llama.cpp\". Use --list-models to see available \
+                 providers/models."
+                    .into(),
+            ),
+            ..TurnOutcome::default()
+        };
+        assert_eq!(
+            provider_diagnostic(&outcome).as_deref(),
+            Some(
+                "Error: Unknown provider \"llama.cpp\". Use --list-models to see available \
+                 providers/models."
+            )
+        );
+
+        // With no error line, everything it said is the diagnostic.
+        let outcome = TurnOutcome {
+            provider_message: Some("connection reset by peer".into()),
+            ..TurnOutcome::default()
+        };
+        assert_eq!(
+            provider_diagnostic(&outcome).as_deref(),
+            Some("connection reset by peer")
         );
     }
 

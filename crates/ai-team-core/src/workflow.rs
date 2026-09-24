@@ -151,30 +151,40 @@ where
                     detail,
                 );
             } else {
-                store.set_run_status(run_id, RunStatus::Failed)?;
-                notify_run(
-                    store,
-                    run_id,
-                    "failed",
-                    "Planning stopped",
-                    "The planning turn did not finish.",
-                );
+                store.fail_run(run_id, &reason)?;
+                notify_run(store, run_id, "failed", "Planning stopped", &reason);
             }
             return Err(error);
         }
     };
     if crate::outcome_status(&outcome) != NodeStatus::Done {
-        store.set_run_status(run_id, RunStatus::Failed)?;
-        notify_run(
-            store,
-            run_id,
-            "failed",
-            "Planning stopped",
-            "The planning turn did not finish.",
-        );
-        return Err(Error::invalid("planning did not finish"));
+        return Err(planning_stopped(store, run_id, &outcome));
     }
     Ok(())
+}
+
+/// Fail a run whose planning turn did not finish, saying why wherever it will be read:
+/// the run, its notification, and the error the caller prints.
+///
+/// The turn that stopped recorded the why on its own row - Pi's own words, and the seat
+/// and model it was on - so that is the reason, rather than the bare fact that planning
+/// stopped, which is all a person was told before.
+fn planning_stopped(store: &mut Store, run_id: i64, outcome: &crate::TurnOutcome) -> Error {
+    let recorded = store.node_runs(run_id).ok().and_then(|nodes| {
+        nodes
+            .into_iter()
+            .rev()
+            .filter(|node| node.status == NodeStatus::Failed)
+            .find_map(|node| node.blocked_reason)
+    });
+    let reason = recorded
+        .or_else(|| crate::supervise::provider_diagnostic(outcome))
+        .unwrap_or_else(|| "the planning turn ended without finishing".to_string());
+    if let Err(error) = store.fail_run(run_id, &reason) {
+        return error;
+    }
+    notify_run(store, run_id, "failed", "Planning stopped", &reason);
+    Error::invalid(format!("planning did not finish: {reason}"))
 }
 
 /// What the database knows, read in one synchronous window.
@@ -1614,6 +1624,53 @@ fn notify_run(store: &mut Store, run_id: i64, kind: &str, title: &str, body: &st
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn planning_that_stopped_says_why_on_the_run_in_its_notification_and_to_the_caller() {
+        let mut store = Store::memory().unwrap();
+        let project = store
+            .create_project(crate::NewProject {
+                name: "Widget".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        let team = store.seed_default_team(project.id).unwrap();
+        let orchestrator = store
+            .agents(team.id)
+            .unwrap()
+            .into_iter()
+            .find(|agent| agent.role == crate::ROOT_ROLE)
+            .unwrap();
+        let run = store
+            .create_run(project.id, "add a --loud option", RunTrigger::Manual)
+            .unwrap();
+        store.set_run_status(run.id, RunStatus::Planning).unwrap();
+        let grounding = store
+            .dispatch(run.id, orchestrator.id, None, &ModelRegistry::local_only())
+            .unwrap();
+        let why = "orchestrator on local/auto could not run: Error: Unknown provider \"llama.cpp\"";
+        store.fail_node(grounding.id, why).unwrap();
+
+        let error = planning_stopped(&mut store, run.id, &crate::TurnOutcome::default());
+
+        assert_eq!(error.to_string(), format!("planning did not finish: {why}"));
+        let run = store.run(run.id).unwrap();
+        assert_eq!(run.status, RunStatus::Failed);
+        assert_eq!(run.blocked_reason.as_deref(), Some(why));
+        assert!(run.ended_at.is_some());
+        let told = store.notifications(10).unwrap();
+        assert_eq!(told[0].body, why);
+
+        // A turn that left no reason still says the one thing that is known.
+        let run = store
+            .create_run(project.id, "again", RunTrigger::Manual)
+            .unwrap();
+        let error = planning_stopped(&mut store, run.id, &crate::TurnOutcome::default());
+        assert_eq!(
+            error.to_string(),
+            "planning did not finish: the planning turn ended without finishing"
+        );
+    }
 
     #[test]
     fn a_run_the_schedule_starts_is_the_schedules_not_the_operators() {

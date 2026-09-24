@@ -204,6 +204,12 @@ separate processes and the window learns anything happened by watching `MAX(even
 move. A turn that records nothing until it ends is a crew panel that says "starting" for
 four minutes.
 
+**A turn that did not finish says why**, on its row and as a `failed` event: the seat, its
+provider and model, and Pi's own `Error:` line, which leads any extension noise Pi printed
+while starting (`record_failed_turn`, `provider_diagnostic`). A run that stops takes the
+reason of the turn that stopped it. A bare "failed" is a failure nobody can act on - the
+first one on a real team was a seat on a provider Pi did not know, and said nothing.
+
 **A run with no live process left in it is settled once** (`store/interrupted.rs`). Nothing
 else changes a run's rows when the process driving it dies, so a crash, a closed terminal
 or a sleeping laptop left runs "planning" for good, and Today reported the team working.

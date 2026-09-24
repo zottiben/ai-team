@@ -948,6 +948,15 @@ async fn check(
     )
     .await;
     Ok(match answered {
+        // Its turn did not finish, so nothing was judged: not accepted, and not a
+        // rejection to send a maker back over. Why is on the verifier's row.
+        Ok(FreshTurn::Finished(finished)) if outcome_status(&finished.1) != NodeStatus::Done => {
+            let why = store
+                .node_run(finished.0.id)?
+                .blocked_reason
+                .unwrap_or_else(|| "the verifier's turn did not finish".to_string());
+            (Verdict::Unavailable(why), None)
+        }
         Ok(FreshTurn::Finished(_)) => {
             let hint = named_owner(&said).map(RepairHint::Role);
             (read_verdict(&said), hint)
@@ -1570,7 +1579,12 @@ settle() {
 }
 task=$(printf '%s\n' "$prompt" | sed -n 's/^Your task is \(T[0-9]*\): .*/\1/p' | head -n 1)
 case "$prompt" in
-  *"Check the pull request"*) settle "VERDICT: pass" ;;
+  *"Check the pull request"*)
+    if [ -f "$here/verifier-dies" ]; then
+      echo 'Error: Unknown provider "llama.cpp". Use --list-models to see available providers/models.' >&2
+      exit 1
+    fi
+    settle "VERDICT: pass" ;;
   *"was rejected"*)
     fixing=$(printf '%s\n' "$prompt" | sed -n 's/^Your work on [A-Z0-9]* \(T[0-9]*\) was rejected.*/\1/p' | head -n 1)
     echo fixed > "repair-$fixing.txt"
@@ -1626,7 +1640,7 @@ esac
         crew: Vec<Assignment>,
         base: String,
         repo: tempfile::TempDir,
-        _support: tempfile::TempDir,
+        support: tempfile::TempDir,
     }
 
     impl Fixture {
@@ -1715,7 +1729,7 @@ esac
                 crew,
                 base,
                 repo,
-                _support: support,
+                support,
             }
         }
 
@@ -1867,6 +1881,30 @@ esac
         assert!(pr.commits().is_empty());
         let (status, _) = settle(&mut pr.store, pr.run_id, "PR1", &rows, &attempted).unwrap();
         assert_ne!(status, NodeStatus::Done);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_verifier_that_could_not_run_stops_the_pr_with_why_and_repairs_nothing() {
+        let mut pr = Fixture::new(
+            "## Tasks\n- T1 [frontend] Pick the range - Touches: ui/**\n",
+            "true",
+        );
+        std::fs::write(pr.support.path().join("verifier-dies"), "").unwrap();
+
+        let (attempted, _) = pr.build(2).await;
+
+        // Nothing was judged, so nothing was accepted - and nothing was rejected either:
+        // sending the maker back to repair a verifier that never started spends its turns
+        // on a question nobody asked.
+        let reason = attempted.rejection.unwrap();
+        assert!(
+            reason.contains("Unknown provider \"llama.cpp\""),
+            "{reason}"
+        );
+        assert!(reason.starts_with("verifier on "), "{reason}");
+        let makers = pr.makers();
+        assert_eq!(makers.len(), 1, "the maker was sent back to repair");
     }
 
     #[cfg(unix)]
