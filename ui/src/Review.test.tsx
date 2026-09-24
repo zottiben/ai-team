@@ -224,3 +224,41 @@ it("says plainly when there is nothing to review", async () => {
   render(<Review tick={0} />);
   expect(await screen.findByText("Nothing to review.")).toBeDefined();
 });
+
+it("starts a minified file's diff collapsed, says why, and shows it on request", async () => {
+  // A committed bundle is one line tens of thousands of characters long. Rendered, it
+  // buried every other file of the PR under a wall of wrapped code.
+  const bundle = `var e=${"x".repeat(20000)};`;
+  const minified = {
+    path: "ui/dist/app.js",
+    old_path: null,
+    status: "modified",
+    binary: false,
+    additions: 1,
+    deletions: 1,
+    hunks: [
+      {
+        header: "@@ -1,1 +1,1 @@",
+        old_start: 1,
+        new_start: 1,
+        lines: [
+          { kind: "removed", old: 1, new: null, text: "var e=1;" },
+          { kind: "added", old: null, new: 1, text: bundle },
+        ],
+      },
+    ],
+  };
+  stub({ files: [FILE, minified] });
+  const user = userEvent.setup();
+  render(<Review tick={0} />);
+  await openReview(user);
+
+  // The file anybody would read is shown as ever.
+  expect(await screen.findByText("fn two(x: i32) {}")).toBeDefined();
+  expect(screen.getByText("ui/dist/app.js")).toBeDefined();
+  expect(screen.getByText(/minified or generated/)).toBeDefined();
+  expect(screen.queryByText(bundle)).toBeNull();
+
+  await user.click(screen.getByRole("button", { name: "Show diff" }));
+  expect(screen.getByText(bundle)).toBeDefined();
+});

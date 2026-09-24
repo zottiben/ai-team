@@ -199,6 +199,19 @@ function Outcome({ outcome }: { outcome: Submitted }) {
   return <p className="notice">Approved.</p>;
 }
 
+/** A line longer than this is not for reading: a minified bundle, or generated output. */
+const UNREADABLE_LINE = 1000;
+
+/** The longest line of a file's diff. A reduce, since a spread of a large diff's lines
+ * would pass more arguments than a call may take. */
+function longestLine(file: FileDiff): number {
+  return file.hunks.reduce(
+    (longest, hunk) =>
+      hunk.lines.reduce((inHunk, line) => Math.max(inHunk, line.text.length), longest),
+    0,
+  );
+}
+
 function FileView({
   file,
   comments,
@@ -217,6 +230,12 @@ function FileView({
   const [body, setBody] = useState("");
 
   const mine = comments.filter((comment) => comment.file_path === file.path);
+  // A minified file starts collapsed: a committed bundle is one line tens of thousands of
+  // characters long, and shown whole it buried the rest of the PR. Open from the start
+  // when it has comments, so no thread is hidden.
+  const longest = longestLine(file);
+  const [shown, setShown] = useState(mine.length > 0);
+  const collapsed = longest > UNREADABLE_LINE && !shown;
 
   return (
     <section className="diff">
@@ -235,7 +254,19 @@ function FileView({
           turns into a screenful of noise. */}
       {file.binary && <p className="faint">Binary file - not shown.</p>}
 
-      {file.hunks.map((hunk) => (
+      {collapsed && (
+        <div className="diff__collapsed">
+          <p className="faint">
+            Collapsed: a minified or generated file - its longest line is{" "}
+            {longest.toLocaleString()} characters.
+          </p>
+          <button type="button" className="button" onClick={() => setShown(true)}>
+            Show diff
+          </button>
+        </div>
+      )}
+
+      {!collapsed && file.hunks.map((hunk) => (
         <div key={hunk.header} className="diff__hunk">
           <div className="diff__hunk-head mono">{hunk.header}</div>
           {hunk.lines.map((line) => {

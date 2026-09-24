@@ -2289,10 +2289,26 @@ button.card:hover {
   font-size: var(--text-sm);
 }
 
+/* Never shrunk to fit: the review is a flex column held to the window's height, and a
+   card whose overflow is hidden may otherwise shrink below its content - every file but
+   the largest became a few pixels of border. The page scrolls instead. */
 .diff {
+  flex: none;
   border: 1px solid var(--border-subtle-default);
   border-radius: var(--radius-md);
   overflow: hidden;
+}
+
+.diff__collapsed {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+}
+
+.diff__collapsed p {
+  margin: 0;
 }
 
 .diff__head {
