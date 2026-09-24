@@ -12,7 +12,7 @@ use serde::Serialize;
 use crate::error::{Error, Result};
 use crate::model::Provider;
 
-use super::{ModelRegistry, ProviderState};
+use super::{ModelRegistry, ProviderState, ProviderStatus};
 
 /// One exact model choice as Pi names it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -37,6 +37,23 @@ pub struct RoleModelDefault {
     pub role: String,
     pub provider: Provider,
     pub model: String,
+}
+
+/// A seat that cannot think on this machine.
+///
+/// Judged by Pi's own catalogue, because that is what a turn fails on: a model Pi does not
+/// list is a turn that dies before any model is reached - `Unknown provider "llama.cpp"`,
+/// two seconds into a run. A provider whose own check passes is no help when Pi has no
+/// model for it, and one whose check fails only gives a better reason.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Stranded {
+    pub agent_id: i64,
+    pub role: String,
+    /// What dispatch would run it as: its own, or the fallback for a denied provider.
+    pub provider: Provider,
+    pub model: String,
+    /// Why, in a line.
+    pub why: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -82,6 +99,56 @@ impl ModelRegistry {
             context_window: (context_tokens > 0).then_some(context_tokens),
             fallback_reason: Some(reason.to_string()),
         }))
+    }
+
+    /// The switched-on seats among `seats` that cannot run here, given Pi's catalogue.
+    ///
+    /// `status` answers for a provider when its own check has something to say; it is asked
+    /// only about a seat already found stranded, so a caller can probe lazily.
+    pub fn stranded(
+        &self,
+        seats: &[crate::model::Agent],
+        catalog: &[ModelChoice],
+        status: impl Fn(Provider) -> Option<ProviderStatus>,
+    ) -> Vec<Stranded> {
+        seats
+            .iter()
+            .filter(|seat| seat.enabled)
+            .filter_map(|seat| {
+                let (provider, model, why) = match self.resolve(seat) {
+                    Ok(resolved) => (resolved.provider, resolved.model, None),
+                    // Denied, with nothing allowed to fall back to.
+                    Err(error) => (seat.provider, seat.model.clone(), Some(error.to_string())),
+                };
+                if why.is_none()
+                    && catalog
+                        .iter()
+                        .any(|choice| choice.provider == provider && choice.model == model)
+                {
+                    return None;
+                }
+                let why = why.unwrap_or_else(|| {
+                    status(provider)
+                        .filter(|status| status.state == ProviderState::Unreachable)
+                        .map_or_else(
+                            || {
+                                format!(
+                                    "Pi has no {}/{model} on this machine",
+                                    crate::pi_provider(provider)
+                                )
+                            },
+                            |status| status.detail,
+                        )
+                });
+                Some(Stranded {
+                    agent_id: seat.id,
+                    role: seat.role.clone(),
+                    provider,
+                    model,
+                    why,
+                })
+            })
+            .collect()
     }
 
     /// Every exact model Pi reports available, narrowed by this machine's policy.
@@ -136,7 +203,16 @@ impl ModelRegistry {
     /// aliases when Pi's catalogue cannot be read. Project creation may choose its own
     /// conservative fallback at the call site.
     pub fn role_defaults(&self) -> Result<Vec<RoleModelDefault>> {
-        let statuses = self.statuses();
+        Ok(self.role_defaults_from(&self.statuses(), &self.models()?))
+    }
+
+    /// The same defaults from statuses and a catalogue a caller has already read, so a
+    /// report that needs both does not probe every provider twice.
+    pub fn role_defaults_from(
+        &self,
+        statuses: &[ProviderStatus],
+        catalog: &[ModelChoice],
+    ) -> Vec<RoleModelDefault> {
         let fallback_provider = statuses
             .iter()
             .filter(|status| status.state == ProviderState::Allowed)
@@ -153,17 +229,17 @@ impl ModelRegistry {
             ModelRegistry::default_model(fallback_provider).to_string(),
         );
         let reachable: HashSet<_> = statuses
-            .into_iter()
+            .iter()
             .filter(|status| status.state == ProviderState::Allowed)
             .map(|status| status.provider)
             .collect();
-        let choices: Vec<_> = self
-            .models()?
-            .into_iter()
+        let choices: Vec<_> = catalog
+            .iter()
             .filter(|choice| reachable.contains(&choice.provider))
+            .cloned()
             .collect();
 
-        Ok(crate::DEFAULT_ROSTER
+        crate::DEFAULT_ROSTER
             .iter()
             .map(|preset| {
                 let (provider, model) = role_choice(preset.role, &choices, &fallback);
@@ -173,7 +249,7 @@ impl ModelRegistry {
                     model,
                 }
             })
-            .collect())
+            .collect()
     }
 }
 

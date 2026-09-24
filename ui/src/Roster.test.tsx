@@ -75,6 +75,18 @@ function stub(options: {
           ],
         });
       }
+      if (url === "/roster/models/reseat") {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            moved: [
+              { role: "orchestrator", to: "openai/gpt-6-astra" },
+              { role: "planner", to: "claude/claude-opus-5" },
+            ],
+            left: [{ role: "reviewer", why: "Pi has no llama.cpp/auto on this machine" }],
+          }),
+        });
+      }
       if (url.startsWith("/roster")) {
         return Promise.resolve({
           ok: true,
@@ -258,6 +270,81 @@ it("keeps existing model choices until an explicit role-default reset is confirm
   );
 });
 
+it("a seat Pi cannot run on this machine says so, and one it can says nothing", async () => {
+  // Seeded while only the local gateway was allowed: the seat still points at it, and the
+  // one hint used to be "(unavailable)" in a select box.
+  stub({
+    project: "widget",
+    seats: [
+      seat({
+        id: 1,
+        role: "orchestrator",
+        provider: "local",
+        model: "auto",
+        effective_provider: "local",
+        effective_model: "auto",
+      }),
+      seat({ id: 2, role: "planner", provider: "claude", model: "claude-opus-5",
+        effective_provider: "claude", effective_model: "claude-opus-5" }),
+      seat({ id: 3, role: "reviewer", provider: "local", model: "auto",
+        effective_provider: "local", effective_model: "auto", enabled: false }),
+    ],
+  });
+  render(<Roster project="widget" onChanged={() => {}} />);
+
+  const warnings = await screen.findAllByText(/Cannot run on this machine/);
+  // Only the orchestrator: the planner runs, and a seat switched off runs nowhere.
+  expect(warnings).toHaveLength(1);
+  expect(warnings[0]?.textContent).toBe(
+    "Cannot run on this machine: Pi has no llama.cpp/auto, so its turns fail before a model is reached.",
+  );
+});
+
+it("moves only the seats that cannot run here, once asked, and says what it did", async () => {
+  const user = userEvent.setup();
+  const stranded = (id: number, role: string) =>
+    seat({ id, role, provider: "local", model: "auto", effective_provider: "local",
+      effective_model: "auto" });
+  const calls = stub({
+    project: "widget",
+    seats: [stranded(1, "orchestrator"), stranded(2, "planner")],
+  });
+  const changed: number[] = [];
+  render(<Roster project="widget" onChanged={() => changed.push(1)} />);
+
+  await user.click(await screen.findByText("Move 2 seats that cannot run here"));
+  expect(calls.some((call) => call.url === "/roster/models/reseat")).toBe(false);
+  await user.click(screen.getByText("Move them"));
+
+  await waitFor(() =>
+    expect(calls).toContainEqual({
+      url: "/roster/models/reseat",
+      method: "POST",
+      body: { project: "widget" },
+    }),
+  );
+  const result = await screen.findByRole("status");
+  // One seat a line, on the project's own page: no project name, no run-on sentence.
+  expect([...result.querySelectorAll("li")].map((item) => item.textContent)).toEqual([
+    "orchestrator → openai/gpt-6-astra",
+    "planner → claude/claude-opus-5",
+    "reviewer stays: Pi has no llama.cpp/auto on this machine",
+  ]);
+  expect(changed.length).toBe(1);
+});
+
+it("offers no move when every seat can run", async () => {
+  stub({
+    project: "widget",
+    seats: [seat({ model: "claude-opus-5", effective_model: "claude-opus-5" })],
+  });
+  render(<Roster project="widget" onChanged={() => {}} />);
+
+  await screen.findByText("Reset role models");
+  expect(screen.queryByText(/seats? that cannot run here/)).toBeNull();
+  expect(screen.queryByText(/Cannot run on this machine/)).toBeNull();
+});
+
 it("a seat that owns nothing says so rather than showing an empty field", async () => {
   stub({ seats: [seat({ zone: "" })] });
   render(<Roster onChanged={() => {}} />);
@@ -285,5 +372,11 @@ it("a disabled seat is marked and can be turned back on", async () => {
 it("says when a change takes effect, because an edit that looks applied and is not is the confusing case", async () => {
   stub();
   render(<Roster onChanged={() => {}} />);
-  expect(await screen.findByText(/take effect on the next run/)).toBeDefined();
+  // A seat is read as each turn starts, so a run already going takes an edit at that seat's
+  // next turn. Saying "the next run" promised a run in progress would not change.
+  expect(
+    await screen.findByText(
+      "Changes take effect at each seat's next turn, including in a run already going.",
+    ),
+  ).toBeDefined();
 });

@@ -20,6 +20,8 @@
 //! write: a report that repairs things as a side effect of being looked at is a
 //! configuration that changes while somebody is reading it.
 
+use std::fmt::Write as _;
+
 use serde::Serialize;
 
 use crate::error::{Error, Result};
@@ -71,6 +73,19 @@ pub enum Action {
     CreateDatabase,
     /// Bring an existing database up to the current schema.
     Migrate,
+    /// Move every seat that cannot run on this machine to the model a new team here gets
+    /// for its role, where Pi can run that (`seats.rs`).
+    ReseatStranded,
+}
+
+impl Action {
+    /// The command that asks for this from a terminal. The window has a button.
+    pub fn command(self) -> &'static str {
+        match self {
+            Action::CreateMachineProfile | Action::CreateDatabase | Action::Migrate => "ait init",
+            Action::ReseatStranded => "ait team reseat",
+        }
+    }
 }
 
 /// One thing that was looked at.
@@ -170,12 +185,24 @@ pub struct Known {
     pub schema: Option<i64>,
     /// Slug, display name, and the main checkout if it has one.
     pub projects: Vec<(String, String, Option<String>)>,
+    /// Each project's seats, by slug: which provider every one of them will think with.
+    pub seats: std::collections::HashMap<String, Vec<crate::model::Agent>>,
 }
 
 impl Known {
     /// Read it off a store.
     pub fn of(store: &Store) -> Known {
+        let seats = store
+            .projects()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|project| {
+                let agents = store.agents(project.team_id?).ok()?;
+                Some((project.slug, agents))
+            })
+            .collect();
         Known {
+            seats,
             schema: store.schema_version().ok(),
             projects: store
                 .projects()
@@ -227,12 +254,43 @@ pub async fn report_at_with_credentials(
 ) -> Report {
     let mut checks = vec![data_directory(paths), machine_profile(paths)];
     checks.push(database(paths, known));
-    checks.extend(providers(paths));
+    // Probed once: the providers' checks and the projects' seat checks read the same
+    // answer, and probing is a connection to each allowed provider.
+    let registry = model_registry(paths);
+    let statuses = registry
+        .as_ref()
+        .map(ModelRegistry::statuses)
+        .unwrap_or_default();
+    checks.extend(providers(registry.as_ref(), &statuses));
     checks.extend(context_sources(paths, credentials));
     checks.extend(neighbours().await);
     checks.push(frontend());
     if let Some(known) = known {
         checks.extend(projects(known));
+        // Pi's catalogue is asked only when there are seats to judge by it. Unreadable, it
+        // judges nothing: a report that cannot tell is not one that says all is well, and
+        // the providers' own checks above still say what they found.
+        let survey = registry
+            .as_ref()
+            .filter(|_| !known.seats.is_empty())
+            .and_then(|registry| {
+                let catalog = registry.models().ok()?;
+                let defaults = registry.role_defaults_from(&statuses, &catalog);
+                Some((
+                    registry,
+                    crate::seats::Survey {
+                        catalog,
+                        statuses: statuses.clone(),
+                        defaults,
+                    },
+                ))
+            });
+        if let Some((registry, survey)) = &survey {
+            checks.extend(known.projects.iter().filter_map(|(slug, name, _)| {
+                let seats = known.seats.get(slug)?;
+                seats_check(slug, name, seats, registry, survey)
+            }));
+        }
     }
 
     let severity = checks
@@ -410,8 +468,11 @@ fn model_registry(paths: &Paths) -> Option<ModelRegistry> {
     MachineProfile::load(path).ok().map(ModelRegistry::new)
 }
 
-fn providers(paths: &Paths) -> Vec<Check> {
-    let Some(registry) = model_registry(paths) else {
+fn providers(
+    registry: Option<&ModelRegistry>,
+    statuses: &[crate::machine::ProviderStatus],
+) -> Vec<Check> {
+    if registry.is_none() {
         return vec![Check {
             id: "providers".into(),
             label: "Model providers".into(),
@@ -422,9 +483,8 @@ fn providers(paths: &Paths) -> Vec<Check> {
                 describe: "Create the machine profile, then allow the accounts you have".into(),
             },
         }];
-    };
+    }
 
-    let statuses = registry.statuses();
     let usable: Vec<&str> = statuses
         .iter()
         .filter(|status| status.state == crate::machine::ProviderState::Allowed)
@@ -452,7 +512,7 @@ fn providers(paths: &Paths) -> Vec<Check> {
         )
     }];
 
-    for status in statuses {
+    for status in statuses.iter().cloned() {
         let id = format!("provider.{}", status.provider.as_str());
         let label = format!("Provider: {}", status.provider);
         checks.push(match status.state {
@@ -703,6 +763,91 @@ fn projects(known: &Known) -> Vec<Check> {
     checks
 }
 
+/// A project's seats that cannot run on this machine, if any, and the repair.
+///
+/// "Cannot run" is Pi's catalogue not having the model a seat will be dispatched as - the
+/// rule in [`crate::machine::Stranded`]. A team seeded before an account was allowed stays
+/// where it was seeded, and on a machine without that provider every run it starts stops
+/// at its first turn. Said here, it is a line in doctor and a banner in the window rather
+/// than a run that dies.
+///
+/// Blocking when it is the orchestrator or the planner, because every planning run starts
+/// with them; degraded otherwise, because planning still starts and those seats' PRs stop.
+/// The seats are ai-team's own rows, so moving them is ai-team's to do - to what a new team
+/// here is seeded with, named before anything moves.
+fn seats_check(
+    slug: &str,
+    name: &str,
+    seats: &[crate::model::Agent],
+    registry: &ModelRegistry,
+    survey: &crate::seats::Survey,
+) -> Option<Check> {
+    let stranded = survey.stranded(registry, seats);
+    if stranded.is_empty() {
+        return None;
+    }
+
+    // Where each would go, in the order found.
+    let mut moves: Vec<(String, Vec<&str>)> = Vec::new();
+    let mut staying: Vec<&str> = Vec::new();
+    for seat in &stranded {
+        match survey.replacement(seat) {
+            Some((provider, model)) => {
+                let to = format!("{}/{model}", provider.as_str());
+                match moves.iter_mut().find(|(target, _)| *target == to) {
+                    Some((_, roles)) => roles.push(&seat.role),
+                    None => moves.push((to, vec![&seat.role])),
+                }
+            }
+            None => staying.push(&seat.role),
+        }
+    }
+
+    let plans = stranded
+        .iter()
+        .any(|seat| seat.role == crate::ROOT_ROLE || seat.role == "planner");
+    let detail = crate::seats::describe(&stranded);
+    let fix = if moves.is_empty() {
+        Fix::Human {
+            what: "Sign in to a provider Pi can run - Claude through the Claude Code CLI or \
+                   ChatGPT through the Codex CLI - and allow it in Settings, then move these \
+                   seats to it"
+                .into(),
+        }
+    } else {
+        let mut describe = format!(
+            "Move them to the models a new team here gets: {}",
+            moves
+                .iter()
+                .map(|(to, roles)| format!("{} to {to}", roles.join(", ")))
+                .collect::<Vec<_>>()
+                .join("; ")
+        );
+        if !staying.is_empty() {
+            let _ = write!(
+                describe,
+                ". {} stay: Pi has nothing here to move them to",
+                staying.join(", ")
+            );
+        }
+        Fix::Itself {
+            action: Action::ReseatStranded,
+            describe,
+        }
+    };
+    Some(Check {
+        id: format!("project.{slug}.seats"),
+        label: format!("Seats: {name}"),
+        severity: if plans {
+            Severity::Blocking
+        } else {
+            Severity::Degraded
+        },
+        detail,
+        fix,
+    })
+}
+
 /// Whether a command is on PATH.
 ///
 /// Written out because the alternative is a dependency to answer a question that is one
@@ -774,6 +919,19 @@ pub fn apply_at(paths: &Paths, action: Action) -> Result<String> {
                 path.display(),
                 store.schema_version()?
             ))
+        }
+        Action::ReseatStranded => {
+            let path = paths
+                .database
+                .as_ref()
+                .map_err(|error| Error::invalid(error.to_string()))?;
+            let registry = model_registry(paths).ok_or_else(|| {
+                Error::invalid("there is no machine profile, so no provider can run a seat")
+            })?;
+            // Pi first, with no connection open: it is a second or two of subprocesses.
+            let survey = crate::seats::Survey::read(&registry)?;
+            let mut store = Store::open(path)?;
+            Ok(crate::seats::reseat_stranded(&mut store, &registry, &survey, None)?.summary())
         }
     }
 }
@@ -891,7 +1049,7 @@ mod tests {
         let newer = crate::db::latest_schema() + 1;
         let known = Known {
             schema: Some(newer),
-            projects: Vec::new(),
+            ..Known::default()
         };
 
         let check = database(&Paths::under(dir.path()), Some(&known));
@@ -904,7 +1062,8 @@ mod tests {
     fn a_custom_readiness_root_does_not_consult_the_real_machine_profile() {
         let dir = tempfile::tempdir().unwrap();
         let paths = Paths::under(dir.path());
-        let checks = providers(&paths);
+        let registry = model_registry(&paths);
+        let checks = providers(registry.as_ref(), &[]);
 
         assert_eq!(checks.len(), 1);
         assert_eq!(checks[0].id, "providers");
@@ -1024,6 +1183,152 @@ mod tests {
             });
         assert_eq!(check.severity, Severity::Blocking);
         assert!(check.detail.contains("/definitely/not/here"));
+    }
+
+    /// A team seeded while only the local gateway was allowed, on a machine where Claude is
+    /// allowed since and there is no gateway: every seat on `local/auto`, and what Pi lists.
+    fn stranded_team() -> (Vec<crate::Agent>, ModelRegistry, crate::seats::Survey) {
+        use crate::model::Provider;
+
+        let mut store = Store::memory().unwrap();
+        let project = store
+            .create_project(crate::model::NewProject {
+                name: "Widget".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        let team = store.seed_default_team(project.id).unwrap();
+        let mut seats = store.agents(team.id).unwrap();
+        for seat in &mut seats {
+            seat.provider = Provider::Local;
+            seat.model = "auto".into();
+        }
+        let registry = ModelRegistry::new(
+            MachineProfile::parse(
+                "version = 1\nfallback = [\"claude\", \"openai\", \"zai\", \"local\"]\n\n\
+                 [providers]\nclaude = true\nopenai = false\nzai = false\nlocal = true\n",
+            )
+            .unwrap(),
+        );
+        let default = |role: &str, model: &str| crate::machine::RoleModelDefault {
+            role: role.into(),
+            provider: Provider::Claude,
+            model: model.into(),
+        };
+        let survey = crate::seats::Survey {
+            catalog: vec![listed("claude-opus-5"), listed("claude-sonnet-5")],
+            statuses: vec![crate::machine::ProviderStatus {
+                provider: Provider::Local,
+                state: crate::machine::ProviderState::Unreachable,
+                detail: "ailocal gateway is not listening on 127.0.0.1:8081".into(),
+                sign_in: None,
+            }],
+            defaults: vec![
+                default("orchestrator", "claude-opus-5"),
+                default("planner", "claude-opus-5"),
+                default("backend", "claude-opus-5"),
+                default("frontend", "claude-sonnet-5"),
+                default("verifier", "claude-sonnet-5"),
+                default("reviewer", "claude-opus-5"),
+            ],
+        };
+        (seats, registry, survey)
+    }
+
+    fn listed(model: &str) -> crate::machine::ModelChoice {
+        crate::machine::ModelChoice {
+            provider: crate::model::Provider::Claude,
+            runtime_provider: "claude-subscription".into(),
+            model: model.into(),
+            context: "1M".into(),
+            context_tokens: 1_000_000,
+            max_output: "128K".into(),
+            thinking: true,
+            images: true,
+        }
+    }
+
+    #[test]
+    fn a_project_whose_seats_cannot_run_here_says_so_and_offers_to_move_them() {
+        // On a machine with no gateway every run this team started died in two seconds,
+        // with nobody told why.
+        let (seats, registry, mut survey) = stranded_team();
+
+        let check = seats_check("widget", "Widget", &seats, &registry, &survey).unwrap();
+        assert_eq!(check.id, "project.widget.seats");
+        assert_eq!(check.severity, Severity::Blocking);
+        assert_eq!(
+            check.detail,
+            "orchestrator, planner, backend, frontend, verifier, reviewer use local/auto, \
+             which cannot run here: ailocal gateway is not listening on 127.0.0.1:8081"
+        );
+        // ai-team's own rows, so ai-team moves them - saying first exactly where to.
+        let Fix::Itself { action, describe } = &check.fix else {
+            panic!("{:?}", check.fix);
+        };
+        assert_eq!(*action, Action::ReseatStranded);
+        assert_eq!(
+            describe,
+            "Move them to the models a new team here gets: orchestrator, planner, backend, \
+             reviewer to claude/claude-opus-5; frontend, verifier to claude/claude-sonnet-5"
+        );
+
+        // Pi cannot run the default for some of them: those are named as staying.
+        survey.catalog.pop();
+        let check = seats_check("widget", "Widget", &seats, &registry, &survey).unwrap();
+        let Fix::Itself { describe, .. } = &check.fix else {
+            panic!("{:?}", check.fix);
+        };
+        assert!(
+            describe.ends_with(
+                "claude/claude-opus-5. frontend, verifier stay: Pi has nothing here to move \
+                 them to"
+            ),
+            "{describe}"
+        );
+
+        // Nothing to move any of them to: that is a sign-in, which is a person's.
+        survey.catalog.clear();
+        let check = seats_check("widget", "Widget", &seats, &registry, &survey).unwrap();
+        assert!(matches!(check.fix, Fix::Human { .. }), "{:?}", check.fix);
+    }
+
+    #[test]
+    fn stranded_makers_degrade_a_project_and_a_seat_switched_off_is_nobodys_problem() {
+        // Planning still starts without makers; their PRs stop, and say why.
+        let (mut seats, registry, survey) = stranded_team();
+        for seat in &mut seats {
+            if matches!(
+                seat.role.as_str(),
+                "orchestrator" | "planner" | "verifier" | "reviewer"
+            ) {
+                seat.provider = crate::model::Provider::Claude;
+                seat.model = "claude-opus-5".into();
+            }
+        }
+        let check = seats_check("widget", "Widget", &seats, &registry, &survey).unwrap();
+        assert_eq!(check.severity, Severity::Degraded);
+        assert!(
+            check.detail.starts_with("backend, frontend use local/auto"),
+            "{}",
+            check.detail
+        );
+
+        for seat in &mut seats {
+            seat.enabled = !matches!(seat.role.as_str(), "backend" | "frontend");
+        }
+        assert!(seats_check("widget", "Widget", &seats, &registry, &survey).is_none());
+    }
+
+    #[test]
+    fn each_repair_names_the_command_that_asks_for_it_from_a_terminal() {
+        assert_eq!(Action::CreateDatabase.command(), "ait init");
+        assert_eq!(Action::ReseatStranded.command(), "ait team reseat");
+        // The window posts the name; the name is the contract.
+        assert_eq!(
+            serde_json::to_value(Action::ReseatStranded).unwrap(),
+            "reseat_stranded"
+        );
     }
 
     #[test]

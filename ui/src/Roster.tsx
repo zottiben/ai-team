@@ -6,6 +6,7 @@ import {
   editSeat,
   models as fetchModels,
   projects as fetchProjects,
+  reseatRosterModels,
   resetRosterModels,
   roster as fetchRoster,
   type DeliveryPolicy,
@@ -13,7 +14,9 @@ import {
   type ModelCatalog,
   type ModelChoice,
   type Project,
+  type Reseated,
   type Roster as RosterData,
+  type Seat,
 } from "./api";
 
 const DEFAULT_DELIVERY: DeliverySettings = { push: "ask", pr: "ask", merge: "ask" };
@@ -30,6 +33,19 @@ function runtimeProvider(provider: string): string {
       zai: "zai-coding-plan",
       local: "llama.cpp",
     }[provider] ?? provider
+  );
+}
+
+/**
+ * Whether Pi can run a seat on this machine: what it will be dispatched as is in Pi's
+ * catalogue. Core's rule too (`machine::Stranded`) - a model Pi does not list is a turn
+ * that dies before a model is reached. A catalogue not read yet, or unreadable, judges
+ * nothing.
+ */
+function runsHere(seat: Seat, catalog: ModelCatalog | null): boolean {
+  if (catalog === null || catalog.error !== null) return true;
+  return catalog.models.some(
+    (choice) => choice.provider === seat.effective_provider && choice.model === seat.effective_model,
   );
 }
 
@@ -69,6 +85,8 @@ export function Roster({
   const [problem, setProblem] = useState<string | null>(null);
   const [confirmDetect, setConfirmDetect] = useState(false);
   const [confirmModels, setConfirmModels] = useState(false);
+  const [confirmReseat, setConfirmReseat] = useState(false);
+  const [reseated, setReseated] = useState<Reseated | null>(null);
   const [detecting, setDetecting] = useState(false);
   const [savingDelivery, setSavingDelivery] = useState(false);
 
@@ -123,22 +141,32 @@ export function Roster({
     }
   };
 
-  const applyTeamAction = async (action: "ownership" | "models") => {
+  const applyTeamAction = async (action: "ownership" | "models" | "reseat") => {
     if (data?.project === null || data?.project === undefined) return;
     setDetecting(true);
     try {
+      let outcome: Reseated | null = null;
       if (action === "ownership") await detectOwnership(data.project);
-      else await resetRosterModels(data.project);
+      else if (action === "models") await resetRosterModels(data.project);
+      else outcome = await reseatRosterModels(data.project);
       await load();
+      // Said once the seats below show it, not a moment before over the old warnings.
+      if (outcome !== null) setReseated(outcome);
       onChanged();
       setConfirmDetect(false);
       setConfirmModels(false);
+      setConfirmReseat(false);
     } catch (error: unknown) {
       setProblem(error instanceof Error ? error.message : String(error));
     } finally {
       setDetecting(false);
     }
   };
+
+  // Seats that exist and are switched on: a default roster and a seat that is off run nowhere.
+  const stranded = (data?.seats ?? []).filter(
+    (seat) => seat.id > 0 && seat.enabled && !runsHere(seat, catalog),
+  );
 
   return (
     <div className="roster">
@@ -169,8 +197,19 @@ export function Roster({
         {data?.project !== null &&
           data?.project !== undefined &&
           !confirmDetect &&
-          !confirmModels && (
+          !confirmModels &&
+          !confirmReseat && (
             <span className="roster__confirm">
+              {stranded.length > 0 && (
+                <button
+                  type="button"
+                  className="button button--primary"
+                  onClick={() => setConfirmReseat(true)}
+                >
+                  Move {stranded.length} {stranded.length === 1 ? "seat" : "seats"} that cannot
+                  run here
+                </button>
+              )}
               <button type="button" className="button" onClick={() => setConfirmDetect(true)}>
                 Detect ownership
               </button>
@@ -195,6 +234,25 @@ export function Roster({
             </button>
           </span>
         )}
+        {data?.project !== null && data?.project !== undefined && confirmReseat && (
+          <span className="roster__confirm">
+            <span className="faint">
+              Move {stranded.map((seat) => seat.role).join(", ")} to the models a new team here
+              gets? Seats Pi can run stay as they are.
+            </span>
+            <button
+              type="button"
+              className="button button--primary"
+              disabled={detecting}
+              onClick={() => void applyTeamAction("reseat")}
+            >
+              {detecting ? "Reading Pi…" : "Move them"}
+            </button>
+            <button type="button" className="button" onClick={() => setConfirmReseat(false)}>
+              Cancel
+            </button>
+          </span>
+        )}
         {data?.project !== null && data?.project !== undefined && confirmModels && (
           <span className="roster__confirm">
             <span className="faint">Replace every seat's model with its role default?</span>
@@ -214,6 +272,27 @@ export function Roster({
       </div>
 
       {problem !== null && <p className="error">{problem}</p>}
+      {reseated !== null && (
+        <div className="notice roster__reseated" role="status">
+          <span>
+            {reseated.moved.length === 0
+              ? "Nothing could be moved."
+              : `Moved ${reseated.moved.length} ${reseated.moved.length === 1 ? "seat" : "seats"} to models this machine can run.`}
+          </span>
+          <ul>
+            {reseated.moved.map((seat) => (
+              <li key={seat.role}>
+                {seat.role} → <span className="mono">{seat.to}</span>
+              </li>
+            ))}
+            {reseated.left.map((seat) => (
+              <li key={seat.role}>
+                {seat.role} stays: {seat.why}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       {data === null && <p className="empty">Reading the roster…</p>}
 
       {data !== null && data.project === null && (
@@ -316,6 +395,14 @@ export function Roster({
                 </label>
               </div>
 
+              {seat.id > 0 && seat.enabled && !runsHere(seat, catalog) && (
+                <span className="error">
+                  Cannot run on this machine: Pi has no{" "}
+                  {runtimeProvider(seat.effective_provider)}/{seat.effective_model}, so its turns
+                  fail before a model is reached.
+                </span>
+              )}
+
               {/* The whole point: what it will actually be, when that is not what it says. */}
               {differs && (
                 <span className="notice">
@@ -381,8 +468,7 @@ export function Roster({
 
       {/* Said once, because an edit that looks applied and is not is the confusing case. */}
       <p className="faint">
-        Changes take effect on the next run - it regenerates the agents before it starts, so
-        an edit never half-applies to a run already going.
+        Changes take effect at each seat's next turn, including in a run already going.
       </p>
     </div>
   );

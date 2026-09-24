@@ -67,7 +67,42 @@ pub(crate) fn run(command: TeamCommand) -> Result<()> {
         } => clone(&mut store, &from, &to, name, replace)?,
 
         TeamCommand::Rm { team, yes } => remove(&mut store, &team, yes)?,
+
+        TeamCommand::Reseat => reseat(&mut store)?,
     }
+    Ok(())
+}
+
+/// The same repair as doctor's, with each move on a line of its own.
+fn reseat(store: &mut Store) -> Result<()> {
+    let registry = ai_team_core::ModelRegistry::load()?;
+    let survey = ai_team_core::Survey::read(&registry)?;
+    let reseated = ai_team_core::reseat_stranded(store, &registry, &survey, None)?;
+    if reseated.moved.is_empty() && reseated.left.is_empty() {
+        println!("Every seat can run on this machine - nothing to move.");
+        return Ok(());
+    }
+    for moved in &reseated.moved {
+        println!(
+            "{} {:<13} {}/{} -> {}/{}",
+            moved.project,
+            moved.role,
+            moved.from.0.as_str(),
+            moved.from.1,
+            moved.to.0.as_str(),
+            moved.to.1
+        );
+    }
+    for (project, seat) in &reseated.left {
+        println!(
+            "{project} {:<13} stays on {}/{}: Pi has nothing here to move it to ({})",
+            seat.role,
+            seat.provider.as_str(),
+            seat.model,
+            seat.why
+        );
+    }
+    stale_notice();
     Ok(())
 }
 
@@ -287,6 +322,7 @@ fn apply_guardrails(mut guardrails: Guardrails, args: &TeamEditArgs) -> Result<G
     Ok(guardrails)
 }
 
+/// A seat is read at dispatch (D2, D20): there is nothing to regenerate or rebuild.
 pub(crate) fn stale_notice() {
-    println!("`ait run` regenerates and rebuilds before the next turn.");
+    println!("Each seat's next turn uses it.");
 }

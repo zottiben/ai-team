@@ -282,16 +282,24 @@ export function Setup({ onReady }: { onReady: () => void }) {
  * a missing file-sql is a banner people learn to ignore - and then it is not there when the
  * database has gone.
  */
-export function HealthBanner({ tick, onOpen }: { tick: number; onOpen: () => void }) {
+export function HealthBanner({ recheck, onOpen }: { recheck: number; onOpen: () => void }) {
   const [report, setReport] = useState<DoctorReport | null>(null);
 
+  // Not on every database tick: a report is a handful of subprocesses, and a turn in flight
+  // ticks several times a second for an answer that changes only when somebody changes the
+  // machine. So on `recheck` - bumped where the window changes it - and on a human-scale
+  // clock for what changes outside it, like a sign-in in a terminal.
   useEffect(() => {
     // Silence on failure: a window that cannot reach its own API has a bigger problem than
     // this banner, and every other surface is already saying so.
-    void doctor()
-      .then(setReport)
-      .catch(() => {});
-  }, [tick]);
+    const read = () =>
+      void doctor()
+        .then(setReport)
+        .catch(() => {});
+    read();
+    const timer = setInterval(read, 60_000);
+    return () => clearInterval(timer);
+  }, [recheck]);
 
   if (report === null || report.severity !== "blocking") return null;
 

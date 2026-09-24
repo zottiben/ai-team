@@ -223,6 +223,9 @@ pub(crate) enum TeamCommand {
         #[arg(long)]
         replace: bool,
     },
+    /// Move every seat that cannot run on this machine to the model a new team here gets
+    /// for its role. A seat Pi can run is left alone.
+    Reseat,
     /// Delete a team and its seats. The project it ran keeps its runs and its history.
     Rm {
         /// A project, or a team's own slug.

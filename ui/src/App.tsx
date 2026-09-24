@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 
 import { Analytics } from "./Analytics";
 import { Notifications } from "./Notifications";
@@ -70,6 +70,19 @@ export default function App() {
   const [problem, setProblem] = useState<string | null>(null);
   // Bumped on every server tick, so views re-read without each owning a subscription.
   const [tick, setTick] = useState(0);
+  // Bumped wherever the window changes the machine's configuration - seats, providers,
+  // projects, a repair in Setup - so the health banner re-reads it then, not per event.
+  const [readiness, setReadiness] = useState(0);
+  const configured = useCallback(() => {
+    setReadiness((value) => value + 1);
+    setTick((value) => value + 1);
+  }, []);
+  // Leaving Setup, however it closes, is leaving the page repairs are made on.
+  const wasSetupOpen = useRef(false);
+  useEffect(() => {
+    if (wasSetupOpen.current && !setupOpen) setReadiness((value) => value + 1);
+    wasSetupOpen.current = setupOpen;
+  }, [setupOpen]);
   // A run Today asked for, carried until the workspace has taken it.
   const [openRun, setOpenRun] = useState<number | null>(null);
   const [firstRun, setFirstRun] = useState<boolean | null>(null);
@@ -332,7 +345,7 @@ export default function App() {
           <Notifications tick={tick} onOpen={openNotification} />
           {/* Visible from every page, because a machine that cannot run anything is worth
               interrupting whatever somebody is looking at. */}
-          <HealthBanner tick={tick} onOpen={() => setSetupOpen(true)} />
+          <HealthBanner recheck={readiness} onOpen={() => setSetupOpen(true)} />
           {firstRun === true && !setupOpen && (
             <button type="button" className="nav-item" onClick={() => setSetupOpen(true)}>
               <span>Finish setting up</span>
@@ -375,7 +388,7 @@ export default function App() {
             onOpenedRun={() => setOpenRun(null)}
             onChanged={() => {
               void loadWorkspaces(inside.slug);
-              setTick((value) => value + 1);
+              configured();
             }}
             onGo={(view) => {
               setLastView((seen) => ({ ...seen, [inside.slug]: view }));
@@ -427,20 +440,20 @@ export default function App() {
             <Projects
               onChanged={() => {
                 void refresh();
-                setTick((value) => value + 1);
+                configured();
               }}
             />
           )}
 
           {place.level === "global" && place.view === "team" && (
-            <Roster onChanged={() => setTick((value) => value + 1)} />
+            <Roster onChanged={configured} />
           )}
 
           {place.level === "global" && place.view === "settings" && (
             <Settings
               theme={theme}
               onTheme={setTheme}
-              onChanged={() => setTick((value) => value + 1)}
+              onChanged={configured}
             />
           )}
         </main>
