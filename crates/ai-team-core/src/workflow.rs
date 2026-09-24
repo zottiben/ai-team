@@ -242,6 +242,8 @@ struct Resolved {
     repo: PathBuf,
     required_context: Vec<ContextSource>,
     parallel_width: usize,
+    /// The plan to build from, when the request named one or has nothing to plan.
+    plan: Option<String>,
 }
 
 /// Everything resolved before a run row exists.
@@ -268,7 +270,7 @@ fn resolve(store: &Store, request: &Request) -> Result<Resolved> {
     // Everything the database is asked for, up front and owned. The borrow ends here on
     // purpose: the checks below talk to other programs, and holding a connection open
     // across that would make this future unspawnable as well as rude.
-    let (team_id, project_slug, project_id, parallel_width, repo, required_context) = {
+    let (team_id, project_slug, project_id, parallel_width, repo, required_context, plan) = {
         let project = store.find_project(&request.project)?;
         let team_id = project.team_id.ok_or_else(|| {
             Error::invalid(format!(
@@ -301,6 +303,15 @@ fn resolve(store: &Store, request: &Request) -> Result<Resolved> {
             &project.brief_md,
             request.prompt.as_deref().unwrap_or_default(),
         );
+        // With nothing to plan, it builds what the checkout's plan has ready: the plan its
+        // newest run worked on, and not ai-planner's guess, which answered with an older
+        // plan the checkout had resolved to more often (rule 7). A prompt plans afresh.
+        let plan = match (&request.plan, &request.prompt) {
+            (Some(plan), _) => Some(plan.clone()),
+            (None, None) => store
+                .plan_in_workspace(project.id, request.workspace.as_deref().unwrap_or(&repo))?,
+            (None, Some(_)) => None,
+        };
         (
             team_id,
             project.slug,
@@ -308,6 +319,7 @@ fn resolve(store: &Store, request: &Request) -> Result<Resolved> {
             width,
             repo,
             required_context,
+            plan,
         )
     };
     Ok(Resolved {
@@ -317,6 +329,7 @@ fn resolve(store: &Store, request: &Request) -> Result<Resolved> {
         repo,
         required_context,
         parallel_width,
+        plan,
     })
 }
 
@@ -329,14 +342,15 @@ async fn prepare(resolved: Resolved, request: &Request) -> Result<Prepared> {
         repo,
         required_context,
         parallel_width,
+        plan,
     } = resolved;
 
     let repo = match &request.workspace {
         Some(workspace) => Worktrees::at(&repo).resolve(workspace).await?,
         None => repo,
     };
-    let planner = match &request.plan {
-        Some(plan) => Planner::at(&repo).for_plan(plan.clone()),
+    let planner = match plan {
+        Some(plan) => Planner::at(&repo).for_plan(plan),
         None => Planner::at(&repo),
     };
     let worktrees = Worktrees::at(&repo);

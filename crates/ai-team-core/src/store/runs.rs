@@ -173,6 +173,32 @@ impl Store {
         Ok(rows)
     }
 
+    /// The plan a checkout is working on: its newest run's that has one (see
+    /// [`WorkspaceScope`]), or `None` where ai-team has run nothing with a plan.
+    ///
+    /// Asked of ai-team's own runs rather than of ai-planner, which answers with whichever
+    /// plan it has resolved in the checkout most - an older one, once a checkout has had
+    /// a few. The window's board then showed that plan's finished slices, and the PRs the
+    /// latest run built, with their Push and Open PR, were nowhere on it (rule 7).
+    pub fn plan_in_workspace(&self, project_id: i64, workspace: &Path) -> Result<Option<String>> {
+        let scope = self.workspace_scope(workspace)?;
+        let (path, plan, slice) = scope.params();
+        Ok(self
+            .db()
+            .conn()
+            .query_row(
+                &format!(
+                    "SELECT plan_slug FROM run WHERE project_id = ?1 AND plan_slug IS NOT NULL
+                        AND {}
+                      ORDER BY id DESC LIMIT 1",
+                    WorkspaceScope::run_sql("run", 2)
+                ),
+                params![project_id, path, plan, slice],
+                |row| row.get(0),
+            )
+            .optional()?)
+    }
+
     /// A run's rows as seen from one checkout: all of them from a checkout the run started
     /// in, and only the ones that built or checked the PR a PR's worktree holds.
     pub fn nodes_in_workspace(&self, run_id: i64, workspace: &Path) -> Result<Vec<NodeRun>> {
@@ -1800,6 +1826,47 @@ mod tests {
         assert_eq!(found, [now[1], now[0]]);
         // The checkout they started in still has all three.
         assert_eq!(s.runs_in_workspace(project, main, 10).unwrap().len(), 3);
+    }
+
+    #[test]
+    fn a_checkout_works_on_the_plan_its_latest_run_worked_on() {
+        // ai-planner, asked which plan a checkout is on, answered with the plan it had
+        // resolved there most - an older one - so the window's board showed that plan's
+        // finished slices, and the PRs the latest run built, with their Push and Open PR,
+        // were nowhere on it.
+        let (mut s, project, team) = seeded();
+        let main = Path::new("/tmp/widget-main");
+        let slot = "/tmp/awt/widget/1/widget";
+        let registry = ModelRegistry::local_only();
+        let backend = backend(&s, team);
+        assert_eq!(s.plan_in_workspace(project, main).unwrap(), None);
+
+        for (prompt, plan) in [("first", "older-plan"), ("second", "review-tab")] {
+            let run = s
+                .create_run_in(project, prompt, RunTrigger::Manual, Some(main))
+                .unwrap();
+            s.set_run_plan(run.id, plan).unwrap();
+            let node = s
+                .dispatch_task(run.id, backend, "PR1", Some("T1"), &registry)
+                .unwrap();
+            s.attach_worktree(node.id, slot, Some(&format!("{plan}/pr1")), None)
+                .unwrap();
+        }
+        // A run that has not written its plan yet does not hide the one before it.
+        s.create_run_in(project, "planning", RunTrigger::Manual, Some(main))
+            .unwrap();
+
+        assert_eq!(
+            s.plan_in_workspace(project, main).unwrap().as_deref(),
+            Some("review-tab")
+        );
+        // A PR's worktree works on the plan of the run that built the PR it holds.
+        assert_eq!(
+            s.plan_in_workspace(project, Path::new(slot))
+                .unwrap()
+                .as_deref(),
+            Some("review-tab")
+        );
     }
 
     /// On macOS a tempdir under `/var/folders` is `/private/var/folders` (D12); the explicit

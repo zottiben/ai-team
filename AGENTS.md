@@ -275,7 +275,10 @@ once deferred a slice in it. So Rust creates the run's plan itself (`Planner::cr
 titled by the orchestrator's `Plan:` line, based on the trunk so every slice copies that
 base) before the planner's turn, and every seat's `aip serve` runs with
 `AI_PLANNER_PLAN=<the run's plan>`. The orchestrator's grounding turn gets no planning
-tools at all: there is no plan yet, and nothing to infer.
+tools at all: there is no plan yet, and nothing to infer. A checkout's plan, for the
+window's board and its Push/Open PR, an empty-prompt build, plan approval and review
+steering, is its newest run's (`Store::plan_in_workspace`); ai-planner's answer stands only
+where ai-team has run nothing with a plan.
 
 **A slice is one PR, built as its tasks (PW4).** The planner writes them into the scope,
 one line each - `- T1 [backend] Title - Touches: paths` - and `tasks.rs` reads them back;

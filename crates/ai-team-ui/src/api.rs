@@ -2269,15 +2269,29 @@ async fn submit(
         }
     }
 
-    // Both paths write to ai-planner through its own CLI (D4).
-    let for_plan = repo.clone();
+    // Both paths write to ai-planner through its own CLI (D4), on the plan the review's
+    // run worked on - not whichever plan ai-planner would guess for this checkout.
+    let planner = {
+        let store = state.store()?;
+        let store = store.lock();
+        match pending
+            .review
+            .run_id
+            .and_then(|run| store.run(run).ok())
+            .and_then(|run| run.plan_slug)
+        {
+            Some(plan) => ai_team_core::Planner::at(&repo).for_plan(plan),
+            None => planner_in(&store, pending.review.project_id, &repo)?,
+        }
+    };
+    let for_plan = planner.clone();
     let queue_state = state.clone();
     let outcome = ai_team_core::deliver_review(
         &pending,
         node,
         orchestrator,
         |title, scope| async move {
-            ai_team_core::Planner::at(for_plan)
+            for_plan
                 .add_slice(
                     "RV",
                     &title,
@@ -2290,11 +2304,7 @@ async fn submit(
                 )
                 .await
         },
-        |key, addition| async move {
-            ai_team_core::Planner::at(repo)
-                .amend_scope(&key, &addition)
-                .await
-        },
+        |key, addition| async move { planner.amend_scope(&key, &addition).await },
         // The lock is taken and dropped inside the callback, so it is never held across
         // one of the awaits above.
         |node_run_id, agent_id, message| {
@@ -2411,7 +2421,30 @@ async fn planner_for(
         })?
     };
     let worktree = worktree_for(state, project, None, workspace).await?;
-    Ok((ai_team_core::Planner::at(worktree), team_id))
+    let planner = {
+        let store = state.store()?;
+        let store = store.lock();
+        planner_in(&store, store.find_project(project)?.id, &worktree)?
+    };
+    Ok((planner, team_id))
+}
+
+/// The planner for a checkout, on the plan the checkout is working on: its newest run's,
+/// or - where ai-team has run nothing with a plan - whatever ai-planner resolves there.
+///
+/// Never ai-planner's guess where ai-team knows better (rule 7). Asked without a plan, it
+/// answered with the plan the checkout had resolved to most, an older one: the board
+/// showed that plan's finished slices, and the PRs the latest run built - with their Push
+/// and Open PR - were nowhere in the window.
+fn planner_in(
+    store: &ai_team_core::Store,
+    project_id: i64,
+    worktree: &std::path::Path,
+) -> Result<ai_team_core::Planner> {
+    Ok(match store.plan_in_workspace(project_id, worktree)? {
+        Some(plan) => ai_team_core::Planner::at(worktree).for_plan(plan),
+        None => ai_team_core::Planner::at(worktree),
+    })
 }
 
 async fn board(
@@ -2749,7 +2782,13 @@ async fn continue_current_approval(
             "approving the current plan cannot also change how a run starts",
         )));
     }
-    let current = ai_team_core::Planner::at(workspace).current().await?;
+    let current = {
+        let store = state.store()?;
+        let store = store.lock();
+        planner_in(&store, store.find_project(&request.project)?.id, workspace)?
+    }
+    .current()
+    .await?;
     let planner = ai_team_core::Planner::at(workspace).for_plan(current.plan.clone());
     let slices = planner.slices().await?;
     let has_legacy_hold = slices.iter().any(ai_team_core::Slice::is_approval_held);
@@ -2832,7 +2871,12 @@ async fn start(
         // "Build what is ready" must not step around a run that already owns this plan.
         // The normal UI continues that run directly; this server check closes stale-tab
         // and non-UI callers as well.
-        if let Ok(current) = ai_team_core::Planner::at(&workspace).current().await {
+        let checkout = {
+            let store = state.store()?;
+            let store = store.lock();
+            planner_in(&store, store.find_project(&request.project)?.id, &workspace)?
+        };
+        if let Ok(current) = checkout.current().await {
             let coherent_run = {
                 let store = state.store()?;
                 let store = store.lock();
