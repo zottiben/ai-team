@@ -165,6 +165,27 @@ fn node_item(node: &crate::model::NodeRun, slug: &str, run_id: i64) -> Option<It
     }
 }
 
+/// A turn whose run's process stopped under it, as something to resume.
+fn interrupted_item(node: &crate::model::NodeRun, slug: &str, run_id: i64) -> Item {
+    let work = [node.slice_key.as_deref(), node.task_key.as_deref()]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" ");
+    Item {
+        urgency: Urgency::Blocking,
+        kind: "node".into(),
+        title: format!("{} was interrupted on {work}", node.role),
+        detail: Some(format!(
+            "The ai-team process running run #{run_id} stopped part-way through this turn. \
+             Resume it from Work to carry on in the same session and worktree."
+        )),
+        project: Some(slug.to_string()),
+        run_id: Some(run_id),
+        since: node.started_at.clone(),
+    }
+}
+
 /// Everything ai-team's own database knows about.
 ///
 /// The plan's open questions live in ai-planner and are added by the caller, which has a
@@ -214,6 +235,10 @@ pub fn from_store(store: &Store) -> Result<Vec<Item>> {
                             && later.slice_key == node.slice_key
                     })
             };
+            // Its process stopped with this turn part-way: nobody is building it, and it
+            // carries on only when somebody resumes it.
+            let interrupted = run.status == crate::model::RunStatus::Blocked
+                && run.blocked_reason.as_deref() == Some(crate::store::INTERRUPTED_REASON);
             for node in &nodes {
                 if matches!(node.status, NodeStatus::Failed | NodeStatus::Blocked)
                     && superseded(node)
@@ -221,6 +246,10 @@ pub fn from_store(store: &Store) -> Result<Vec<Item>> {
                     continue;
                 }
                 if waiting(node) {
+                    continue;
+                }
+                if interrupted && node.status == NodeStatus::Running {
+                    items.push(interrupted_item(node, &slug, run.id));
                     continue;
                 }
                 if let Some(item) = node_item(node, &slug, run.id) {
@@ -555,6 +584,59 @@ mod tests {
             flying,
             ["verifier is checking PR1", "frontend is building PR2"]
         );
+    }
+
+    #[test]
+    fn a_turn_whose_process_stopped_is_something_to_resume_not_the_team_working() {
+        let mut store = Store::memory().unwrap();
+        let project = store
+            .create_project(crate::NewProject {
+                name: "Widget".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        let team = store.seed_default_team(project.id).unwrap();
+        let backend = store
+            .agents(team.id)
+            .unwrap()
+            .into_iter()
+            .find(|agent| agent.role == "backend")
+            .unwrap()
+            .id;
+        let run = store
+            .create_run(project.id, "build", crate::RunTrigger::Manual)
+            .unwrap();
+        let node = store
+            .dispatch_task(
+                run.id,
+                backend,
+                "PR1",
+                Some("T2"),
+                &crate::machine::ModelRegistry::local_only(),
+            )
+            .unwrap();
+        store.set_node_status(node.id, NodeStatus::Running).unwrap();
+        store
+            .block_run(run.id, crate::store::INTERRUPTED_REASON)
+            .unwrap();
+
+        let items = from_store(&store).unwrap();
+
+        assert!(
+            items.iter().all(|item| item.urgency != Urgency::InFlight),
+            "{items:?}"
+        );
+        let resume = items
+            .iter()
+            .find(|item| item.run_id == Some(run.id))
+            .unwrap();
+        assert_eq!(resume.urgency, Urgency::Blocking);
+        assert_eq!(resume.title, "backend was interrupted on PR1 T2");
+        assert!(resume
+            .detail
+            .as_deref()
+            .unwrap()
+            .contains("Resume it from Work"));
     }
 
     #[test]

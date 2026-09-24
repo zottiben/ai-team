@@ -131,7 +131,7 @@ pub use speak::{
     target_in as speak_target_in, Reached, Target, Would,
 };
 pub use stack::parent as stacked_on;
-pub use store::Store;
+pub use store::{Abandoned, Store, INTERRUPTED_REASON};
 pub use supervise::{outcome_status, Dispatched, Orchestration, Orchestrator, Rig, TurnOutcome};
 pub use terminal::{Chunk, Listed, Terminals};
 pub use today::{
@@ -149,8 +149,9 @@ pub use workflow::{
     approve_at as approve_run_at, claim_plan_approval, claim_plan_approval_with_direction,
     claim_session_reset, continue_approved_at as continue_approved_run_at, follow_up_at,
     open_follow_up, reset_claimed_session_at as reset_claimed_session,
-    resume_interrupted_node_at as resume_interrupted_node, run as run_workflow, Branching,
-    Progress, Request, PLAN_APPROVAL_PREPARING_REASON, PLAN_APPROVAL_REASON,
+    resume_interrupted_node_at as resume_interrupted_node, run as run_workflow,
+    settle_abandoned_runs, Branching, Progress, Request, PLAN_APPROVAL_PREPARING_REASON,
+    PLAN_APPROVAL_REASON,
 };
 
 /// The workspace version, compiled in.

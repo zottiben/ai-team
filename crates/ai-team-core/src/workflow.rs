@@ -1346,13 +1346,22 @@ pub async fn resume_interrupted_node_at(
 ) -> Result<Orchestration> {
     let mut store = Store::open(db)?;
     let run = store.run(run_id)?;
-    if run.status != RunStatus::Running || run.blocked_reason.is_some() {
+    // Interrupted is what a run whose process stopped mid-turn is settled as, and waiting
+    // to be resumed is the whole of what that state means.
+    let interrupted = run.status == RunStatus::Blocked
+        && run.blocked_reason.as_deref() == Some(crate::store::INTERRUPTED_REASON);
+    if !interrupted && (run.status != RunStatus::Running || run.blocked_reason.is_some()) {
         return Err(Error::invalid("that run is no longer available to resume"));
     }
     let node = store.node_run(node_id)?;
     if node.run_id != run_id || node.status != NodeStatus::Running {
         return Err(Error::invalid("that node is no longer available to resume"));
     }
+    let run = if interrupted {
+        store.resume_interrupted_run(run_id, i64::from(std::process::id()))?
+    } else {
+        run
+    };
     let team_id = run
         .team_id
         .ok_or_else(|| Error::invalid("the interrupted run has no team snapshot"))?;
@@ -1508,6 +1517,82 @@ pub async fn reset_claimed_session_at(db: &Path, run_id: i64, node_id: i64) -> R
 }
 
 /// Attention delivery must not be able to fail the run it describes.
+/// Settle every run whose ai-team process is gone (see `store::interrupted`), and tell the
+/// operator about each. Returns what happened, a line a run, for whoever is watching.
+///
+/// A maker's turn that stopped for good gives its slice and worktree back as any failed
+/// build does: left claimed, the slice looks taken to every later run, and the lease is
+/// never returned to the pool.
+pub async fn settle_abandoned_runs(db: &Path) -> Result<Vec<String>> {
+    let settled = Store::open(db)?.settle_abandoned_runs(crate::util::process_is_alive)?;
+    let mut said = Vec::new();
+    for abandoned in settled {
+        let run = &abandoned.run;
+        {
+            let mut store = Store::open(db)?;
+            if abandoned.resumable.is_empty() {
+                notify_run(
+                    &mut store,
+                    run.id,
+                    "failed",
+                    "Team run stopped",
+                    &format!(
+                        "Run #{} stopped when the ai-team process running it (pid {}) exited.",
+                        run.id, abandoned.pid
+                    ),
+                );
+            } else {
+                notify_run(
+                    &mut store,
+                    run.id,
+                    "input_required",
+                    "Team run interrupted",
+                    &format!(
+                        "Run #{} was interrupted when the ai-team process running it (pid {})                          exited. Resume it from Work to carry on where it stopped.",
+                        run.id, abandoned.pid
+                    ),
+                );
+            }
+        }
+        said.push(if abandoned.resumable.is_empty() {
+            format!(
+                "run #{} stopped: its process ({}) is gone",
+                run.id, abandoned.pid
+            )
+        } else {
+            format!(
+                "run #{} interrupted: its process ({}) is gone; resume it to carry on",
+                run.id, abandoned.pid
+            )
+        });
+        give_back_stopped(run, &abandoned).await;
+    }
+    Ok(said)
+}
+
+/// Release what a build that stopped for good held - its slice's claim and its lease -
+/// as a failed build does, so later runs do not find its slice taken.
+async fn give_back_stopped(run: &crate::model::Run, abandoned: &crate::store::Abandoned) {
+    let (Some(plan), Some(root)) = (run.plan_slug.as_deref(), run.workspace_path.as_deref()) else {
+        return;
+    };
+    let planner = Planner::at(root).for_plan(plan);
+    for node in &abandoned.released {
+        let (Some(slice), Some(worktree)) =
+            (node.slice_key.as_deref(), node.worktree_path.as_deref())
+        else {
+            continue;
+        };
+        let reason = node.blocked_reason.as_deref().unwrap_or("its run stopped");
+        let _ = planner.set_status(slice, "blocked", Some(reason)).await;
+        let _ = planner.release(slice, Path::new(worktree)).await;
+        // The run's own checkout is the operator's, not a lease to give back.
+        if !crate::neighbours::same_worktree(worktree, root) {
+            let _ = Worktrees::at(root).release(Path::new(worktree)).await;
+        }
+    }
+}
+
 fn notify_run(store: &mut Store, run_id: i64, kind: &str, title: &str, body: &str) {
     let Ok(run) = store.run(run_id) else { return };
     let Ok(project) = store.project(run.project_id) else {

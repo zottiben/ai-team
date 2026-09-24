@@ -7,6 +7,8 @@
 
 mod agents;
 mod events;
+mod interrupted;
+pub use interrupted::{Abandoned, INTERRUPTED_REASON};
 mod notifications;
 mod projects;
 mod reminders;
