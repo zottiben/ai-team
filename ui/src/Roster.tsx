@@ -352,7 +352,7 @@ export function Roster({
                   <span className="faint mono">{seat.role}</span>
                 </span>
                 <span className="roster__seat">
-                  <span className="status" data-status={seat.read_only ? "queued" : "running"}>
+                  <span className="status" data-access={seat.read_only ? "reads" : "writes"}>
                     {seat.read_only ? "reads" : "writes"}
                   </span>
                   {!seat.enabled && (

@@ -68,3 +68,9 @@ it("a tree row's caret slot has one width, caret or not", () => {
   expect(rule(".tree__caret")).toMatch(/flex:\s*none/);
   expect(rule(".tree__caret")).toMatch(/\bwidth:/);
 });
+
+// What a seat may do is coloured, but still: only work that is happening pulses.
+it("a seat's access has a colour of its own and no pulse", () => {
+  expect(rule('.status[data-access="writes"]')).toMatch(/--status-color:/);
+  expect(css).not.toMatch(/data-access[^{]*::before[^{]*\{[^}]*animation/);
+});

@@ -388,6 +388,11 @@ button.card:hover {
 .status[data-status="blocked"] { --status-color: var(--status-blocked-default); }
 .status[data-status="cancelled"] { --status-color: var(--status-cancelled-default); }
 
+/* What a seat may do, not what it is doing: coloured, but it never breathes - a pulse is
+ * for work that is happening. */
+.status[data-access="writes"] { --status-color: var(--accent-action-default); }
+.status[data-access="reads"] { --status-color: var(--status-queued-default); }
+
 /* A running row breathes, so an open window tells you something is happening from
  * across the desk. Respects a reduced-motion preference. */
 .status[data-status="running"]::before,

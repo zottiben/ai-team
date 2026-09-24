@@ -385,6 +385,19 @@ it("a seat's role sits beside its name, and its badges together at the end", asy
   expect(who?.parentElement?.children).toHaveLength(2);
 });
 
+it("a seat's access is not dressed as a run state, which breathes as if it were working", async () => {
+  // "writes" wore the running status, and a running status pulses - so every maker seat on
+  // the Team page looked busy while nothing ran.
+  stub({ seats: [seat(), seat({ id: 4, role: "verifier", name: "Verifier", read_only: true })] });
+  render(<Roster onChanged={() => {}} />);
+
+  for (const access of ["writes", "reads"]) {
+    const badge = await screen.findByText(access);
+    expect(badge.getAttribute("data-status")).toBeNull();
+    expect(badge.getAttribute("data-access")).toBe(access);
+  }
+});
+
 it("says when a change takes effect, because an edit that looks applied and is not is the confusing case", async () => {
   stub();
   render(<Roster onChanged={() => {}} />);
