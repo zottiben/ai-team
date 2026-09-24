@@ -22,22 +22,46 @@ pub(crate) async fn prepare_branch(worktree: &Path, branch: &str) -> Result<()> 
     git(worktree, &["checkout", "-B", branch]).await.map(drop)
 }
 
-/// Put a leased checkout on the exact branch and base ai-planner declared.
+/// How a checkout was put on a PR's branch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Placed {
+    /// A new branch, cut from the base.
+    Started,
+    /// The branch already carried work of its own, and carries on from it.
+    Continued,
+}
+
+/// Put a checkout on a PR's branch: carry on with it when it already holds work, start it
+/// from `base` when it does not.
 ///
-/// A lease usually returns on the repository's default branch. Building a stacked slice
-/// from that incidental HEAD drops its predecessor, even though the plan names the
-/// dependency as `base_branch`.
-pub(crate) async fn prepare_branch_from(
-    worktree: &Path,
-    branch: &str,
-    base_branch: Option<&str>,
-) -> Result<()> {
-    match base_branch.filter(|base| !base.trim().is_empty()) {
-        Some(base) => git(worktree, &["checkout", "-B", branch, base])
-            .await
-            .map(drop),
-        None => prepare_branch(worktree, branch).await,
+/// `checkout -B` resets a branch to its start point, and a PR's branch outlives any one
+/// build - a review sends it back for more, a recovered run picks it up again. Resetting
+/// it would throw its commits away. So a branch with commits of its own is checked out as
+/// it is, and only a new one, or one holding nothing beyond its base, is cut from the
+/// base. The base is explicit even for the default branch: a lease usually comes back on
+/// it, and building from that incidental `HEAD` drops a stacked slice's predecessor.
+pub(crate) async fn put_on_branch(worktree: &Path, branch: &str, base: &str) -> Result<Placed> {
+    if branch_exists(worktree, branch).await {
+        let ahead = git(
+            worktree,
+            &[
+                "rev-list",
+                "--count",
+                &format!("{base}..refs/heads/{branch}"),
+            ],
+        )
+        .await?;
+        if ahead.trim().parse::<u64>().unwrap_or(0) > 0 {
+            git(worktree, &["checkout", "--quiet", branch]).await?;
+            return Ok(Placed::Continued);
+        }
     }
+    git(
+        worktree,
+        &["checkout", "--quiet", "--no-track", "-B", branch, base],
+    )
+    .await?;
+    Ok(Placed::Started)
 }
 
 /// Commit everything in a worktree onto a branch.
@@ -117,52 +141,78 @@ fn porcelain_paths(status: &str) -> Vec<String> {
         .collect()
 }
 
-/// What every path that differs from `HEAD` holds right now: its blob hash, or `None` for
-/// a deletion. Taken before a turn, so what the turn changed can be told apart from what
-/// was already there.
-pub(crate) type Snapshot = std::collections::BTreeMap<String, Option<String>>;
+/// What a checkout holds before a turn: the commit it is on, and what every path that
+/// differs from it holds - a blob hash, or `None` for a deletion. So what the turn changed
+/// can be told apart from what was already there.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct Snapshot {
+    /// `None` when it was not taken - after an interrupted process, say - and whether the
+    /// seat committed anything itself cannot be known.
+    head: Option<String>,
+    paths: std::collections::BTreeMap<String, Option<String>>,
+}
 
 pub(crate) async fn snapshot(worktree: &Path) -> Result<Snapshot> {
+    let head = rev_parse(worktree, "HEAD").await.ok();
     let status = git(
         worktree,
         &["status", "--porcelain", "--untracked-files=all"],
     )
     .await?;
     // A trailing slash is a nested repository or worktree: a checkout, not a file.
-    let paths: Vec<String> = porcelain_paths(&status)
+    let listed: Vec<String> = porcelain_paths(&status)
         .into_iter()
         .filter(|path| !path.ends_with('/'))
         .collect();
-    let present: Vec<&str> = paths
+    let present: Vec<&str> = listed
         .iter()
         .map(String::as_str)
         .filter(|path| worktree.join(path).is_file())
         .collect();
     let hashes = hash_objects(worktree, &present).await?;
-    let mut snapshot: Snapshot = present
+    let mut paths: std::collections::BTreeMap<String, Option<String>> = present
         .iter()
         .zip(hashes)
         .map(|(path, hash)| ((*path).to_string(), Some(hash)))
         .collect();
-    for path in paths {
-        snapshot.entry(path).or_insert(None);
+    for path in listed {
+        paths.entry(path).or_insert(None);
     }
-    Ok(snapshot)
+    Ok(Snapshot { head, paths })
 }
 
-/// The paths whose content is different now from what `before` recorded.
+/// What one turn did to a checkout.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Changes {
+    /// Paths whose content differs from what the snapshot recorded.
+    pub(crate) paths: Vec<String>,
+    /// Whether the checkout's own commit moved: the seat committed something itself.
+    pub(crate) committed: bool,
+}
+
+/// What changed since `before`: uncommitted paths whose content is different, and whether
+/// the seat committed work of its own.
 ///
 /// What one turn changed, and nothing else: the gates leave output behind that no ignore
 /// file covers, and committing that as the seat's work would be ai-team's mess on
 /// somebody's pull request (rule 9). A path the turn put back to `HEAD` is not listed -
-/// there is nothing of it left to commit.
-pub(crate) async fn changed_since(worktree: &Path, before: &Snapshot) -> Result<Vec<String>> {
-    Ok(snapshot(worktree)
-        .await?
-        .into_iter()
-        .filter(|(path, now)| before.get(path) != Some(now))
-        .map(|(path, _)| path)
-        .collect())
+/// there is nothing of it left to commit. A seat is told not to commit, but one that does
+/// has still built something, and must not read as a turn that changed nothing.
+pub(crate) async fn changed_since(worktree: &Path, before: &Snapshot) -> Result<Changes> {
+    let now = snapshot(worktree).await?;
+    let committed = match (&before.head, &now.head) {
+        (Some(before), Some(now)) => before != now,
+        _ => false,
+    };
+    Ok(Changes {
+        paths: now
+            .paths
+            .into_iter()
+            .filter(|(path, hash)| before.paths.get(path) != Some(hash))
+            .map(|(path, _)| path)
+            .collect(),
+        committed,
+    })
 }
 
 /// Blob hashes for files, in the order given. Paths go in on stdin rather than as
@@ -781,10 +831,11 @@ mod tests {
             .await
             .unwrap();
 
-        prepare_branch_from(dir.path(), "feature/second", Some("feature/first"))
+        let placed = put_on_branch(dir.path(), "feature/second", "feature/first")
             .await
             .unwrap();
 
+        assert_eq!(placed, Placed::Started);
         assert_eq!(
             current_branch(dir.path()).await.as_deref(),
             Some("feature/second")
@@ -797,6 +848,43 @@ mod tests {
             base
         );
         assert!(dir.path().join("first.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn a_branch_that_already_carries_work_is_continued_not_reset() {
+        let dir = repo().await;
+        let original = current_branch(dir.path()).await.unwrap();
+        put_on_branch(dir.path(), "ai-team/pr1", &original)
+            .await
+            .unwrap();
+        std::fs::write(dir.path().join("built.txt"), "the first build\n").unwrap();
+        git(dir.path(), &["add", "built.txt"]).await.unwrap();
+        git(dir.path(), &["commit", "-qm", "PR1 T1: build"])
+            .await
+            .unwrap();
+        let built = rev_parse(dir.path(), "HEAD").await.unwrap();
+        git(dir.path(), &["checkout", "-q", &original])
+            .await
+            .unwrap();
+
+        // Sent back for more - by a review, or a recovered run. Its commits stay.
+        let placed = put_on_branch(dir.path(), "ai-team/pr1", &original)
+            .await
+            .unwrap();
+        assert_eq!(placed, Placed::Continued);
+        assert_eq!(rev_parse(dir.path(), "HEAD").await.unwrap(), built);
+
+        // A branch with nothing of its own is simply started again from the base.
+        git(dir.path(), &["checkout", "-q", &original])
+            .await
+            .unwrap();
+        git(dir.path(), &["branch", "-q", "ai-team/empty"])
+            .await
+            .unwrap();
+        let placed = put_on_branch(dir.path(), "ai-team/empty", &original)
+            .await
+            .unwrap();
+        assert_eq!(placed, Placed::Started);
     }
 
     #[tokio::test]

@@ -1,12 +1,13 @@
 # ai-team — Concept
 
-> Status: draft · Author: zottiben · Last updated: 2026-09-17
+> Status: draft · Author: zottiben · Last updated: 2026-09-23
 
 ## Elevator pitch
 
 A desktop platform where you give one prompt to an orchestrator and a configured team of
-AI agents plans it, builds it in parallel worktrees, verifies its own work, and brings you a
-diff to review — with the plan living on your ai-planner board the whole time.
+AI agents plans it as pull requests, builds each in a worktree of its own, verifies its own
+work, and brings you a diff to review — with the plan living on your ai-planner board the
+whole time.
 
 ## Core fantasy
 
@@ -36,9 +37,11 @@ to extend. Everything runs locally on the machine it is installed on.
 
 ## Core loop
 
-**Moment to moment:** prompt → the orchestrator plans onto the board → agents claim slices
-into leased worktrees → a verifier on a different model checks the work → a diff arrives in
-your review queue → you comment → the responsible agent picks the comments up.
+**Moment to moment:** prompt → the orchestrator plans onto the board, one user story per
+pull request → each PR is built in its own worktree, its tasks taken in turn by the seats
+that own them → a verifier on a different model checks the whole PR → a diff arrives in
+your review queue → you comment → the responsible agent picks the comments up, in that
+PR's worktree.
 
 **Session:** open Today, see the one right next thing across every project, unblock it.
 
@@ -79,7 +82,7 @@ mistake twice and the accepted-change rate climbs.
 
 ## Scope & non-goals
 
-- In scope: team configuration, orchestration, worktree-parallel execution, verification,
+- In scope: team configuration, orchestration, one worktree per pull request, verification,
   diff review with comments, Today, analytics, reminders, and an editing surface good enough
   to live in.
 - Non-goals: multi-user, hosting, billing, mobile, and any model access that does not run

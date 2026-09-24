@@ -14,7 +14,7 @@ use std::fmt::Write as _;
 use std::path::Path;
 
 use crate::error::{Error, Result};
-use crate::neighbours::git;
+use crate::neighbours::{git, Planner};
 
 /// What putting a run's checkout on its own branch did, for the run to say.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -154,10 +154,38 @@ pub(crate) fn refuse_default_branch(branch: &str, trunk: &str, allowed: bool) ->
     )))
 }
 
+/// Make a plan's stack explicit on the board: a branch for every slice, and for every
+/// slice that says `Stacks on:` another, that one's branch as its base.
+///
+/// Written through ai-planner's CLI, because its MCP server can set neither - which is
+/// why a planner seat says it in the scope instead. Idempotent, so it is asked before
+/// every build as well as after planning: a plan somebody wrote by hand gets the same.
+/// `names` says whether the plan's branch names are ai-team's to set (see [`Names`]).
+///
+/// [`Names`]: crate::stack::Names
+pub(crate) async fn settle_stack(
+    planner: &Planner,
+    slug: &str,
+    names: crate::stack::Names,
+) -> Result<()> {
+    let planner = planner.clone().for_plan(slug);
+    let slices = planner.slices().await?;
+    for edit in crate::stack::edits(slug, &slices, names) {
+        match edit {
+            crate::stack::Edit::Branch { key, branch } => {
+                planner.set_branch(&key, &branch).await?;
+            }
+            crate::stack::Edit::Base { key, base } => {
+                planner.set_slice_base(&key, &base).await?;
+            }
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::neighbours::Planner;
 
     /// git with an identity and no signing, so a machine's own config cannot change what
     /// these tests see.

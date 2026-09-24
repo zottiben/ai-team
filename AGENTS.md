@@ -160,8 +160,9 @@ a `cd` changes. The guard is installed *outside* the lease, because a guard a no
 edit is not a guard.
 
 It is not a security boundary and the file says so. A model with `bash` can spell
-anything. What contains a node is that the worktree is disposable, the branch is a draft,
-and nothing in the process is authenticated to publish.
+anything. What contains a node is that the branch is a draft, nothing in the process is
+authenticated to publish, and - except for a one-PR plan, which builds in the run's own
+checkout on a branch made for it - the worktree is a lease nobody else works in.
 
 `read_only` seats pass `--exclude-tools write,edit` and keep `bash`, so the guarantee is
 "cannot edit source through its tools", not "cannot write a byte" - the verifier has to
@@ -208,10 +209,18 @@ hands it to its crew - one Pi process per task turn, one turn at a time in each 
 agent shelling out to `awt` and spawning sibling agents would be the supervisor's job done
 with no budget or failure isolation around it.
 
-ai-planner has **no dependency edges** — only `ord`, `status`, and a claim scoped to a
-worktree. So dispatch means *ready, claimed, and the owning seat is idle*; a dependent
-slice is held back by being left `blocked` rather than `ready`. Never add a deps table
-here: that is plan structure, and copying it is what D4 forbids.
+The only dependency ai-planner records is a **stack**: a slice's `base_branch` naming
+another slice's `branch` (PW9). Its MCP server cannot set one, so a planner seat writes
+`Stacks on: PR1` in the scope and `stack.rs` writes the base through the CLI. **Every PR's
+branch lives under its plan's slug**: right after planning, before anything is built, a
+planner's own name `pr1-x` becomes `<plan>/pr1-x` (`stack::Names::Own`); later, names stand,
+because work may be on them. A bare name is shared across plans, and since a branch with
+commits is *continued*, a re-planned feature would silently build on the old plan's work.
+A new plan's slug is never an existing branch, or git could not make `<slug>/...`. A child
+builds once its parent is **built**
+(`in_review`/`done`), not merged; the board is read again after every wave so it is
+picked up in the same run. Never add a deps table here: that is plan structure, and
+copying it is what D4 forbids.
 
 **A run that plans starts on a fresh branch.** Its checkout is fetched and put on
 `ai-team/run-<id>`, cut from `origin/<default>`; a checkout with uncommitted work, or with
@@ -242,10 +251,20 @@ committed as it finishes (`PR1 T2: title`), so the next starts from a known stat
 share one index, lockfiles and gates; parallelism comes from sibling PRs, never from seats
 sharing a checkout. A seat is dispatched once per wave, and a PR holds its whole crew.
 
-**A leased worktree is borrowed.** `awt return` cleans and resets it, so a node's work is
-committed to an `ai-team/<slice>` branch *before* the lease goes back. The worktrees are
-git worktrees of one repo, so the branch survives; the worktree does not. A turn that
-reports done but changed no file is recorded as **failed**, not done.
+**One worktree per PR, not per agent** (PW3, PW10). A one-PR plan builds in the run's own
+checkout; a larger one gives every PR an `awt` lease, and a built PR **keeps** it - with its
+ai-planner claim - until it is merged or abandoned: it is where review comments are
+worked on and what a stacked PR builds beside. Only a PR that stopped for good gives it
+back; its branch keeps the commits. `git::put_on_branch` **continues** a branch that
+already has work rather than `checkout -B`-resetting it to the base, and a base naming
+the default branch starts from `origin/<default>`. A turn that reports done but changed
+no file is recorded as **failed**, not done - unless it committed its work itself, which
+the snapshot's `HEAD` shows.
+
+**Review comments go back where the PR was built.** A finished seat's review, while its
+PR is still in review and its worktree still on its branch, starts a follow-up run there
+(`follow_up_at`): the seat takes them in its own conversation, and the whole PR is checked
+again. It does not hold the checkout above it, so it runs while another run builds.
 
 ### 8. Done means this project's gates pass (M2-S9)
 `gates.rs` **discovers** the checks from the repo's own manifests - cargo, and only the
@@ -284,7 +303,7 @@ claim, `abort_branch` releases it - and a blocked slice goes back to `blocked` w
 reason, never to `ready`, which would offer the next run the same slice with no memory of
 why it failed.
 
-**The gates run inside the lease and leave build output there.** ai-team writes `target/`,
+**The gates run inside the PR's worktree and leave build output there.** ai-team writes `target/`,
 `node_modules/`, `dist/` and `.output/` into `.git/info/exclude` for that lease,
 and commits only what each turn changed: `git::snapshot` hashes every dirty path before a
 turn and `changed_since` keeps the ones that differ after, so gate output nothing ignores

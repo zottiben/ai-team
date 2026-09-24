@@ -1120,6 +1120,100 @@ pub async fn continue_approved_at(db: &Path, run_id: i64) -> Result<Orchestratio
     result
 }
 
+/// The run a review follow-up is, created before anything is spawned so the caller can
+/// say which run took the comments.
+///
+/// A run of its own, rooted in the checkout the building run was: it is new work, with its
+/// own spend and its own verdict, and the run that built the PR has already been judged.
+pub fn open_follow_up(
+    store: &mut Store,
+    target: &crate::review::FollowUp,
+) -> Result<crate::model::Run> {
+    let built_by = store.run(target.run_id)?;
+    let plan = built_by
+        .plan_slug
+        .clone()
+        .ok_or_else(|| Error::invalid("the run that built this pull request had no plan"))?;
+    let workspace = built_by
+        .workspace_path
+        .as_deref()
+        .map(PathBuf::from)
+        .ok_or_else(|| Error::invalid("the run that built this pull request has no checkout"))?;
+    let run = store.create_run_in(
+        built_by.project_id,
+        &format!("Address review comments on {}", target.slice_key),
+        RunTrigger::Review,
+        Some(&workspace),
+    )?;
+    store.set_run_plan(run.id, &plan)
+}
+
+/// Work a submitted review's comments into the pull request where it was built.
+///
+/// It does not hold the checkout the way a planning run does - it works in the PR's own
+/// worktree - so it runs even while another run is building above it, which is when a
+/// person reviewing the first PR is most likely to want it (PW12).
+pub async fn follow_up_at(
+    db: &Path,
+    run_id: i64,
+    target: crate::review::FollowUp,
+    comments: String,
+) -> Result<Orchestration> {
+    let mut store = Store::open(db)?;
+    let initialization = (|| {
+        store.set_run_supervisor(run_id, i64::from(std::process::id()))?;
+        let run = store.set_run_status(run_id, RunStatus::Running)?;
+        let plan = run
+            .plan_slug
+            .clone()
+            .ok_or_else(|| Error::invalid("the follow-up run has no plan"))?;
+        let repo = run
+            .workspace_path
+            .as_deref()
+            .map(PathBuf::from)
+            .ok_or_else(|| Error::invalid("the follow-up run has no checkout"))?
+            .canonicalize()
+            .map_err(|_| Error::invalid("the checkout that built this no longer exists"))?;
+        let team_id = run
+            .team_id
+            .ok_or_else(|| Error::invalid("the project has no team"))?;
+        let project = store.project(run.project_id)?;
+        Ok::<_, Error>(Orchestrator {
+            db_path: db.to_path_buf(),
+            project_dir: store.support_dir(&project.slug)?,
+            planner: Planner::at(&repo).for_plan(plan),
+            worktrees: Worktrees::at(&repo),
+            repo,
+            run_id,
+            team_id,
+            registry: ModelRegistry::load()?,
+            parallel_width: 1,
+        })
+    })();
+    let orchestrator = match initialization {
+        Ok(orchestrator) => orchestrator,
+        Err(error) => {
+            record_workflow_failure(&mut store, run_id, &error)?;
+            return Err(error);
+        }
+    };
+    let result = match orchestrator.follow_up(&mut store, &target, comments).await {
+        Ok(dispatched) => finish_run(
+            &mut store,
+            run_id,
+            Orchestration {
+                unrouted: Vec::new(),
+                dispatched: vec![dispatched],
+            },
+        ),
+        Err(error) => Err(error),
+    };
+    if let Err(error) = &result {
+        record_workflow_failure(&mut store, run_id, error)?;
+    }
+    result
+}
+
 /// Reattach an interrupted maker to the same run, Pi session and awt lease.
 ///
 /// The caller claims `node_run.supervisor_pid` before spawning this future. Failure leaves
@@ -1315,6 +1409,62 @@ fn notify_run(store: &mut Store, run_id: i64, kind: &str, title: &str, body: &st
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_review_follow_up_is_a_run_of_its_own_triggered_by_the_review() {
+        let checkout = tempfile::tempdir().unwrap();
+        let mut store = Store::memory().unwrap();
+        let project = store
+            .create_project(crate::NewProject {
+                name: "Widget".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        let team = store.seed_default_team(project.id).unwrap();
+        let built = store
+            .create_run_in(
+                project.id,
+                "build PR1",
+                RunTrigger::Manual,
+                Some(checkout.path()),
+            )
+            .unwrap();
+        let built = store.set_run_plan(built.id, "widget-plan").unwrap();
+        let backend = store
+            .agents(team.id)
+            .unwrap()
+            .into_iter()
+            .find(|agent| agent.role == "backend")
+            .unwrap();
+        let node = store
+            .dispatch_task(
+                built.id,
+                backend.id,
+                "PR1",
+                Some("T1"),
+                &ModelRegistry::local_only(),
+            )
+            .unwrap();
+        let node = store.set_node_status(node.id, NodeStatus::Done).unwrap();
+        let target = crate::review::FollowUp {
+            run_id: built.id,
+            node,
+            slice_key: "PR1".into(),
+            plan: "widget-plan".into(),
+            worktree: PathBuf::from("/work/pr1"),
+            branch: "widget-plan/pr1".into(),
+        };
+
+        let follow = open_follow_up(&mut store, &target).unwrap();
+
+        // Its own spend and verdict, rooted and planned where the PR was built - and on
+        // the record as a review's, which is what started it.
+        assert_ne!(follow.id, built.id);
+        assert_eq!(follow.trigger, RunTrigger::Review);
+        assert_eq!(follow.workspace_path, built.workspace_path);
+        assert_eq!(follow.plan_slug.as_deref(), Some("widget-plan"));
+        assert_eq!(follow.prompt, "Address review comments on PR1");
+    }
 
     #[test]
     fn an_explicit_prompt_is_planned_even_when_an_existing_plan_has_ready_work() {

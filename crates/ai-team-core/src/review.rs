@@ -39,6 +39,14 @@ pub enum Submitted {
         /// has a session to tell.
         told_orchestrator: bool,
     },
+    /// The seat that wrote the code had finished, but its pull request is still open in
+    /// the worktree it was built in - so a follow-up run has picked the comments up there,
+    /// on that branch, in that seat's own conversation.
+    FollowedUp {
+        slice_key: String,
+        run_id: i64,
+        comments: usize,
+    },
     /// Nobody was listening, so the work is on the plan for the next run.
     Planned { slice_key: String, comments: usize },
     /// Approved with nothing to act on.
@@ -51,7 +59,21 @@ pub enum Submitted {
 /// against the tip attributes everything anybody else landed in the meantime to this
 /// agent, which is how a review of four lines turns into a review of four hundred.
 pub async fn diff_for(review: &Review, repo: &Path) -> Result<Vec<FileDiff>> {
-    let (base, head) = range_for(review, repo).await?;
+    diff_against(review, repo, None).await
+}
+
+/// The diff a review is about, measured from the branch its pull request is based on.
+///
+/// A PR stacked on another is reviewed against that one's branch, as GitHub will show it:
+/// measured from the default branch, the second PR of a stack shows the first one's work
+/// as well, and a reviewer comments on code that is not this PR's to change. Asked of the
+/// branch each time rather than pinned, because a stack is rebased when its parent moves.
+pub async fn diff_against(
+    review: &Review,
+    repo: &Path,
+    base_branch: Option<&str>,
+) -> Result<Vec<FileDiff>> {
+    let (base, head) = range_for(review, repo, base_branch).await?;
 
     // If this checkout is sitting on the branch under review, diff against what is on
     // disk rather than against its last commit. A hosted review cannot do this - there is
@@ -80,7 +102,11 @@ pub async fn diff_for(review: &Review, repo: &Path) -> Result<Vec<FileDiff>> {
 ///
 /// A review pinned to shas keeps showing the same diff after the branch moves on, which
 /// is what a comment on line 42 needs to stay true.
-async fn range_for(review: &Review, repo: &Path) -> Result<(String, String)> {
+async fn range_for(
+    review: &Review,
+    repo: &Path,
+    base_branch: Option<&str>,
+) -> Result<(String, String)> {
     if let (Some(base), Some(head)) = (&review.base_sha, &review.head_sha) {
         return Ok((base.clone(), head.clone()));
     }
@@ -90,13 +116,16 @@ async fn range_for(review: &Review, repo: &Path) -> Result<(String, String)> {
         .ok_or_else(|| Error::invalid("that review has no branch and no commit range"))?;
     let head = git::rev_parse(repo, branch).await?;
 
-    // Measured from the default branch, not from HEAD. A leased worktree is normally
-    // *sitting on* the branch under review, so `merge-base(HEAD, branch)` is the branch
-    // tip itself and the diff comes back empty - which reads as "the agent changed
-    // nothing" rather than as a bug in the tool.
-    let base_ref = git::default_branch(repo)
-        .await
-        .ok_or_else(|| Error::invalid("this repository has no main branch to measure against"))?;
+    // Measured from the branch it is based on - the default branch unless it stacks -
+    // not from HEAD. A leased worktree is normally *sitting on* the branch under review,
+    // so `merge-base(HEAD, branch)` is the branch tip itself and the diff comes back
+    // empty - which reads as "the agent changed nothing" rather than as a bug in the tool.
+    let base_ref = match base_branch {
+        Some(base) => base.to_string(),
+        None => git::default_branch(repo).await.ok_or_else(|| {
+            Error::invalid("this repository has no main branch to measure against")
+        })?,
+    };
     let base = git::merge_base(repo, &base_ref, branch).await?;
     Ok((base, head))
 }
@@ -189,7 +218,8 @@ pub fn instructions_for(
     let mut out = match audience {
         Audience::TheSameNode => String::from(
             "A human reviewed your work and left comments. Address every one of them in \
-             the worktree you already have, then commit as before.\n\n",
+             the worktree you already have. Do not commit: your changes are committed for \
+             you, as before, when you finish.\n\n",
         ),
         Audience::Whoever { .. } => {
             let mut opening = String::from(
@@ -275,6 +305,52 @@ fn still_working(node: Option<crate::model::NodeRun>) -> Option<(i64, i64)> {
 /// The node a review would steer, read in one synchronous window.
 pub fn responsible(store: &Store, review: &Review) -> Option<crate::model::NodeRun> {
     store.node_run(review.node_run_id?).ok()
+}
+
+/// A pull request whose comments can be worked on where it was built.
+#[derive(Debug, Clone)]
+pub struct FollowUp {
+    /// The run that built it. A follow-up is a run of its own, rooted where this one was.
+    pub run_id: i64,
+    /// The seat's last turn on it: whose work the comments are about, and whose
+    /// conversation the follow-up continues.
+    pub node: crate::model::NodeRun,
+    pub slice_key: String,
+    /// The plan the slice is on, from the run that built it - never re-resolved from a
+    /// checkout, which may have moved on to another plan since.
+    pub plan: String,
+    pub worktree: std::path::PathBuf,
+    pub branch: String,
+}
+
+/// Where a review's comments could be worked on in place, when its seat has finished.
+///
+/// Read from the database in one synchronous window; whether the worktree is still on that
+/// branch is the caller's to check before acting (`follow_up_ready`), because it asks git.
+pub fn follow_up_target(store: &Store, review: &Review) -> Option<FollowUp> {
+    let node = responsible(store, review)?;
+    if still_working(Some(node.clone())).is_some() || node.status != crate::NodeStatus::Done {
+        return None;
+    }
+    Some(FollowUp {
+        run_id: node.run_id,
+        plan: store.run(node.run_id).ok()?.plan_slug?,
+        slice_key: node.slice_key.clone()?,
+        worktree: node
+            .worktree_path
+            .as_deref()
+            .map(std::path::PathBuf::from)?,
+        branch: node.branch.clone()?,
+        node,
+    })
+}
+
+/// Whether a follow-up can work in that worktree now: it still exists, and it is still on
+/// the pull request's branch. A worktree that has moved on - a one-PR plan's checkout
+/// started on the next plan, a lease returned after merge - is not the PR's any more.
+pub async fn follow_up_ready(target: &FollowUp) -> bool {
+    target.worktree.is_dir()
+        && git::current_branch(&target.worktree).await.as_deref() == Some(target.branch.as_str())
 }
 
 /// The orchestrator's current node on this review's run, if it has one.
@@ -472,5 +548,64 @@ mod tests {
         for body in ["first", "second", "third"] {
             assert!(text.contains(body), "{body} missing from {text}");
         }
+    }
+
+    #[test]
+    fn a_finished_seats_review_follows_up_where_its_pr_was_built() {
+        let mut store = Store::memory().unwrap();
+        let project = store
+            .create_project(crate::NewProject {
+                name: "Widget".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        let team = store.seed_default_team(project.id).unwrap();
+        let run = store
+            .create_run(project.id, "build PR1", crate::RunTrigger::Manual)
+            .unwrap();
+        store.set_run_plan(run.id, "widget-plan").unwrap();
+        let backend = store
+            .agents(team.id)
+            .unwrap()
+            .into_iter()
+            .find(|agent| agent.role == "backend")
+            .unwrap();
+        let node = store
+            .dispatch_task(
+                run.id,
+                backend.id,
+                "PR1",
+                Some("T2"),
+                &crate::machine::ModelRegistry::local_only(),
+            )
+            .unwrap();
+        store
+            .attach_worktree(node.id, "/work/pr1", Some("widget-plan/pr1"), None)
+            .unwrap();
+        let review = store
+            .open_review(
+                project.id,
+                "PR1: a range",
+                Some(run.id),
+                Some(node.id),
+                Some("widget-plan/pr1"),
+            )
+            .unwrap();
+
+        // Still working: its session takes the comments directly, not a follow-up.
+        store
+            .set_node_status(node.id, crate::NodeStatus::Running)
+            .unwrap();
+        assert!(follow_up_target(&store, &review).is_none());
+
+        store
+            .set_node_status(node.id, crate::NodeStatus::Done)
+            .unwrap();
+        let target = follow_up_target(&store, &review).unwrap();
+        assert_eq!(target.slice_key, "PR1");
+        assert_eq!(target.plan, "widget-plan");
+        assert_eq!(target.branch, "widget-plan/pr1");
+        assert_eq!(target.worktree, std::path::Path::new("/work/pr1"));
+        assert_eq!(target.node.task_key.as_deref(), Some("T2"));
     }
 }

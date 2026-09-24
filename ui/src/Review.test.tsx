@@ -83,6 +83,17 @@ async function openReview(user: ReturnType<typeof userEvent.setup>) {
   await user.click(await screen.findByText("PR1: subtract"));
 }
 
+it("says before submitting that a finished seat's comments go back into its pull request", async () => {
+  const user = userEvent.setup();
+  stub({ steerable: false, follows_up: true });
+  render(<Review tick={0} />);
+  await openReview(user);
+
+  expect(
+    (await screen.findByText(/still open where it was built/)).textContent,
+  ).toContain("checked again");
+});
+
 it("anchors a comment to the side and line the human clicked", async () => {
   // A comment on a removed line and one on an added line at the same number are
   // different comments. Losing the side is how feedback lands on the wrong code.

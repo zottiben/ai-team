@@ -401,9 +401,11 @@ impl Planner {
     /// seats can be pointed at it rather than left to infer one (see `AI_PLANNER_PLAN`).
     /// `base` is what its pull requests target; every slice copies it as it is added. The
     /// slug is the title's, cut to something a branch name can carry, and chosen so that
-    /// every plan in the repository can still be named (see [`free_slug`]).
+    /// every plan in the repository can still be named and its PRs' `<plan>/<pr>` branches
+    /// can be made (see [`free_slug`]).
     pub async fn create(&self, title: &str, base: Option<&str>) -> Result<String> {
-        let slug = free_slug(title, &self.plans().await?);
+        let branches = super::git::branches(&self.root).await?;
+        let slug = free_slug(title, &self.plans().await?, &branches);
         let mut args = vec!["new", title, "--slug", &slug];
         if let Some(base) = base {
             args.push("--base");
@@ -411,6 +413,14 @@ impl Planner {
         }
         self.output(&args).await?;
         Ok(slug)
+    }
+
+    /// The branch one slice is built on and its pull request targets. Set through the CLI
+    /// because ai-planner's MCP server cannot: a planner seat says `Stacks on:` instead.
+    pub async fn set_slice_base(&self, key: &str, base: &str) -> Result<()> {
+        self.output(&["slice", "edit", key, "--base", base])
+            .await
+            .map(drop)
     }
 
     /// Point the slice at the branch its work landed on, so review starts from the board.
@@ -491,20 +501,23 @@ const SLUG_LIMIT: usize = 40;
 /// ai-planner finds a plan by matching the name against every slug and title that
 /// contains it, and refuses when more than one does: an exact slug does not win. So a new
 /// slug may not be one another plan's slug or title contains, and may not contain another
-/// plan's slug - `csv-export-2` would leave `csv-export` unnameable. Tried in order: the
-/// title's words cut at [`SLUG_LIMIT`], then numbered, then with leading words dropped.
-fn free_slug(title: &str, plans: &[PlanHeader]) -> String {
+/// plan's slug - `csv-export-2` would leave `csv-export` unnameable. Nor may it be one of
+/// the repository's `branches`: git cannot make `shout/pr1` while a branch `shout` exists.
+/// Tried in order: the title's words cut at [`SLUG_LIMIT`], then numbered, then with
+/// leading words dropped.
+fn free_slug(title: &str, plans: &[PlanHeader], branches: &[String]) -> String {
     let words: Vec<String> = crate::util::slugify(title)
         .split('-')
         .filter(|word| !word.is_empty())
         .map(str::to_string)
         .collect();
     let usable = |slug: &str| {
-        plans.iter().all(|plan| {
-            !plan.slug.contains(slug)
-                && !plan.title.to_lowercase().contains(slug)
-                && !slug.contains(plan.slug.as_str())
-        })
+        !branches.iter().any(|branch| branch == slug)
+            && plans.iter().all(|plan| {
+                !plan.slug.contains(slug)
+                    && !plan.title.to_lowercase().contains(slug)
+                    && !slug.contains(plan.slug.as_str())
+            })
     };
     let bases = (0..words.len())
         .map(|start| cut(&words[start..]))
@@ -561,16 +574,27 @@ mod tests {
 
     #[test]
     fn a_plan_slug_is_its_title_cut_at_a_word() {
-        assert_eq!(free_slug("CSV export", &[]), "csv-export");
+        assert_eq!(free_slug("CSV export", &[], &[]), "csv-export");
         // A title that runs on is cut where a word ends, not through one.
         let long = free_slug(
             "Let greet.sh take a --name=VALUE form as well as the positional name",
+            &[],
             &[],
         );
         assert_eq!(long, "let-greet-sh-take-a-name-value-form-as");
         assert!(long.len() <= SLUG_LIMIT);
         // Nothing sluggable still names a plan.
-        assert_eq!(free_slug("!!!", &[]), "plan");
+        assert_eq!(free_slug("!!!", &[], &[]), "plan");
+    }
+
+    #[test]
+    fn a_plan_slug_is_never_a_branch_the_repository_has() {
+        // A plan's PRs are built on `<plan>/<pr>`, and git cannot make `shout/pr1` while a
+        // branch called `shout` exists.
+        let branches = vec!["main".to_string(), "shout".to_string()];
+        assert_eq!(free_slug("Shout", &[], &branches), "shout-2");
+        assert_eq!(free_slug("Main", &[], &branches), "main-2");
+        assert_eq!(free_slug("CSV export", &[], &branches), "csv-export");
     }
 
     #[test]
@@ -595,7 +619,7 @@ mod tests {
             // A slug a title already contains.
             ("Ledger", vec![plan("q3", "Rebuild the ledger totals")]),
         ] {
-            let slug = free_slug(title, &existing);
+            let slug = free_slug(title, &existing, &[]);
             let mut after = existing.clone();
             after.push(plan(&slug, title));
             assert!(names_one(&slug, &after), "{slug} is ambiguous ({title})");

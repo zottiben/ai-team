@@ -160,3 +160,32 @@ async fn a_branch_reviewed_from_another_checkout_is_measured_from_main() {
     assert_eq!(files.len(), 1);
     assert_eq!(files[0].path, "lib.rs");
 }
+
+#[tokio::test]
+async fn a_stacked_pull_request_is_reviewed_against_the_one_it_stacks_on() {
+    // The second PR of a stack carries the first one's commits too. Measured from main,
+    // its review shows both, and a reviewer comments on code that is not its to change.
+    let dir = repo();
+    git(dir.path(), &["checkout", "-q", "-b", "ai-team/s2"]);
+    std::fs::write(dir.path().join("page.html"), "<p>sub</p>\n").unwrap();
+    git(dir.path(), &["add", "-A"]);
+    git(dir.path(), &["commit", "-qm", "show sub"]);
+    git(dir.path(), &["checkout", "-q", "main"]);
+
+    let mut store = Store::memory().unwrap();
+    let review = review(&mut store, "ai-team/s2");
+
+    let from_main = ai_team_core::diff_for(&review, dir.path()).await.unwrap();
+    assert_eq!(from_main.len(), 2, "measured from main it shows both PRs");
+
+    let stacked = ai_team_core::diff_against(&review, dir.path(), Some("ai-team/s1"))
+        .await
+        .unwrap();
+    assert_eq!(
+        stacked
+            .iter()
+            .map(|file| file.path.as_str())
+            .collect::<Vec<_>>(),
+        ["page.html"]
+    );
+}

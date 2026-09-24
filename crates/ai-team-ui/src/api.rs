@@ -1987,9 +1987,12 @@ struct ReviewDetail {
     review: ai_team_core::Review,
     files: Vec<ai_team_core::FileDiff>,
     comments: Vec<ai_team_core::ReviewComment>,
-    /// Whether the node that wrote this is still up. The surface says which of the two
+    /// Whether the node that wrote this is still up. The surface says which of the
     /// things submitting will do, rather than letting it be a surprise.
     steerable: bool,
+    /// Whether, its seat finished, the pull request is still open where it was built - so
+    /// the comments would go back into that worktree rather than onto the plan.
+    follows_up: bool,
 }
 
 async fn review(
@@ -2011,7 +2014,7 @@ async fn review(
     // Read the node in a synchronous window, then let the lock go: what follows talks to
     // git and to the agent, and a future holding a `Store` is neither `Send` nor
     // spawnable.
-    let node = {
+    let (node, target, pr) = {
         let store = state.store()?;
         let store = store.lock();
         if let Some(scope) = &scope {
@@ -2021,18 +2024,48 @@ async fn review(
                 )));
             }
         }
-        ai_team_core::responsible(&store, &review)
+        let node = ai_team_core::responsible(&store, &review);
+        // Which plan and slice this review's work is, to find what it stacks on.
+        let pr = review
+            .run_id
+            .and_then(|run| store.run(run).ok()?.plan_slug)
+            .zip(node.as_ref().and_then(|node| node.slice_key.clone()));
+        (node, ai_team_core::follow_up_target(&store, &review), pr)
     };
 
-    let files = ai_team_core::diff_for(&review, &repo).await?;
+    // A stacked PR is reviewed against the one it stacks on, read from the plan now
+    // rather than pinned, because a stack is rebased when its parent moves.
+    let stacked_on = match &pr {
+        Some((plan, slice_key)) => stacked_base(&repo, plan, slice_key).await,
+        None => None,
+    };
+    let files = ai_team_core::diff_against(&review, &repo, stacked_on.as_deref()).await?;
     let steerable = ai_team_core::steerable(node);
+    let follows_up = match &target {
+        Some(target) => !steerable && ai_team_core::follow_up_ready(target).await,
+        None => false,
+    };
 
     Ok(Json(ReviewDetail {
         review,
         files,
         comments,
         steerable,
+        follows_up,
     }))
+}
+
+/// The branch a PR stacks on, when it stacks on another PR of its plan. `None` for a PR
+/// based on the default branch, and whenever the plan cannot be read: the review then
+/// measures from the default branch, as it always has.
+async fn stacked_base(repo: &std::path::Path, plan: &str, slice_key: &str) -> Option<String> {
+    let slices = ai_team_core::Planner::at(repo)
+        .for_plan(plan)
+        .slices()
+        .await
+        .ok()?;
+    let slice = slices.iter().find(|slice| slice.key == slice_key)?;
+    ai_team_core::stacked_on(slice, &slices).map(|parent| parent.branch.clone().unwrap_or_default())
 }
 
 #[derive(Debug, Deserialize)]
@@ -2100,7 +2133,7 @@ async fn submit(
     JsonBody(request): JsonBody<SubmitRequest>,
 ) -> Result<Json<ai_team_core::Submitted>> {
     // Everything the database knows, read before any await and released after.
-    let (pending, node, orchestrator, slug) = {
+    let (pending, node, orchestrator, slug, follow_up) = {
         let store = state.store()?;
         let store = store.lock();
         let pending = ai_team_core::pending_review(&store, id)?;
@@ -2109,7 +2142,8 @@ async fn submit(
         // reaches the author leaves the plan still saying the old thing.
         let orchestrator = ai_team_core::conductor(&store, &pending.review);
         let slug = store.project(pending.review.project_id)?.slug;
-        (pending, node, orchestrator, slug)
+        let follow_up = ai_team_core::follow_up_target(&store, &pending.review);
+        (pending, node, orchestrator, slug, follow_up)
     };
     let repo = worktree_for(&state, &slug, None, request.workspace.as_deref()).await?;
     let scope = runtime_scope_for(&state, &slug, request.workspace.as_deref()).await?;
@@ -2120,6 +2154,41 @@ async fn submit(
             return Err(crate::error::Error::Core(ai_team_core::Error::invalid(
                 "that review does not belong to the selected workspace",
             )));
+        }
+    }
+
+    // A finished seat whose pull request is still open where it was built: the comments go
+    // back into that worktree, as a follow-up run, rather than onto the plan as new work
+    // somebody would start without the code they are about (PW10).
+    if let Some(target) = follow_up {
+        if !pending.open.is_empty() && ai_team_core::follow_up_ready(&target).await {
+            // The slice first, as when steering: the verifier checks the PR against it.
+            ai_team_core::Planner::at(&repo)
+                .for_plan(target.plan.clone())
+                .amend_scope(&target.slice_key, &ai_team_core::amendment(&pending.open))
+                .await?;
+            let (db, run_id) = {
+                let store = state.store()?;
+                let mut store = store.lock();
+                let run = ai_team_core::open_follow_up(&mut store, &target)?;
+                store.submit_review(id, request.status)?;
+                (store.path().to_path_buf(), run.id)
+            };
+            let comments = pending.message.clone();
+            let slice_key = target.slice_key.clone();
+            // Detached: the follow-up takes minutes, and records itself in the database
+            // the window is already watching.
+            tokio::spawn(async move {
+                if let Err(error) = ai_team_core::follow_up_at(&db, run_id, target, comments).await
+                {
+                    eprintln!("ai-team: review follow-up run {run_id} stopped: {error}");
+                }
+            });
+            return Ok(Json(ai_team_core::Submitted::FollowedUp {
+                slice_key,
+                run_id,
+                comments: pending.open.len(),
+            }));
         }
     }
 

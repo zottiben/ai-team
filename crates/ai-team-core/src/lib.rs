@@ -37,6 +37,7 @@ mod schedule;
 mod secrets;
 mod skills;
 mod speak;
+mod stack;
 mod store;
 mod supervise;
 mod tasks;
@@ -108,9 +109,9 @@ pub use readiness::{
     Severity,
 };
 pub use review::{
-    amendment, as_instructions, conductor, deliver as deliver_review, diff_for, for_orchestrator,
-    instructions_for, pending as pending_review, responsible, steerable, Audience, Pending,
-    Submitted,
+    amendment, as_instructions, conductor, deliver as deliver_review, diff_against, diff_for,
+    follow_up_ready, follow_up_target, for_orchestrator, instructions_for,
+    pending as pending_review, responsible, steerable, Audience, FollowUp, Pending, Submitted,
 };
 pub use roles::{
     preset, RolePreset, DEFAULT_LOCAL_MODEL, DEFAULT_ROSTER, ROOT_ROLE, VERIFIER_ROLE,
@@ -124,6 +125,7 @@ pub use speak::{
     queue as queue_message, start_turn, start_turn_in, target as speak_target,
     target_in as speak_target_in, Reached, Target, Would,
 };
+pub use stack::parent as stacked_on;
 pub use store::Store;
 pub use supervise::{outcome_status, Dispatched, Orchestration, Orchestrator, Rig, TurnOutcome};
 pub use terminal::{Chunk, Listed, Terminals};
@@ -139,8 +141,8 @@ pub use util::{
 };
 pub use workflow::{
     approve_at as approve_run_at, claim_plan_approval, claim_plan_approval_with_direction,
-    claim_session_reset, continue_approved_at as continue_approved_run_at,
-    reset_claimed_session_at as reset_claimed_session,
+    claim_session_reset, continue_approved_at as continue_approved_run_at, follow_up_at,
+    open_follow_up, reset_claimed_session_at as reset_claimed_session,
     resume_interrupted_node_at as resume_interrupted_node, run as run_workflow, Branching,
     Progress, Request, PLAN_APPROVAL_PREPARING_REASON, PLAN_APPROVAL_REASON,
 };
