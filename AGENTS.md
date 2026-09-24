@@ -437,9 +437,9 @@ partial unique index and ingest uses `INSERT OR IGNORE` — so a replayed sessio
 free, and a retry's evidence survives because a second session's event 0 is not the
 first's. Three traps that real turns exposed and fixtures did not: token and turn
 **counters** must only accumulate for rows that were genuinely new; `node_run.stream_cursor`
-is `from_index + batch.len()`, never `cursor + batch.len()`; and `input` is a total whose
-`cacheRead` / `cacheWrite` are subsets, so subtract them before storing the uncached
-input column.
+is `from_index + batch.len()`, never `cursor + batch.len()`; and `cacheRead` /
+`cacheWrite` sit beside `input`, not inside it, so a step's whole prompt is
+`totalTokens - output` - read as `input`, a seat 69K tokens into a session holds one.
 
 ### 13. House rules are how every seat hears the repo (M3-S25, M8-S36)
 `house.rs` reads what a checkout already carries — `AGENTS.md`, `CLAUDE.md`,

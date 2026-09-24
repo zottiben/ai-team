@@ -191,7 +191,7 @@ mod tests {
             event(r#"{"type":"tool_execution_end","toolName":"read","result":{"content":[]}}"#),
             event(
                 r#"{"type":"turn_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],
-                    "stopReason":"stop","usage":{"input":1000,"output":50,"cacheRead":600,"cacheWrite":300}}}"#,
+                    "stopReason":"stop","usage":{"input":100,"output":50,"cacheRead":600,"cacheWrite":300,"totalTokens":1050}}}"#,
             ),
             event(r#"{"type":"agent_settled"}"#),
         ]
@@ -212,8 +212,9 @@ mod tests {
     }
 
     #[test]
-    fn the_cache_subsets_are_taken_out_of_the_input_total() {
-        // Rule 12 in Pi's spelling. 1000 total, 600 read, 300 written - 100 uncached.
+    fn the_cache_figures_are_stored_beside_the_uncached_input() {
+        // Rule 12 in Pi's spelling: 100 uncached, 600 read, 300 written - a 1000-token
+        // prompt, which is what the session holds.
         let mut store = Store::memory().unwrap();
         let node_run = node(&mut store);
 
