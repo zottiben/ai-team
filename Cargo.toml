@@ -37,7 +37,11 @@ toml = "0.9"
 clap = { version = "4", features = ["derive", "env"] }
 axum = "0.8"
 getrandom = "0.3"
-rustix = { version = "1", features = ["process"] }
+# `fs` is not used here, but `tempfile` - a dev-dependency - turns it on. Features differ
+# between a build and a test build, so without it `cargo build` and `cargo test` each
+# compile their own rustix and then their own copy of every crate above it: the whole
+# workspace twice, in time and in `target/`.
+rustix = { version = "1", features = ["process", "fs"] }
 # `bundled` on purpose: the whole point of the install story is a Rust toolchain and
 # nothing else, and a system libsqlite3 of unknown vintage is exactly the kind of
 # per-machine difference that produces a bug report nobody can reproduce.
