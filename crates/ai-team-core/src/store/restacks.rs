@@ -30,12 +30,9 @@ impl Store {
             .ok_or_else(|| Error::NoTeam(project.slug.clone()))?;
         let guardrails = self.team(team_id)?.guardrails;
         let agent = self.agent(restack.agent_id)?;
-        let workspace = restack
-            .workspace
-            .canonicalize()
-            .unwrap_or_else(|_| restack.workspace.to_path_buf())
-            .to_string_lossy()
-            .into_owned();
+        let workspace = super::runs::resolved(restack.workspace);
+        // Stored and compared as every node row's path is (D12).
+        let worktree = super::runs::resolved(std::path::Path::new(restack.worktree));
         let pid = i64::from(std::process::id());
         let summary = format!(
             "{} restacks {} onto {}",
@@ -54,7 +51,7 @@ impl Store {
         let at = now();
 
         let created = self.db_mut().write(|tx| {
-            if at_work(tx, restack.worktree)? {
+            if at_work(tx, &worktree)? {
                 return Ok(None);
             }
             if tried(tx, &restack)? {
@@ -100,7 +97,7 @@ impl Store {
                     restack.resolution.provider,
                     restack.resolution.model,
                     restack.slice_key,
-                    restack.worktree,
+                    worktree,
                     restack.branch,
                     pid,
                     at
@@ -144,7 +141,8 @@ impl Store {
 
     /// Whether a turn is at work in `worktree`, or waiting there on a person.
     pub fn worktree_at_work(&self, worktree: &str) -> Result<bool> {
-        at_work(self.db().conn(), worktree)
+        let worktree = super::runs::resolved(std::path::Path::new(worktree));
+        at_work(self.db().conn(), &worktree)
     }
 
     /// Pin the remote commit a node's push may replace, for a branch it rewrote.
@@ -387,6 +385,33 @@ mod tests {
         assert!(s.store.worktree_at_work("/awt/3").unwrap());
         s.maker("/awt/4", NodeStatus::Done, Some(me));
         assert!(!s.store.worktree_at_work("/awt/4").unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_worktree_is_one_worktree_whichever_path_names_it() {
+        // macOS reaches /tmp through /private/tmp, and every node row stores the path the
+        // filesystem resolves (D12). A restack asked about the other spelling must still
+        // see the turn at work there - and store its own row the same way.
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let (real_path, link_path) = (
+            real.canonicalize().unwrap().to_string_lossy().into_owned(),
+            link.to_string_lossy().into_owned(),
+        );
+        let mut s = stack();
+        let me = i64::from(std::process::id());
+
+        s.maker(&real_path, NodeStatus::Running, Some(me));
+        assert!(s.store.worktree_at_work(&link_path).unwrap());
+        assert!(s.open(&link_path, "aaaa").is_none(), "under a running turn");
+
+        let mut s = stack();
+        let (_, node) = s.open(&link_path, "aaaa").unwrap();
+        assert_eq!(node.worktree_path.as_deref(), Some(real_path.as_str()));
     }
 
     #[test]

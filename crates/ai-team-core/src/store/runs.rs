@@ -1323,7 +1323,7 @@ impl Store {
 }
 
 /// A checkout path as the filesystem resolves it, or as written when it does not exist.
-fn resolved(path: &Path) -> String {
+pub(crate) fn resolved(path: &Path) -> String {
     path.canonicalize()
         .unwrap_or_else(|_| path.to_path_buf())
         .to_string_lossy()
