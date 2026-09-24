@@ -216,11 +216,20 @@ async fn the_guard_refuses_a_write_outside_the_lease() {
     }
 
     // Control: without the guard the same prompt really does escape. Without this, a
-    // model that simply declined would look exactly like a guard that worked.
-    let (escaped, _) = tried_to_escape(false).await;
+    // model that simply declined would look exactly like a guard that worked. A model
+    // does now and then decline to write outside its directory, which says nothing about
+    // the guard, so the control - a precondition, never the assertion - gets three goes.
+    let mut declined = Vec::new();
+    for _ in 0..3 {
+        let (escaped, said) = tried_to_escape(false).await;
+        if escaped {
+            break;
+        }
+        declined.push(said);
+    }
     assert!(
-        escaped,
-        "the control did not escape, so the guarded case proves nothing"
+        declined.len() < 3,
+        "the control never escaped, so the guarded case proves nothing; the model said: {declined:?}"
     );
 
     let (escaped, _) = tried_to_escape(true).await;

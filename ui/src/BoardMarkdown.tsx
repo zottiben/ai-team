@@ -10,18 +10,26 @@ const TABLE_ROW = /^\s*\|.*\|\s*$/;
 const BULLET = /^(\s*)[-*+]\s+(.*)$/;
 const NUMBERED = /^(\s*)\d+[.)]\s+(.*)$/;
 
-/** Render the subset of Markdown plans actually use without ever accepting HTML. */
+/**
+ * Render the subset of Markdown plans actually use without ever accepting HTML.
+ *
+ * `breaks` keeps a single newline as a line break. A plan is hard-wrapped prose whose
+ * newlines fold into the paragraph; an agent's message is written the way chat is, with a
+ * title on one line and what it owns on the next.
+ */
 export function BoardMarkdown({
   source,
   tight = false,
+  breaks = false,
 }: {
   source: string;
   tight?: boolean;
+  breaks?: boolean;
 }) {
-  return <div className={`board-md${tight ? " tight" : ""}`}>{blocks(source)}</div>;
+  return <div className={`board-md${tight ? " tight" : ""}`}>{blocks(source, breaks)}</div>;
 }
 
-function blocks(source: string): ReactNode[] {
+function blocks(source: string, breaks: boolean): ReactNode[] {
   const lines = source.replace(/\r\n/g, "\n").split("\n");
   const result: ReactNode[] = [];
   let index = 0;
@@ -71,7 +79,7 @@ function blocks(source: string): ReactNode[] {
         body.push((lines[index] ?? "").replace(/^\s*>\s?/, ""));
         index += 1;
       }
-      result.push(<blockquote key={key++}>{blocks(body.join("\n"))}</blockquote>);
+      result.push(<blockquote key={key++}>{blocks(body.join("\n"), breaks)}</blockquote>);
       continue;
     }
 
@@ -122,7 +130,17 @@ function blocks(source: string): ReactNode[] {
       paragraph.push(line);
       index += 1;
     }
-    result.push(<p key={key++}>{inline(paragraph.join(" "), `p${key}`)}</p>);
+    const at = key++;
+    result.push(
+      <p key={at}>
+        {breaks
+          ? paragraph.flatMap((part, line) => [
+              ...(line > 0 ? [<br key={`p${at}br${line}`} />] : []),
+              ...inline(part, `p${at}l${line}`),
+            ])
+          : inline(paragraph.join(" "), `p${at}`)}
+      </p>,
+    );
   }
 
   return result;
@@ -131,22 +149,23 @@ function blocks(source: string): ReactNode[] {
 function inline(text: string, prefix: string): ReactNode[] {
   const result: ReactNode[] = [];
   let last = 0;
-  let match: RegExpExecArray | null;
   let count = 0;
-  INLINE.lastIndex = 0;
 
-  while ((match = INLINE.exec(text)) !== null) {
+  // `matchAll` walks its own copy of the pattern, so the text inside a bold span - code in
+  // a slice title, most often - is read by this same function without the outer walk
+  // losing its place in the shared one.
+  for (const match of text.matchAll(INLINE)) {
     if (match.index > last) result.push(text.slice(last, match.index));
     const token = match[0];
     const key = `${prefix}-${count++}`;
     if (token.startsWith("`")) {
       result.push(<code key={key}>{token.slice(1, -1)}</code>);
     } else if (token.startsWith("**") || token.startsWith("__")) {
-      result.push(<strong key={key}>{token.slice(2, -2)}</strong>);
+      result.push(<strong key={key}>{inline(token.slice(2, -2), key)}</strong>);
     } else if (token.startsWith("~~")) {
-      result.push(<del key={key}>{token.slice(2, -2)}</del>);
+      result.push(<del key={key}>{inline(token.slice(2, -2), key)}</del>);
     } else if (token.startsWith("*")) {
-      result.push(<em key={key}>{token.slice(1, -1)}</em>);
+      result.push(<em key={key}>{inline(token.slice(1, -1), key)}</em>);
     } else if (token.startsWith("[")) {
       const split = token.indexOf("](");
       const label = token.slice(1, split);

@@ -10,6 +10,7 @@ import { Review } from "./Review";
 import { Roster } from "./Roster";
 import { Source } from "./Source";
 import { Talk } from "./Talk";
+import { workspaceTitle } from "./tree";
 import {
   run as fetchRun,
   runEvents as fetchRunEvents,
@@ -157,6 +158,41 @@ export function Workspace({
     return () => window.removeEventListener("keydown", onKey);
   }, [expanded, selected, talking]);
 
+  // A pull request's worktree has a crew, not a run of its own: the orchestrator that
+  // planned it works from the checkout above.
+  const startWork =
+    workspace.kind === "pr" ? (
+      <section className="block">
+        <div className="block__head">
+          <h3>{workspace.slice_key}'s worktree</h3>
+          <span className="faint">{workspace.plan}</span>
+        </div>
+        <p className="faint">
+          One pull request lives here. Its seats build it task by task, and review comments on
+          it come back here. A team run starts from the checkout above it.
+        </p>
+      </section>
+    ) : (
+      <section className="block">
+        <div className="block__head">
+          <h3>Start a team run</h3>
+          <span className="faint">plan, approve, dispatch, verify</span>
+        </div>
+        <Prompt
+          project={project.slug}
+          workspace={workspace}
+          onStarted={(runId) => {
+            if (runId !== undefined) {
+              setTalking(null);
+              setSelected(runId);
+            }
+            void refresh();
+            onTeamStarted();
+          }}
+        />
+      </section>
+    );
+
   return (
     <>
       <main className="main">
@@ -170,7 +206,7 @@ export function Workspace({
               <div>
                 <h2>Work</h2>
                 <span className="workspace-title mono">
-                  {workspace.main ? "main checkout" : workspace.branch ?? workspace.name}
+                  {workspaceTitle(workspace)}
                 </span>
               </div>
               {problem !== null && <span className="error">{problem}</span>}
@@ -183,26 +219,7 @@ export function Workspace({
                   id: "start",
                   label: "Start work",
                   span: 1,
-                  content: (
-                    <section className="block">
-                      <div className="block__head">
-                        <h3>Start a team run</h3>
-                        <span className="faint">plan, approve, dispatch, verify</span>
-                      </div>
-                      <Prompt
-                        project={project.slug}
-                        workspace={workspace}
-                        onStarted={(runId) => {
-                          if (runId !== undefined) {
-                            setTalking(null);
-                            setSelected(runId);
-                          }
-                          void refresh();
-                          onTeamStarted();
-                        }}
-                      />
-                    </section>
-                  ),
+                  content: startWork,
                 },
                 {
                   id: "activity",
@@ -212,6 +229,7 @@ export function Workspace({
                     <AgentActivity
                       runs={runs}
                       workspace={workspace.path}
+                      leaf={workspace.kind === "pr"}
                       tick={tick}
                       onOpenRun={(id) => {
                         setTalking(null);
@@ -229,6 +247,9 @@ export function Workspace({
                       <Crew
                         project={project.slug}
                         workspace={workspace.path}
+                        pullRequest={
+                          workspace.kind === "pr" ? (workspace.slice_key ?? undefined) : undefined
+                        }
                         tick={tick}
                         onOpenRun={(id) => {
                           setTalking(null);

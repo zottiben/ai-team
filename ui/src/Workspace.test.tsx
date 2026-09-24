@@ -26,6 +26,8 @@ const MAIN: Worktree = {
   processes: [],
   branch: "main",
   main: true,
+  kind: "main",
+  parent: null,
 };
 
 const RUN = {
@@ -105,6 +107,38 @@ function area(view: Parameters<typeof Workspace>[0]["view"] = "work", openRun: n
     />,
   );
 }
+
+it("a pull request's worktree shows its crew's work and no control to start a run", async () => {
+  stub();
+  render(
+    <Workspace
+      project={WIDGET}
+      workspace={{
+        ...MAIN,
+        name: "2",
+        path: "/awt/widget/2/widget",
+        status: "leased",
+        branch: "csv/pr2",
+        main: false,
+        kind: "pr",
+        plan: "csv",
+        slice_key: "PR2",
+        parent: "/awt/widget/1/widget",
+      }}
+      view="work"
+      tick={0}
+      openRun={null}
+      onOpenedRun={() => {}}
+      onChanged={() => {}}
+      onGo={() => {}}
+      onTeamStarted={() => {}}
+    />,
+  );
+
+  expect(await screen.findByText("PR2's worktree")).toBeDefined();
+  expect(screen.getByText("PR2 · csv/pr2")).toBeDefined();
+  expect(screen.queryByLabelText("What should the team build?")).toBeNull();
+});
 
 it("asks only for this project's runs", async () => {
   // A run belongs to a project. A list that spans them cannot say what pressing anything

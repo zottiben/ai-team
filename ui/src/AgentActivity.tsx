@@ -14,10 +14,12 @@ import {
   resumeRunNode,
   run as fetchRun,
   runEvents as fetchEvents,
+  workLabel,
   type Run,
   type RunDetail,
   type RunEvent,
 } from "./api";
+import { BoardMarkdown } from "./BoardMarkdown";
 
 const ACTIVE = new Set(["queued", "planning", "running", "blocked"]);
 
@@ -36,11 +38,14 @@ function firstRun(runs: Run[]): number | null {
 export function AgentActivity({
   runs,
   workspace,
+  leaf = false,
   tick,
   onOpenRun,
 }: {
   runs: Run[];
   workspace: string;
+  /** A pull request's worktree: its work arrives from a run started above it. */
+  leaf?: boolean;
   tick: number;
   onOpenRun?: (id: number) => void;
 }) {
@@ -211,7 +216,18 @@ export function AgentActivity({
 
       {problem !== null && <p className="error">{problem}</p>}
       {detail === null ? (
-        <p className="empty">Start a run to see the team think and work here.</p>
+        // Said only when there is nothing to show - not under an error, and not while the
+        // run being opened is still on its way.
+        problem === null &&
+        (runs.length === 0 ? (
+          <p className="empty">
+            {leaf
+              ? "Nothing has been built here yet. A run started above it dispatches its crew here."
+              : "Start a run to see the team think and work here."}
+          </p>
+        ) : (
+          <p className="empty">Reading the run…</p>
+        ))
       ) : (
         <>
           <div className="agent-activity__state">
@@ -232,6 +248,24 @@ export function AgentActivity({
               >
                 <span className="workspace-dot" data-status={node.status} />
                 {node.role}
+                {/* Spaced in the text as well as by the row's gap, so the button is named
+                    "frontend PR1 T2", not "frontendPR1 T2". */}
+                {node.slice_key !== null && (
+                  <>
+                    {" "}
+                    <span className="agent-activity__work">
+                      {workLabel(node.slice_key, node.task_key)}
+                    </span>
+                  </>
+                )}
+                {/* A repair is a new turn on the same task, and reads differently from
+                    progress. */}
+                {node.attempt > 1 && (
+                  <>
+                    {" "}
+                    <span className="faint">try {node.attempt}</span>
+                  </>
+                )}
               </button>
             ))}
           </div>
@@ -390,7 +424,7 @@ function activityRows(event: RunEvent, seenThinking: Set<string>, latest: boolea
     rows.push(
       <article key={`${event.id}-thinking-${index}`} className="activity-thinking">
         <span className="activity-message__who">{event.actor ?? "agent"} is thinking</span>
-        <p>{thought}</p>
+        <BoardMarkdown source={thought} breaks />
       </article>,
     );
   }
@@ -403,7 +437,9 @@ function activityRows(event: RunEvent, seenThinking: Set<string>, latest: boolea
         className={`activity-message${human ? " activity-message--human" : ""}`}
       >
         <span className="activity-message__who">{human ? "You" : event.actor ?? "Agent"}</span>
-        <p>{event.message}</p>
+        {/* An agent writes Markdown. What a person typed is shown as they typed it: an
+            asterisk in a reply is not a request for italics. */}
+        {human ? <p>{event.message}</p> : <BoardMarkdown source={event.message} breaks />}
       </article>,
     );
     return rows;

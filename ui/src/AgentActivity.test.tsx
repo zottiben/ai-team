@@ -98,8 +98,9 @@ function stub(run: Partial<Run> = {}, recoverable = false, events?: unknown[]) {
                 provider: "openai",
                 model: "gpt",
                 status: "running",
-                attempt: 1,
+                attempt: 2,
                 slice_key: "W2",
+                task_key: "T2",
                 worktree_path: "/tmp/widget",
                 branch: "task",
                 blocked_reason: null,
@@ -130,6 +131,29 @@ function stub(run: Partial<Run> = {}, recoverable = false, events?: unknown[]) {
 
 afterEach(() => vi.unstubAllGlobals());
 
+it("says what empty means in a pull request's worktree, and nothing under an error", async () => {
+  const { unmount } = render(
+    <AgentActivity runs={[]} workspace="/awt/widget/2/widget" leaf tick={0} />,
+  );
+  expect(screen.getByText(/A run started above it dispatches its crew here/)).toBeDefined();
+  expect(screen.queryByText(/Start a run/)).toBeNull();
+  unmount();
+
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(() =>
+      Promise.resolve({
+        ok: false,
+        status: 400,
+        json: async () => ({ error: "that run does not belong to the selected workspace" }),
+      }),
+    ),
+  );
+  render(<AgentActivity runs={[RUN]} workspace="/tmp/widget" tick={0} />);
+  expect(await screen.findByText("that run does not belong to the selected workspace")).toBeDefined();
+  expect(screen.queryByText(/Start a run/)).toBeNull();
+});
+
 it("shows thinking and the full answer instead of only the clipped event summary", async () => {
   stub();
   render(<AgentActivity runs={[RUN]} workspace="/tmp/widget" tick={0} />);
@@ -138,6 +162,53 @@ it("shows thinking and the full answer instead of only the clipped event summary
   expect(screen.getAllByText("Checking the plan and the current branch")).toHaveLength(1);
   expect(await screen.findByText("I need an answer before I can continue.")).toBeDefined();
   expect(screen.getByText("continue from the plan")).toBeDefined();
+});
+
+it("reads an agent's markdown as the formatting it is, and what you typed as you typed it", async () => {
+  stub({}, false, [
+    {
+      id: 1,
+      node_run_id: 11,
+      kind: "cost",
+      actor: "orchestrator",
+      summary: "step finished",
+      message: null,
+      thinking: ["**Checking baseline branch**"],
+      at: "",
+    },
+    {
+      id: 2,
+      node_run_id: 11,
+      kind: "note",
+      actor: "orchestrator",
+      summary: "Plan: shout",
+      message:
+        "## Grounding\n- `src/greet.sh` prints the greeting.\n\n**PR2 - Show both forms**\nOwner: frontend.",
+      thinking: [],
+      at: "",
+    },
+    {
+      id: 3,
+      node_run_id: 11,
+      kind: "note",
+      actor: "human",
+      summary: "keep *this*",
+      message: "keep *this* exactly",
+      thinking: [],
+      at: "",
+    },
+  ]);
+  render(<AgentActivity runs={[RUN]} workspace="/tmp/widget" tick={0} />);
+
+  expect(await screen.findByRole("heading", { name: "Grounding" })).toBeDefined();
+  expect(screen.getByText("src/greet.sh").tagName).toBe("CODE");
+  expect(screen.getByText("Checking baseline branch").tagName).toBe("STRONG");
+  // Its lines are its lines: the title and the owner are not run together.
+  expect(screen.getByText("PR2 - Show both forms").parentElement?.innerHTML).toBe(
+    "<strong>PR2 - Show both forms</strong><br>Owner: frontend.",
+  );
+  expect(screen.queryByText(/\*\*|##/)).toBeNull();
+  expect(screen.getByText("keep *this* exactly").tagName).toBe("P");
 });
 
 it("shows that a streamed tool call is still running while its result is pending", async () => {
@@ -277,7 +348,10 @@ it("keeps concurrent agents in separate selectable conversations", async () => {
 
   expect(await screen.findByText("I need an answer before I can continue.")).toBeDefined();
   expect(screen.queryByText("I am checking the visual state.")).toBeNull();
-  await user.click(screen.getByRole("button", { name: "frontend" }));
+  // Each seat says what it is on: a PR's seats take several turns, and two that read
+  // "frontend" cannot be told apart.
+  expect(screen.getByRole("button", { name: "orchestrator" })).toBeDefined();
+  await user.click(screen.getByRole("button", { name: "frontend W2 T2 try 2" }));
   expect(await screen.findByText("I am checking the visual state.")).toBeDefined();
   expect(screen.queryByText("I need an answer before I can continue.")).toBeNull();
 

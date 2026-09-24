@@ -22,6 +22,7 @@ mod gates;
 mod guardrails;
 mod house;
 mod launch_path;
+mod layout;
 mod lsp;
 mod machine;
 mod map;
@@ -65,6 +66,9 @@ pub use house::{
     read as read_house_rules, read_for as read_house_rules_for, section as house_section, Rules,
 };
 pub use launch_path::adopt_login_path;
+pub use layout::{
+    place as place_worktrees, Kind as WorktreeKind, Placed as PlacedWorktree, PrFacts,
+};
 pub use lsp::{
     language_for, language_id, workspace_root, Client, Diagnostic, Hover, Language, Location, Pool,
     Position, Range,
@@ -130,7 +134,8 @@ pub use store::Store;
 pub use supervise::{outcome_status, Dispatched, Orchestration, Orchestrator, Rig, TurnOutcome};
 pub use terminal::{Chunk, Listed, Terminals};
 pub use today::{
-    from_question, from_slice, from_store as today_from_store, rank as rank_today, Item, Urgency,
+    checkouts as today_checkouts, from_plans as today_from_plans, from_question, from_slice,
+    from_store as today_from_store, rank as rank_today, Item, Urgency,
 };
 pub use update::{
     apply as apply_update, check as check_update, current_version, is_newer,

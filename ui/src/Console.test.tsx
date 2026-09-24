@@ -29,6 +29,8 @@ const TASK: Worktree = {
   processes: [],
   branch: "feature/task",
   main: false,
+  kind: "manual",
+  parent: "/tmp/widget",
 };
 
 const NODE: NodeRun = {

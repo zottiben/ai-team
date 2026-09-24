@@ -92,6 +92,40 @@ impl Store {
         Ok(rows)
     }
 
+    /// A run's events as seen from one checkout, in the order they happened.
+    ///
+    /// From a checkout the run started in, all of them. From a pull request's worktree,
+    /// only the turns that built or checked that PR there: the run's coordination and its
+    /// other PRs are the business of the checkout above.
+    pub fn events_in_workspace(
+        &self,
+        run_id: i64,
+        workspace: &std::path::Path,
+        after: Option<i64>,
+        limit: i64,
+    ) -> Result<Vec<Event>> {
+        let scope = self.workspace_scope(workspace)?;
+        let (path, plan, slice) = scope.params();
+        let mut stmt = self.db().conn().prepare(&format!(
+            "SELECT e.id, e.run_id, e.node_run_id, e.at, e.kind, e.actor, e.summary,
+                    e.payload_json
+               FROM event e
+               JOIN run r ON r.id = e.run_id
+          LEFT JOIN node_run n ON n.id = e.node_run_id
+              WHERE e.run_id = ?1 AND e.id > ?2
+                AND (?6 IS NULL OR n.id IS NOT NULL) AND {}
+              ORDER BY e.id LIMIT ?3",
+            crate::store::WorkspaceScope::node_sql("n", "r", 4)
+        ))?;
+        let rows = stmt
+            .query_map(
+                params![run_id, after.unwrap_or(0), limit, path, plan, slice],
+                event_from_row,
+            )?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(rows)
+    }
+
     pub fn node_events(&self, node_run_id: i64, limit: i64) -> Result<Vec<Event>> {
         let mut stmt = self.db().conn().prepare(&format!(
             "{EVENT_SELECT} WHERE node_run_id = ?1 ORDER BY id LIMIT ?2"

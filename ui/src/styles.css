@@ -152,18 +152,32 @@ button {
   font-size: var(--text-xs);
 }
 
+/* Indented by how deep it sits: a PR under the checkout its run started in, a stacked PR
+ * under the PR it stacks on - so the tree reads the way the work merges. */
 .nav-item--workspace {
   justify-content: flex-start;
   min-width: 0;
   padding-block: var(--space-1);
+  padding-left: calc(var(--space-2) + var(--workspace-depth, 0) * var(--space-3));
   font-family: var(--font-mono);
   font-size: var(--text-xs);
 }
 
-.nav-item--workspace > span:nth-child(2) {
+.nav-item__name {
+  flex: 0 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.nav-item__detail {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary-faint);
 }
 
 .workspace-dot {
@@ -510,8 +524,17 @@ button.card:hover {
   background: transparent;
   font: inherit;
   font-size: var(--text-xs);
+  /* Fixed rather than `normal`, which is the font's own: a pill carrying a mono label would
+   * otherwise stand a pixel taller than one carrying only a role. */
+  line-height: 1.5;
   color: var(--text-primary-muted);
   cursor: pointer;
+}
+
+/* The PR and task a turn was on: mono so `PR1 T2` reads as an identifier, at the pill's
+ * own size rather than `.mono`'s. */
+.agent-activity__work {
+  font-family: var(--font-mono);
 }
 
 .agent-activity__seat:hover,
@@ -614,6 +637,19 @@ button.card:hover {
   white-space: pre-wrap;
 }
 
+/* An agent's Markdown is read at the conversation's size, not the board's smaller one -
+ * or the agent's half of the conversation reads smaller than yours. A heading is its
+ * text in bold, not the board's small section label. */
+.activity-message .board-md,
+.activity-thinking .board-md {
+  font-size: inherit;
+}
+
+.activity-message .board-md :is(h3, h4, h5, h6),
+.activity-thinking .board-md :is(h3, h4, h5, h6) {
+  font-size: 1em;
+}
+
 .activity-action {
   display: grid;
   grid-template-columns: 7rem minmax(0, 1fr);
@@ -642,12 +678,39 @@ button.card:hover {
   container-type: inline-size;
 }
 
+/* One column per stage, 13rem at the least. Where the stages do not fit side by side they
+ * fold - four into two rows, then everything into one - rather than scroll the last ones
+ * out of sight past an edge that shows no scrollbar. A connector only draws between
+ * neighbours in one row. */
 .team-graph__flow {
   display: grid;
   grid-template-columns: repeat(4, minmax(13rem, 1fr));
   gap: var(--space-4);
-  overflow-x: auto;
   padding: var(--space-2);
+}
+
+.team-graph__flow[data-stages="2"] {
+  grid-template-columns: repeat(2, minmax(13rem, 1fr));
+}
+
+@container (max-width: 56rem) {
+  .team-graph__flow[data-stages="4"] {
+    grid-template-columns: repeat(2, minmax(13rem, 1fr));
+  }
+
+  .team-graph__flow[data-stages="4"] > .team-graph__step:nth-child(3) .team-graph__connector {
+    display: none;
+  }
+}
+
+@container (max-width: 28rem) {
+  .team-graph__flow[data-stages] {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .team-graph__flow .team-graph__connector {
+    display: none;
+  }
 }
 
 .team-graph__step {
@@ -2306,7 +2369,9 @@ button.card:hover {
   font-size: var(--text-sm);
 }
 
-.diff__comment[data-status="resolved"] {
+/* Resolved, or sent and since built on: kept for the record, quieter than what is open. */
+.diff__comment[data-status="resolved"],
+.diff__comment[data-status="outdated"] {
   opacity: 0.6;
 }
 
@@ -3396,7 +3461,7 @@ button.card:hover {
   width: 100%;
   height: auto;
   /* Capped, or a wide repository makes a panel tall enough to push everything below it
-   * off the screen. The viewBox letterboxes inside whatever box this leaves. */
+   * off the screen. The layout is solved to fit under it, so it is read from here. */
   max-height: 32rem;
   display: block;
 }
@@ -3480,10 +3545,12 @@ button.card:hover {
   font-family: var(--font-mono);
   font-size: 11px;
   fill: var(--text-primary-muted);
-  paint-order: stroke;
-  stroke: var(--surface-panel-default);
-  stroke-width: 4px;
-  stroke-linejoin: round;
+}
+
+/* The panel's own colour: a halo the width of the whole label, gaps included. */
+.map__label-plate {
+  fill: var(--surface-panel-default);
+  opacity: 0.9;
 }
 
 .map__labels text[data-working="true"] {

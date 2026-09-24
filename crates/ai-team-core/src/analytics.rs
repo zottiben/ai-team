@@ -153,11 +153,29 @@ pub fn rollup(store: &Store, by: By, project_id: Option<i64>) -> Result<Vec<Row>
     rollup_workspace(store, by, project_id, None)
 }
 
-/// The same metrics, optionally limited to runs rooted in one checkout.
+/// Path, plan and slice for [`crate::store::WorkspaceScope::node_sql`], all NULL when no
+/// checkout was asked for.
+type Scoped = (Option<String>, Option<String>, Option<String>);
+
+fn scoped(store: &Store, worktree: Option<&str>) -> Result<Scoped> {
+    let Some(worktree) = worktree else {
+        return Ok((None, None, None));
+    };
+    let scope = store.workspace_scope(std::path::Path::new(worktree))?;
+    let (path, plan, slice) = scope.params();
+    Ok((
+        Some(path.to_string()),
+        plan.map(str::to_string),
+        slice.map(str::to_string),
+    ))
+}
+
+/// The same metrics, optionally limited to what belongs to one checkout.
 ///
-/// Maker attempts may execute in leased worktrees, so scoping by `node_run.worktree_path`
-/// would hide most of a workspace's team. The run root keeps every attempt, gate, and
-/// cycle attached to the checkout where the work was initiated.
+/// For a checkout runs start in, that is every attempt, gate and cycle of those runs,
+/// wherever their pull requests were built - scoping by `node_run.worktree_path` would
+/// hide most of its team. For a pull request's own worktree it is that PR's, and not the
+/// rest of the run that built it.
 pub fn rollup_workspace(
     store: &Store,
     by: By,
@@ -165,6 +183,8 @@ pub fn rollup_workspace(
     worktree: Option<&str>,
 ) -> Result<Vec<Row>> {
     let group = by.column();
+    let (path, plan, slice) = scoped(store, worktree)?;
+    let in_workspace = crate::store::WorkspaceScope::node_sql("n", "r", 2);
     let sql = format!(
         "WITH maker AS (
              SELECT n.*, r.project_id
@@ -174,7 +194,7 @@ pub fn rollup_workspace(
               -- would dilute every rate below with work that never produced a diff.
               WHERE n.role <> 'verifier'
                 AND (?1 IS NULL OR r.project_id = ?1)
-                AND (?2 IS NULL OR r.workspace_path = ?2)
+                AND (?2 IS NULL OR {in_workspace})
          ),
          -- One row per slice a group actually landed, with how long it took from the
          -- first attempt at it. Computed separately because a slice spans attempts and
@@ -241,7 +261,7 @@ pub fn rollup_workspace(
     let conn = store.db().conn();
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt
-        .query_map(rusqlite::params![project_id, worktree], |row| {
+        .query_map(rusqlite::params![project_id, path, plan, slice], |row| {
             Ok(Row {
                 group: row.get(0)?,
                 attempts: row.get(1)?,
@@ -415,6 +435,50 @@ mod tests {
         let backend = find(&rows, "backend");
         assert_eq!(backend.attempts, 1);
         assert_eq!(backend.tokens_in, 200);
+    }
+
+    #[test]
+    fn a_pr_worktree_counts_the_work_and_gates_of_its_pr_alone() {
+        // One run, rooted in the main checkout, builds PR1 and PR2 in two worktrees. Each
+        // worktree's numbers are its own PR's; the checkout's are the whole run's.
+        let (mut store, project, team, _) = seeded();
+        let run = store
+            .create_run_in(
+                project,
+                "two PRs",
+                RunTrigger::Manual,
+                Some(std::path::Path::new("/tmp/widget-main")),
+            )
+            .unwrap();
+        store.set_run_plan(run.id, "csv").unwrap();
+        let backend = seat(&store, team, "backend");
+        for (slice, worktree, tokens) in [("PR1", "/tmp/pool/1", 100), ("PR2", "/tmp/pool/2", 300)]
+        {
+            let node = attempt(
+                &mut store,
+                run.id,
+                backend,
+                slice,
+                true,
+                ("2026-09-18T09:00:00Z", "2026-09-18T09:05:00Z"),
+                (tokens, 10, 0, 0),
+            );
+            store
+                .attach_worktree(node, worktree, Some(&format!("csv/{slice}")), None)
+                .unwrap();
+            gate(&mut store, run.id, node, true);
+        }
+
+        let pr1 = rollup_workspace(&store, By::Agent, Some(project), Some("/tmp/pool/1")).unwrap();
+        let backend_pr1 = find(&pr1, "backend");
+        assert_eq!(backend_pr1.attempts, 1);
+        assert_eq!(backend_pr1.tokens_in, 100);
+        assert_eq!(backend_pr1.gates_run, 1);
+
+        let main =
+            rollup_workspace(&store, By::Agent, Some(project), Some("/tmp/widget-main")).unwrap();
+        assert_eq!(find(&main, "backend").attempts, 2);
+        assert_eq!(find(&main, "backend").gates_run, 2);
     }
 
     #[test]

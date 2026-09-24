@@ -244,7 +244,7 @@ struct WorktreesQuery {
 async fn worktrees(
     State(state): State<AppState>,
     Query(query): Query<WorktreesQuery>,
-) -> Result<Json<Vec<ai_team_core::PoolEntry>>> {
+) -> Result<Json<Vec<ai_team_core::PlacedWorktree>>> {
     // Resolved and the lock dropped before awaiting: `awt` and `git` are other programs,
     // and holding the database across them would block every other request.
     let repo = {
@@ -261,7 +261,57 @@ async fn worktrees(
                 ))
             })?
     };
-    Ok(Json(ai_team_core::Worktrees::at(repo).pool().await?))
+    let entries = ai_team_core::Worktrees::at(&repo).pool().await?;
+
+    // Which pull request each worktree holds, from the rows that built in it - read in one
+    // window, and the lock let go before asking ai-planner anything.
+    let built: Vec<(String, String, String, Option<String>)> = {
+        let store = state.store()?;
+        let store = store.lock();
+        let mut built = Vec::new();
+        for entry in entries.iter().filter(|entry| !entry.main) {
+            let Some(node) = store.latest_pr_node_in(&entry.path)? else {
+                continue;
+            };
+            let run = store.run(node.run_id)?;
+            if let (Some(plan), Some(slice_key)) = (run.plan_slug, node.slice_key) {
+                built.push((entry.path.clone(), plan, slice_key, run.workspace_path));
+            }
+        }
+        built
+    };
+
+    // What each stacks on, from its plan: once per plan, and nothing when the plan cannot
+    // be read - the worktree then sits under its run's checkout rather than vanishing.
+    let mut plans: std::collections::HashMap<String, Vec<ai_team_core::Slice>> =
+        std::collections::HashMap::new();
+    for (_, plan, _, _) in &built {
+        if !plans.contains_key(plan) {
+            let slices = ai_team_core::Planner::at(&repo)
+                .for_plan(plan.clone())
+                .slices()
+                .await
+                .unwrap_or_default();
+            plans.insert(plan.clone(), slices);
+        }
+    }
+    let facts: Vec<ai_team_core::PrFacts> = built
+        .into_iter()
+        .map(|(path, plan, slice_key, workspace)| {
+            let stacked_on = plans.get(&plan).and_then(|slices| {
+                let slice = slices.iter().find(|slice| slice.key == slice_key)?;
+                ai_team_core::stacked_on(slice, slices)?.branch.clone()
+            });
+            ai_team_core::PrFacts {
+                path,
+                plan,
+                slice_key,
+                workspace,
+                stacked_on,
+            }
+        })
+        .collect();
+    Ok(Json(ai_team_core::place_worktrees(entries, &facts)))
 }
 
 async fn tree(
@@ -1977,7 +2027,7 @@ fn review_in_workspace(
     let Some(run_id) = run_id else {
         return Ok(false);
     };
-    Ok(run_in_workspace(&store.run(run_id)?, worktree))
+    run_in_workspace(store, run_id, worktree)
 }
 
 /// A review, its diff, and everything anybody has said about it.
@@ -2247,52 +2297,18 @@ async fn submit(
 /// ai-team's own database knows, and the questions ai-planner is holding - and hands
 /// them over in one order.
 async fn today(State(state): State<AppState>) -> Result<Json<Vec<ai_team_core::Item>>> {
-    // Two passes over the store, with the lock released in between, because reading the
-    // questions means running `aip` once per checkout and no request should hold a
-    // database connection across that.
+    // Two passes, with the lock released in between, because reading the plans means
+    // running `aip` once per checkout and no request should hold a database connection
+    // across that.
     let (mut items, checkouts) = {
         let store = state.store()?;
         let store = store.lock();
-        let items = ai_team_core::today_from_store(&store)?;
-        let checkouts: Vec<(String, String)> = store
-            .projects()?
-            .into_iter()
-            .filter_map(|project| {
-                let repo = store
-                    .project_repos(project.id)
-                    .ok()?
-                    .into_iter()
-                    .find_map(|repo| repo.main_path)?;
-                Some((project.slug, repo))
-            })
-            .collect();
-        (items, checkouts)
+        (
+            ai_team_core::today_from_store(&store)?,
+            ai_team_core::today_checkouts(&store)?,
+        )
     };
-
-    for (slug, repo) in checkouts {
-        // Best effort per project: a checkout that has been deleted, or one with no plan
-        // yet, must not empty the whole list for every other project.
-        let planner = ai_team_core::Planner::at(repo);
-        let Ok(questions) = planner.open_questions().await else {
-            continue;
-        };
-        for question in questions {
-            items.push(ai_team_core::from_question(
-                &slug,
-                &question.body,
-                question.asked_at,
-            ));
-        }
-        // Work an agent finished and left `in_review` is the commonest thing waiting
-        // after a run, and it lives on the plan rather than in ai-team's own tables.
-        for slice in planner.slices().await.unwrap_or_default() {
-            if let Some(item) =
-                ai_team_core::from_slice(&slug, &slice.key, &slice.title, &slice.status)
-            {
-                items.push(item);
-            }
-        }
-    }
+    items.extend(ai_team_core::today_from_plans(checkouts).await);
 
     Ok(Json(ai_team_core::rank_today(items)))
 }
@@ -2935,11 +2951,14 @@ fn default_limit() -> i64 {
     50
 }
 
-fn run_in_workspace(run: &Run, workspace: &std::path::Path) -> bool {
-    let selected = workspace.to_string_lossy();
-    run.workspace_path
-        .as_deref()
-        .is_some_and(|path| ai_team_core::same_worktree(path, &selected))
+/// Whether a run belongs to the selected checkout: the same rule its run list follows, so
+/// what the window lists there is what it may open, reply to, resume or deliver.
+fn run_in_workspace(
+    store: &ai_team_core::Store,
+    run_id: i64,
+    workspace: &std::path::Path,
+) -> ai_team_core::Result<bool> {
+    store.run_in_workspace(run_id, workspace)
 }
 
 async fn runs(
@@ -3016,15 +3035,18 @@ async fn run(
     let scope = runtime_scope_for(&state, &slug, query.workspace.as_deref()).await?;
     let store = state.store()?;
     let store = store.lock();
-    if scope
-        .as_deref()
-        .is_some_and(|scope| !run_in_workspace(&run, scope))
-    {
-        return Err(crate::error::Error::Core(ai_team_core::Error::invalid(
-            "that run does not belong to the selected workspace",
-        )));
+    if let Some(scope) = scope.as_deref() {
+        if !run_in_workspace(&store, run.id, scope)? {
+            return Err(crate::error::Error::Core(ai_team_core::Error::invalid(
+                "that run does not belong to the selected workspace",
+            )));
+        }
     }
-    let nodes = store.node_runs(id)?;
+    // From a pull request's worktree, only the turns that built or checked that PR.
+    let nodes = match scope.as_deref() {
+        Some(scope) => store.nodes_in_workspace(id, scope)?,
+        None => store.node_runs(id)?,
+    };
     let usage = nodes
         .iter()
         .fold(ai_team_core::Usage::default(), |mut total, node| {
@@ -3228,21 +3250,18 @@ async fn run_events(
     let store = state.store()?;
     let store = store.lock();
     let run = store.run(id)?;
-    if scope
-        .as_deref()
-        .is_some_and(|scope| !run_in_workspace(&run, scope))
-    {
-        return Err(crate::error::Error::Core(ai_team_core::Error::invalid(
-            "that run does not belong to the selected workspace",
-        )));
+    if let Some(scope) = scope.as_deref() {
+        if !run_in_workspace(&store, run.id, scope)? {
+            return Err(crate::error::Error::Core(ai_team_core::Error::invalid(
+                "that run does not belong to the selected workspace",
+            )));
+        }
     }
-    Ok(Json(
-        store
-            .events(id, query.after, query.limit)?
-            .into_iter()
-            .map(ActivityEvent::from)
-            .collect(),
-    ))
+    let events = match scope.as_deref() {
+        Some(scope) => store.events_in_workspace(id, scope, query.after, query.limit)?,
+        None => store.events(id, query.after, query.limit)?,
+    };
+    Ok(Json(events.into_iter().map(ActivityEvent::from).collect()))
 }
 
 #[derive(Debug, Deserialize)]
@@ -3265,7 +3284,7 @@ async fn reply_to_node(
         )));
     }
 
-    let (slug, run_workspace, agent_id) = {
+    let (slug, agent_id) = {
         let store = state.store()?;
         let store = store.lock();
         let run = store.run(run_id)?;
@@ -3298,17 +3317,16 @@ async fn reply_to_node(
                 "that turn has no active Pi session to continue",
             )));
         }
-        (
-            store.project(run.project_id)?.slug,
-            run.workspace_path,
-            agent_id,
-        )
+        (store.project(run.project_id)?.slug, agent_id)
     };
 
     let selected = worktree_for(&state, &slug, None, Some(&request.workspace)).await?;
-    if !run_workspace.as_deref().is_some_and(|workspace| {
-        ai_team_core::same_worktree(&selected.to_string_lossy(), workspace)
-    }) {
+    let belongs = {
+        let store = state.store()?;
+        let store = store.lock();
+        run_in_workspace(&store, run_id, &selected)?
+    };
+    if !belongs {
         return Err(crate::error::Error::Core(ai_team_core::Error::invalid(
             "that node does not belong to the selected workspace",
         )));
@@ -3341,7 +3359,7 @@ async fn resume_node(
     Path((run_id, node_id)): Path<(i64, i64)>,
     JsonBody(request): JsonBody<ResumeNodeRequest>,
 ) -> Result<Json<serde_json::Value>> {
-    let (slug, run_workspace, previous_pid) = {
+    let (slug, previous_pid) = {
         let store = state.store()?;
         let store = store.lock();
         let run = store.run(run_id)?;
@@ -3379,17 +3397,16 @@ async fn resume_node(
                 "that turn is still supervised; refresh its live activity",
             )));
         }
-        (
-            store.project(run.project_id)?.slug,
-            run.workspace_path,
-            node.supervisor_pid,
-        )
+        (store.project(run.project_id)?.slug, node.supervisor_pid)
     };
 
     let selected = worktree_for(&state, &slug, None, Some(&request.workspace)).await?;
-    if !run_workspace.as_deref().is_some_and(|workspace| {
-        ai_team_core::same_worktree(&selected.to_string_lossy(), workspace)
-    }) {
+    let belongs = {
+        let store = state.store()?;
+        let store = store.lock();
+        run_in_workspace(&store, run_id, &selected)?
+    };
+    if !belongs {
         return Err(crate::error::Error::Core(ai_team_core::Error::invalid(
             "that node does not belong to the selected workspace",
         )));
@@ -3425,7 +3442,7 @@ async fn deliver_node(
     Path((run_id, node_id)): Path<(i64, i64)>,
     JsonBody(request): JsonBody<DeliveryRequest>,
 ) -> Result<Json<NodeRun>> {
-    let (db, run_workspace) = {
+    let db = {
         let store = state.store()?;
         let store = store.lock();
         let node = store.node_run(node_id)?;
@@ -3441,12 +3458,7 @@ async fn deliver_node(
                 "that delivery node does not belong to the selected project",
             )));
         }
-        let workspace = run.workspace_path.ok_or_else(|| {
-            crate::error::Error::Core(ai_team_core::Error::invalid(
-                "that delivery run has no workspace",
-            ))
-        })?;
-        (store.path().to_path_buf(), workspace)
+        store.path().to_path_buf()
     };
     let selected = worktree_for(
         &state,
@@ -3455,7 +3467,12 @@ async fn deliver_node(
         Some(request.workspace.as_str()),
     )
     .await?;
-    if !ai_team_core::same_worktree(&selected.to_string_lossy(), &run_workspace) {
+    let belongs = {
+        let store = state.store()?;
+        let store = store.lock();
+        run_in_workspace(&store, run_id, &selected)?
+    };
+    if !belongs {
         return Err(crate::error::Error::Core(ai_team_core::Error::invalid(
             "that delivery node does not belong to the selected workspace",
         )));
@@ -3475,19 +3492,19 @@ async fn reset_node_session(
     Path((run_id, node_id)): Path<(i64, i64)>,
     JsonBody(request): JsonBody<ResetSessionRequest>,
 ) -> Result<Json<serde_json::Value>> {
-    let (slug, workspace) = {
+    let slug = {
         let store = state.store()?;
         let store = store.lock();
         let run = store.run(run_id)?;
-        (
-            store.project(run.project_id)?.slug,
-            run.workspace_path.ok_or_else(|| {
-                crate::error::Error::Core(ai_team_core::Error::invalid("that run has no workspace"))
-            })?,
-        )
+        store.project(run.project_id)?.slug
     };
     let selected = worktree_for(&state, &slug, None, Some(&request.workspace)).await?;
-    if !ai_team_core::same_worktree(&selected.to_string_lossy(), &workspace) {
+    let belongs = {
+        let store = state.store()?;
+        let store = store.lock();
+        run_in_workspace(&store, run_id, &selected)?
+    };
+    if !belongs {
         return Err(crate::error::Error::Core(ai_team_core::Error::invalid(
             "that node does not belong to the selected workspace",
         )));

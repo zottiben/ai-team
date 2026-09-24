@@ -911,6 +911,13 @@ export type Worktree = {
   branch: string | null;
   /** The checkout registered on the project, rather than a linked task worktree. */
   main: boolean;
+  /** What it is: the project's checkout, one the operator made, or a pull request's. */
+  kind: "main" | "manual" | "pr";
+  /** For a pull request's worktree: its plan and slice. */
+  plan?: string;
+  slice_key?: string;
+  /** The path of the checkout it sits under; `null` for the top of the tree. */
+  parent: string | null;
 };
 
 /// The worktrees `awt` is holding for a project, with the branch each has checked out.

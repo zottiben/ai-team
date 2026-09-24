@@ -99,6 +99,72 @@ pub fn rank(mut items: Vec<Item>) -> Vec<Item> {
     items
 }
 
+/// The newest accepted maker turn on each PR, by plan and slice.
+///
+/// A rejected attempt is evidence, not work waiting on anyone, once a later turn on the
+/// same PR - in its own run or a review follow-up - was accepted. The verifier's rows name
+/// the PR too, but a verifier's turn finishing is not the PR being accepted.
+fn newest_accepted(
+    store: &Store,
+    runs: &[crate::model::Run],
+) -> Result<std::collections::HashMap<(Option<String>, String), i64>> {
+    let mut accepted = std::collections::HashMap::new();
+    for run in runs {
+        for node in store.node_runs(run.id)? {
+            if node.role == crate::VERIFIER_ROLE {
+                continue;
+            }
+            if let (NodeStatus::Done, Some(slice)) = (node.status, node.slice_key) {
+                let newest = accepted
+                    .entry((run.plan_slug.clone(), slice))
+                    .or_insert(node.id);
+                *newest = (*newest).max(node.id);
+            }
+        }
+    }
+    Ok(accepted)
+}
+
+/// What one node run puts on the list: failed work, or work in flight.
+fn node_item(node: &crate::model::NodeRun, slug: &str, run_id: i64) -> Option<Item> {
+    let on = |joiner: &str| {
+        node.slice_key
+            .as_ref()
+            .map(|key| format!("{joiner}{key}"))
+            .unwrap_or_default()
+    };
+    match node.status {
+        NodeStatus::Failed | NodeStatus::Blocked => Some(Item {
+            urgency: Urgency::Failed,
+            kind: "node".into(),
+            title: format!("{} failed{}", node.role, on(" on ")),
+            detail: node.blocked_reason.clone(),
+            project: Some(slug.to_string()),
+            run_id: Some(run_id),
+            since: node.ended_at.clone().or(node.started_at.clone()),
+        }),
+        NodeStatus::Running => Some(Item {
+            urgency: Urgency::InFlight,
+            kind: "node".into(),
+            title: format!(
+                "{} is {}{}",
+                node.role,
+                if node.role == crate::VERIFIER_ROLE {
+                    "checking"
+                } else {
+                    "building"
+                },
+                on(" ")
+            ),
+            detail: None,
+            project: Some(slug.to_string()),
+            run_id: Some(run_id),
+            since: node.started_at.clone(),
+        }),
+        _ => None,
+    }
+}
+
 /// Everything ai-team's own database knows about.
 ///
 /// The plan's open questions live in ai-planner and are added by the caller, which has a
@@ -111,7 +177,10 @@ pub fn from_store(store: &Store) -> Result<Vec<Item>> {
     for project in store.projects()? {
         let slug = project.slug.clone();
 
-        for run in store.runs(Some(project.id), 50)? {
+        let runs = store.runs(Some(project.id), 50)?;
+        let accepted = newest_accepted(store, &runs)?;
+
+        for run in runs {
             // A parked run is the expensive case: everything it leased is sitting idle.
             for approval in store.pending_approvals(run.id)? {
                 items.push(Item {
@@ -125,41 +194,37 @@ pub fn from_store(store: &Store) -> Result<Vec<Item>> {
                 });
             }
 
-            for node in store.node_runs(run.id)? {
-                match node.status {
-                    NodeStatus::Failed | NodeStatus::Blocked => items.push(Item {
-                        urgency: Urgency::Failed,
-                        kind: "node".into(),
-                        title: format!(
-                            "{} failed{}",
-                            node.role,
-                            node.slice_key
-                                .as_ref()
-                                .map(|key| format!(" on {key}"))
-                                .unwrap_or_default()
-                        ),
-                        detail: node.blocked_reason.clone(),
-                        project: Some(slug.clone()),
-                        run_id: Some(run.id),
-                        since: node.ended_at.clone().or(node.started_at.clone()),
-                    }),
-                    NodeStatus::Running => items.push(Item {
-                        urgency: Urgency::InFlight,
-                        kind: "node".into(),
-                        title: format!(
-                            "{} is building{}",
-                            node.role,
-                            node.slice_key
-                                .as_ref()
-                                .map(|key| format!(" {key}"))
-                                .unwrap_or_default()
-                        ),
-                        detail: None,
-                        project: Some(slug.clone()),
-                        run_id: Some(run.id),
-                        since: node.started_at.clone(),
-                    }),
-                    _ => {}
+            let superseded = |failed: &crate::model::NodeRun| {
+                failed.slice_key.as_ref().is_some_and(|slice| {
+                    accepted
+                        .get(&(run.plan_slug.clone(), slice.clone()))
+                        .is_some_and(|newest| *newest > failed.id)
+                })
+            };
+            let nodes = store.node_runs(run.id)?;
+            // A PR's rows stay running until its verdict, so the turns that built it are
+            // still open while it is checked. Its one seat actually at work is its newest
+            // running row; the others are waiting on the answer.
+            let waiting = |node: &crate::model::NodeRun| {
+                node.status == NodeStatus::Running
+                    && node.slice_key.is_some()
+                    && nodes.iter().any(|later| {
+                        later.id > node.id
+                            && later.status == NodeStatus::Running
+                            && later.slice_key == node.slice_key
+                    })
+            };
+            for node in &nodes {
+                if matches!(node.status, NodeStatus::Failed | NodeStatus::Blocked)
+                    && superseded(node)
+                {
+                    continue;
+                }
+                if waiting(node) {
+                    continue;
+                }
+                if let Some(item) = node_item(node, &slug, run.id) {
+                    items.push(item);
                 }
             }
         }
@@ -229,8 +294,18 @@ fn slipped(due: &str, at: &str) -> i64 {
 /// run, and it lives in ai-planner rather than in ai-team's own `review` table - so
 /// without this, the most likely answer to "I just ran something, what now" was
 /// "nothing".
-pub fn from_slice(project: &str, key: &str, title: &str, status: &str) -> Option<Item> {
+///
+/// `reviewed` says the slice's branch already has an open review. That review is the same
+/// finished PR, and already listed; the slice is only listed where there is none.
+pub fn from_slice(
+    project: &str,
+    key: &str,
+    title: &str,
+    status: &str,
+    reviewed: bool,
+) -> Option<Item> {
     let (urgency, detail) = match status {
+        "in_review" if reviewed => return None,
         "in_review" => (Urgency::Review, "finished, waiting for you to look at it"),
         // Blocked work will not unblock itself, and the reason is on the slice.
         "blocked" => (Urgency::Failed, "blocked - the plan says why"),
@@ -245,6 +320,77 @@ pub fn from_slice(project: &str, key: &str, title: &str, status: &str) -> Option
         run_id: None,
         since: None,
     })
+}
+
+/// A project's checkout, and what ai-team already lists for it, read before asking its
+/// plan anything - so no database connection is held across the `aip` calls.
+#[derive(Debug, Clone)]
+pub struct Checkout {
+    slug: String,
+    repo: String,
+    /// Branches whose PR already has an open review, listed as that review.
+    reviewed: std::collections::HashSet<String>,
+}
+
+/// Every project with a checkout, as [`from_plans`] needs it.
+pub fn checkouts(store: &Store) -> Result<Vec<Checkout>> {
+    let mut found = Vec::new();
+    for project in store.projects()? {
+        let Some(repo) = store
+            .project_repos(project.id)?
+            .into_iter()
+            .find_map(|repo| repo.main_path)
+        else {
+            continue;
+        };
+        let reviewed = store
+            .reviews(Some(project.id), true)?
+            .into_iter()
+            .filter_map(|review| review.branch)
+            .collect();
+        found.push(Checkout {
+            slug: project.slug,
+            repo,
+            reviewed,
+        });
+    }
+    Ok(found)
+}
+
+/// What each project's plan is holding: open questions, and finished or blocked slices.
+///
+/// Best effort per project: a checkout that has moved, or one with no plan yet, must not
+/// empty the list for every other project.
+pub async fn from_plans(checkouts: Vec<Checkout>) -> Vec<Item> {
+    let mut items = Vec::new();
+    for Checkout {
+        slug,
+        repo,
+        reviewed,
+    } in checkouts
+    {
+        let planner = crate::neighbours::Planner::at(repo);
+        let Ok(questions) = planner.open_questions().await else {
+            continue;
+        };
+        for question in questions {
+            items.push(from_question(&slug, &question.body, question.asked_at));
+        }
+        // Work an agent finished and left `in_review` is the commonest thing waiting
+        // after a run, and it lives on the plan rather than in ai-team's own tables.
+        for slice in planner.slices().await.unwrap_or_default() {
+            let has_review = slice
+                .branch
+                .as_ref()
+                .is_some_and(|branch| reviewed.contains(branch));
+            if let Some(item) =
+                from_slice(&slug, &slice.key, &slice.title, &slice.status, has_review)
+            {
+                items.push(item);
+            }
+        }
+    }
+    items
 }
 
 /// An open question ai-planner is holding, as an item.
@@ -274,6 +420,141 @@ mod tests {
             run_id: None,
             since: since.map(ToString::to_string),
         }
+    }
+
+    #[test]
+    fn a_rejected_attempt_whose_pr_was_then_accepted_is_not_failed_work() {
+        let mut store = Store::memory().unwrap();
+        let project = store
+            .create_project(crate::NewProject {
+                name: "Widget".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        let team = store.seed_default_team(project.id).unwrap();
+        let seat = |store: &Store, role: &str| {
+            store
+                .agents(team.id)
+                .unwrap()
+                .into_iter()
+                .find(|agent| agent.role == role)
+                .unwrap()
+                .id
+        };
+        let registry = crate::machine::ModelRegistry::local_only();
+        let run = store
+            .create_run(project.id, "build", crate::RunTrigger::Manual)
+            .unwrap();
+        let frontend = seat(&store, "frontend");
+
+        // Rejected on its first go, repaired on its second: an accepted PR.
+        let rejected = store
+            .dispatch_task(run.id, frontend, "PR1", Some("T1"), &registry)
+            .unwrap();
+        store.block_node(rejected.id, "gates failed").unwrap();
+        store
+            .set_node_status(rejected.id, NodeStatus::Failed)
+            .unwrap();
+        let repaired = store
+            .dispatch_task(run.id, frontend, "PR1", Some("T1"), &registry)
+            .unwrap();
+        store
+            .set_node_status(repaired.id, NodeStatus::Done)
+            .unwrap();
+
+        // Rejected in the run that built it, accepted by a follow-up run on the same PR.
+        store.set_run_plan(run.id, "csv").unwrap();
+        let backend = seat(&store, "backend");
+        let first = store
+            .dispatch_task(run.id, backend, "PR3", Some("T1"), &registry)
+            .unwrap();
+        store.set_node_status(first.id, NodeStatus::Failed).unwrap();
+        let follow = store
+            .create_run(project.id, "address review", crate::RunTrigger::Review)
+            .unwrap();
+        store.set_run_plan(follow.id, "csv").unwrap();
+        let later = store
+            .dispatch_task(follow.id, backend, "PR3", Some("T1"), &registry)
+            .unwrap();
+        store.set_node_status(later.id, NodeStatus::Done).unwrap();
+
+        // Rejected, and then only checked: a verifier finishing is not the PR accepted.
+        let unrepaired = store
+            .dispatch_task(run.id, backend, "PR4", Some("T1"), &registry)
+            .unwrap();
+        store
+            .set_node_status(unrepaired.id, NodeStatus::Failed)
+            .unwrap();
+        let checked = store
+            .dispatch_task(run.id, seat(&store, "verifier"), "PR4", None, &registry)
+            .unwrap();
+        store.set_node_status(checked.id, NodeStatus::Done).unwrap();
+
+        // Rejected and never repaired: still somebody's problem.
+        let stuck = store
+            .dispatch_task(run.id, backend, "PR2", None, &registry)
+            .unwrap();
+        store.block_node(stuck.id, "out of repairs").unwrap();
+        store.set_node_status(stuck.id, NodeStatus::Failed).unwrap();
+
+        let failed: Vec<String> = from_store(&store)
+            .unwrap()
+            .into_iter()
+            .filter(|item| item.urgency == Urgency::Failed)
+            .map(|item| item.title)
+            .collect();
+        assert_eq!(failed, ["backend failed on PR4", "backend failed on PR2"]);
+    }
+
+    #[test]
+    fn a_pr_in_flight_is_one_item_naming_the_seat_taking_its_turn() {
+        // A PR's rows stay running until its verdict, so while the verifier checks it the
+        // turns that built it are open too. That is one PR being checked, not three seats
+        // at work.
+        let mut store = Store::memory().unwrap();
+        let project = store
+            .create_project(crate::NewProject {
+                name: "Widget".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        let team = store.seed_default_team(project.id).unwrap();
+        let seat = |store: &Store, role: &str| {
+            store
+                .agents(team.id)
+                .unwrap()
+                .into_iter()
+                .find(|agent| agent.role == role)
+                .unwrap()
+                .id
+        };
+        let registry = crate::machine::ModelRegistry::local_only();
+        let run = store
+            .create_run(project.id, "build", crate::RunTrigger::Manual)
+            .unwrap();
+        let backend = seat(&store, "backend");
+        let running = |store: &mut Store, agent: i64, slice: &str, task: Option<&str>| {
+            let node = store
+                .dispatch_task(run.id, agent, slice, task, &registry)
+                .unwrap();
+            store.set_node_status(node.id, NodeStatus::Running).unwrap();
+        };
+        let (verifier, frontend) = (seat(&store, "verifier"), seat(&store, "frontend"));
+        running(&mut store, backend, "PR1", Some("T1"));
+        running(&mut store, backend, "PR1", Some("T2"));
+        running(&mut store, verifier, "PR1", None);
+        running(&mut store, frontend, "PR2", Some("T1"));
+
+        let flying: Vec<String> = from_store(&store)
+            .unwrap()
+            .into_iter()
+            .filter(|item| item.urgency == Urgency::InFlight)
+            .map(|item| item.title)
+            .collect();
+        assert_eq!(
+            flying,
+            ["verifier is checking PR1", "frontend is building PR2"]
+        );
     }
 
     #[test]
@@ -367,23 +648,36 @@ mod tests {
         // The commonest thing waiting after a run, and it lives in ai-planner rather than
         // in ai-team's own review table - so without it Today was empty the moment a run
         // succeeded, which is exactly when somebody looks.
-        let item = from_slice("widget", "S1", "Add subtract", "in_review").unwrap();
+        let item = from_slice("widget", "S1", "Add subtract", "in_review", false).unwrap();
         assert_eq!(item.urgency, Urgency::Review);
         assert!(item.title.contains("S1"));
 
         // Blocked work will not unblock itself.
         assert_eq!(
-            from_slice("widget", "S2", "x", "blocked").unwrap().urgency,
+            from_slice("widget", "S2", "x", "blocked", false)
+                .unwrap()
+                .urgency,
             Urgency::Failed
         );
 
         // Everything else is work in progress or work done, and neither wants a human.
         for status in ["ready", "active", "done", "draft", "deferred"] {
             assert!(
-                from_slice("widget", "S3", "x", status).is_none(),
+                from_slice("widget", "S3", "x", status, false).is_none(),
                 "{status}"
             );
         }
+    }
+
+    #[test]
+    fn a_slice_with_its_own_review_open_is_that_review_not_a_second_item() {
+        // ai-team opens a review for every PR it builds, and the plan marks the same PR
+        // `in_review`: listed both ways, two finished PRs read as four things to look at.
+        assert!(from_slice("widget", "PR1", "Shout", "in_review", true).is_none());
+        // Without a review - built by hand, say - the plan is the only place it shows.
+        assert!(from_slice("widget", "PR1", "Shout", "in_review", false).is_some());
+        // Blocked says something a review does not.
+        assert!(from_slice("widget", "PR1", "Shout", "blocked", true).is_some());
     }
 
     #[test]
