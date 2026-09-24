@@ -304,7 +304,16 @@ async fn build_pr(
     start: Start,
 ) -> Result<Attempted> {
     let (next, repairs, mut last) = match start {
-        Start::Fresh => (0, 0, None),
+        Start::Fresh => {
+            let next = already_built(pr).await?;
+            if next == pr.crew.len() {
+                return Err(Error::invalid(format!(
+                    "every task of {} is already on its branch, so nothing is left to build",
+                    pr.slice.key
+                )));
+            }
+            (next, 0, None)
+        }
         Start::Resume(node) => match pick_up(store, pr, rows, node).await? {
             PickedUp::At {
                 next,
@@ -351,6 +360,25 @@ async fn build_pr(
     let last =
         last.ok_or_else(|| Error::invalid(format!("{} has nothing to build", pr.slice.key)))?;
     judge(store, pr, rows, last, repairs).await
+}
+
+/// How many of the PR's tasks, from the first, its branch already carries.
+///
+/// A PR that stopped part-way keeps its branch, and each task it finished is on it as
+/// `PR1 T2: <title>`. Built again from the first task, that task's seat found its work
+/// already there, changed nothing, and was recorded as having built nothing - so the PR
+/// stopped at a task it had done. Counted in order, because each task starts from the
+/// ones before it: a later task on the branch with an earlier one missing is not built.
+async fn already_built(pr: &Pr<'_>) -> Result<usize> {
+    let subjects = git::subjects_between(pr.worktree, pr.base, "HEAD").await?;
+    Ok(pr
+        .crew
+        .iter()
+        .take_while(|assignment| {
+            let label = format!("{}: ", assignment.label(pr.slice));
+            subjects.iter().any(|subject| subject.starts_with(&label))
+        })
+        .count())
 }
 
 /// Work review comments into a PR that is already built, before it is checked again.
@@ -1850,6 +1878,61 @@ esac
     const TWO_SEATS: &str = "As an operator, I want a range.\n\n## Tasks\n\
         - T1 [frontend] Pick the range - Touches: ui/**\n\
         - T2 [backend] Keep the range - Touches: crates/**\n";
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_pr_built_again_carries_on_from_the_first_task_its_branch_lacks() {
+        // A PR that stopped part-way keeps its branch, and its tasks' commits are on it.
+        // Built again from the first task, T1's seat found its work already there,
+        // changed nothing, and was recorded as having built nothing - so the PR stopped
+        // again at the task it had already finished.
+        let mut pr = Fixture::new(TWO_SEATS, "true");
+        std::fs::write(pr.repo.path().join("T1.txt"), "built by the run before\n").unwrap();
+        git(pr.repo.path(), &["add", "T1.txt"]);
+        git(pr.repo.path(), &["commit", "-qm", "PR1 T1: Pick the range"]);
+
+        let (attempted, _) = pr.build(0).await;
+
+        assert_eq!(attempted.rejection, None, "{:?}", attempted.rejection);
+        let makers = pr.makers();
+        assert_eq!(
+            makers
+                .iter()
+                .map(|node| node.task_key.as_deref())
+                .collect::<Vec<_>>(),
+            [Some("T2")],
+            "only the task the branch lacks is built"
+        );
+        assert_eq!(
+            pr.commits(),
+            ["PR1 T1: Pick the range", "PR1 T2: Keep the range"]
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_pr_whose_branch_has_every_task_says_so_rather_than_building_one_again() {
+        let mut pr = Fixture::new(TWO_SEATS, "true");
+        for (file, subject) in [
+            ("T1.txt", "PR1 T1: Pick the range"),
+            ("T2.txt", "PR1 T2: Keep the range"),
+        ] {
+            std::fs::write(pr.repo.path().join(file), "built\n").unwrap();
+            git(pr.repo.path(), &["add", file]);
+            git(pr.repo.path(), &["commit", "-qm", subject]);
+        }
+
+        let (built, _) = pr.try_build(0).await;
+
+        let Err(error) = built else {
+            panic!("there was nothing left to build");
+        };
+        assert!(
+            error.to_string().contains("already on its branch"),
+            "{error}"
+        );
+        assert!(pr.makers().is_empty(), "no task was dispatched again");
+    }
 
     #[cfg(unix)]
     #[tokio::test]

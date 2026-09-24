@@ -577,6 +577,12 @@ pub(crate) async fn commits_between(worktree: &Path, from: &str, to: &str) -> Re
         .map_err(|_| Error::invalid(format!("git counted `{}` commits", count.trim())))
 }
 
+/// The subject line of every commit `to` has that `from` does not, newest first.
+pub(crate) async fn subjects_between(worktree: &Path, from: &str, to: &str) -> Result<Vec<String>> {
+    let log = git(worktree, &["log", "--format=%s", &format!("{from}..{to}")]).await?;
+    Ok(log.lines().map(str::to_string).collect())
+}
+
 /// Whether a rebase stopped part-way in this checkout, on a conflict or a question.
 ///
 /// Asked of git rather than of a path: a linked worktree keeps its rebase state under the

@@ -299,7 +299,13 @@ back; its branch keeps the commits. `git::put_on_branch` **continues** a branch 
 already has work rather than `checkout -B`-resetting it to the base, and a base naming
 the default branch starts from `origin/<default>`. A turn that reports done but changed
 no file is recorded as **failed**, not done - unless it committed its work itself, which
-the snapshot's `HEAD` shows.
+the snapshot's `HEAD` shows. So a PR built again **carries on from the first task its
+branch lacks** (`already_built`, by the `PR1 T2:` subjects), rather than asking a seat to
+redo work that is already there. An *error* while building - a commit git refused, a
+full disk - stops the PR on the row it happened in, settled like any failure
+(`stopped_by`); left as an error it had rows running for good, the slice active and the
+run done without it, and its lease went back to be cleaned with the work uncommitted.
+Work not yet committed keeps its lease.
 
 **A stack is kept on its parents (PW11, D14, D15).** A parent that moves after its child
 was built on it - review follow-ups, or a merge - leaves the child on commits that are not
