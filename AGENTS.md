@@ -361,14 +361,17 @@ claim, `abort_branch` releases it - and a blocked slice goes back to `blocked` w
 reason, never to `ready`, which would offer the next run the same slice with no memory of
 why it failed.
 
-**The gates run inside the PR's worktree and leave build output there.** ai-team writes `target/`,
-`node_modules/`, `dist/` and `.output/` into `.git/info/exclude` for that lease,
-and commits only what each turn changed: `git::snapshot` hashes every dirty path before a
-turn and `changed_since` keeps the ones that differ after, so gate output nothing ignores
-is never a seat's work. Two traps: `git status
---porcelain` writes `XY path`, so trimming the front eats an unstaged file's leading space
-and every path starts a character late; and the gates are repo-wide, so a violation
-anywhere rejects a node whose zone does not contain it.
+**The gates run inside the PR's worktree and leave build output there.** ai-team excludes
+`target/`, `node_modules/`, `vendor/`, `dist/`, `.output/` and `.eve/` in
+`.git/info/exclude` - one file per repository, shared by every checkout of it, the main
+one too - leaving out any pattern that would hide a tracked file: a repo that commits
+`ui/dist` means it as work, and hiding it made `git add` refuse the rebuilt bundle. It
+commits only what each turn changed: `git::snapshot` hashes every dirty path before a turn
+and `changed_since` keeps the ones that differ after, so gate output nothing ignores is
+never a seat's work. Two traps: `git status --porcelain` writes `XY path`, so trimming the
+front eats an unstaged file's leading space and every path starts a character late; and
+the gates are repo-wide, so a violation anywhere rejects a node whose zone does not
+contain it.
 
 Publishing is not a node's call - see rule 4. The guard refuses it, on both CI legs.
 
