@@ -457,23 +457,7 @@ impl Planner {
     }
 
     async fn output_in(&self, cwd: &Path, args: &[&str]) -> Result<String> {
-        let mut command = Command::new("aip");
-        command.arg("-C").arg(cwd);
-        if let Some(db) = &self.db {
-            command.arg("--db").arg(db);
-        }
-        if let Some(plan) = &self.plan {
-            // Every call names the plan. `aip` can infer one from the worktree, but a
-            // leased worktree is a copy of the repo and inference there is a guess.
-            command.arg("-p").arg(plan);
-        }
-        command
-            .args(args)
-            .current_dir(&self.root)
-            .stdin(Stdio::null())
-            .kill_on_drop(true);
-
-        let output = command.output().await.map_err(|error| {
+        let output = self.command(cwd, args).output().await.map_err(|error| {
             Error::invalid(format!(
                 "could not run `aip`: {error}. ai-planner is a separate tool; install it \
                  from its own repo."
@@ -488,6 +472,31 @@ impl Planner {
             )));
         }
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    }
+
+    /// One `aip` call, in `cwd`, about this planner's plan.
+    fn command(&self, cwd: &Path, args: &[&str]) -> Command {
+        let mut command = Command::new("aip");
+        command.arg("-C").arg(cwd);
+        if let Some(db) = &self.db {
+            command.arg("--db").arg(db);
+        }
+        if let Some(plan) = &self.plan {
+            // Every call names the plan. `aip` can infer one from the worktree, but a
+            // leased worktree is a copy of the repo and inference there is a guess.
+            command.arg("-p").arg(plan);
+        }
+        command
+            .args(args)
+            // Never the plan this process happens to carry. Inside a seat it names the
+            // run that seat works for, and an ai-team process started there - its own
+            // tests, run by a verifier - was answered about that run's plan, whatever
+            // it asked. The plan is the one named above, or else the checkout's.
+            .env_remove("AI_PLANNER_PLAN")
+            .current_dir(&self.root)
+            .stdin(Stdio::null())
+            .kill_on_drop(true);
+        command
     }
 }
 
@@ -554,6 +563,26 @@ fn cut(words: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_call_never_takes_its_plan_from_the_environment() {
+        // Inside a seat, AI_PLANNER_PLAN names the run that seat works for. A seat that
+        // runs ai-team's own tests - or any ai-team process started from one - asked
+        // ai-planner a question about some other checkout, and got answered about that
+        // run's plan instead: a test's `current` failed on "no plan matching" in every
+        // verifier's full `cargo test`, and was waved through as unrelated.
+        for planner in [
+            Planner::at("/repo"),
+            Planner::at("/repo").for_plan("the-runs-plan"),
+        ] {
+            let command = planner.command(Path::new("/repo"), &["current", "--json"]);
+            let removed = command
+                .as_std()
+                .get_envs()
+                .any(|(name, value)| name == "AI_PLANNER_PLAN" && value.is_none());
+            assert!(removed, "{:?} inherits AI_PLANNER_PLAN", planner.plan);
+        }
+    }
 
     fn plan(slug: &str, title: &str) -> PlanHeader {
         PlanHeader {
