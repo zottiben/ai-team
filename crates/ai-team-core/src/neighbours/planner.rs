@@ -106,6 +106,12 @@ impl Slice {
             )
     }
 
+    /// The tasks this PR is built as, read out of its scope (PW4). Empty for a slice that
+    /// is one piece of work.
+    pub fn tasks(&self) -> crate::tasks::TaskList {
+        crate::tasks::parse(self.scope_md.as_deref().unwrap_or_default())
+    }
+
     /// The paths this slice touches, as the orchestrator declared them.
     ///
     /// Written as a `Touches:` trailer on the scope, which is deliberately something a

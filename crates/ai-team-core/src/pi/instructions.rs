@@ -19,8 +19,14 @@ use crate::roles::ROOT_ROLE;
 /// The system prompt for one seat.
 ///
 /// `team` and `roster` are only used by a planning seat - a maker does not need to know
-/// who else is on the team, because it is not deciding who does what.
-pub(super) fn for_seat(agent: &Agent, team: &Team, roster: &[Agent]) -> String {
+/// who else is on the team, because it is not deciding who does what. `guide` is the
+/// planning method the planner works to (PW13), when it is installed.
+pub(super) fn for_seat(
+    agent: &Agent,
+    team: &Team,
+    roster: &[Agent],
+    guide: Option<&str>,
+) -> String {
     let mut out = String::new();
     let _ = write!(
         out,
@@ -42,7 +48,8 @@ pub(super) fn for_seat(agent: &Agent, team: &Team, roster: &[Agent]) -> String {
 
     out.push_str(
         "## Where you are\n\n\
-         Your working directory is a git worktree leased to you alone. It is real: build \
+         Your working directory is a git worktree leased for this work, and while you are \
+         in it nobody else is writing to it. It is real: build \
          it, test it, and run the project's own checks in it. Your tools are held to it - \
          reaching outside it is refused, and so is anything that publishes.\n\n\
          Your work is a draft. ai-team commits what you leave behind to a branch and a \
@@ -53,7 +60,7 @@ pub(super) fn for_seat(agent: &Agent, team: &Team, roster: &[Agent]) -> String {
     if coordinates(agent) {
         coordinating_section(&mut out, roster);
     } else if plans(agent) {
-        planning_section(&mut out, roster);
+        planning_section(&mut out, roster, guide);
     } else {
         building_section(&mut out, agent);
     }
@@ -103,31 +110,52 @@ fn coordinating_section(out: &mut String, roster: &[Agent]) {
     roster_section(out, roster);
 }
 
-fn planning_section(out: &mut String, roster: &[Agent]) {
+fn planning_section(out: &mut String, roster: &[Agent], guide: Option<&str>) {
     out.push_str(
         "## How the work gets done\n\n\
          **You do not build the slices yourself, and you do not dispatch anybody.** Turn \
-         the request into a plan. ai-team reads the plan back, gives each ready slice its \
-         own worktree, and starts the seat whose zone owns it. Writing the code yourself \
-         is the single most common way this goes wrong: it leaves the board empty, so \
-         nothing is dispatched and nothing is reviewed.\n\n\
+         the request into a plan. ai-team reads the plan back, gives each pull request its \
+         own worktree, and hands it to the seats its tasks name, one task at a time. \
+         Writing the code yourself is the single most common way this goes wrong: it \
+         leaves the board empty, so nothing is dispatched and nothing is reviewed.\n\n\
          The plan lives in ai-planner, which you reach through its MCP server. Read it \
          first with `get_plan` and `list_slices`: it is a board that outlives this \
          conversation, so add only what is genuinely missing. A slice that repeats one \
          already there gives somebody the same work twice.\n\n\
-         Add work with `add_slice`. **The last line of every slice's scope must be a \
-         `Touches:` line naming the paths it touches**, comma-separated, like this:\n\n\
+         Each slice is one pull request. Add it with `add_slice`; its scope carries the \
+         user story, its acceptance criteria and its tasks. **Every task is one line, in \
+         exactly this form, under a `## Tasks` heading:**\n\n\
          ```\n\
-         Touches: src/lib.rs, crates/**\n\
+         ## Tasks\n\
+         - T1 [backend] Add the range column and its migration - Touches: migrations/**, src/db/**\n\
+         - T2 [frontend] Show the range picker on Summary - Touches: ui/src/Summary.tsx\n\
          ```\n\n\
-         That exact line is what routes the slice - ai-team reads it, finds the seat \
-         whose zone owns those paths, and gives it the work. Describing the paths in \
-         prose instead does not route anything: the slice is reported back to the human \
-         undone, which is the single most common way a plan produces no work. Keep each \
-         slice small enough to demo on its own.\n\n",
+         `T1`, `T2` and on number the tasks in the order they are built. The word in \
+         brackets is the role of the seat that builds it - one of the writing seats under \
+         Your team - and `Touches:` names the paths it changes, which belong inside that \
+         seat's zone. Those lines are what ai-team reads to decide who builds what: a task \
+         whose owner is not a writing seat on this team, or that names no paths, leaves its \
+         pull request unbuilt and is reported back undone. A task two seats need is two \
+         tasks.\n\n\
+         **The last line of every slice's scope is a `Touches:` line naming every path its \
+         tasks touch**, comma-separated:\n\n\
+         ```\n\
+         Touches: migrations/**, src/db/**, ui/src/Summary.tsx\n\
+         ```\n\n",
     );
 
     roster_section(out, roster);
+
+    if let Some(guide) = guide {
+        let _ = write!(
+            out,
+            "## How to shape the plan\n\n\
+             Plan the way this guide says. Where it and the instructions above differ, the \
+             instructions win: the task format is what the dispatcher reads, and this run's \
+             plan already exists - skip any step that starts one.\n\n{}\n\n",
+            guide.trim()
+        );
+    }
 }
 
 fn roster_section(out: &mut String, roster: &[Agent]) {
@@ -175,12 +203,12 @@ fn building_section(out: &mut String, agent: &Agent) {
 
     out.push_str("## What you build\n\n");
     if zone.is_empty() {
-        out.push_str("You have no owned paths, so work only on what the slice names.\n\n");
+        out.push_str("You have no owned paths, so work only on what your task names.\n\n");
     } else {
         let _ = write!(
             out,
-            "You own: {zone}. Work on what the slice names, and stay inside what you own \
-             - another seat may be editing the rest of this repository right now.\n\n"
+            "You own: {zone}. Work on what your task names, and stay inside what you own \
+             - the rest of a pull request is built by the seats that own it, in their turn.\n\n"
         );
     }
 
@@ -239,7 +267,7 @@ mod tests {
     #[test]
     fn the_orchestrator_is_told_to_ground_and_delegate_without_shaping_the_board() {
         let (agent, team, roster) = seat("orchestrator");
-        let prompt = for_seat(&agent, &team, &roster);
+        let prompt = for_seat(&agent, &team, &roster, None);
 
         assert!(prompt.contains("You coordinate"), "{prompt}");
         assert!(prompt.contains("delegation brief"), "{prompt}");
@@ -253,19 +281,48 @@ mod tests {
         // Routing is by zone, so a plan written without knowing the zones is a plan
         // whose slices nobody owns.
         let (agent, team, roster) = seat("planner");
-        let prompt = for_seat(&agent, &team, &roster);
+        let prompt = for_seat(&agent, &team, &roster, None);
         assert!(prompt.contains("## Your team"), "{prompt}");
         assert!(prompt.contains("backend"), "{prompt}");
         assert!(prompt.contains("Owns:"), "{prompt}");
         assert!(prompt.contains("add_slice"), "{prompt}");
         assert!(prompt.contains("`Touches:` line"), "{prompt}");
-        assert!(prompt.contains("Touches: src/lib.rs"), "{prompt}");
+        assert!(prompt.contains("## Tasks"), "{prompt}");
+        // No guide installed, no guide section: an empty heading tells a model nothing.
+        assert!(!prompt.contains("How to shape the plan"), "{prompt}");
+
+        let guided = for_seat(&agent, &team, &roster, Some("Write user stories."));
+        assert!(guided.contains("## How to shape the plan"), "{guided}");
+        assert!(guided.contains("Write user stories."), "{guided}");
+        // The guide may say to start a plan; ai-team already has.
+        assert!(guided.contains("skip any step that starts one"), "{guided}");
+    }
+
+    #[test]
+    fn the_task_lines_the_planner_is_shown_are_the_ones_the_dispatcher_reads() {
+        // The example is the contract. If the format shown and the format parsed drift
+        // apart, every plan written from these instructions is reported back unbuilt.
+        let (agent, team, roster) = seat("planner");
+        let prompt = for_seat(&agent, &team, &roster, None);
+        let listed = crate::tasks::parse(&prompt);
+        assert!(listed.problems.is_empty(), "{:?}", listed.problems);
+        assert_eq!(
+            listed
+                .tasks
+                .iter()
+                .map(|task| (task.key.as_str(), task.owner.as_str()))
+                .collect::<Vec<_>>(),
+            [("T1", "backend"), ("T2", "frontend")]
+        );
+        assert!(crate::tasks::check(&listed.tasks, &roster)
+            .iter()
+            .all(|finding| !finding.blocking));
     }
 
     #[test]
     fn a_maker_is_not_told_the_roster_and_cannot_shape_the_plan() {
         let (agent, team, roster) = seat("backend");
-        let prompt = for_seat(&agent, &team, &roster);
+        let prompt = for_seat(&agent, &team, &roster, None);
 
         assert!(!prompt.contains("## Your team"), "{prompt}");
         assert!(prompt.contains("do not shape it"), "{prompt}");
@@ -277,7 +334,7 @@ mod tests {
         // `bash` is still there, so this is the half of the guarantee that has to be
         // asked for rather than enforced.
         let (agent, team, roster) = seat("verifier");
-        let prompt = for_seat(&agent, &team, &roster);
+        let prompt = for_seat(&agent, &team, &roster, None);
         assert!(prompt.contains("You do not write"), "{prompt}");
         assert!(prompt.contains("Do not work around this with"), "{prompt}");
     }
@@ -288,7 +345,7 @@ mod tests {
         // was not expecting reads as a broken tool.
         let (team, agents) = team();
         for agent in &agents {
-            let prompt = for_seat(agent, &team, &agents);
+            let prompt = for_seat(agent, &team, &agents, None);
             assert!(prompt.contains("draft"), "{}: {prompt}", agent.role);
             assert!(prompt.contains("do not push"), "{}", agent.role);
         }
@@ -298,7 +355,7 @@ mod tests {
     fn a_custom_prompt_is_carried_through() {
         let (mut agent, team, roster) = seat("backend");
         agent.prompt_md = Some("Always use tabs.".into());
-        let prompt = for_seat(&agent, &team, &roster);
+        let prompt = for_seat(&agent, &team, &roster, None);
         assert!(prompt.contains("Custom instructions"), "{prompt}");
         assert!(prompt.contains("Always use tabs."), "{prompt}");
     }

@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   models as fetchModels,
   resetNodeSession,
+  crewLabel,
   type Board,
   type BoardSlice,
   type Doing,
@@ -372,7 +373,9 @@ export function WorkGraph({
                   ))}
                 </div>
                 <div className="work-task__foot faint">
-                  <span>{slice.owner === null ? "unrouted" : `owned by ${slice.owner}`}</span>
+                  <span>
+                    {crewLabel(slice) === null ? "unrouted" : `built by ${crewLabel(slice)}`}
+                  </span>
                   {slice.blocked_reason !== null && (
                     <span className={slice.approval_held ? "faint" : "error"}>
                       {slice.blocked_reason}

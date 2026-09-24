@@ -79,6 +79,10 @@ pub struct PiTurn {
     /// assistant holding a `bash` tool, which is how the first Pi run had the
     /// orchestrator write the code instead of the plan.
     pub instructions: Option<String>,
+    /// The Pi to run: `pi` on the `PATH` unless something else is named. Only a test
+    /// names one - a script that answers the way Pi's stream does, so a whole PR can be
+    /// driven without a model.
+    pub program: Option<PathBuf>,
     /// What this seat's process is given, as `NAME=value` pairs.
     ///
     /// The context tokens its own MCP servers need (D23), and only the ones its sources
@@ -103,6 +107,7 @@ impl PiTurn {
             session_id: None,
             guard: None,
             instructions: None,
+            program: None,
             environment: Vec::new(),
         }
     }
@@ -170,7 +175,11 @@ impl PiProcess {
             });
         }
 
-        let mut command = Command::new("pi");
+        let mut command = Command::new(
+            turn.program
+                .as_deref()
+                .unwrap_or_else(|| std::path::Path::new("pi")),
+        );
         for key in METERED_MODEL_ENV {
             command.env_remove(key);
         }

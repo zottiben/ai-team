@@ -8,6 +8,7 @@
 //! window reads the database the run is already writing to. So progress is a callback,
 //! and everything else lives here.
 
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
@@ -615,18 +616,19 @@ async fn stop_before_build(
             }
             return Ok(true);
         }
+        let findings = record_crew_findings(orchestrator, store, run_id).await;
         if store.transition_blocked_run(
             run_id,
             PLAN_APPROVAL_PREPARING_REASON,
             PLAN_APPROVAL_REASON,
         )? {
-            notify_run(
-                store,
-                run_id,
-                "plan_ready",
-                "Plan ready",
+            let mut body = String::from(
                 "Review the plan, then approve it to continue this same run into the build.",
             );
+            if !findings.is_empty() {
+                let _ = write!(body, "\n\nWorth a look first: {}", findings.join("; "));
+            }
+            notify_run(store, run_id, "plan_ready", "Plan ready", &body);
         }
         return Ok(true);
     }
@@ -642,6 +644,45 @@ async fn stop_before_build(
         return Ok(true);
     }
     Ok(false)
+}
+
+/// Check each PR's tasks against the team before a person approves the plan (PW4), and
+/// record what is worth knowing on the run. Best-effort: a board that could not be read
+/// back is not a reason to lose the approval, and the dispatcher checks again anyway.
+async fn record_crew_findings(
+    orchestrator: &Orchestrator,
+    store: &mut Store,
+    run_id: i64,
+) -> Vec<String> {
+    let Ok(slices) = orchestrator.offered().await else {
+        return Vec::new();
+    };
+    let Ok(findings) = orchestrator.crew_findings(store, &slices) else {
+        return Vec::new();
+    };
+    let mut summary = Vec::new();
+    for (slice, finding, blocking) in findings {
+        let line = if blocking {
+            format!("{slice} would not be built: {finding}")
+        } else {
+            format!("{slice}: {finding}")
+        };
+        let _ = store.append_event(
+            run_id,
+            crate::NewEvent::new(
+                if blocking {
+                    crate::EventKind::Failed
+                } else {
+                    crate::EventKind::Note
+                },
+                &line,
+            )
+            .by("orchestrator")
+            .with(serde_json::json!({ "slice": slice, "blocking": blocking })),
+        );
+        summary.push(line);
+    }
+    summary
 }
 
 struct StartedExecution<'a> {

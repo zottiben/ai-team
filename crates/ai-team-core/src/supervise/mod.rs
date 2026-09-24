@@ -5,6 +5,7 @@
 //! leasing a worktree for it, running the project's own gates, asking the verifier, and
 //! deciding what the answer makes of the node.
 
+mod build;
 mod orchestrate;
 mod outcome;
 

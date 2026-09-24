@@ -199,6 +199,7 @@ it("draws work from board evidence rather than treating every configured seat as
         rev: 1,
         updated_at: null,
         owner: "frontend",
+        crew: ["frontend", "backend"],
         touches: ["ui/**"],
       },
     ],
@@ -220,7 +221,9 @@ it("draws work from board evidence rather than treating every configured seat as
   expect(screen.getByRole("region", { name: "make work" }).textContent).toContain("2/2 slices delivered");
   expect(screen.getByRole("region", { name: "check work" }).textContent).toContain("1/2 verified");
   expect(screen.getByText("Build the API")).toBeDefined();
-  expect(screen.getByText("owned by backend")).toBeDefined();
+  expect(screen.getByText("built by backend")).toBeDefined();
+  // A pull request built as tasks is built by its whole crew, in the order they build.
+  expect(screen.getByText("built by frontend, then backend")).toBeDefined();
   expect(container.querySelector('[aria-label="S1 route"] [data-state="live"]')?.textContent).toBe("check");
   expect(screen.queryByText("Reviewer")).toBeNull();
   expect(screen.queryByText(/tokens/)).toBeNull();

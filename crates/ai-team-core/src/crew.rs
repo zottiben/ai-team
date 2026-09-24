@@ -67,6 +67,8 @@ pub struct Member {
     pub node_run_id: Option<i64>,
     pub run_id: Option<i64>,
     pub slice_key: Option<String>,
+    /// Which task of that PR it is on (PW4), when the PR is built as tasks.
+    pub task_key: Option<String>,
     pub branch: Option<String>,
     pub pushed_at: Option<String>,
     pub pr_url: Option<String>,
@@ -227,6 +229,7 @@ pub fn of_workspace(
             node_run_id: found.map(|(node, _)| node.id),
             run_id: found.map(|(_, run)| *run),
             slice_key: found.and_then(|(node, _)| node.slice_key.clone()),
+            task_key: found.and_then(|(node, _)| node.task_key.clone()),
             branch: found.and_then(|(node, _)| node.branch.clone()),
             pushed_at: found.and_then(|(node, _)| node.pushed_at.clone()),
             pr_url: found.and_then(|(node, _)| node.pr_url.clone()),

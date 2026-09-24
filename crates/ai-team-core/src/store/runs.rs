@@ -701,7 +701,23 @@ impl Store {
         // The picker and generated project are not a permission boundary. Resolve again
         // here so a scheduled, unattended run cannot reach a denied account (D8).
         let resolution = registry.resolve(&agent)?;
-        self.dispatch_with_resolution(run_id, agent_id, slice_key, &resolution)
+        self.dispatch_with_resolution(run_id, agent_id, slice_key, None, &resolution)
+    }
+
+    /// Dispatch one task of a PR (PW4). The task key is a reference into the slice's
+    /// scope, like the slice key is into the plan, and attempts are counted per task: the
+    /// second task a seat builds in a PR is not its second try at the first.
+    pub fn dispatch_task(
+        &mut self,
+        run_id: i64,
+        agent_id: i64,
+        slice_key: &str,
+        task_key: Option<&str>,
+        registry: &ModelRegistry,
+    ) -> Result<NodeRun> {
+        let agent = self.agent(agent_id)?;
+        let resolution = registry.resolve(&agent)?;
+        self.dispatch_with_resolution(run_id, agent_id, Some(slice_key), task_key, &resolution)
     }
 
     /// Dispatch with an explicit runtime resolution after a recognized account quota
@@ -712,6 +728,7 @@ impl Store {
         run_id: i64,
         agent_id: i64,
         slice_key: Option<&str>,
+        task_key: Option<&str>,
         resolution: &ModelResolution,
     ) -> Result<NodeRun> {
         let agent = self.agent(agent_id)?;
@@ -721,17 +738,18 @@ impl Store {
         // evidence of what went wrong, which is what analytics is made of.
         let attempt: i64 = self.db().conn().query_row(
             "SELECT COALESCE(MAX(attempt) + 1, 1) FROM node_run
-              WHERE run_id = ?1 AND agent_id = ?2 AND COALESCE(slice_key, '') = COALESCE(?3, '')",
-            params![run_id, agent_id, slice_key],
+              WHERE run_id = ?1 AND agent_id = ?2 AND COALESCE(slice_key, '') = COALESCE(?3, '')
+                AND COALESCE(task_key, '') = COALESCE(?4, '')",
+            params![run_id, agent_id, slice_key, task_key],
             |r| r.get(0),
         )?;
 
         let id = self.db_mut().write(|tx| {
             tx.execute(
                 "INSERT INTO node_run
-                   (run_id, agent_id, role, provider, model, attempt, slice_key,
+                   (run_id, agent_id, role, provider, model, attempt, slice_key, task_key,
                     created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)",
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)",
                 params![
                     run_id,
                     agent_id,
@@ -740,6 +758,7 @@ impl Store {
                     resolution.model,
                     attempt,
                     slice_key,
+                    task_key,
                     at
                 ],
             )?;
@@ -911,6 +930,35 @@ impl Store {
         if changed == 0 {
             return Err(Error::invalid("that delivery action is no longer claimed"));
         }
+        self.node_run(node_run_id)
+    }
+
+    /// Carry a seat's conversation onto its next row in the same PR.
+    ///
+    /// A retry is a new row (D2), and a new row starts a new Pi session - which hands a
+    /// seat repairing its own work, or building its second task, a prompt and none of the
+    /// conversation behind it. So the session moves forward, and its stream cursor with
+    /// it: events are keyed `<session>:<index>`, and a row that restarted the index at 0
+    /// would collide with the rows before it and have its events silently ignored (rule
+    /// 12). A retired session stays retired; the row starts fresh.
+    pub fn continue_session(&mut self, node_run_id: i64, from: i64) -> Result<NodeRun> {
+        let at = now();
+        self.db_mut().write(|tx| {
+            tx.execute(
+                "UPDATE node_run
+                    SET session_id = (SELECT session_id FROM node_run WHERE id = ?2),
+                        stream_cursor = (SELECT stream_cursor FROM node_run WHERE id = ?2),
+                        context_tokens = (SELECT context_tokens FROM node_run WHERE id = ?2),
+                        rev = rev + 1, updated_at = ?3
+                  WHERE id = ?1
+                    AND EXISTS (SELECT 1 FROM node_run
+                                 WHERE id = ?2 AND session_id IS NOT NULL
+                                   AND session_retired_at IS NULL
+                                   AND session_resetting_at IS NULL)",
+                params![node_run_id, from, at],
+            )?;
+            Ok(())
+        })?;
         self.node_run(node_run_id)
     }
 
@@ -1228,7 +1276,7 @@ const NODE_SELECT: &str = "SELECT id, run_id, agent_id, role, provider, model, s
      tokens_in, tokens_out, tokens_cache_read, tokens_cache_write, turns, blocked_reason, \
      started_at, ended_at, rev, created_at, updated_at, context_tokens, session_retired_at, \
      session_resetting_at, pushed_at, pr_url, merge_requested_at, delivery_claim, \
-     delivery_claimed_at, delivery_error, supervisor_pid FROM node_run";
+     delivery_claimed_at, delivery_error, supervisor_pid, task_key FROM node_run";
 
 fn node_from_row(r: &Row<'_>) -> rusqlite::Result<NodeRun> {
     Ok(NodeRun {
@@ -1254,6 +1302,7 @@ fn node_from_row(r: &Row<'_>) -> rusqlite::Result<NodeRun> {
         session_retired_at: non_empty(r.get(28)?),
         session_resetting_at: non_empty(r.get(29)?),
         supervisor_pid: r.get(36)?,
+        task_key: non_empty(r.get(37)?),
         context_tokens: r.get(27)?,
         eve_port: r.get(13)?,
         eve_token: non_empty(r.get(14)?),

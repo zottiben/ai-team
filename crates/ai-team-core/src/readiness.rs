@@ -613,6 +613,32 @@ async fn neighbours() -> Vec<Check> {
         }
     });
 
+    let skill = crate::skills::PLANNING_SKILL;
+    checks.push(match crate::skills::find_installed(skill) {
+        Some(found) => Check::fine(
+            "planning_skill",
+            "Planning skill",
+            found.path.display().to_string(),
+        ),
+        None => Check {
+            id: "planning_skill".into(),
+            label: "Planning skill".into(),
+            // A plan is still written and still routed - the task format is in the
+            // planner's own instructions - just without the method behind it.
+            severity: Severity::Degraded,
+            detail: format!(
+                "{skill} is not installed - the planner writes plans without its method"
+            ),
+            fix: Fix::Command {
+                run: format!("ai-toolbox skill {skill} --user"),
+                why: format!(
+                    "{skill} is how the planner shapes a plan: user stories as pull \
+                     requests, tasks with an owner. ai-team reads it; ai-toolbox installs it"
+                ),
+            },
+        },
+    });
+
     checks
 }
 

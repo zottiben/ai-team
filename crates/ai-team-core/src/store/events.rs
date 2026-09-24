@@ -102,6 +102,23 @@ impl Store {
         Ok(rows)
     }
 
+    /// A node's events whose structured payload carries `key`, oldest first.
+    ///
+    /// How recovery finds out what a PR already did - which tasks were built, how many
+    /// rejections it took - without reading a whole transcript, or English back out of a
+    /// summary (rule 8).
+    pub fn node_events_marked(&self, node_run_id: i64, key: &str) -> Result<Vec<Event>> {
+        let mut stmt = self.db().conn().prepare(&format!(
+            "{EVENT_SELECT} WHERE node_run_id = ?1
+               AND json_extract(payload_json, '$.' || ?2) IS NOT NULL
+             ORDER BY id"
+        ))?;
+        let rows = stmt
+            .query_map(params![node_run_id, key], event_from_row)?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(rows)
+    }
+
     /// The newest observable activity for one node, without reading its whole transcript.
     pub fn latest_node_event(&self, node_run_id: i64) -> Result<Option<Event>> {
         let mut stmt = self.db().conn().prepare(&format!(

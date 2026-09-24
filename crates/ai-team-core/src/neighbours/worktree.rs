@@ -37,7 +37,11 @@ pub struct PoolEntry {
     // workspace serialises to the window is snake_case, and a plain `rename` applies in
     // both directions - which quietly published one camelCase field to the frontend and
     // cost a round trip to notice.
-    #[serde(rename(deserialize = "leaseHolder"), default)]
+    #[serde(
+        rename(deserialize = "leaseHolder"),
+        default,
+        deserialize_with = "holder_or_nobody"
+    )]
     pub lease_holder: Option<String>,
     #[serde(default)]
     pub processes: Vec<Process>,
@@ -53,6 +57,16 @@ pub struct PoolEntry {
     /// window should not need a second source of truth just to render the first child.
     #[serde(default)]
     pub main: bool,
+}
+
+/// A tree returned to the pool reports `"leaseHolder": ""`. That is nobody, not somebody
+/// with no name: read as a holder, every tree ever returned showed in the window as
+/// leased.
+fn holder_or_nobody<'de, D>(deserializer: D) -> std::result::Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<String>::deserialize(deserializer)?.filter(|holder| !holder.trim().is_empty()))
 }
 
 impl PoolEntry {
@@ -367,6 +381,20 @@ mod tests {
         assert_eq!(pool.worktrees[0].lease_holder.as_deref(), Some("ai-team"));
         // An available tree carries no holder, and that must not fail to parse.
         assert_eq!(pool.worktrees[1].lease_holder, None);
+    }
+
+    #[test]
+    fn a_tree_returned_to_the_pool_is_held_by_nobody() {
+        // Captured from `awt status --json` v0.1.0 after ai-team returned a lease: the
+        // key stays, empty.
+        let pool: Pool = serde_json::from_str(
+            r#"{"poolDir":"/Users/me/.awt/widget-45ea46","worktrees":[
+                 {"name":"1","path":"/Users/me/.awt/widget-45ea46/1/widget",
+                  "status":"available","leaseHolder":"","processes":[]}]}"#,
+        )
+        .unwrap();
+        assert_eq!(pool.worktrees[0].lease_holder, None);
+        assert!(!pool.worktrees[0].orphaned());
     }
 
     #[test]

@@ -117,6 +117,114 @@ fn porcelain_paths(status: &str) -> Vec<String> {
         .collect()
 }
 
+/// What every path that differs from `HEAD` holds right now: its blob hash, or `None` for
+/// a deletion. Taken before a turn, so what the turn changed can be told apart from what
+/// was already there.
+pub(crate) type Snapshot = std::collections::BTreeMap<String, Option<String>>;
+
+pub(crate) async fn snapshot(worktree: &Path) -> Result<Snapshot> {
+    let status = git(
+        worktree,
+        &["status", "--porcelain", "--untracked-files=all"],
+    )
+    .await?;
+    // A trailing slash is a nested repository or worktree: a checkout, not a file.
+    let paths: Vec<String> = porcelain_paths(&status)
+        .into_iter()
+        .filter(|path| !path.ends_with('/'))
+        .collect();
+    let present: Vec<&str> = paths
+        .iter()
+        .map(String::as_str)
+        .filter(|path| worktree.join(path).is_file())
+        .collect();
+    let hashes = hash_objects(worktree, &present).await?;
+    let mut snapshot: Snapshot = present
+        .iter()
+        .zip(hashes)
+        .map(|(path, hash)| ((*path).to_string(), Some(hash)))
+        .collect();
+    for path in paths {
+        snapshot.entry(path).or_insert(None);
+    }
+    Ok(snapshot)
+}
+
+/// The paths whose content is different now from what `before` recorded.
+///
+/// What one turn changed, and nothing else: the gates leave output behind that no ignore
+/// file covers, and committing that as the seat's work would be ai-team's mess on
+/// somebody's pull request (rule 9). A path the turn put back to `HEAD` is not listed -
+/// there is nothing of it left to commit.
+pub(crate) async fn changed_since(worktree: &Path, before: &Snapshot) -> Result<Vec<String>> {
+    Ok(snapshot(worktree)
+        .await?
+        .into_iter()
+        .filter(|(path, now)| before.get(path) != Some(now))
+        .map(|(path, _)| path)
+        .collect())
+}
+
+/// Blob hashes for files, in the order given. Paths go in on stdin rather than as
+/// arguments: a turn that leaves a few thousand untracked files behind would otherwise
+/// overflow the command line.
+async fn hash_objects(worktree: &Path, paths: &[&str]) -> Result<Vec<String>> {
+    use tokio::io::AsyncWriteExt as _;
+
+    if paths.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut child = Command::new("git")
+        .args(["hash-object", "--stdin-paths"])
+        .current_dir(worktree)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|error| Error::invalid(format!("could not run git: {error}")))?;
+    let mut input = paths.join("\n");
+    input.push('\n');
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| Error::invalid("git hash-object took no input"))?;
+    // Written from its own task: git answers as it reads, and a full stdout pipe would
+    // otherwise stop it reading before all the paths are in.
+    let writer = tokio::spawn(async move {
+        let written = stdin.write_all(input.as_bytes()).await;
+        drop(stdin);
+        written
+    });
+    let output = child
+        .wait_with_output()
+        .await
+        .map_err(|error| Error::invalid(format!("could not run git: {error}")))?;
+    writer
+        .await
+        .map_err(|error| Error::invalid(format!("writing to git hash-object: {error}")))?
+        .map_err(|error| Error::invalid(format!("writing to git hash-object: {error}")))?;
+    if !output.status.success() {
+        return Err(Error::invalid(format!(
+            "`git hash-object` failed in {}: {}",
+            worktree.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    let hashes: Vec<String> = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::to_string)
+        .collect();
+    if hashes.len() != paths.len() {
+        return Err(Error::invalid(format!(
+            "`git hash-object` answered {} of {} paths",
+            hashes.len(),
+            paths.len()
+        )));
+    }
+    Ok(hashes)
+}
+
 /// What a person has changed and not committed, untracked files included.
 ///
 /// A run starts its checkout on a fresh branch, and the agents commit whatever changed:

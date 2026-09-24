@@ -867,6 +867,7 @@ button.card:hover {
   flex-direction: column;
   gap: var(--space-4);
   min-width: 0;
+  container-type: inline-size;
 }
 
 .work-graph__stages {
@@ -880,6 +881,18 @@ button.card:hover {
 .work-graph__stage-wrap {
   position: relative;
   min-width: 11rem;
+}
+
+/* Four stages need 48rem side by side. Narrower, they fold to two rows rather than scroll
+ * the last one out of sight - and the second row starts with no edge leading into it. */
+@container (max-width: 48rem) {
+  .work-graph__stages {
+    grid-template-columns: repeat(2, minmax(11rem, 1fr));
+  }
+
+  .work-graph__stage-wrap:nth-child(3) .work-graph__edge {
+    display: none;
+  }
 }
 
 .work-graph__edge {
