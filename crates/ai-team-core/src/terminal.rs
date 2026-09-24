@@ -426,6 +426,33 @@ mod tests {
         assert!(terminals.resize(99, 10, 10).is_err());
     }
 
+    // The tests below run fixed programs, never `open`'s login shell. Typing into the
+    // operator's shell runs their rc files and writes every line into their history -
+    // `sharehistory` appends it at once, under a lock that shells started side by side in
+    // the suite then queue on until an `exit` misses its deadline. What is under test is
+    // the terminal - the pty, the pump, the status - and `open` differs from
+    // `open_program` only in which program it starts.
+
+    /// Read a session until its program has ended having printed `expected`, or until a
+    /// deadline. Measured in time rather than in polls: the suite runs git, Pi and
+    /// language servers beside this, and a count of sleeps is only as long as the
+    /// scheduler makes it.
+    #[cfg(unix)]
+    fn read_until_ended(terminals: &Terminals, id: u64, expected: &str) -> Chunk {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let mut text = String::new();
+        let mut cursor = 0;
+        loop {
+            let chunk = terminals.read(id, cursor).unwrap();
+            text.push_str(&chunk.text);
+            cursor = chunk.cursor;
+            if (chunk.done && text.contains(expected)) || std::time::Instant::now() > deadline {
+                return Chunk { text, ..chunk };
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+
     #[cfg(unix)]
     #[test]
     fn a_command_run_in_a_terminal_streams_and_reports_its_status() {
@@ -433,26 +460,25 @@ mod tests {
         std::fs::write(dir.path().join("marker.txt"), "hi").unwrap();
 
         let terminals = Terminals::new();
-        let id = terminals.open(dir.path()).unwrap();
-        terminals.write(id, "ls\nexit\n").unwrap();
+        let id = terminals
+            .open_program(
+                dir.path(),
+                "/bin/sh",
+                &[
+                    "-c".to_string(),
+                    r#"read line; echo "got $line"; ls; exit 3"#.to_string(),
+                ],
+            )
+            .unwrap();
+        terminals.write(id, "typed\n").unwrap();
 
-        // Polled: a shell takes a moment to start, echo and exit. The full suite also
-        // starts real Pi, LSP and nested path-test processes, so use a scheduler-independent
-        // deadline rather than assuming this subprocess always exits within 5 seconds.
-        let mut text = String::new();
-        let mut cursor = 0;
-        for _ in 0..300 {
-            let chunk = terminals.read(id, cursor).unwrap();
-            text.push_str(&chunk.text);
-            cursor = chunk.cursor;
-            if chunk.done && text.contains("marker.txt") {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(50));
-        }
-
-        assert!(text.contains("marker.txt"), "{text}");
-        assert!(terminals.read(id, cursor).unwrap().done);
+        let ended = read_until_ended(&terminals, id, "marker.txt");
+        // What was typed reached the program, what it printed came back, and so did how
+        // it ended - a status that is not the default, so a zero read by mistake shows.
+        assert!(ended.text.contains("got typed"), "{}", ended.text);
+        assert!(ended.text.contains("marker.txt"), "{}", ended.text);
+        assert!(ended.done, "{}", ended.text);
+        assert_eq!(ended.status, Some(3), "{}", ended.text);
     }
 
     #[cfg(unix)]
@@ -471,18 +497,8 @@ mod tests {
             )
             .unwrap();
 
-        let mut text = String::new();
-        let mut cursor = 0;
-        for _ in 0..100 {
-            let chunk = terminals.read(id, cursor).unwrap();
-            text.push_str(&chunk.text);
-            cursor = chunk.cursor;
-            if chunk.done {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(50));
-        }
-        assert!(text.contains(&marker), "{text}");
+        let ended = read_until_ended(&terminals, id, &marker);
+        assert!(ended.text.contains(&marker), "{}", ended.text);
     }
 
     #[cfg(unix)]
@@ -495,22 +511,14 @@ mod tests {
         std::fs::write(real.join("only-here.txt"), "x").unwrap();
 
         let terminals = Terminals::new();
-        let id = terminals.open(&real).unwrap();
-        terminals.write(id, "ls only-here.txt\nexit\n").unwrap();
+        let id = terminals
+            .open_program(&real, "/bin/ls", &["only-here.txt".to_string()])
+            .unwrap();
 
-        let mut text = String::new();
-        let mut cursor = 0;
-        for _ in 0..100 {
-            let chunk = terminals.read(id, cursor).unwrap();
-            text.push_str(&chunk.text);
-            cursor = chunk.cursor;
-            if chunk.done {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(50));
-        }
-        assert!(text.contains("only-here.txt"), "{text}");
-        assert!(!text.contains("No such file"), "{text}");
+        let ended = read_until_ended(&terminals, id, "only-here.txt");
+        assert!(ended.text.contains("only-here.txt"), "{}", ended.text);
+        // `ls` of a name that is not there fails, so the status says where it ran.
+        assert_eq!(ended.status, Some(0), "{}", ended.text);
     }
 
     #[cfg(unix)]
@@ -520,8 +528,9 @@ mod tests {
         let two = tempfile::tempdir().unwrap();
         let terminals = Terminals::new();
 
-        let a = terminals.open(one.path()).unwrap();
-        terminals.open(two.path()).unwrap();
+        // `cat` waits on the terminal until it hangs up, so both stay open until closed.
+        let a = terminals.open_program(one.path(), "/bin/cat", &[]).unwrap();
+        terminals.open_program(two.path(), "/bin/cat", &[]).unwrap();
 
         assert_eq!(terminals.list(None).len(), 2);
         let mine = terminals.list(Some(one.path()));
