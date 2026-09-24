@@ -3,7 +3,7 @@
 use rusqlite::params;
 
 use crate::error::{Error, Result};
-use crate::model::{EventKind, NewRestack, NodeRun, NodeStatus, Run, RunTrigger};
+use crate::model::{EventKind, NewRestack, NodeRun, NodeStatus, Run, RunOrigin, RunTrigger};
 use crate::store::Store;
 use crate::util::now;
 
@@ -118,6 +118,28 @@ impl Store {
         created
             .map(|(run_id, node_id)| Ok((self.run(run_id)?, self.node_run(node_id)?)))
             .transpose()
+    }
+
+    /// Who started `run`. A restack and a review follow-up are both review-triggered (D14);
+    /// only a restack carries the note saying what it is rebasing onto.
+    pub fn run_origin(&self, run: &Run) -> Result<RunOrigin> {
+        Ok(match run.trigger {
+            RunTrigger::Manual => RunOrigin::Operator,
+            RunTrigger::Scheduled | RunTrigger::Reminder => RunOrigin::Schedule,
+            RunTrigger::Review => {
+                let restack: bool = self.db().conn().query_row(
+                    "SELECT EXISTS (SELECT 1 FROM event WHERE run_id = ?1
+                        AND json_extract(payload_json, '$.restack') IS NOT NULL)",
+                    params![run.id],
+                    |r| r.get(0),
+                )?;
+                if restack {
+                    RunOrigin::Watch
+                } else {
+                    RunOrigin::Review
+                }
+            }
+        })
     }
 
     /// Whether a turn is at work in `worktree`, or waiting there on a person.
@@ -303,6 +325,35 @@ mod tests {
         assert_eq!(node.supervisor_pid, Some(i64::from(std::process::id())));
         let said = s.store.node_events(node.id, 10).unwrap();
         assert_eq!(said[0].summary, "orchestrator restacks PR2 onto 01234567");
+    }
+
+    #[test]
+    fn a_run_says_who_started_it_and_a_restack_was_the_watch_not_a_review() {
+        let mut s = stack();
+        let asked = s
+            .store
+            .create_run(s.project, "build it", RunTrigger::Manual)
+            .unwrap();
+        let reviewed = s
+            .store
+            .create_run(
+                s.project,
+                "Address review comments on PR2",
+                RunTrigger::Review,
+            )
+            .unwrap();
+        let fired = s
+            .store
+            .create_run(s.project, "nightly", RunTrigger::Scheduled)
+            .unwrap();
+        let (restack, _) = s.open("/awt/2", "aaaa").unwrap();
+
+        let origin = |run: &Run| s.store.run_origin(run).unwrap();
+        assert_eq!(origin(&asked), RunOrigin::Operator);
+        assert_eq!(origin(&reviewed), RunOrigin::Review);
+        assert_eq!(origin(&fired), RunOrigin::Schedule);
+        // Both are review-triggered (D14); only one is somebody's review.
+        assert_eq!(origin(&restack), RunOrigin::Watch);
     }
 
     #[test]

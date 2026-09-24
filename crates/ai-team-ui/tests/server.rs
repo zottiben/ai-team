@@ -672,6 +672,8 @@ fn a_run_and_all_its_leased_nodes_stay_in_the_workspace_that_started_it() {
     assert_eq!(task_detail.status, 200, "{}", task_detail.body);
     let task_detail: serde_json::Value = serde_json::from_str(&task_detail.body).unwrap();
     assert_eq!(task_detail["nodes"].as_array().unwrap().len(), 2);
+    // Said by the run, so the window does not put words in the operator's mouth.
+    assert_eq!(task_detail["started_by"], "operator");
     assert!(ai_team_core::same_worktree(
         task_detail["workspace_path"].as_str().unwrap(),
         &task.to_string_lossy()

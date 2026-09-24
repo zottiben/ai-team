@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, expect, it, vi } from "vitest";
 
 import { AgentActivity } from "./AgentActivity";
-import type { Run } from "./api";
+import type { Run, RunDetail } from "./api";
 
 const RUN: Run = {
   id: 7,
@@ -17,7 +17,11 @@ const RUN: Run = {
   ended_at: "",
 };
 
-function stub(run: Partial<Run> = {}, recoverable = false, events?: unknown[]) {
+function stub(
+  run: Partial<Omit<RunDetail, "nodes" | "usage">> = {},
+  recoverable = false,
+  events?: unknown[],
+) {
   const calls: Array<{ path: string; body?: unknown }> = [];
   vi.stubGlobal(
     "fetch",
@@ -209,6 +213,24 @@ it("reads an agent's markdown as the formatting it is, and what you typed as you
   );
   expect(screen.queryByText(/\*\*|##/)).toBeNull();
   expect(screen.getByText("keep *this* exactly").tagName).toBe("P");
+});
+
+it("says who started a run, and only puts the operator's own words in their bubble", async () => {
+  stub({ started_by: "watch", prompt: "Restack PR2 onto origin/main: PR1 was merged into main" });
+  render(<AgentActivity runs={[RUN]} workspace="/tmp/widget" tick={0} />);
+
+  const who = await screen.findByText("The pull-request watch started the run");
+  const prompt = screen.getByText("Restack PR2 onto origin/main: PR1 was merged into main");
+  expect(prompt.closest("article")).toBe(who.closest("article"));
+  expect(who.closest("article")?.classList.contains("activity-message--human")).toBe(false);
+});
+
+it("puts a prompt the operator typed in their own bubble", async () => {
+  stub({ started_by: "operator" });
+  render(<AgentActivity runs={[RUN]} workspace="/tmp/widget" tick={0} />);
+
+  const who = await screen.findByText("You started the run");
+  expect(who.closest("article")?.classList.contains("activity-message--human")).toBe(true);
 });
 
 it("shows that a streamed tool call is still running while its result is pending", async () => {

@@ -2999,6 +2999,8 @@ async fn runs(
 struct RunDetail {
     #[serde(flatten)]
     run: Run,
+    /// Who started it. A restack's prompt is ai-team's words, not the operator's.
+    started_by: ai_team_core::RunOrigin,
     nodes: Vec<RunNode>,
     usage: Usage,
 }
@@ -3042,6 +3044,7 @@ async fn run(
             )));
         }
     }
+    let started_by = store.run_origin(&run)?;
     // From a pull request's worktree, only the turns that built or checked that PR.
     let nodes = match scope.as_deref() {
         Some(scope) => store.nodes_in_workspace(id, scope)?,
@@ -3078,7 +3081,12 @@ async fn run(
             }
         })
         .collect();
-    Ok(Json(RunDetail { run, nodes, usage }))
+    Ok(Json(RunDetail {
+        run,
+        started_by,
+        nodes,
+        usage,
+    }))
 }
 
 #[derive(Debug, Deserialize)]

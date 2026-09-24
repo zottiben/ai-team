@@ -182,9 +182,23 @@ sql_enum! {
         Scheduled => "scheduled",
         Reminder => "reminder",
         /// A pull request's review moved on: comments to work in, or its stack to keep on
-        /// its parents (D14).
+        /// its parents (D14). [`RunOrigin`] tells the two apart.
         Review => "review",
     }
+}
+
+/// Who started a run, the way a person would put it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunOrigin {
+    /// The operator asked for it.
+    Operator,
+    /// A reminder or a schedule fired it.
+    Schedule,
+    /// A review the operator submitted: comments to work in.
+    Review,
+    /// ai-team's pull-request watch: a stacked PR to keep on its parent (PW11).
+    Watch,
 }
 
 sql_enum! {
