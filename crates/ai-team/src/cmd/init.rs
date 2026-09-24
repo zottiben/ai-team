@@ -5,7 +5,7 @@
 
 use anyhow::{Context, Result};
 
-use ai_team_core::Store;
+use ai_team_core::{RoleModelDefault, Store};
 
 use crate::cli::InitArgs;
 
@@ -27,7 +27,13 @@ pub(crate) fn run(args: InitArgs) -> Result<()> {
     }
 
     let cwd = std::env::current_dir().context("reading the current directory")?;
-    let done = ai_team_core::register_project(&mut store, &cwd, args.name.as_deref(), args.kind)?;
+    let done = ai_team_core::register_project(
+        &mut store,
+        &cwd,
+        args.name.as_deref(),
+        args.kind,
+        RoleModelDefault::for_this_machine,
+    )?;
 
     if done.created {
         println!("Registered {} ({})", done.project.slug, done.project.kind);

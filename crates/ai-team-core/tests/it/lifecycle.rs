@@ -95,7 +95,10 @@ fn a_whole_run_hangs_together_and_the_views_report_it() {
             },
         )
         .unwrap();
-    let team = h.store.seed_default_team(project.id).unwrap();
+    let team = h
+        .store
+        .seed_default_team(project.id, &ai_team_core::RoleModelDefault::local_floor())
+        .unwrap();
 
     assert_eq!(h.cell("v_projects", "team"), team.name);
     assert_eq!(h.cell("v_projects", "agents"), "6");
@@ -298,7 +301,9 @@ fn a_project_that_is_not_a_repo_works_the_same_way() {
             ..Default::default()
         })
         .unwrap();
-    h.store.seed_default_team(project.id).unwrap();
+    h.store
+        .seed_default_team(project.id, &ai_team_core::RoleModelDefault::local_floor())
+        .unwrap();
 
     assert_eq!(h.cell("v_projects", "kind"), "epic");
     assert_eq!(h.cell("v_projects", "repos"), "0");
@@ -327,7 +332,9 @@ fn the_database_survives_being_closed_and_reopened() {
             ..Default::default()
         })
         .unwrap();
-    store.seed_default_team(project.id).unwrap();
+    store
+        .seed_default_team(project.id, &ai_team_core::RoleModelDefault::local_floor())
+        .unwrap();
     let run = store
         .create_run(project.id, "ship it", RunTrigger::Manual)
         .unwrap();
@@ -371,11 +378,15 @@ fn seeding_twice_does_not_produce_a_second_roster() {
             ..Default::default()
         })
         .unwrap();
-    h.store.seed_default_team(project.id).unwrap();
+    h.store
+        .seed_default_team(project.id, &ai_team_core::RoleModelDefault::local_floor())
+        .unwrap();
 
     // Each role is unique per team, so a second seed onto the same team is refused
     // rather than quietly doubling the roster.
-    let again = h.store.seed_default_team(project.id);
+    let again = h
+        .store
+        .seed_default_team(project.id, &ai_team_core::RoleModelDefault::local_floor());
     assert!(again.is_err(), "a duplicate team slug must not be accepted");
     assert_eq!(h.view_count("v_agents"), 6);
 }
@@ -392,7 +403,10 @@ fn every_provider_in_the_registry_is_subscription_backed() {
             ..Default::default()
         })
         .unwrap();
-    let team = h.store.seed_default_team(project.id).unwrap();
+    let team = h
+        .store
+        .seed_default_team(project.id, &ai_team_core::RoleModelDefault::local_floor())
+        .unwrap();
     let agent = h.store.agents(team.id).unwrap().into_iter().next().unwrap();
 
     for provider in Provider::ALL {

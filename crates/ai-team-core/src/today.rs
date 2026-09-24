@@ -460,7 +460,9 @@ mod tests {
                 ..Default::default()
             })
             .unwrap();
-        let team = store.seed_default_team(project.id).unwrap();
+        let team = store
+            .seed_default_team(project.id, &crate::RoleModelDefault::local_floor())
+            .unwrap();
         let seat = |store: &Store, role: &str| {
             store
                 .agents(team.id)
@@ -547,7 +549,9 @@ mod tests {
                 ..Default::default()
             })
             .unwrap();
-        let team = store.seed_default_team(project.id).unwrap();
+        let team = store
+            .seed_default_team(project.id, &crate::RoleModelDefault::local_floor())
+            .unwrap();
         let seat = |store: &Store, role: &str| {
             store
                 .agents(team.id)
@@ -595,7 +599,9 @@ mod tests {
                 ..Default::default()
             })
             .unwrap();
-        let team = store.seed_default_team(project.id).unwrap();
+        let team = store
+            .seed_default_team(project.id, &crate::RoleModelDefault::local_floor())
+            .unwrap();
         let backend = store
             .agents(team.id)
             .unwrap()

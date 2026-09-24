@@ -1529,7 +1529,9 @@ mod tests {
                 ..Default::default()
             })
             .unwrap();
-        let team = s.seed_default_team(project.id).unwrap();
+        let team = s
+            .seed_default_team(project.id, &crate::RoleModelDefault::local_floor())
+            .unwrap();
         (s, project.id, team.id)
     }
 
@@ -1803,7 +1805,9 @@ mod tests {
                 ..Default::default()
             })
             .unwrap();
-        let team = s.seed_default_team(project.id).unwrap();
+        let team = s
+            .seed_default_team(project.id, &crate::RoleModelDefault::local_floor())
+            .unwrap();
         s.attach_repo(
             project.id,
             crate::model::NewRepo {

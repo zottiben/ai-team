@@ -24,7 +24,9 @@ fn loaded(count: usize) -> (Store, i64) {
             ..Default::default()
         })
         .unwrap();
-    store.seed_default_team(project.id).unwrap();
+    store
+        .seed_default_team(project.id, &ai_team_core::RoleModelDefault::local_floor())
+        .unwrap();
     let run = store
         .create_run(project.id, "ship it", RunTrigger::Manual)
         .unwrap();

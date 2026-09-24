@@ -17,4 +17,5 @@ mod pi_live;
 mod release_assets;
 mod review_range;
 mod review_steering;
+mod seeding;
 mod staging;
