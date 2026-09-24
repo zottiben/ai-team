@@ -152,7 +152,7 @@ pub use workflow::{
     claim_session_reset, continue_approved_at as continue_approved_run_at, follow_up_at,
     open_follow_up, reset_claimed_session_at as reset_claimed_session,
     resume_interrupted_node_at as resume_interrupted_node, run as run_workflow,
-    settle_abandoned_runs, Branching, Progress, Request, PLAN_APPROVAL_PREPARING_REASON,
+    settle_abandoned_runs, Branching, Progress, Request, Resumed, PLAN_APPROVAL_PREPARING_REASON,
     PLAN_APPROVAL_REASON,
 };
 

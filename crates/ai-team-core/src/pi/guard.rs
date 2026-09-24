@@ -1,6 +1,6 @@
 //! Putting the guard extension where Pi can load it.
 //!
-//! The extension is three TypeScript files compiled into the binary, so a `cargo
+//! The extension is four TypeScript files compiled into the binary, so a `cargo
 //! install`ed ai-team carries its own guard rather than depending on a checkout. They are
 //! written under the data directory once per version and passed to Pi with `--extension`.
 //!
@@ -14,12 +14,14 @@ use crate::error::{Error, Result};
 const GUARD: &str = include_str!("assets/guard.ts");
 const WORKTREE: &str = include_str!("assets/worktree.ts");
 const IRREVERSIBLE: &str = include_str!("assets/irreversible.ts");
+const LIFELINE: &str = include_str!("assets/lifeline.ts");
 
 /// The files that make up the guard, and their contents.
 const FILES: &[(&str, &str)] = &[
     ("guard.ts", GUARD),
     ("worktree.ts", WORKTREE),
     ("irreversible.ts", IRREVERSIBLE),
+    ("lifeline.ts", LIFELINE),
 ];
 
 /// Write the guard into `dir` and return the entry point to hand to `--extension`.
@@ -65,10 +67,11 @@ mod tests {
         for (name, _) in FILES {
             assert!(dir.path().join(name).exists(), "{name} was not written");
         }
-        // The entry point imports the other two by relative path, so they have to be
+        // The entry point imports the others by relative path, so they have to be
         // siblings rather than merely present somewhere.
         let guard = std::fs::read_to_string(&entry).unwrap();
         assert!(guard.contains("./irreversible.ts"), "{guard}");
+        assert!(guard.contains("./lifeline.ts"), "{guard}");
         assert!(guard.contains("./worktree.ts"), "{guard}");
     }
 

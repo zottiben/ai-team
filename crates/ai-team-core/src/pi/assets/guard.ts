@@ -16,6 +16,7 @@
 // too far up.
 
 import { judge } from "./irreversible.ts";
+import { holdOn } from "./lifeline.ts";
 import { isInside, worktreeRoot } from "./worktree.ts";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { realpathSync } from "node:fs";
@@ -105,4 +106,6 @@ export default function aiTeamGuard(pi: {
   ) => void;
 }) {
   pi.on("tool_call", (event) => decide(event.toolName, event.input));
+  // Here rather than at import, so loading this file to test `decide` watches nothing.
+  holdOn();
 }

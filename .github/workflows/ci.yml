@@ -76,6 +76,7 @@ jobs:
           node --test crates/ai-team-core/src/pi/assets/worktree.test.ts
           node --test crates/ai-team-core/src/pi/assets/irreversible.test.ts
           node --test crates/ai-team-core/src/pi/assets/guard.test.ts
+          node --test crates/ai-team-core/src/pi/assets/lifeline.test.ts
 
       - name: format
         run: cargo fmt --all --check

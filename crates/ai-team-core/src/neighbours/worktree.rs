@@ -209,9 +209,10 @@ impl Worktrees {
             )));
         }
         if !entry.processes.is_empty() {
+            let running = running(&entry.processes).await;
             return Err(Error::invalid(format!(
-                "the interrupted worktree still has {} live process(es); refusing duplicate supervision",
-                entry.processes.len()
+                "the interrupted worktree still has {running} running in it, and a turn is \
+                 not resumed beside them: stop them, then resume again"
             )));
         }
         Ok(Lease {
@@ -244,9 +245,9 @@ impl Worktrees {
         }
         if !entry.processes.is_empty() {
             return Err(Error::invalid(format!(
-                "{} has {} live process(es) in it; refusing a second supervisor",
+                "{} has {} running in it; refusing a second supervisor",
                 requested.display(),
-                entry.processes.len()
+                running(&entry.processes).await
             )));
         }
         Ok(Lease {
@@ -379,6 +380,36 @@ impl Worktrees {
     }
 }
 
+/// What is running in a worktree, as somebody would recognise it:
+/// `pi (13106), claude (13487)`.
+///
+/// Named by `ps` where it can be. `awt` names a process by its executable's file, and
+/// Claude's is a version number, so a refusal naming "node, 2.1.281" tells nobody that it
+/// is a turn still running. A process `ps` no longer knows keeps the name `awt` gave it.
+async fn running(processes: &[Process]) -> String {
+    let mut named = Vec::with_capacity(processes.len());
+    for process in processes {
+        // One at a time: `ps` refuses the whole list over one pid it will not take, and
+        // this runs only when a refusal is being written.
+        let known = Command::new("ps")
+            .args(["-o", "comm=", "-p", &process.pid.to_string()])
+            .stdin(Stdio::null())
+            .output()
+            .await
+            .ok()
+            .filter(|output| output.status.success())
+            .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+            .filter(|command| !command.is_empty())
+            .map(|command| command.rsplit('/').next().unwrap_or(&command).to_string());
+        named.push(format!(
+            "{} ({})",
+            known.unwrap_or_else(|| process.name.clone()),
+            process.pid
+        ));
+    }
+    named.join(", ")
+}
+
 /// Whether two paths name the same directory.
 ///
 /// Compared after resolving, because macOS hands back `/private/var/...` where `awt`
@@ -399,6 +430,37 @@ pub fn same_worktree(left: &str, right: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_refusal_names_what_is_running_the_way_ps_does() {
+        // awt names Claude by its executable's file, a version number. `ps` names it
+        // claude, which is what tells somebody a turn is still running.
+        let me = i64::from(std::process::id());
+        let mut exited = std::process::Command::new("true").spawn().unwrap();
+        exited.wait().unwrap();
+        let gone = i64::from(exited.id());
+        let named = running(&[
+            Process {
+                pid: me,
+                name: "2.1.281".into(),
+            },
+            Process {
+                pid: gone,
+                name: "node".into(),
+            },
+        ])
+        .await;
+
+        let (first, second) = named.split_once(", ").unwrap();
+        let (name, pid) = first.split_once(' ').unwrap();
+        assert_eq!(pid, format!("({me})"));
+        // Linux keeps fifteen characters of a process's name, macOS the whole path.
+        let file = std::env::current_exe().unwrap();
+        let file = file.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(file.starts_with(name) && name.len() >= 12, "{named}");
+        // One `ps` does not know keeps the name awt gave it.
+        assert_eq!(second, format!("node ({gone})"));
+    }
 
     #[test]
     fn the_pool_json_shape_is_what_awt_actually_prints() {

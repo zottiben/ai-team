@@ -306,6 +306,32 @@ it("reattaches an interrupted turn to its existing run, session, and checkout", 
   expect(await screen.findByText(/resumed in the same run, session, and checkout/)).toBeDefined();
 });
 
+it("says why an interrupted turn could not resume, and still offers it", async () => {
+  // The loop this guards: the window said "resumed", the resume failed where nobody saw,
+  // and the same banner came back with nothing said about why.
+  const calls = stub({}, true);
+  const answered = globalThis.fetch;
+  const refusal =
+    "the interrupted worktree still has pi (13106), claude (13487) running in it, and a " +
+    "turn is not resumed beside them: stop them, then resume again";
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: string, init?: RequestInit) =>
+      String(input).endsWith("/runs/7/nodes/11/resume")
+        ? (calls.push({ path: "/runs/7/nodes/11/resume" }),
+          Promise.resolve({ ok: false, status: 422, json: async () => ({ error: refusal }) }))
+        : answered(input, init),
+    ),
+  );
+  render(<AgentActivity runs={[RUN]} workspace="/tmp/widget" tick={0} />);
+
+  await userEvent.click(await screen.findByRole("button", { name: "Resume interrupted turn" }));
+
+  expect(await screen.findByText(refusal)).toBeDefined();
+  expect(screen.queryByText(/resumed in the same run/)).toBeNull();
+  expect(screen.getByRole("button", { name: "Resume interrupted turn" })).toBeDefined();
+});
+
 it("resumes an interrupted turn when the operator replies to it", async () => {
   const calls = stub({}, true);
   render(<AgentActivity runs={[RUN]} workspace="/tmp/widget" tick={0} />);

@@ -215,6 +215,10 @@ both were learned rather than designed:
   fills the stderr buffer, which on a failing turn is exactly when it happens.
 - **Signal the process group.** Pi starts MCP servers and tool subprocesses; killing the
   direct child leaves them running.
+- **A turn ends with its supervisor.** Pi cannot tell ai-team died: its stdin is
+  `/dev/null` and Node ignores SIGPIPE, so an idle turn outlives a crash, holds its lease
+  busy, and every Resume is refused. The guard's `lifeline.ts` stops the turn's process
+  group once Pi is reparented; `node --test` proves it against a real killed parent.
 
 Ingest is batched small and written as the turn runs, because `ait ui` and `ait run` are
 separate processes and the window learns anything happened by watching `MAX(event.id)`
@@ -230,10 +234,10 @@ first one on a real team was a seat on a provider Pi did not know, and said noth
 **A run with no live process left in it is settled once** (`store/interrupted.rs`). Nothing
 else changes a run's rows when the process driving it dies, so a crash, a closed terminal
 or a sleeping laptop left runs "planning" for good, and Today reported the team working.
-The clock in `ait ui` and `ait daemon`, and `ait today`, settle them: only on evidence - a
-recorded pid, and none alive, the run's or its open turns' (a resumed turn runs under the
-window's) - and once, in a write that checks the run is still open. A maker's turn with
-its session and worktree is left `running` and the run is blocked as
+The clock in `ait ui`, the desktop app and `ait daemon`, and `ait today`, settle them:
+only on evidence - a recorded pid, and none alive, the run's or its open turns' (a resumed
+turn runs under the window's) - and once, in a write that checks the run is still open. A
+maker's turn with its session and worktree is left `running` and the run is blocked as
 `INTERRUPTED_REASON`, the one state Resume takes back; everything else fails, and a build
 that stopped for good gives its claim and lease back. A restack's or verifier's turn sits
 in some other build's worktree and never does.
@@ -299,7 +303,7 @@ the snapshot's `HEAD` shows.
 
 **A stack is kept on its parents (PW11, D14, D15).** A parent that moves after its child
 was built on it - review follow-ups, or a merge - leaves the child on commits that are not
-its parent any more. `ait ui` and `ait daemon` both run the watch (`restack.rs`, every two
+its parent any more. The clock (rule 6) runs the watch (`restack.rs`, every two
 minutes): it starts from the leases ai-team holds for PRs, asks `gh` about those only, and
 for a child whose parent merged, or whose parent's branch on origin is no longer in it,
 opens a **restack** - a run triggered by `review` whose one orchestrator turn runs in the

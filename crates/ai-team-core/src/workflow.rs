@@ -1396,14 +1396,12 @@ pub(crate) async fn restack_at(
 
 /// Reattach an interrupted maker to the same run, Pi session and awt lease.
 ///
-/// The caller claims `node_run.supervisor_pid` before spawning this future. Failure leaves
-/// the node running but unsupervised so the same recovery can be retried without losing
-/// either its transcript or uncommitted checkout.
-pub async fn resume_interrupted_node_at(
-    db: &Path,
-    run_id: i64,
-    node_id: i64,
-) -> Result<Orchestration> {
+/// The caller claims `node_run.supervisor_pid` first. This returns once the resume has
+/// either taken the PR back or failed to, and [`Resumed::build`] finishes it: whoever
+/// asked hears why a resume could not start rather than being told it resumed. Failure
+/// leaves the node running but unsupervised and the run as it was found, so the same
+/// recovery can be tried again without losing its transcript or uncommitted checkout.
+pub async fn resume_interrupted_node_at(db: &Path, run_id: i64, node_id: i64) -> Result<Resumed> {
     let mut store = Store::open(db)?;
     let run = store.run(run_id)?;
     // Interrupted is what a run whose process stopped mid-turn is settled as, and waiting
@@ -1411,17 +1409,44 @@ pub async fn resume_interrupted_node_at(
     let interrupted = run.status == RunStatus::Blocked
         && run.blocked_reason.as_deref() == Some(crate::store::INTERRUPTED_REASON);
     if !interrupted && (run.status != RunStatus::Running || run.blocked_reason.is_some()) {
-        return Err(Error::invalid("that run is no longer available to resume"));
+        let error = Error::invalid("that run is no longer available to resume");
+        return Err(could_not_resume(&mut store, run_id, node_id, None, error));
     }
     let node = store.node_run(node_id)?;
     if node.run_id != run_id || node.status != NodeStatus::Running {
-        return Err(Error::invalid("that node is no longer available to resume"));
+        let error = Error::invalid("that node is no longer available to resume");
+        return Err(could_not_resume(&mut store, run_id, node_id, None, error));
     }
-    let run = if interrupted {
-        store.resume_interrupted_run(run_id, i64::from(std::process::id()))?
+    let took_back = if interrupted {
+        if let Err(error) = store.resume_interrupted_run(run_id, i64::from(std::process::id())) {
+            return Err(could_not_resume(&mut store, run_id, node_id, None, error));
+        }
+        Some(TakenBack {
+            previous: run.supervisor_pid,
+        })
     } else {
-        run
+        None
     };
+    match prepare_resume(&mut store, db, run_id, node_id).await {
+        Ok(pr) => Ok(Resumed {
+            store,
+            run_id,
+            node_id,
+            pr,
+        }),
+        Err(error) => Err(could_not_resume(
+            &mut store, run_id, node_id, took_back, error,
+        )),
+    }
+}
+
+async fn prepare_resume(
+    store: &mut Store,
+    db: &Path,
+    run_id: i64,
+    node_id: i64,
+) -> Result<crate::supervise::ResumedPr> {
+    let run = store.run(run_id)?;
     let team_id = run
         .team_id
         .ok_or_else(|| Error::invalid("the interrupted run has no team snapshot"))?;
@@ -1448,28 +1473,99 @@ pub async fn resume_interrupted_node_at(
         planner: Planner::at(&repo).for_plan(plan_slug),
         worktrees: Worktrees::at(&repo),
     };
+    orchestrator.prepare_resume(store, node_id).await
+}
 
-    match orchestrator.resume_node(&mut store, node_id).await {
-        Ok(dispatched) => finish_run(
-            &mut store,
+/// An interrupted run a resume took back, and the process it named before.
+#[derive(Debug, Clone, Copy)]
+struct TakenBack {
+    previous: Option<i64>,
+}
+
+/// Put back what a resume that could not start took, and say why on the run.
+///
+/// Every turn of the PR this process claimed is released - the resume claims the PR's
+/// waiting seats along with the interrupted one - and an interrupted run it took back
+/// waits to be resumed again, rather than reading as running with nothing running it.
+fn could_not_resume(
+    store: &mut Store,
+    run_id: i64,
+    node_id: i64,
+    took_back: Option<TakenBack>,
+    error: Error,
+) -> Error {
+    let pid = i64::from(std::process::id());
+    let slice = store.node_run(node_id).ok().and_then(|node| node.slice_key);
+    for node in store.node_runs(run_id).unwrap_or_default() {
+        let same_pr = node.id == node_id || (slice.is_some() && node.slice_key == slice);
+        if same_pr && node.supervisor_pid == Some(pid) {
+            let _ = store.release_node_supervision(node.id, pid);
+        }
+    }
+    if let Some(taken) = took_back {
+        let _ = store.return_interrupted_run(run_id, pid, taken.previous);
+    }
+    let _ = store.append_event(
+        run_id,
+        crate::NewEvent::new(
+            crate::EventKind::Failed,
+            format!("interrupted turn could not resume: {error}"),
+        )
+        .on_node(node_id)
+        .by("ai-team"),
+    );
+    error
+}
+
+/// An interrupted turn taken back and ready to carry on: its PR's lease reattached and
+/// its seats claimed by this process.
+pub struct Resumed {
+    store: Store,
+    run_id: i64,
+    node_id: i64,
+    pr: crate::supervise::ResumedPr,
+}
+
+impl std::fmt::Debug for Resumed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Resumed")
+            .field("run_id", &self.run_id)
+            .field("node_id", &self.node_id)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Resumed {
+    /// Finish the PR where it stopped: the interrupted turn, the tasks after it, the check.
+    pub async fn build(self) -> Result<Orchestration> {
+        let Resumed {
+            mut store,
             run_id,
-            Orchestration {
-                unrouted: Vec::new(),
-                dispatched: vec![dispatched],
-            },
-        ),
-        Err(error) => {
-            let _ = store.release_node_supervision(node_id, i64::from(std::process::id()));
-            let _ = store.append_event(
+            node_id,
+            pr,
+        } = self;
+        match pr.build().await {
+            Ok(dispatched) => finish_run(
+                &mut store,
                 run_id,
-                crate::NewEvent::new(
-                    crate::EventKind::Failed,
-                    format!("interrupted turn could not resume: {error}"),
-                )
-                .on_node(node_id)
-                .by("ai-team"),
-            );
-            Err(error)
+                Orchestration {
+                    unrouted: Vec::new(),
+                    dispatched: vec![dispatched],
+                },
+            ),
+            Err(error) => {
+                let _ = store.release_node_supervision(node_id, i64::from(std::process::id()));
+                let _ = store.append_event(
+                    run_id,
+                    crate::NewEvent::new(
+                        crate::EventKind::Failed,
+                        format!("interrupted turn could not resume: {error}"),
+                    )
+                    .on_node(node_id)
+                    .by("ai-team"),
+                );
+                Err(error)
+            }
         }
     }
 }
