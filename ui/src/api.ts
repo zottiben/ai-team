@@ -502,7 +502,7 @@ export type AnalyticsRow = {
   attempts: number;
   accepted: number;
   rejected: number;
-  slices_accepted: number;
+  changes_accepted: number;
   tokens_in: number;
   tokens_out: number;
   cache_read: number;

@@ -88,19 +88,19 @@ export function Analytics({ tick }: { tick: number }) {
               <th scope="col" title="Of the attempts that reached a verdict">
                 accepted
               </th>
-              <th scope="col" title="Attempts per slice landed. 1.0 is first-time-right">
+              <th scope="col" title="Attempts per task landed. 1.0 is first-time-right">
                 rework
               </th>
               <th scope="col" title="Gates that passed, of gates run">
                 gates
               </th>
-              <th scope="col" title="First attempt at a slice to the accepted one">
+              <th scope="col" title="First attempt at a task to the accepted one">
                 cycle
               </th>
               <th scope="col" title="Every input token sent, cached or not - the rate-limit number">
                 input
               </th>
-              <th scope="col" title="Input tokens per slice landed">
+              <th scope="col" title="Input tokens per task landed">
                 per change
               </th>
               <th scope="col" title="How much of the context sent was served from cache">
