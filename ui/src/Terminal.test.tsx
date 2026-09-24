@@ -49,6 +49,19 @@ it("rejoins a session this worktree already has", async () => {
   expect(calls.some((call) => call.url === "/terminals" && call.method === "POST")).toBe(false);
 });
 
+it("names its session under the heading, as other pages name their checkout", async () => {
+  // Heading, session and Restart were three children spaced apart, so the session label
+  // floated alone in the middle of the header.
+  stub([{ id: 7, worktree: "/w", done: false, status: null }], [
+    { text: "", cursor: 0, done: false, status: null },
+  ]);
+  render(<TerminalPane project="widget" node={null} />);
+
+  const session = await screen.findByText("session 7");
+  expect(session.parentElement).toBe(screen.getByRole("heading", { name: "Terminal" }).parentElement);
+  expect(session.parentElement?.classList.contains("main__header")).toBe(false);
+});
+
 it("opens one when there is none to rejoin", async () => {
   const calls = stub([], [{ text: "", cursor: 0, done: false, status: null }]);
   render(<TerminalPane project="widget" node={null} />);
