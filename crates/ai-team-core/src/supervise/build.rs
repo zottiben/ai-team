@@ -192,8 +192,8 @@ pub(super) async fn run_pr(task: PrTask) -> Result<Dispatched> {
     };
     let resuming = matches!(start, Start::Resume(_));
     let mut rows = Rows::default();
-    let attempted = match build_pr(&mut store, &pr, &mut rows, start).await {
-        Ok(attempted) => attempted,
+    let (attempted, lease) = match build_pr(&mut store, &pr, &mut rows, start).await {
+        Ok(attempted) => (attempted, lease),
         Err(error) if resuming => {
             // Recovery must be retryable too. Keep the Pi sessions and the dirty lease;
             // returning it would make awt clean away the very work being recovered.
@@ -207,7 +207,27 @@ pub(super) async fn run_pr(task: PrTask) -> Result<Dispatched> {
             return Err(error);
         }
         Err(error) => {
-            return Err(release_failed(&planner, &slice.key, &worktree, lease, error).await);
+            // Work a turn finished but could not commit is still in the worktree, and
+            // returning the lease would have awt clean it away: it is kept instead.
+            let unfinished = lease.is_some()
+                && git::porcelain(&worktree)
+                    .await
+                    .map_or(true, |changes| !changes.is_empty());
+            let left_in = unfinished.then_some(worktree.as_path());
+            match stopped_by(&store, &rows, &error, left_in)? {
+                Some(attempted) if unfinished => {
+                    if let Some(lease) = lease {
+                        lease.preserve();
+                    }
+                    (attempted, None)
+                }
+                Some(attempted) => (attempted, lease),
+                None => {
+                    return Err(
+                        release_failed(&planner, &slice.key, &worktree, lease, error).await,
+                    );
+                }
+            }
         }
     };
     finish_pr(
@@ -1215,6 +1235,44 @@ struct Completion {
     run_id: i64,
 }
 
+/// An error while building a PR, as the answer the PR stopped on.
+///
+/// Returned as an error, it ended the PR with its rows still running, its slice still
+/// active on the board and the run finishing as done without it. Given as the row it
+/// happened in failing, [`finish_pr`] settles it like any PR that stopped: every row, the
+/// board and the run say so, and why - including where the work not yet committed was
+/// left, when it was. `None` when no row had opened, so there is nothing to settle.
+fn stopped_by(
+    store: &Store,
+    rows: &Rows,
+    error: &Error,
+    left_in: Option<&Path>,
+) -> Result<Option<Attempted>> {
+    let Some(&row) = rows.all.last() else {
+        return Ok(None);
+    };
+    // Where the work is comes before the error: a row keeps a reason's first line and
+    // two hundred characters of it, and git's own message runs long.
+    let reason = match left_in {
+        Some(worktree) => format!(
+            "ai-team could not carry on, and kept the work not yet committed in {}: {error}",
+            worktree.display()
+        ),
+        None => format!("ai-team could not carry on: {error}"),
+    };
+    Ok(Some(Attempted {
+        outcome: TurnOutcome {
+            provider_message: Some(reason.clone()),
+            terminal: Some(crate::model::TerminalState::Failed),
+            ..TurnOutcome::default()
+        },
+        rejection: Some(reason),
+        repairs: 0,
+        node: store.node_run(row)?,
+        exhausted: false,
+    }))
+}
+
 /// Settle every row of the PR on its answer, tell the board and the operator, and give
 /// the checkout back.
 async fn finish_pr(
@@ -1594,6 +1652,10 @@ case "$prompt" in
     printf '{"type":"agent_error","error":"the model could not be reached"}\n'
     printf '{"type":"agent_settled"}\n' ;;
   *"Your task is T"*": Think"*) settle "nothing to change" ;;
+  *"Your task is T"*": Lock"*)
+    echo built > "$task.txt"
+    touch "$(git rev-parse --git-path index.lock)"
+    settle "built $task" ;;
   *"Your task is T"*": Commit"*)
     echo built > "$task.txt"
     git add "$task.txt" && git -c user.email=seat@test -c user.name=seat -c commit.gpgsign=false commit -qm "my own commit"
@@ -1736,6 +1798,11 @@ esac
         }
 
         async fn build(&mut self, max_repairs: i64) -> (Attempted, Rows) {
+            let (attempted, rows) = self.try_build(max_repairs).await;
+            (attempted.unwrap(), rows)
+        }
+
+        async fn try_build(&mut self, max_repairs: i64) -> (Result<Attempted>, Rows) {
             let pr = Pr {
                 rig: &self.rig,
                 registry: &self.rig.registry,
@@ -1749,9 +1816,7 @@ esac
                 verifier: Some(&self.verifier),
             };
             let mut rows = Rows::default();
-            let attempted = build_pr(&mut self.store, &pr, &mut rows, Start::Fresh)
-                .await
-                .unwrap();
+            let attempted = build_pr(&mut self.store, &pr, &mut rows, Start::Fresh).await;
             (attempted, rows)
         }
 
@@ -1785,6 +1850,56 @@ esac
     const TWO_SEATS: &str = "As an operator, I want a range.\n\n## Tasks\n\
         - T1 [frontend] Pick the range - Touches: ui/**\n\
         - T2 [backend] Keep the range - Touches: crates/**\n";
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_turn_whose_work_cannot_be_committed_stops_its_pr_and_says_why() {
+        // What stopped a real PR: its last task finished, committing it failed, and the
+        // build ended as an error. Its rows stayed running for good, the board kept the
+        // slice active, the run finished as done without it, and the worktree - holding
+        // the task's work - went back to the pool to be cleaned. A stale index.lock is
+        // the same failure by another cause: a crash, or a disk that filled.
+        let mut pr = Fixture::new(
+            "As an operator, I want a range.\n\n## Tasks\n\
+             - T1 [frontend] Pick the range - Touches: ui/**\n\
+             - T2 [backend] Lock the range - Touches: crates/**\n",
+            "true",
+        );
+        let (built, rows) = pr.try_build(1).await;
+        let Err(error) = built else {
+            panic!("the second task's work cannot be committed");
+        };
+        assert!(error.to_string().contains("index.lock"), "{error}");
+
+        let left = pr.repo.path().to_path_buf();
+        let attempted = stopped_by(&pr.store, &rows, &error, Some(&left))
+            .unwrap()
+            .expect("rows had opened, so there is a PR to stop");
+        let (status, _) = settle(&mut pr.store, pr.run_id, "PR1", &rows, &attempted).unwrap();
+
+        assert_eq!(status, NodeStatus::Failed);
+        let makers = pr.makers();
+        assert!(
+            makers.iter().all(|node| node.status == NodeStatus::Failed),
+            "{makers:#?}"
+        );
+        // The row it happened in says where the work is, and the run's record says why.
+        let why = makers[1].blocked_reason.clone().unwrap();
+        assert!(why.contains("could not carry on"), "{why}");
+        assert!(why.contains(&left.display().to_string()), "{why}");
+        assert!(makers[0]
+            .blocked_reason
+            .clone()
+            .unwrap()
+            .contains("stopped before"));
+        let said = pr.store.events(pr.run_id, None, 500).unwrap();
+        assert!(
+            said.iter()
+                .any(|event| event.node_run_id == Some(makers[1].id)
+                    && event.summary.contains("index.lock")),
+            "{said:#?}"
+        );
+    }
 
     #[cfg(unix)]
     #[tokio::test]
