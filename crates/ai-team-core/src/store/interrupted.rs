@@ -231,6 +231,33 @@ impl Store {
         }
         self.run(id)
     }
+
+    /// Undo [`Store::resume_interrupted_run`] for a resume that could not start: waiting
+    /// again, and naming the process that last ran it rather than the one that only
+    /// tried to. Only while `pid` still holds it, so this never takes back somebody
+    /// else's resume.
+    pub fn return_interrupted_run(
+        &mut self,
+        id: i64,
+        pid: i64,
+        previous: Option<i64>,
+    ) -> Result<Run> {
+        let at = now();
+        let changed = self.db_mut().write(|tx| {
+            Ok(tx.execute(
+                "UPDATE run SET status = 'blocked', blocked_reason = ?4, supervisor_pid = ?3,
+                                rev = rev + 1, updated_at = ?5
+                  WHERE id = ?1 AND status = 'running' AND supervisor_pid = ?2",
+                params![id, pid, previous, INTERRUPTED_REASON, at],
+            )?)
+        })?;
+        if changed == 0 {
+            return Err(crate::error::Error::invalid(
+                "that run is no longer this process's to give back",
+            ));
+        }
+        self.run(id)
+    }
 }
 
 #[cfg(test)]
@@ -369,6 +396,30 @@ mod tests {
         assert!(resumed.blocked_reason.is_none());
         // Two Resume clicks start one resume.
         assert!(c.store.resume_interrupted_run(run.id, LIVE).is_err());
+    }
+
+    #[test]
+    fn a_resume_that_could_not_start_leaves_the_run_as_it_found_it() {
+        let mut c = crash();
+        let run = c.run(RunStatus::Running, Some(GONE));
+        c.turn(&run, "backend", NodeStatus::Running, Some(GONE));
+        c.settle();
+        c.store.resume_interrupted_run(run.id, LIVE).unwrap();
+
+        // Not by a process that did not take it back.
+        assert!(c
+            .store
+            .return_interrupted_run(run.id, GONE, Some(GONE))
+            .is_err());
+        let back = c
+            .store
+            .return_interrupted_run(run.id, LIVE, Some(GONE))
+            .unwrap();
+        assert_eq!(back.status, RunStatus::Blocked);
+        assert_eq!(back.blocked_reason.as_deref(), Some(INTERRUPTED_REASON));
+        assert_eq!(back.supervisor_pid, Some(GONE));
+        // And it can be resumed again, which is the point of giving it back.
+        assert!(c.store.resume_interrupted_run(run.id, LIVE).is_ok());
     }
 
     #[test]

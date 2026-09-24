@@ -36,6 +36,19 @@ pub struct Dispatched {
     pub branch: Option<String>,
 }
 
+/// An interrupted PR taken back - its lease reattached, its seats' claims held - and not
+/// yet building.
+pub(crate) struct ResumedPr(PrTask);
+
+impl ResumedPr {
+    /// Finish the PR where it stopped.
+    pub(crate) async fn build(self) -> Result<Dispatched> {
+        // Boxed: a whole PR's build is a large future, and every caller of this one would
+        // otherwise carry it inline.
+        Box::pin(run_pr(self.0)).await
+    }
+}
+
 /// What a whole orchestrated run did.
 #[derive(Debug, Default)]
 pub struct Orchestration {
@@ -781,14 +794,19 @@ impl Orchestrator {
         })
     }
 
-    /// Reattach an interrupted PR to its exact lease and Pi sessions, and finish it.
+    /// Reattach an interrupted PR to its exact lease and Pi sessions, ready to finish.
     ///
     /// No branch is prepared and no dependencies are reinstalled here: both could
     /// overwrite evidence left by the interrupted process. The persisted node, planner
     /// claim and awt lease must all agree before a model is started. The PR picks up
     /// where it stopped: the interrupted turn first, then the tasks after it, then the
-    /// check.
-    pub async fn resume_node(&self, store: &mut Store, node_id: i64) -> Result<Dispatched> {
+    /// check - which is [`ResumedPr::build`], separate so that whoever asked for the
+    /// resume hears whether it could start before the build takes its minutes.
+    pub(crate) async fn prepare_resume(
+        &self,
+        store: &mut Store,
+        node_id: i64,
+    ) -> Result<ResumedPr> {
         let node = store.node_run(node_id)?;
         if node.run_id != self.run_id || node.status != NodeStatus::Running {
             return Err(Error::invalid(
@@ -850,6 +868,10 @@ impl Orchestrator {
             .clone()
             .unwrap_or_else(|| slice_branch(&slice, self.planner.plan_slug()));
         let base = pr_base(&worktree, &slice).await?;
+        let verifier = self.verifier(store)?;
+        let max_repairs = store.run(self.run_id)?.max_repairs;
+        // Last, because nothing may fail while the lease is held here: a `Lease` dropped
+        // on an error goes back to the pool, and this one is the PR's until it merges.
         // A one-PR plan was built in the run's own checkout, which nobody leased.
         let lease = if crate::neighbours::same_worktree(
             &worktree.to_string_lossy(),
@@ -860,8 +882,8 @@ impl Orchestrator {
             let holder = lease_holder(self.run_id, &slice_key, &crew_roles(&crew).join("+"));
             Some(self.worktrees.resume(&worktree, &holder).await?)
         };
-        let verifier = self.verifier(store)?;
-        store.append_event(
+        // Not worth the lease, for the same reason.
+        let _ = store.append_event(
             self.run_id,
             NewEvent::new(
                 EventKind::Note,
@@ -872,11 +894,9 @@ impl Orchestrator {
             )
             .on_node(node.id)
             .by("ai-team"),
-        )?;
+        );
 
-        // Boxed: a whole PR's build is a large future, and every caller of this one would
-        // otherwise carry it inline.
-        Box::pin(run_pr(PrTask {
+        Ok(ResumedPr(PrTask {
             db_path: self.db_path.clone(),
             rig: self.rig(),
             registry: self.registry.clone(),
@@ -888,11 +908,10 @@ impl Orchestrator {
             lease,
             planner: self.planner.clone(),
             run_id: self.run_id,
-            max_repairs: store.run(self.run_id)?.max_repairs,
+            max_repairs,
             verifier,
             start: Start::Resume(node),
         }))
-        .await
     }
 
     /// Work a review's comments into a pull request where it was built (PW10).

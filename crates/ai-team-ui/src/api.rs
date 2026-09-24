@@ -3456,8 +3456,12 @@ async fn resume_node(
         store.claim_node_supervision(node_id, pid, previous_pid)?;
     }
     let db = state.database_path()?;
+    // Awaited as far as the PR being taken back, so a resume that cannot start says why
+    // here. Answering first and failing afterwards is what left the window offering the
+    // same Resume, again and again, with no reason given.
+    let resumed = ai_team_core::resume_interrupted_node(&db, run_id, node_id).await?;
     tokio::spawn(async move {
-        let _ = ai_team_core::resume_interrupted_node(&db, run_id, node_id).await;
+        let _ = resumed.build().await;
     });
 
     Ok(Json(serde_json::json!({

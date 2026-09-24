@@ -863,6 +863,42 @@ fn assert_node_recoverable(
 }
 
 #[test]
+fn a_resume_that_cannot_start_says_why_instead_of_that_it_resumed() {
+    // The loop this guards: the endpoint answered "resumed" before the resume had tried
+    // anything, the resume then failed where nobody was looking, and the window offered
+    // the same Resume again - forever, and without a word about why.
+    let (_source, repo, task) = linked_checkout();
+    let (app, db) = Harness::with_repo(&repo);
+    let path = db.path().join("team.db");
+    let (run_id, _project_id, node_id) = split_run(&path, &repo, &task);
+    {
+        let mut store = ai_team_core::Store::open(&path).unwrap();
+        store.set_node_session(node_id, "session-1").unwrap();
+    }
+    assert_node_recoverable(&app, run_id, &task, true);
+
+    let resumed = app.post(
+        &format!("/api/runs/{run_id}/nodes/{node_id}/resume"),
+        &serde_json::json!({ "workspace": task.to_string_lossy() }).to_string(),
+    );
+    assert_ne!(resumed.status, 200, "{}", resumed.body);
+    let store = ai_team_core::Store::open(&path).unwrap();
+    let failed = store
+        .events(run_id, None, 100)
+        .unwrap()
+        .into_iter()
+        .rfind(|event| event.kind == ai_team_core::EventKind::Failed)
+        .expect("the failure is recorded on the run");
+    let reason = failed
+        .summary
+        .trim_start_matches("interrupted turn could not resume: ");
+    assert!(resumed.body.contains(reason), "{} / {reason}", resumed.body);
+    drop(store);
+    // Still offered, and unsupervised: the same resume can be tried once the cause is gone.
+    assert_node_recoverable(&app, run_id, &task, true);
+}
+
+#[test]
 fn run_activity_is_readable_and_a_reply_stays_in_its_workspace_thread() {
     let (_source, repo, task) = linked_checkout();
     let (app, db) = Harness::with_repo(&repo);

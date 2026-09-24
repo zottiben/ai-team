@@ -10,7 +10,7 @@ mod orchestrate;
 mod outcome;
 mod restack;
 
-pub(crate) use orchestrate::held_by;
+pub(crate) use orchestrate::{held_by, ResumedPr};
 pub use orchestrate::{Dispatched, Orchestration, Orchestrator, Rig};
 pub use outcome::{outcome_status, TurnOutcome};
 pub(crate) use outcome::{provider_diagnostic, quota_exhaustion};
