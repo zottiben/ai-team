@@ -52,6 +52,12 @@ The root `cargo` commands skip `ai-team-desktop` on purpose — it pulls in Taur
 platform webview. CI compiles it separately so it cannot rot. On Linux it needs the
 webview headers listed in `.github/workflows/ci.yml`.
 
+**A test never reaches the operator's machine.** No real `pi`, no typing into `$SHELL`,
+no `machine.toml`: seed teams with `RoleModelDefault::local_floor()` and drive terminals
+with `open_program`. A test that needs the machine (`launch_path`) says so and skips
+cleanly. The other way cost a second a test in Pi calls, tested a different roster on
+every machine, and wrote into the operator's shell history.
+
 ## Plan and design
 
 There is no `BUILD_PLAN.md` or `HANDOFF.md`. The plan is a row in ai-planner:
