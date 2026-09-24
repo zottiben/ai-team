@@ -9,6 +9,10 @@
 //! forced rather than chosen - a `rusqlite::Connection` is `Send` but not `Sync`, so a
 //! future holding one cannot be spawned, and this loop is a spawned task in both
 //! processes. Opening SQLite costs about a millisecond every twenty seconds.
+//!
+//! The same loop watches the pull requests ai-team holds worktrees for, less often
+//! ([`crate::restack::WATCH_EVERY`]), because that asks GitHub: a parent that merged or
+//! moved gets its stack restacked, and a merged PR gives its worktree back (PW11).
 
 use crate::error::Result;
 use crate::schedule::{self, Fired};
@@ -21,6 +25,7 @@ pub async fn serve<F>(mut on_fire: F)
 where
     F: FnMut(&Fired),
 {
+    let mut watched: Option<std::time::Instant> = None;
     loop {
         match once().await {
             Ok(fired) => {
@@ -32,8 +37,25 @@ where
             // busy with a run committing, and the next tick is twenty seconds away.
             Err(error) => eprintln!("scheduler: {error}"),
         }
+        if watched.is_none_or(|at| at.elapsed() >= crate::restack::WATCH_EVERY) {
+            watched = Some(std::time::Instant::now());
+            match watch().await {
+                Ok(said) => {
+                    for line in said {
+                        eprintln!("watch: {line}");
+                    }
+                }
+                Err(error) => eprintln!("watch: {error}"),
+            }
+        }
         tokio::time::sleep(schedule::TICK).await;
     }
+}
+
+/// One look at the pull requests ai-team holds worktrees for.
+async fn watch() -> Result<Vec<String>> {
+    let db = Store::open_default()?.path().to_path_buf();
+    crate::restack::watch(&db).await
 }
 
 /// One tick: claim in a synchronous window, then act with no database open.

@@ -181,6 +181,8 @@ sql_enum! {
         Manual => "manual",
         Scheduled => "scheduled",
         Reminder => "reminder",
+        /// A pull request's review moved on: comments to work in, or its stack to keep on
+        /// its parents (D14).
         Review => "review",
     }
 }
@@ -521,6 +523,9 @@ pub struct NodeRun {
     pub delivery_claim: Option<String>,
     pub delivery_claimed_at: Option<String>,
     pub delivery_error: Option<String>,
+    /// The remote commit this node's push may replace, for a branch it rewrote (PW11).
+    /// `None` for every ordinary push, which must fast-forward.
+    pub push_replaces: Option<String>,
     pub session_id: Option<String>,
     /// Set when future turns must start fresh. The id stays as transcript evidence.
     pub session_retired_at: Option<String>,
@@ -590,6 +595,27 @@ pub struct Event {
     pub actor: Option<String>,
     pub summary: String,
     pub payload: Option<serde_json::Value>,
+}
+
+/// A restack about to start: a stacked pull request to rebase onto where its parent is
+/// now (PW11), by the orchestrator, in the PR's own worktree.
+#[derive(Debug, Clone)]
+pub struct NewRestack<'a> {
+    pub project_id: i64,
+    /// The checkout the run that built the PR started in. A restack is rooted there, as a
+    /// review follow-up is: it is that run's PR, worked on where it was built.
+    pub workspace: &'a std::path::Path,
+    pub plan: &'a str,
+    pub slice_key: &'a str,
+    pub branch: &'a str,
+    /// The PR's worktree, where the rebase happens.
+    pub worktree: &'a str,
+    /// The commit it is rebased onto. With `branch`, what makes an attempt this one.
+    pub onto: &'a str,
+    pub prompt: &'a str,
+    /// The orchestrator seat, and what it resolves to on this machine.
+    pub agent_id: i64,
+    pub resolution: &'a crate::machine::ModelResolution,
 }
 
 #[derive(Debug, Clone)]

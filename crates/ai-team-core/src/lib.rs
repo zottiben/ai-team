@@ -32,6 +32,7 @@ mod onboard;
 mod paths;
 mod pi;
 mod readiness;
+mod restack;
 mod review;
 mod roles;
 mod schedule;

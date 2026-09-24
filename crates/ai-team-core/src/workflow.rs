@@ -1266,6 +1266,70 @@ pub async fn follow_up_at(
     result
 }
 
+/// Restack one stacked pull request, on the run and node the watch opened for it (PW11).
+///
+/// Like a follow-up it works in the PR's own worktree and holds nothing above it, so it
+/// goes ahead while another run builds in the checkout it was started from.
+pub(crate) async fn restack_at(
+    db: &Path,
+    run_id: i64,
+    node_id: i64,
+    restack: crate::restack::Restack,
+) -> Result<Orchestration> {
+    let mut store = Store::open(db)?;
+    let initialization = (|| {
+        store.set_run_supervisor(run_id, i64::from(std::process::id()))?;
+        let run = store.set_run_status(run_id, RunStatus::Running)?;
+        let repo = run
+            .workspace_path
+            .as_deref()
+            .map(PathBuf::from)
+            .ok_or_else(|| Error::invalid("the restack has no checkout"))?
+            .canonicalize()
+            .map_err(|_| Error::invalid("the checkout that built this no longer exists"))?;
+        let team_id = run
+            .team_id
+            .ok_or_else(|| Error::invalid("the project has no team"))?;
+        let project = store.project(run.project_id)?;
+        Ok::<_, Error>(Orchestrator {
+            db_path: db.to_path_buf(),
+            project_dir: store.support_dir(&project.slug)?,
+            planner: Planner::at(&repo).for_plan(restack.plan.clone()),
+            worktrees: Worktrees::at(&repo),
+            repo,
+            run_id,
+            team_id,
+            registry: ModelRegistry::load()?,
+            parallel_width: 1,
+        })
+    })();
+    let result = match initialization {
+        Ok(orchestrator) => match orchestrator.restack(&mut store, &restack, node_id).await {
+            Ok(dispatched) => finish_run(
+                &mut store,
+                run_id,
+                Orchestration {
+                    unrouted: Vec::new(),
+                    dispatched: vec![dispatched],
+                },
+            ),
+            Err(error) => Err(error),
+        },
+        Err(error) => Err(error),
+    };
+    if let Err(error) = &result {
+        // Not left queued: a restack that never ran would hold the PR's worktree as busy
+        // until the process that opened it exited.
+        let node = store.node_run(node_id)?;
+        if matches!(node.status, NodeStatus::Queued | NodeStatus::Running) {
+            store.block_node(node_id, &error.to_string())?;
+            store.set_node_status(node_id, NodeStatus::Failed)?;
+        }
+        record_workflow_failure(&mut store, run_id, error)?;
+    }
+    result
+}
+
 /// Reattach an interrupted maker to the same run, Pi session and awt lease.
 ///
 /// The caller claims `node_run.supervisor_pid` before spawning this future. Failure leaves

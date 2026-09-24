@@ -248,6 +248,23 @@ impl Store {
         self.review(id)
     }
 
+    /// Close what is still open on a branch whose pull request merged on GitHub: approved,
+    /// because it was - by whoever merged it. Returns how many.
+    ///
+    /// Left open, a merged PR stays at the top of Today as finished work waiting to be
+    /// looked at, long after anybody could change it.
+    pub fn close_merged_reviews(&mut self, project_id: i64, branch: &str) -> Result<usize> {
+        let at = now();
+        self.db_mut().write(|tx| {
+            Ok(tx.execute(
+                "UPDATE review SET status = 'approved', submitted_at = ?3, rev = rev + 1,
+                                   updated_at = ?3
+                  WHERE project_id = ?1 AND branch = ?2 AND status = 'open'",
+                params![project_id, branch, at],
+            )?)
+        })
+    }
+
     pub fn unresolved_count(&self, review_id: i64) -> Result<i64> {
         Ok(self.db().conn().query_row(
             "SELECT COUNT(*) FROM review_comment WHERE review_id = ?1 AND status = 'open'",
@@ -541,5 +558,33 @@ mod tests {
         assert_eq!(open.len(), 1);
         assert_eq!(open[0].id, b.id);
         assert_eq!(s.reviews(Some(project), false).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn a_pull_request_merged_on_github_is_nothing_left_to_review_here() {
+        let (mut s, project, node) = reviewable();
+        let merged = s
+            .open_review(project, "PR1", None, Some(node), Some("p/pr1"))
+            .unwrap();
+        let decided = s
+            .open_review(project, "PR1 again", None, Some(node), Some("p/pr1"))
+            .unwrap();
+        s.submit_review(decided.id, ReviewStatus::ChangesRequested)
+            .unwrap();
+        let other = s
+            .open_review(project, "PR2", None, Some(node), Some("p/pr2"))
+            .unwrap();
+
+        assert_eq!(s.close_merged_reviews(project, "p/pr1").unwrap(), 1);
+
+        // Somebody accepted it, by merging it.
+        assert_eq!(s.review(merged.id).unwrap().status, ReviewStatus::Approved);
+        assert!(s.review(merged.id).unwrap().submitted_at.is_some());
+        // What a person already decided stands; another PR's review is its own.
+        assert_eq!(
+            s.review(decided.id).unwrap().status,
+            ReviewStatus::ChangesRequested
+        );
+        assert_eq!(s.review(other.id).unwrap().status, ReviewStatus::Open);
     }
 }
