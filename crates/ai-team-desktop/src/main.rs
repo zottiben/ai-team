@@ -66,6 +66,13 @@ fn run() -> Result<()> {
         match Server::bind(options).await {
             Ok(server) => {
                 let _ = ready.send(Ok(server.url()));
+                // The clock `ait ui` runs, and for the same reasons: a reminder fires with
+                // the window open, a stack is kept on its parents, and a run whose process
+                // died is settled as interrupted rather than reading as running for good.
+                // Without it, a Mac with only the app open did none of the three.
+                tokio::spawn(ai_team_core::serve_schedule(|fired| {
+                    eprintln!("ai-team: scheduler: {}", fired.reminder.title);
+                }));
                 let _ = server.serve().await;
             }
             Err(err) => {
