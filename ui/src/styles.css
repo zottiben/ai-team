@@ -30,6 +30,17 @@ button {
   cursor: pointer;
 }
 
+/* Every select, so one in a new place is not the browser's own grey box in Arial. A
+ * container that wants another shape - the board's borderless status - says so. */
+select {
+  font: inherit;
+  color: var(--text-primary-default);
+  background: var(--surface-canvas-default);
+  border: 1px solid var(--border-subtle-default);
+  border-radius: var(--radius-sm);
+  padding: var(--space-1) var(--space-2);
+}
+
 :focus-visible {
   outline: 2px solid var(--border-focus-default);
   outline-offset: 1px;

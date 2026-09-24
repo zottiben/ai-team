@@ -41,3 +41,13 @@ it("a disabled button looks it, and does not answer the pointer", () => {
 it("the chosen button of a set is drawn as chosen", () => {
   expect(rule('.button[aria-current="true"]')).toMatch(/background:/);
 });
+
+// Selects were styled container by container, so one in a new place - the activity run
+// picker, the layout menu's widths - rendered as the browser's own grey box in Arial.
+it("a select looks like the window's other controls wherever it is", () => {
+  const base = rule("select");
+  expect(base).toMatch(/font:\s*inherit/);
+  expect(base).toMatch(/background:\s*var\(--surface-canvas-default\)/);
+  expect(base).toMatch(/border:\s*1px solid var\(--border-subtle-default\)/);
+  expect(base).toMatch(/border-radius:\s*var\(--radius-sm\)/);
+});
