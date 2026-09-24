@@ -27,6 +27,15 @@ where
 {
     let mut watched: Option<std::time::Instant> = None;
     loop {
+        // First, so nothing below reads a run as live whose process is gone.
+        match settle_abandoned().await {
+            Ok(said) => {
+                for line in said {
+                    eprintln!("runs: {line}");
+                }
+            }
+            Err(error) => eprintln!("runs: {error}"),
+        }
         match once().await {
             Ok(fired) => {
                 for entry in &fired {
@@ -56,6 +65,12 @@ where
 async fn watch() -> Result<Vec<String>> {
     let db = Store::open_default()?.path().to_path_buf();
     crate::restack::watch(&db).await
+}
+
+/// Settle the runs whose ai-team process is gone (`store::interrupted`).
+async fn settle_abandoned() -> Result<Vec<String>> {
+    let db = crate::default_db_path()?;
+    crate::workflow::settle_abandoned_runs(&db).await
 }
 
 /// One tick: claim in a synchronous window, then act with no database open.

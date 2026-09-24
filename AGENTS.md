@@ -204,6 +204,17 @@ separate processes and the window learns anything happened by watching `MAX(even
 move. A turn that records nothing until it ends is a crew panel that says "starting" for
 four minutes.
 
+**A run with no live process left in it is settled once** (`store/interrupted.rs`). Nothing
+else changes a run's rows when the process driving it dies, so a crash, a closed terminal
+or a sleeping laptop left runs "planning" for good, and Today reported the team working.
+The clock in `ait ui` and `ait daemon`, and `ait today`, settle them: only on evidence - a
+recorded pid, and none alive, the run's or its open turns' (a resumed turn runs under the
+window's) - and once, in a write that checks the run is still open. A maker's turn with
+its session and worktree is left `running` and the run is blocked as
+`INTERRUPTED_REASON`, the one state Resume takes back; everything else fails, and a build
+that stopped for good gives its claim and lease back. A restack's or verifier's turn sits
+in some other build's worktree and never does.
+
 ### 7. The orchestrator plans; Rust leases and dispatches (D14)
 `ait run` without `--worktree` runs the orchestrator seat to write an ai-planner plan,
 then **Rust** reads the ready slices back, leases a worktree for each PR with `awt`, and

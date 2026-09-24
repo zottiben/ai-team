@@ -9,6 +9,9 @@ use ai_team_core::{Result, Store, Urgency};
 const LABEL: usize = 9;
 
 pub(crate) async fn run() -> Result<()> {
+    // Often asked with neither the window nor the daemon keeping the clock, and a run
+    // whose process is gone must not be reported as the team working.
+    ai_team_core::settle_abandoned_runs(&ai_team_core::default_db_path()?).await?;
     let store = Store::open_default()?;
 
     let mut items = ai_team_core::today_from_store(&store)?;
