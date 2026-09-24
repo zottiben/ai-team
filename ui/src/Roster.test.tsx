@@ -369,6 +369,22 @@ it("a disabled seat is marked and can be turned back on", async () => {
   expect(calls.find((c) => c.url === "/roster/3")?.body).toEqual({ enabled: true });
 });
 
+it("a seat's role sits beside its name, and its badges together at the end", async () => {
+  // The header row spaces its children apart, so name, role and badges were each pushed
+  // to a different place - the role floating mid-card, wherever the name's length left it.
+  stub({ seats: [seat({ enabled: false })] });
+  render(<Roster onChanged={() => {}} />);
+
+  const who = (await screen.findByText("backend")).parentElement;
+  const badges = screen.getByText("off").parentElement;
+  expect(screen.getByText("Backend").parentElement).toBe(who);
+  expect(screen.getByText("writes").parentElement).toBe(badges);
+  // Two groups in one row, so the row's spacing falls between them and nowhere else.
+  expect(badges).not.toBe(who);
+  expect(badges?.parentElement).toBe(who?.parentElement);
+  expect(who?.parentElement?.children).toHaveLength(2);
+});
+
 it("says when a change takes effect, because an edit that looks applied and is not is the confusing case", async () => {
   stub();
   render(<Roster onChanged={() => {}} />);

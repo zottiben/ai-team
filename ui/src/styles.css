@@ -3034,6 +3034,14 @@ button.card:hover {
   padding: var(--space-1) var(--space-2);
 }
 
+/* A seat's name with its role, and its badges: each a group, so the header row's spacing
+   falls between the two and not between every label. */
+.roster__seat {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+
 .roster__model {
   display: grid;
   gap: var(--space-1);
