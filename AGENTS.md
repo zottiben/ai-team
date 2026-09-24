@@ -215,6 +215,10 @@ both were learned rather than designed:
   fills the stderr buffer, which on a failing turn is exactly when it happens.
 - **Signal the process group.** Pi starts MCP servers and tool subprocesses; killing the
   direct child leaves them running.
+- **A turn ends with its supervisor.** Pi cannot tell ai-team died: its stdin is
+  `/dev/null` and Node ignores SIGPIPE, so an idle turn outlives a crash, holds its lease
+  busy, and every Resume is refused. The guard's `lifeline.ts` stops the turn's process
+  group once Pi is reparented; `node --test` proves it against a real killed parent.
 
 Ingest is batched small and written as the turn runs, because `ait ui` and `ait run` are
 separate processes and the window learns anything happened by watching `MAX(event.id)`
