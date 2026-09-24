@@ -574,6 +574,97 @@ fn record_workflow_failure(store: &mut Store, run_id: i64, error: &Error) -> Res
     Ok(())
 }
 
+/// How [`finish_run`] says a slice was never sent to a seat, and that nothing was. Named,
+/// because [`close_runs_finished_later`] reads them back.
+const UNROUTED: &str = " unrouted: ";
+const NOTHING_DISPATCHED: &str = "no slices were dispatched";
+
+/// Close each blocked run whose unfinished pull requests a later run of its plan has
+/// since accepted.
+///
+/// Nothing connected the two: a run blocked on PR1 stayed blocked after the run that
+/// carried PR1 on had it accepted, so the window opened on it with PR1's rows red and
+/// Today counted it active, with its work done. Only a run blocked on its own stopped
+/// work closes - not one waiting for a person (interrupted, or on its plan's approval),
+/// not one with a turn still open, and not one that left work undispatched.
+pub(crate) fn close_runs_finished_later(store: &mut Store) -> Result<Vec<String>> {
+    let runs = store.runs(None, i64::MAX)?;
+    let waiting = [
+        crate::store::INTERRUPTED_REASON,
+        PLAN_APPROVAL_REASON,
+        PLAN_APPROVAL_PREPARING_REASON,
+    ];
+    let mut said = Vec::new();
+    for run in runs.iter().filter(|run| run.status == RunStatus::Blocked) {
+        let Some(plan) = run.plan_slug.as_deref() else {
+            continue;
+        };
+        let reason = run.blocked_reason.as_deref().unwrap_or_default();
+        if waiting.contains(&reason) || reason.contains(UNROUTED) || reason == NOTHING_DISPATCHED {
+            continue;
+        }
+        let rows = store.node_runs(run.id)?;
+        if rows.iter().any(|row| {
+            matches!(
+                row.status,
+                NodeStatus::Queued | NodeStatus::Running | NodeStatus::Parked
+            )
+        }) {
+            continue;
+        }
+        // Each PR's answer is its latest row's.
+        let mut latest = std::collections::BTreeMap::new();
+        for row in &rows {
+            if let Some(slice) = row.slice_key.as_deref() {
+                latest.insert(slice, row.status);
+            }
+        }
+        let unfinished: Vec<&str> = latest
+            .into_iter()
+            .filter(|(_, status)| *status != NodeStatus::Done)
+            .map(|(slice, _)| slice)
+            .collect();
+        if unfinished.is_empty() {
+            continue;
+        }
+        let mut finished_by = Vec::new();
+        for slice in &unfinished {
+            let by = runs.iter().filter(|later| {
+                later.id > run.id
+                    && later.project_id == run.project_id
+                    && later.plan_slug.as_deref() == Some(plan)
+            });
+            let mut accepted = None;
+            for later in by {
+                if store.node_runs(later.id)?.iter().any(|row| {
+                    row.slice_key.as_deref() == Some(*slice) && row.status == NodeStatus::Done
+                }) {
+                    accepted = Some(later.id);
+                    break;
+                }
+            }
+            match accepted {
+                Some(later) => finished_by.push(format!("{slice} in run #{later}")),
+                None => break,
+            }
+        }
+        if finished_by.len() < unfinished.len() || !store.close_blocked_run(run.id)? {
+            continue;
+        }
+        let finished = finished_by.join(", ");
+        store.append_event(
+            run.id,
+            crate::NewEvent::new(
+                crate::EventKind::Note,
+                format!("closed: what it stopped on was finished later - {finished}"),
+            )
+            .by("ai-team"),
+        )?;
+        said.push(format!("run #{} closed: {finished} finished later", run.id));
+    }
+    Ok(said)
+}
+
 fn finish_run(store: &mut Store, run_id: i64, done: Orchestration) -> Result<Orchestration> {
     let unfinished = done
         .dispatched
@@ -603,10 +694,10 @@ fn finish_run(store: &mut Store, run_id: i64, done: Orchestration) -> Result<Orc
             reasons.extend(
                 done.unrouted
                     .iter()
-                    .map(|(slice, reason)| format!("{slice} unrouted: {reason}")),
+                    .map(|(slice, reason)| format!("{slice}{UNROUTED}{reason}")),
             );
             if done.dispatched.is_empty() && done.unrouted.is_empty() {
-                reasons.push("no slices were dispatched".into());
+                reasons.push(NOTHING_DISPATCHED.into());
             }
             store.block_run(run_id, &reasons.join("; "))?;
         }
@@ -614,6 +705,9 @@ fn finish_run(store: &mut Store, run_id: i64, done: Orchestration) -> Result<Orc
             store.set_run_status(run_id, status)?;
         }
     }
+    // What this run finished may be what an earlier one stopped on. Best-effort: this
+    // run's own answer is already written, and the clock looks again on its next tick.
+    let _ = close_runs_finished_later(store);
     match status {
         RunStatus::Done => notify_run(
             store,
@@ -1704,7 +1798,8 @@ pub async fn settle_abandoned_runs(db: &Path) -> Result<Vec<String>> {
                     "input_required",
                     "Team run interrupted",
                     &format!(
-                        "Run #{} was interrupted when the ai-team process running it (pid {})                          exited. Resume it from Work to carry on where it stopped.",
+                        "Run #{} was interrupted when the ai-team process running it (pid {}) \
+                         exited. Resume it from Work to carry on where it stopped.",
                         run.id, abandoned.pid
                     ),
                 );
@@ -1723,6 +1818,7 @@ pub async fn settle_abandoned_runs(db: &Path) -> Result<Vec<String>> {
         });
         give_back_stopped(run, &abandoned).await;
     }
+    said.extend(close_runs_finished_later(&mut Store::open(db)?)?);
     Ok(said)
 }
 
@@ -1770,6 +1866,134 @@ fn notify_run(store: &mut Store, run_id: i64, kind: &str, title: &str, body: &st
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A project with its team, and a way to add a run of a plan whose PRs ended as said.
+    struct Runs {
+        store: Store,
+        project: i64,
+        backend: i64,
+    }
+
+    impl Runs {
+        fn new() -> Runs {
+            let mut store = Store::memory().unwrap();
+            let project = store
+                .create_project(crate::NewProject {
+                    name: "Widget".into(),
+                    ..Default::default()
+                })
+                .unwrap();
+            let team = store
+                .seed_default_team(project.id, &crate::RoleModelDefault::local_floor())
+                .unwrap();
+            let backend = store
+                .agents(team.id)
+                .unwrap()
+                .into_iter()
+                .find(|agent| agent.role == "backend")
+                .unwrap()
+                .id;
+            Runs {
+                store,
+                project: project.id,
+                backend,
+            }
+        }
+
+        fn run(&mut self, plan: &str, prs: &[(&str, NodeStatus)], ended: Option<&str>) -> i64 {
+            let run = self
+                .store
+                .create_run(self.project, "build it", RunTrigger::Manual)
+                .unwrap();
+            self.store.set_run_plan(run.id, plan).unwrap();
+            let registry = ModelRegistry::local_only();
+            for (slice, status) in prs {
+                let row = self
+                    .store
+                    .dispatch(run.id, self.backend, Some(slice), &registry)
+                    .unwrap();
+                self.store.set_node_status(row.id, *status).unwrap();
+            }
+            match ended {
+                Some(reason) => self.store.block_run(run.id, reason).unwrap(),
+                None => self.store.set_run_status(run.id, RunStatus::Done).unwrap(),
+            };
+            run.id
+        }
+    }
+
+    #[test]
+    fn a_run_blocked_on_a_pr_a_later_run_finished_is_closed() {
+        // Run 1 stopped with PR1 failed; run 2 carried PR1 on and it was accepted. Run 1
+        // still read blocked: the window opened on it with PR1's rows red, Today counted
+        // it active, and nothing said its work was done.
+        let mut runs = Runs::new();
+        let first = runs.run(
+            "plan",
+            &[("PR1", NodeStatus::Failed), ("PR2", NodeStatus::Done)],
+            Some("PR1 (backend) failed"),
+        );
+        let second = runs.run("plan", &[("PR1", NodeStatus::Done)], None);
+
+        let said = close_runs_finished_later(&mut runs.store).unwrap();
+
+        let closed = runs.store.run(first).unwrap();
+        assert_eq!(closed.status, RunStatus::Done, "{said:?}");
+        assert_eq!(closed.blocked_reason, None);
+        let note = runs.store.events(first, None, 50).unwrap().pop().unwrap();
+        assert!(
+            note.summary.contains(&format!("run #{second}")),
+            "{}",
+            note.summary
+        );
+        assert!(note.summary.contains("PR1"), "{}", note.summary);
+        // Once: nothing is left to close.
+        assert!(close_runs_finished_later(&mut runs.store)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn a_run_is_left_blocked_while_anything_it_stopped_on_is_still_unfinished() {
+        let mut runs = Runs::new();
+        // PR1 finished later, PR2 not.
+        let partly = runs.run(
+            "plan",
+            &[("PR1", NodeStatus::Failed), ("PR2", NodeStatus::Failed)],
+            Some("PR1 (backend) failed; PR2 (backend) failed"),
+        );
+        // A slice it never dispatched is unfinished too, whatever became of the rest.
+        let unrouted = runs.run(
+            "plan",
+            &[("PR1", NodeStatus::Failed)],
+            Some("PR1 (backend) failed; PR3 unrouted: no seat owns ui/**"),
+        );
+        // A turn still open is somebody's to resume.
+        let open = runs.run(
+            "plan",
+            &[("PR1", NodeStatus::Running)],
+            Some(crate::store::INTERRUPTED_REASON),
+        );
+        // Waiting on a person, with no PR of its own yet.
+        let approval = runs.run("plan", &[], Some(PLAN_APPROVAL_REASON));
+        // Another plan's PR1 is not this one.
+        let elsewhere = runs.run(
+            "other-plan",
+            &[("PR1", NodeStatus::Failed)],
+            Some("PR1 (backend) failed"),
+        );
+        runs.run("plan", &[("PR1", NodeStatus::Done)], None);
+
+        close_runs_finished_later(&mut runs.store).unwrap();
+
+        for run in [partly, unrouted, open, approval, elsewhere] {
+            assert_eq!(
+                runs.store.run(run).unwrap().status,
+                RunStatus::Blocked,
+                "run #{run} was closed"
+            );
+        }
+    }
 
     #[test]
     fn a_planning_run_whose_planners_cannot_run_here_is_refused_before_it_starts() {

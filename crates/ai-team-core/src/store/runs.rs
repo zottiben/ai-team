@@ -489,6 +489,22 @@ impl Store {
         self.run(id)
     }
 
+    /// Close a blocked run whose stopped work a later run has finished: done, with nothing
+    /// left blocking it, and ended when it stopped rather than now. Only while it is still
+    /// blocked, so a run somebody took back in the meantime stays theirs.
+    pub fn close_blocked_run(&mut self, id: i64) -> Result<bool> {
+        let at = now();
+        let changed = self.db_mut().write(|tx| {
+            Ok(tx.execute(
+                "UPDATE run SET status = 'done', blocked_reason = NULL,
+                                ended_at = COALESCE(ended_at, ?2), rev = rev + 1, updated_at = ?2
+                  WHERE id = ?1 AND status = 'blocked'",
+                params![id, at],
+            )?)
+        })?;
+        Ok(changed > 0)
+    }
+
     pub fn fail_run(&mut self, id: i64, reason: &str) -> Result<Run> {
         let at = now();
         self.db_mut().write(|tx| {
