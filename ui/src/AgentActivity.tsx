@@ -125,8 +125,9 @@ export function AgentActivity({
       detail.plan_slug &&
       approvedRun !== detail.id,
   );
+  const live = selectedNode?.status === "running";
   const canReply = Boolean(
-    selectedNode?.status === "running" &&
+    live &&
       selectedNode.session_id &&
       selectedNode.replyable !== false &&
       workspace,
@@ -331,18 +332,20 @@ export function AgentActivity({
             </div>
           )}
 
+          {/* Live only while the turn is: a finished one has an end to return to, and
+              nothing to follow. */}
           <div className="agent-activity__follow">
-            {following ? (
-              <span className="agent-activity__live"><span /> following live</span>
-            ) : (
+            {!following ? (
               <button
                 type="button"
                 className="button"
-                aria-label="Jump to live activity"
+                aria-label={live ? "Jump to live activity" : "Jump to the end of this turn"}
                 onClick={scrollToLive}
               >
-                Jump to live
+                {live ? "Jump to live" : "Jump to end"}
               </button>
+            ) : (
+              live && <span className="agent-activity__live"><span /> following live</span>
             )}
           </div>
 
@@ -369,7 +372,7 @@ export function AgentActivity({
               </span>
               <p>{detail.prompt}</p>
             </article>
-            {conversationRows(conversation, selectedNode?.status === "running")}
+            {conversationRows(conversation, live)}
             {conversation.length === 0 && <p className="faint">Waiting for this agent's first update…</p>}
           </div>
 

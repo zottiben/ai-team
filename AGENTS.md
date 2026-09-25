@@ -204,7 +204,9 @@ because they publish a CLI and not a server.
 
 Which ai-planner tools a seat gets is an allow-list, the same mechanism as rule 10: a
 maker reads the board and records notes, a planning seat shapes it, nobody gets
-`delete_plan`. A maker that can add slices can give itself work.
+`delete_plan`. A maker that can add slices can give itself work. `bash` reaches `aip`
+around that list, so the guard holds a seat's own `aip` calls to the same line
+(`plan.ts`, told by `AI_TEAM_PLAN`): a maker once moved its own PR to `in_review`.
 
 ### 6. Supervision is a pipe, not a protocol
 A turn is a child process and its stdout is NDJSON, so there is no HTTP client, no
@@ -275,7 +277,10 @@ once deferred a slice in it. So Rust creates the run's plan itself (`Planner::cr
 titled by the orchestrator's `Plan:` line, based on the trunk so every slice copies that
 base) before the planner's turn, and every seat's `aip serve` runs with
 `AI_PLANNER_PLAN=<the run's plan>`. The orchestrator's grounding turn gets no planning
-tools at all: there is no plan yet, and nothing to infer.
+tools at all: there is no plan yet, and nothing to infer. A checkout's plan, for the
+window's board and its Push/Open PR, an empty-prompt build, plan approval and review
+steering, is its newest run's (`Store::plan_in_workspace`); ai-planner's answer stands only
+where ai-team has run nothing with a plan.
 
 **A slice is one PR, built as its tasks (PW4).** The planner writes them into the scope,
 one line each - `- T1 [backend] Title - Touches: paths` - and `tasks.rs` reads them back;
@@ -299,7 +304,15 @@ back; its branch keeps the commits. `git::put_on_branch` **continues** a branch 
 already has work rather than `checkout -B`-resetting it to the base, and a base naming
 the default branch starts from `origin/<default>`. A turn that reports done but changed
 no file is recorded as **failed**, not done - unless it committed its work itself, which
-the snapshot's `HEAD` shows.
+the snapshot's `HEAD` shows. So a PR built again **carries on from the first task its
+branch lacks** (`already_built`, by the `PR1 T2:` subjects), rather than asking a seat to
+redo work that is already there. One whose branch has every task stopped at its check or
+after it, and may have been fixed by hand: its last seat takes one turn with the reason it
+stopped, then the PR is checked (`check_again`) - never approved unchecked (D5). An
+*error* while building - a commit git refused, a full disk - stops the PR on the row it
+happened in, settled like any failure (`stopped_by`); left as an error it had rows running
+for good, the slice active and the run done without it, and its lease went back to be
+cleaned with the work uncommitted. Work not yet committed keeps its lease.
 
 **A stack is kept on its parents (PW11, D14, D15).** A parent that moves after its child
 was built on it - review follow-ups, or a merge - leaves the child on commits that are not
@@ -341,7 +354,9 @@ it: a failing gate names its manifest and the zone owning `ui/package.json` gets
 verifier names one with `OWNER: <role>`; otherwise the last task's owner. It is recorded
 on **that seat's** row, because that is the attempt that was rejected. Acceptance is a fact
 about the PR, so every row stays `running` until the verdict and then takes it - a `done`
-row is what analytics counts as accepted.
+row is what analytics counts as accepted. So is a row a PR's stop took down whose task a
+later run found built and whose PR it then got accepted: analytics derives it
+(`CARRIED_AT`), and the row keeps the verdict its own run gave it.
 
 Two rules the loop broke once each. A model's answer is captured from the **stream**
 (`PiEvent::assistant_message`), never by filtering `Note` rows back out of the event
@@ -361,14 +376,17 @@ claim, `abort_branch` releases it - and a blocked slice goes back to `blocked` w
 reason, never to `ready`, which would offer the next run the same slice with no memory of
 why it failed.
 
-**The gates run inside the PR's worktree and leave build output there.** ai-team writes `target/`,
-`node_modules/`, `dist/` and `.output/` into `.git/info/exclude` for that lease,
-and commits only what each turn changed: `git::snapshot` hashes every dirty path before a
-turn and `changed_since` keeps the ones that differ after, so gate output nothing ignores
-is never a seat's work. Two traps: `git status
---porcelain` writes `XY path`, so trimming the front eats an unstaged file's leading space
-and every path starts a character late; and the gates are repo-wide, so a violation
-anywhere rejects a node whose zone does not contain it.
+**The gates run inside the PR's worktree and leave build output there.** ai-team excludes
+`target/`, `node_modules/`, `vendor/`, `dist/`, `.output/` and `.eve/` in
+`.git/info/exclude` - one file per repository, shared by every checkout of it, the main
+one too - leaving out any pattern that would hide a tracked file: a repo that commits
+`ui/dist` means it as work, and hiding it made `git add` refuse the rebuilt bundle. It
+commits only what each turn changed: `git::snapshot` hashes every dirty path before a turn
+and `changed_since` keeps the ones that differ after, so gate output nothing ignores is
+never a seat's work. Two traps: `git status --porcelain` writes `XY path`, so trimming the
+front eats an unstaged file's leading space and every path starts a character late; and
+the gates are repo-wide, so a violation anywhere rejects a node whose zone does not
+contain it.
 
 Publishing is not a node's call - see rule 4. The guard refuses it, on both CI legs.
 
@@ -425,9 +443,9 @@ partial unique index and ingest uses `INSERT OR IGNORE` — so a replayed sessio
 free, and a retry's evidence survives because a second session's event 0 is not the
 first's. Three traps that real turns exposed and fixtures did not: token and turn
 **counters** must only accumulate for rows that were genuinely new; `node_run.stream_cursor`
-is `from_index + batch.len()`, never `cursor + batch.len()`; and `input` is a total whose
-`cacheRead` / `cacheWrite` are subsets, so subtract them before storing the uncached
-input column.
+is `from_index + batch.len()`, never `cursor + batch.len()`; and `cacheRead` /
+`cacheWrite` sit beside `input`, not inside it, so a step's whole prompt is
+`totalTokens - output` - read as `input`, a seat 69K tokens into a session holds one.
 
 ### 13. House rules are how every seat hears the repo (M3-S25, M8-S36)
 `house.rs` reads what a checkout already carries — `AGENTS.md`, `CLAUDE.md`,

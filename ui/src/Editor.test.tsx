@@ -93,6 +93,47 @@ it("opens a file from the tree and shows its text", async () => {
   expect(await shown(container)).toBe("# hello");
 });
 
+it("a file's name lines up with a folder's, past the same caret slot", async () => {
+  // A file's caret slot held one space, which collapses to nothing, so every file name
+  // sat a caret's width left of the folder names above it. The slot's width is the
+  // stylesheet's (layout.test.ts); here, that every row has one.
+  stub({ "src/lib.rs": "fn a() {}", "README.md": "# hello" });
+  render(<Editor project="widget" node={null} />);
+
+  for (const name of ["src", "README.md"]) {
+    const row = (await screen.findByText(name)).closest("button");
+    expect(row?.firstElementChild?.classList.contains("tree__caret")).toBe(true);
+  }
+});
+
+it("draws the tab strip only once a file is open", async () => {
+  // Empty, it was a bare rule across the top of the pane with nothing above it.
+  const user = userEvent.setup();
+  stub({ "README.md": "# hello" });
+  const { container } = render(<Editor project="widget" node={null} />);
+
+  await user.click(await screen.findByText("README.md"));
+  // Tree rows and tabs are both buttons named for the file; the tab is in the strip.
+  await waitFor(() => expect(container.querySelector(".editor__tabs")).not.toBeNull());
+  await user.click(screen.getByLabelText("close README.md"));
+  expect(container.querySelector(".editor__tabs")).toBeNull();
+});
+
+it("closing the file in view shows a neighbour, not an empty pane beside open tabs", async () => {
+  const user = userEvent.setup();
+  stub({ "a.md": "first", "b.md": "second" });
+  const { container } = render(<Editor project="widget" node={null} />);
+
+  await user.click(await screen.findByText("a.md"));
+  await waitFor(async () => expect(await shown(container)).toBe("first"));
+  await user.click(screen.getAllByText("b.md")[0]!);
+  await waitFor(async () => expect(await shown(container)).toBe("second"));
+
+  await user.click(screen.getByLabelText("close b.md"));
+  await waitFor(async () => expect(await shown(container)).toBe("first"));
+  expect(screen.queryByText("Open a file from the tree, or search for one.")).toBeNull();
+});
+
 it("switching tabs does not discard unsaved edits by re-reading", async () => {
   // The bug worth guarding: an open buffer is the human's work, and re-fetching it from
   // disk on every tab click silently throws it away.

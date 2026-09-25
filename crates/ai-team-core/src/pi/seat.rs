@@ -384,10 +384,13 @@ impl Seat<'_> {
         // work is and the designs reach the seat that owns the UI (D9), so handing every
         // seat every credential would undo the scoping the MCP config just did.
         turn.environment = context_environment(self.sources);
-        // Its own `aip` calls, through `bash`, act on the run's plan as its server's do.
+        // Its own `aip` calls, through `bash`, act on the run's plan as its server's do -
+        // and are held by the guard to what its server's allow-list lets it do (rule 5).
         if let Some(access) = self.plan {
             turn.environment
                 .push(("AI_PLANNER_PLAN".into(), access.plan.to_string()));
+            let may = if access.may_write { "shape" } else { "read" };
+            turn.environment.push(("AI_TEAM_PLAN".into(), may.into()));
         }
         if is_planning_role(&self.agent.role) {
             // The adapter otherwise merges repository and global MCP definitions after
@@ -946,6 +949,49 @@ mod tests {
             Some("csv-export")
         );
         assert_eq!(named(None), None);
+    }
+
+    #[test]
+    fn the_guard_is_told_whether_a_seat_may_shape_the_plan() {
+        // Its ai-planner tools are an allow-list, and `bash` reaches `aip` around it: the
+        // guard holds a seat's own `aip` calls to the same line, and needs to know where
+        // that line is for this seat. No plan, nothing to hold it to.
+        let support = tempfile::tempdir().unwrap();
+        let lease = tempfile::tempdir().unwrap();
+        let (team, roster) = team_of();
+        let agent = roster
+            .iter()
+            .find(|agent| agent.role == "backend")
+            .unwrap()
+            .clone();
+        let told = |plan: Option<PlanAccess<'_>>| {
+            Seat {
+                agent: &agent,
+                provider: Provider::Local,
+                model: "local",
+                worktree: lease.path(),
+                support: support.path(),
+                sources: &[],
+                plan,
+                team: &team,
+                roster: &roster,
+            }
+            .turn("build it")
+            .unwrap()
+            .environment
+            .into_iter()
+            .find(|(name, _)| name == "AI_TEAM_PLAN")
+            .map(|(_, may)| may)
+        };
+        assert_eq!(
+            told(Some(access(lease.path(), false))).as_deref(),
+            Some("read")
+        );
+        assert_eq!(
+            told(Some(access(lease.path(), true))).as_deref(),
+            Some("shape")
+        );
+        assert_eq!(told(None), None);
     }
 
     #[test]

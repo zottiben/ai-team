@@ -347,16 +347,20 @@ export function Roster({
           return (
             <div key={`${seat.role}-${seat.id}`} className="card">
               <div className="card__row">
-                <span>{seat.name}</span>
-                <span className="faint mono">{seat.role}</span>
-                <span className="status" data-status={seat.read_only ? "queued" : "running"}>
-                  {seat.read_only ? "reads" : "writes"}
+                <span className="roster__seat">
+                  <span>{seat.name}</span>
+                  <span className="faint mono">{seat.role}</span>
                 </span>
-                {!seat.enabled && (
-                  <span className="status" data-status="cancelled">
-                    off
+                <span className="roster__seat">
+                  <span className="status" data-access={seat.read_only ? "reads" : "writes"}>
+                    {seat.read_only ? "reads" : "writes"}
                   </span>
-                )}
+                  {!seat.enabled && (
+                    <span className="status" data-status="cancelled">
+                      off
+                    </span>
+                  )}
+                </span>
               </div>
               <span className="faint">{seat.purpose}</span>
 

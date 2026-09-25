@@ -21,7 +21,7 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Keep this version in sync with rust-toolchain.toml when it is bumped. It cannot
       # be read from that file: the toolchain has to exist before cargo can parse it.
@@ -42,7 +42,7 @@ jobs:
         with:
           key: ${{ steps.root-manifest.outputs.hash }}
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
@@ -77,6 +77,7 @@ jobs:
           node --test crates/ai-team-core/src/pi/assets/irreversible.test.ts
           node --test crates/ai-team-core/src/pi/assets/guard.test.ts
           node --test crates/ai-team-core/src/pi/assets/lifeline.test.ts
+          node --test crates/ai-team-core/src/pi/assets/plan.test.ts
 
       - name: format
         run: cargo fmt --all --check
@@ -100,7 +101,7 @@ jobs:
     name: licences and advisories
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # Deliberately not EmbarkStudios/cargo-deny-action: it runs in a musl container,
       # where rust-toolchain.toml resolves to a target triple the image does not have
       # and every invocation opens with a toolchain override error. A prebuilt binary on

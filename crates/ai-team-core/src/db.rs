@@ -66,6 +66,11 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
     ),
     (15, "tasks", include_str!("migrations/015_tasks.sql")),
     (16, "restack", include_str!("migrations/016_restack.sql")),
+    (
+        17,
+        "context_from_evidence",
+        include_str!("migrations/017_context_from_evidence.sql"),
+    ),
 ];
 
 /// The number of `v_` views the schema ships. Asserted in tests, because a view silently
@@ -324,6 +329,70 @@ mod tests {
             .unwrap();
         assert_eq!(unassigned, None);
         assert_eq!(task.as_deref(), Some("/repo/task"));
+    }
+
+    #[test]
+    fn a_sessions_context_is_read_again_from_the_evidence_it_left() {
+        // Rule 12 once read a step's prompt as `input` alone, which Pi reports beside the
+        // cache figures, so every recorded session held a token or two. The events kept
+        // the whole usage, and the latest step's prompt is what the session held.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("team.db");
+        let conn = Connection::open(&path).unwrap();
+        configure(&conn).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_migrations (
+                 version INTEGER PRIMARY KEY,
+                 name TEXT NOT NULL,
+                 applied_at TEXT NOT NULL
+             )",
+        )
+        .unwrap();
+        for (version, name, sql) in MIGRATIONS.iter().filter(|(version, _, _)| *version <= 16) {
+            conn.execute_batch(sql).unwrap();
+            conn.execute(
+                "INSERT INTO schema_migrations (version, name, applied_at)
+                 VALUES (?1, ?2, '2026-01-01T00:00:00Z')",
+                rusqlite::params![version, name],
+            )
+            .unwrap();
+        }
+        let at = "'2026-01-01T00:00:00Z'";
+        conn.execute_batch(&format!(
+            "INSERT INTO project (id, slug, name, created_at, updated_at)
+             VALUES (1, 'p', 'P', {at}, {at});
+             INSERT INTO run (id, project_id, prompt, created_at, updated_at)
+             VALUES (1, 1, 'build it', {at}, {at});
+             INSERT INTO node_run
+                    (id, run_id, role, provider, model, context_tokens, created_at, updated_at)
+             VALUES (1, 1, 'frontend', 'claude', 'sonnet', 1, {at}, {at}),
+                    (2, 1, 'backend', 'claude', 'sonnet', 7, {at}, {at});
+             INSERT INTO event (run_id, node_run_id, at, kind, payload_json) VALUES
+               (1, 1, {at}, 'cost', '{{\"message\":{{\"usage\":{{\"input\":1,\"output\":90,
+                  \"cacheRead\":60000,\"cacheWrite\":500,\"totalTokens\":60591}}}}}}'),
+               (1, 1, {at}, 'cost', '{{\"message\":{{\"usage\":{{\"input\":1,\"output\":319,
+                  \"cacheRead\":68881,\"cacheWrite\":257,\"totalTokens\":69458}}}}}}'),
+               (1, 1, {at}, 'note', '{{\"usage\":{{\"input\":0,\"output\":0,
+                  \"totalTokens\":0}}}}'),
+               (1, 2, {at}, 'note', '{{\"summary\":\"no usage recorded\"}}');"
+        ))
+        .unwrap();
+        drop(conn);
+
+        let db = Db::open(&path).unwrap();
+        let context = |id: i64| -> Option<i64> {
+            db.conn()
+                .query_row(
+                    "SELECT context_tokens FROM node_run WHERE id = ?1",
+                    [id],
+                    |row| row.get(0),
+                )
+                .unwrap()
+        };
+        // The latest step's whole prompt, cached or not.
+        assert_eq!(context(1), Some(69_139));
+        // A turn that left no usage keeps what it had rather than a guess.
+        assert_eq!(context(2), Some(7));
     }
 
     #[test]

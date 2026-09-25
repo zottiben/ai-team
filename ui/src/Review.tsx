@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
   addComment,
@@ -26,13 +26,28 @@ export function Review({
   project = null,
   workspace = null,
   tick,
+  initial = null,
+  onOpenedInitial,
 }: {
   project?: string | null;
   workspace?: string | null;
   tick: number;
+  /** A review to open on arrival - how Today hands one over. */
+  initial?: number | null;
+  onOpenedInitial?: () => void;
 }) {
   const [list, setList] = useState<ReviewSummary[]>([]);
-  const [open, setOpen] = useState<number | null>(null);
+  const [open, setOpen] = useState<number | null>(initial);
+
+  // Handed over once: a later tick must not drag the view back to it.
+  const handed = useRef<number | null>(null);
+  useEffect(() => {
+    if (initial !== null && handed.current !== initial) {
+      handed.current = initial;
+      setOpen(initial);
+      onOpenedInitial?.();
+    }
+  }, [initial, onOpenedInitial]);
   const [detail, setDetail] = useState<ReviewDetail | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const [outcome, setOutcome] = useState<Submitted | null>(null);
@@ -78,7 +93,7 @@ export function Review({
   if (open !== null && detail !== null) {
     return (
       <div className="review">
-        <div className="main__header">
+        <div className="main__header review__head">
           <button type="button" className="button" onClick={() => setOpen(null)}>
             Back
           </button>
@@ -147,7 +162,7 @@ export function Review({
           <button
             type="button"
             key={entry.id}
-            className="card"
+            className="card review__entry"
             onClick={() => {
               setOutcome(null);
               setOpen(entry.id);
@@ -199,6 +214,19 @@ function Outcome({ outcome }: { outcome: Submitted }) {
   return <p className="notice">Approved.</p>;
 }
 
+/** A line longer than this is not for reading: a minified bundle, or generated output. */
+const UNREADABLE_LINE = 1000;
+
+/** The longest line of a file's diff. A reduce, since a spread of a large diff's lines
+ * would pass more arguments than a call may take. */
+function longestLine(file: FileDiff): number {
+  return file.hunks.reduce(
+    (longest, hunk) =>
+      hunk.lines.reduce((inHunk, line) => Math.max(inHunk, line.text.length), longest),
+    0,
+  );
+}
+
 function FileView({
   file,
   comments,
@@ -217,6 +245,12 @@ function FileView({
   const [body, setBody] = useState("");
 
   const mine = comments.filter((comment) => comment.file_path === file.path);
+  // A minified file starts collapsed: a committed bundle is one line tens of thousands of
+  // characters long, and shown whole it buried the rest of the PR. Open from the start
+  // when it has comments, so no thread is hidden.
+  const longest = longestLine(file);
+  const [shown, setShown] = useState(mine.length > 0);
+  const collapsed = longest > UNREADABLE_LINE && !shown;
 
   return (
     <section className="diff">
@@ -235,7 +269,19 @@ function FileView({
           turns into a screenful of noise. */}
       {file.binary && <p className="faint">Binary file - not shown.</p>}
 
-      {file.hunks.map((hunk) => (
+      {collapsed && (
+        <div className="diff__collapsed">
+          <p className="faint">
+            Collapsed: a minified or generated file - its longest line is{" "}
+            {longest.toLocaleString()} characters.
+          </p>
+          <button type="button" className="button" onClick={() => setShown(true)}>
+            Show diff
+          </button>
+        </div>
+      )}
+
+      {!collapsed && file.hunks.map((hunk) => (
         <div key={hunk.header} className="diff__hunk">
           <div className="diff__hunk-head mono">{hunk.header}</div>
           {hunk.lines.map((line) => {

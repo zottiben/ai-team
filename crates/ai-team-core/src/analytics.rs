@@ -63,8 +63,9 @@ pub struct Row {
     /// Attempts that were rejected or blocked.
     pub rejected: i64,
 
-    /// Distinct slices this group got accepted.
-    pub slices_accepted: i64,
+    /// Distinct changes this group got accepted: a PR's task, or the PR itself when it
+    /// was built as one piece of work (PW4) - the unit its attempts are counted in.
+    pub changes_accepted: i64,
 
     /// Input tokens that were *not* served from cache.
     pub tokens_in: i64,
@@ -74,8 +75,8 @@ pub struct Row {
 
     /// Seconds from a node starting to it ending, summed over attempts.
     pub seconds: i64,
-    /// Wall-clock seconds from the first attempt at a slice to the accepted one, summed
-    /// over slices. Bigger than `seconds` whenever work sat between attempts.
+    /// Wall-clock seconds from the first attempt at a change to the accepted one, summed
+    /// over changes. Bigger than `seconds` whenever work sat between attempts.
     pub cycle_seconds: i64,
 
     pub gates_run: i64,
@@ -101,9 +102,9 @@ impl Row {
         ratio(self.accepted, self.accepted + self.rejected)
     }
 
-    /// Attempts per accepted slice. 1.0 is first-time-right; 2.0 means one repair each.
+    /// Attempts per accepted change. 1.0 is first-time-right; 2.0 means one repair each.
     pub fn rework(&self) -> Option<f64> {
-        ratio(self.attempts, self.slices_accepted)
+        ratio(self.attempts, self.changes_accepted)
     }
 
     /// Every input token this group asked the provider to process, cached or not.
@@ -116,7 +117,7 @@ impl Row {
 
     /// Input tokens per accepted change - the headline.
     pub fn input_per_accepted(&self) -> Option<f64> {
-        ratio(self.total_input(), self.slices_accepted)
+        ratio(self.total_input(), self.changes_accepted)
     }
 
     /// How much of the context this group sent was served from cache.
@@ -138,9 +139,9 @@ impl Row {
         ratio(self.gates_passed, self.gates_run)
     }
 
-    /// Mean seconds from first attempt to acceptance, per slice.
+    /// Mean seconds from first attempt to acceptance, per change.
     pub fn cycle_time(&self) -> Option<f64> {
-        ratio(self.cycle_seconds, self.slices_accepted)
+        ratio(self.cycle_seconds, self.changes_accepted)
     }
 }
 
@@ -152,6 +153,36 @@ impl Row {
 pub fn rollup(store: &Store, by: By, project_id: Option<i64>) -> Result<Vec<Row>> {
     rollup_workspace(store, by, project_id, None)
 }
+
+/// One key per change, the unit attempts are counted in (`Store::dispatch_task`): a task
+/// of a PR, or the PR when it was built as one piece of work (PW4). With its plan, because
+/// every plan names its pull requests PR1, PR2... and a slice key alone is every plan's PR1.
+/// NULL for a turn with no slice behind it, which changed nothing a plan asked for.
+const CHANGE_KEY: &str = "CASE WHEN n.slice_key IS NOT NULL THEN
+        COALESCE(r.plan_slug, '') || char(31) || n.slice_key || char(31) || COALESCE(n.task_key, '')
+    END";
+
+/// When a later run's verdict accepted the work this row built, or NULL.
+///
+/// A PR that stops part-way takes every row with it, the tasks already built too; the next
+/// run skips those tasks as on the branch (`already_built`), finishes the rest, and the PR
+/// is accepted - so the skipped tasks' commits are what was accepted, and the verdict is a
+/// fact about the PR (rule 8). Derived here rather than written back, because the row's own
+/// verdict is still the truth about its run. Only a row nothing later rebuilt: a task that
+/// failed and was tried again has a later row, and stays the rejected attempt it was.
+const CARRIED_AT: &str = "CASE WHEN n.status IN ('failed','blocked','cancelled')
+            AND n.slice_key IS NOT NULL
+            AND NOT EXISTS (
+                SELECT 1 FROM node_run l JOIN run lr ON lr.id = l.run_id
+                 WHERE l.id > n.id AND l.slice_key = n.slice_key
+                   AND COALESCE(l.task_key, '') = COALESCE(n.task_key, '')
+                   AND COALESCE(lr.plan_slug, '') = COALESCE(r.plan_slug, '')
+                   AND l.role <> 'verifier')
+        THEN (SELECT MIN(a.ended_at) FROM node_run a JOIN run ar ON ar.id = a.run_id
+               WHERE a.id > n.id AND a.slice_key = n.slice_key AND a.status = 'done'
+                 AND COALESCE(ar.plan_slug, '') = COALESCE(r.plan_slug, '')
+                 AND a.role <> 'verifier')
+    END";
 
 /// Path, plan and slice for [`crate::store::WorkspaceScope::node_sql`], all NULL when no
 /// checkout was asked for.
@@ -187,7 +218,8 @@ pub fn rollup_workspace(
     let in_workspace = crate::store::WorkspaceScope::node_sql("n", "r", 2);
     let sql = format!(
         "WITH maker AS (
-             SELECT n.*, r.project_id
+             SELECT n.*, r.project_id, {CHANGE_KEY} AS change_key,
+                    {CARRIED_AT} AS carried_at
                FROM node_run n
                JOIN run r ON r.id = n.run_id
               -- A verifier checks; it does not change anything. Including its turns
@@ -196,8 +228,8 @@ pub fn rollup_workspace(
                 AND (?1 IS NULL OR r.project_id = ?1)
                 AND (?2 IS NULL OR {in_workspace})
          ),
-         -- One row per slice a group actually landed, with how long it took from the
-         -- first attempt at it. Computed separately because a slice spans attempts and
+         -- One row per change a group actually landed, with how long it took from the
+         -- first attempt at it. Computed separately because a change spans attempts and
          -- the per-attempt sum below would count the gap between them as zero.
          -- Aliased `n` here and in `gates` because `{group}` is written in terms of
          -- `n`, `p` and `t`. Alias it anything else and the expression silently refers
@@ -205,15 +237,16 @@ pub fn rollup_workspace(
          -- match every row.
          cycles AS (
              SELECT {group} AS grp,
-                    n.slice_key,
+                    n.change_key,
                     MIN(n.started_at) AS first_start,
-                    MIN(CASE WHEN n.status = 'done' THEN n.ended_at END) AS accepted_at
+                    MIN(CASE WHEN n.status = 'done' THEN n.ended_at ELSE n.carried_at END)
+                        AS accepted_at
                FROM maker n
                JOIN run r  ON r.id = n.run_id
                JOIN project p ON p.id = r.project_id
           LEFT JOIN team t ON t.id = r.team_id
-              WHERE n.slice_key IS NOT NULL
-           GROUP BY grp, n.slice_key
+              WHERE n.change_key IS NOT NULL
+           GROUP BY grp, n.change_key
              HAVING accepted_at IS NOT NULL
          ),
          gates AS (
@@ -231,9 +264,10 @@ pub fn rollup_workspace(
          )
          SELECT {group} AS grp,
                 COUNT(*),
-                SUM(CASE WHEN n.status = 'done' THEN 1 ELSE 0 END),
-                SUM(CASE WHEN n.status IN ('failed','blocked','cancelled') THEN 1 ELSE 0 END),
-                COUNT(DISTINCT CASE WHEN n.status = 'done' THEN n.slice_key END),
+                SUM(n.status = 'done' OR n.carried_at IS NOT NULL),
+                SUM(n.status IN ('failed','blocked','cancelled') AND n.carried_at IS NULL),
+                COUNT(DISTINCT CASE WHEN n.status = 'done' OR n.carried_at IS NOT NULL
+                                    THEN n.change_key END),
                 SUM(n.tokens_in),
                 SUM(n.tokens_out),
                 SUM(n.tokens_cache_read),
@@ -267,7 +301,7 @@ pub fn rollup_workspace(
                 attempts: row.get(1)?,
                 accepted: row.get(2)?,
                 rejected: row.get(3)?,
-                slices_accepted: row.get(4)?,
+                changes_accepted: row.get(4)?,
                 tokens_in: row.get(5)?,
                 tokens_out: row.get(6)?,
                 cache_read: row.get(7)?,
@@ -344,8 +378,21 @@ mod tests {
         when: (&str, &str),
         usage: (i64, i64, i64, i64),
     ) -> i64 {
+        attempt_task(store, run, agent, (slice, None), accepted, when, usage)
+    }
+
+    /// [`attempt`] at one task of a PR (PW4).
+    fn attempt_task(
+        store: &mut Store,
+        run: i64,
+        agent: i64,
+        (slice, task): (&str, Option<&str>),
+        accepted: bool,
+        when: (&str, &str),
+        usage: (i64, i64, i64, i64),
+    ) -> i64 {
         let node = store
-            .dispatch(run, agent, Some(slice), &ModelRegistry::local_only())
+            .dispatch_task(run, agent, slice, task, &ModelRegistry::local_only())
             .unwrap();
         let (tokens_in, tokens_out, cache_read, cache_write) = usage;
         store
@@ -540,13 +587,169 @@ mod tests {
         let rows = rollup(&store, By::Agent, Some(project)).unwrap();
         let backend = find(&rows, "backend");
         assert_eq!(backend.attempts, 3);
-        assert_eq!(backend.slices_accepted, 1);
+        assert_eq!(backend.changes_accepted, 1);
         assert_eq!(backend.accepted_rate(), Some(1.0 / 3.0));
         assert_eq!(backend.rework(), Some(3.0));
 
         // Half an hour from the first attempt to acceptance, not three ten-minute
         // stretches added together.
         assert_eq!(backend.cycle_seconds, 1_800);
+    }
+
+    #[test]
+    fn a_pr_built_as_two_tasks_first_time_right_is_no_rework() {
+        // A PR is built as its tasks (PW4), and attempts are counted per task. Counting
+        // what landed per slice made a seat that built both tasks of one PR first time
+        // look as if it had needed a repair - rework 2.0 for work nobody sent back.
+        let (mut store, project, team, run) = seeded();
+        store.set_run_plan(run, "csv").unwrap();
+        let backend = seat(&store, team, "backend");
+        for (task, when) in [
+            ("T1", ("2026-09-18T08:00:00Z", "2026-09-18T08:10:00Z")),
+            ("T2", ("2026-09-18T08:10:00Z", "2026-09-18T08:30:00Z")),
+        ] {
+            let usage = (100, 50, 0, 0);
+            attempt_task(
+                &mut store,
+                run,
+                backend,
+                ("PR1", Some(task)),
+                true,
+                when,
+                usage,
+            );
+        }
+
+        let rows = rollup(&store, By::Agent, Some(project)).unwrap();
+        let backend = find(&rows, "backend");
+        assert_eq!(backend.changes_accepted, 2);
+        assert_eq!(backend.rework(), Some(1.0));
+        assert_eq!(backend.input_per_accepted(), Some(100.0));
+        // Each task from its own first attempt, not the PR from its first task.
+        assert_eq!(backend.cycle_seconds, 1_800);
+    }
+
+    #[test]
+    fn work_a_later_run_accepted_counts_where_it_was_built() {
+        // A PR stops part-way and every row takes the stop - the tasks already built too.
+        // The next run skips those tasks, finishes the rest, and the PR is accepted: the
+        // skipped tasks' commits are what was accepted, but their rows still said failed,
+        // so the seat that built them read 0 of 2 accepted for work that all landed.
+        let (mut store, project, team, first) = seeded();
+        store.set_run_plan(first, "csv").unwrap();
+        let second = store
+            .create_run(project, "carry on", RunTrigger::Manual)
+            .unwrap()
+            .id;
+        store.set_run_plan(second, "csv").unwrap();
+        let backend = seat(&store, team, "backend");
+        let frontend = seat(&store, team, "frontend");
+        let usage = (100, 50, 0, 0);
+        for (run, agent, task, accepted, when) in [
+            // Built, then taken down by the PR stopping at T2.
+            (
+                first,
+                backend,
+                "T1",
+                false,
+                ("2026-09-18T08:00:00Z", "2026-09-18T08:10:00Z"),
+            ),
+            // The attempt that stopped it, and its retry in the next run.
+            (
+                first,
+                frontend,
+                "T2",
+                false,
+                ("2026-09-18T08:10:00Z", "2026-09-18T08:20:00Z"),
+            ),
+            (
+                second,
+                frontend,
+                "T2",
+                true,
+                ("2026-09-18T09:00:00Z", "2026-09-18T09:20:00Z"),
+            ),
+        ] {
+            attempt_task(
+                &mut store,
+                run,
+                agent,
+                ("PR1", Some(task)),
+                accepted,
+                when,
+                usage,
+            );
+        }
+        // A PR nobody finished stays as it stopped.
+        attempt_task(
+            &mut store,
+            second,
+            backend,
+            ("PR2", Some("T1")),
+            false,
+            ("2026-09-18T09:20:00Z", "2026-09-18T09:30:00Z"),
+            usage,
+        );
+
+        let rows = rollup(&store, By::Agent, Some(project)).unwrap();
+        let backend = find(&rows, "backend");
+        assert_eq!((backend.accepted, backend.rejected), (1, 1));
+        assert_eq!(backend.changes_accepted, 1);
+        // From T1's first start to the PR being accepted in the next run.
+        assert_eq!(backend.cycle_seconds, 4_800);
+        // A retry is still a retry: T2 failed once before it landed.
+        let frontend = find(&rows, "frontend");
+        assert_eq!((frontend.accepted, frontend.rejected), (1, 1));
+        assert_eq!(frontend.rework(), Some(2.0));
+    }
+
+    #[test]
+    fn pr1_of_one_plan_is_not_pr1_of_another() {
+        // Every plan names its pull requests PR1, PR2..., so a key alone is shared by
+        // every plan a project ever had: the second plan's PR1 landing counted as nothing
+        // new, and the first plan's clock was the only one read.
+        let (mut store, project, team, first) = seeded();
+        store.set_run_plan(first, "csv").unwrap();
+        let second = store
+            .create_run(project, "and json", RunTrigger::Manual)
+            .unwrap()
+            .id;
+        store.set_run_plan(second, "json").unwrap();
+        let backend = seat(&store, team, "backend");
+        for (run, accepted, when) in [
+            (
+                first,
+                true,
+                ("2026-09-18T08:00:00Z", "2026-09-18T08:10:00Z"),
+            ),
+            (
+                second,
+                false,
+                ("2026-09-25T08:00:00Z", "2026-09-25T08:10:00Z"),
+            ),
+            (
+                second,
+                true,
+                ("2026-09-25T08:10:00Z", "2026-09-25T08:30:00Z"),
+            ),
+        ] {
+            attempt(
+                &mut store,
+                run,
+                backend,
+                "PR1",
+                accepted,
+                when,
+                (100, 50, 0, 0),
+            );
+        }
+
+        let rows = rollup(&store, By::Agent, Some(project)).unwrap();
+        let backend = find(&rows, "backend");
+        assert_eq!(backend.changes_accepted, 2);
+        assert_eq!(backend.rework(), Some(1.5));
+        // Ten minutes for the first plan's PR1, half an hour for the second's.
+        assert_eq!(backend.cycle_seconds, 2_400);
     }
 
     #[test]
@@ -677,7 +880,7 @@ mod tests {
         // row carrying both attempts.
         let by_model = rollup(&store, By::Model, Some(project)).unwrap();
         assert_eq!(by_model.len(), 1);
-        assert_eq!((by_model[0].attempts, by_model[0].slices_accepted), (2, 2));
+        assert_eq!((by_model[0].attempts, by_model[0].changes_accepted), (2, 2));
     }
 
     #[test]
@@ -731,7 +934,7 @@ mod tests {
             attempts: accepted + rejected,
             accepted,
             rejected,
-            slices_accepted: slices,
+            changes_accepted: slices,
             tokens_in: 0,
             tokens_out: 0,
             cache_read: 0,
@@ -762,7 +965,7 @@ mod tests {
     }
 
     #[test]
-    fn rework_counts_attempts_against_slices_landed() {
+    fn rework_counts_attempts_against_changes_landed() {
         // Four attempts to land two slices is one repair each.
         let r = row(2, 2, 2);
         assert_eq!(r.rework(), Some(2.0));
@@ -805,8 +1008,8 @@ mod tests {
     }
 
     #[test]
-    fn cycle_time_is_per_slice_not_per_attempt() {
-        // Three attempts over an hour to land one slice is an hour of cycle time, not
+    fn cycle_time_is_per_change_not_per_attempt() {
+        // Three attempts over an hour to land one change is an hour of cycle time, not
         // three separate short ones.
         let mut r = row(1, 2, 1);
         r.cycle_seconds = 3_600;

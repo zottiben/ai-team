@@ -442,11 +442,30 @@ pub(crate) async fn porcelain(worktree: &Path) -> Result<String> {
         .to_string())
 }
 
-/// Keep the gates' own output out of git's view, for this lease only.
+/// What running a project's checks leaves behind, when the project does not commit it.
+const BUILD_OUTPUT: &[&str] = &[
+    "target/",
+    "node_modules/",
+    "vendor/",
+    "dist/",
+    ".output/",
+    ".eve/",
+];
+
+/// Heads ai-team's block in the exclude file, so a later write can find and replace it.
+const BUILD_OUTPUT_MARK: &str = "# ai-team: what running this project's checks leaves behind.";
+
+/// Keep the gates' own output out of git's view.
 ///
-/// `.git/info/exclude` is git's per-checkout ignore file: it is not tracked, so this
-/// does not edit the repository, and the worktree is returned to the pool afterwards
-/// anyway. A repo whose own .gitignore already covers these loses nothing.
+/// Written to `.git/info/exclude`, which is not tracked, so this edits nothing the
+/// repository carries. It is not this lease's alone, though: git keeps one exclude file
+/// per repository, shared by every checkout of it - the main one included. So a pattern
+/// that would hide a file the repository tracks is left out. A repo that commits its
+/// `dist/` or `vendor/` means them as work, and hiding them made `git add` refuse the
+/// very files a task had to change.
+///
+/// ai-team's block is rewritten each time rather than written once, so a pattern an
+/// earlier version put there is taken back out.
 pub(crate) async fn ignore_build_output(worktree: &Path) -> Result<()> {
     let info = git(worktree, &["rev-parse", "--git-path", "info/exclude"]).await?;
     let path = worktree.join(info.trim());
@@ -454,16 +473,45 @@ pub(crate) async fn ignore_build_output(worktree: &Path) -> Result<()> {
         let _ = std::fs::create_dir_all(parent);
     }
     let existing = std::fs::read_to_string(&path).unwrap_or_default();
-    if existing.contains("# ai-team") {
-        return Ok(());
+    let mut kept = Vec::new();
+    for pattern in BUILD_OUTPUT {
+        let exclude = format!("--exclude={pattern}");
+        let hidden = git(
+            worktree,
+            &["ls-files", "--cached", "--ignored", exclude.as_str()],
+        )
+        .await?;
+        if hidden.trim().is_empty() {
+            kept.push(*pattern);
+        }
     }
-    let added = format!(
-        "{existing}\n# ai-team: what running this project's checks leaves behind.\n\
-         target/\nnode_modules/\nvendor/\ndist/\n.output/\n.eve/\n"
-    );
-    std::fs::write(&path, added)
-        .map_err(|error| Error::invalid(format!("could not write {}: {error}", path.display())))?;
+    let block = format!("{BUILD_OUTPUT_MARK}\n{}\n", kept.join("\n"));
+    let written = format!("{}\n{block}", without_build_output(&existing).trim_end());
+    if written != existing {
+        std::fs::write(&path, written).map_err(|error| {
+            Error::invalid(format!("could not write {}: {error}", path.display()))
+        })?;
+    }
     Ok(())
+}
+
+/// An exclude file without ai-team's block: its mark and the patterns ai-team writes
+/// under it. Any other line ends the block, so everything the operator wrote stays.
+fn without_build_output(exclude: &str) -> String {
+    let mut kept = Vec::new();
+    let mut in_block = false;
+    for line in exclude.lines() {
+        if line == BUILD_OUTPUT_MARK {
+            in_block = true;
+            continue;
+        }
+        if in_block && BUILD_OUTPUT.contains(&line.trim()) {
+            continue;
+        }
+        in_block = false;
+        kept.push(line);
+    }
+    kept.join("\n")
 }
 
 /// The commit a branch forked from, which is what a review should be measured against.
@@ -527,6 +575,12 @@ pub(crate) async fn commits_between(worktree: &Path, from: &str, to: &str) -> Re
         .trim()
         .parse()
         .map_err(|_| Error::invalid(format!("git counted `{}` commits", count.trim())))
+}
+
+/// The subject line of every commit `to` has that `from` does not, newest first.
+pub(crate) async fn subjects_between(worktree: &Path, from: &str, to: &str) -> Result<Vec<String>> {
+    let log = git(worktree, &["log", "--format=%s", &format!("{from}..{to}")]).await?;
+    Ok(log.lines().map(str::to_string).collect())
 }
 
 /// Whether a rebase stopped part-way in this checkout, on a conflict or a question.
@@ -1045,7 +1099,69 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_gates_own_output_is_excluded_for_this_lease_only() {
+    async fn a_build_directory_the_repository_commits_is_still_its_work() {
+        // ai-team's own repo commits `ui/dist`, and its CI fails when the bundle is stale
+        // - so the frontend rebuilds it on every change. Excluding `dist/` hid that work:
+        // `git add` refused the committed bundle, the task could not be committed, and the
+        // PR stopped with it.
+        let dir = repo().await;
+        std::fs::create_dir_all(dir.path().join("ui/dist")).unwrap();
+        std::fs::write(dir.path().join("ui/dist/app.js"), "one\n").unwrap();
+        git(dir.path(), &["add", "-A"]).await.unwrap();
+        git(dir.path(), &["commit", "-qm", "the bundle"])
+            .await
+            .unwrap();
+        ignore_build_output(dir.path()).await.unwrap();
+
+        std::fs::write(dir.path().join("ui/dist/app.js"), "two\n").unwrap();
+        std::fs::write(dir.path().join("ui/dist/chunk.js"), "new\n").unwrap();
+        std::fs::create_dir_all(dir.path().join("target/debug")).unwrap();
+        std::fs::write(dir.path().join("target/debug/out.bin"), "junk").unwrap();
+
+        let paths = changed_paths(dir.path()).await.unwrap();
+        assert_eq!(paths, ["ui/dist/app.js", "ui/dist/chunk.js"], "{paths:?}");
+        let sha = commit_paths(dir.path(), "main", "PR1 T3: rebuild", &paths)
+            .await
+            .unwrap();
+        assert!(sha.is_some());
+    }
+
+    #[tokio::test]
+    async fn an_exclusion_an_earlier_ai_team_wrote_is_rewritten() {
+        // The file is the repository's, shared by every checkout of it, and the lease that
+        // wrote `dist/` there left it for the main checkout too. Writing again is what
+        // takes it back out.
+        let dir = repo().await;
+        std::fs::create_dir_all(dir.path().join("ui/dist")).unwrap();
+        std::fs::write(dir.path().join("ui/dist/app.js"), "one\n").unwrap();
+        git(dir.path(), &["add", "-A"]).await.unwrap();
+        git(dir.path(), &["commit", "-qm", "the bundle"])
+            .await
+            .unwrap();
+        let exclude = dir.path().join(".git/info/exclude");
+        std::fs::write(
+            &exclude,
+            "# the operator's own\nnotes/\n\n\
+             # ai-team: what running this project's checks leaves behind.\n\
+             target/\nnode_modules/\nvendor/\ndist/\n.output/\n.eve/\n",
+        )
+        .unwrap();
+
+        ignore_build_output(dir.path()).await.unwrap();
+        ignore_build_output(dir.path()).await.unwrap();
+
+        let written = std::fs::read_to_string(&exclude).unwrap();
+        assert!(!written.lines().any(|line| line == "dist/"), "{written}");
+        assert!(written.lines().any(|line| line == "target/"), "{written}");
+        assert!(
+            written.contains("# the operator's own\nnotes/"),
+            "{written}"
+        );
+        assert_eq!(written.matches("# ai-team").count(), 1, "{written}");
+    }
+
+    #[tokio::test]
+    async fn the_gates_own_output_is_excluded_without_touching_the_repository() {
         let dir = repo().await;
         ignore_build_output(dir.path()).await.unwrap();
         std::fs::create_dir_all(dir.path().join("target/debug")).unwrap();

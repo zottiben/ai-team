@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, it, vi } from "vitest";
 
@@ -90,6 +90,48 @@ it("an item pointing at a run can be followed; one that does not, cannot", async
   expect(opened).toEqual([7]);
 
   expect(screen.getByText("stand-up").closest("button")).toBeNull();
+});
+
+it("a review waiting on you opens that review, not the run that built it", async () => {
+  // Following it used to open the run - a page of agent activity - and the review had to
+  // be found again under Review.
+  const user = userEvent.setup();
+  const runs: number[] = [];
+  const reviews: Array<[number, string | null, number | null]> = [];
+  stub([
+    item({ urgency: "review", kind: "review", title: "PR1: subtract", run_id: 7, review_id: 3 }),
+  ]);
+  render(
+    <Today
+      tick={0}
+      onOpenRun={(id) => runs.push(id)}
+      onOpenReview={(id, project, run) => reviews.push([id, project, run])}
+    />,
+  );
+
+  await user.click(await screen.findByText("PR1: subtract"));
+  expect(reviews).toEqual([[3, "widget", 7]]);
+  expect(runs).toEqual([]);
+});
+
+it("an item's urgency, project and kind read as one line, the kind only when it adds to it", async () => {
+  // They were three children of a row that spaces its children apart, so the project sat
+  // alone mid-card - and a review said "Review ... review" from either end.
+  stub([
+    item({ urgency: "review", kind: "review", title: "PR1: subtract" }),
+    item({ urgency: "failed", kind: "node", title: "PR2 T1: parse" }),
+  ]);
+  render(<Today tick={0} onOpenRun={() => {}} />);
+
+  const meta = async (title: string) => {
+    const row = (await screen.findByText(title)).closest(".today-row") as HTMLElement;
+    return within(row.querySelector(".today-row__meta") as HTMLElement);
+  };
+  const review = await meta("PR1: subtract");
+  expect(review.getByText("Review")).toBeDefined();
+  expect(review.getByText("widget")).toBeDefined();
+  expect(review.queryByText("review")).toBeNull();
+  expect((await meta("PR2 T1: parse")).getByText("node")).toBeDefined();
 });
 
 it("says plainly when nothing is waiting", async () => {

@@ -121,6 +121,8 @@ const SKIP: &[&str] = &[
     ".output",
     ".eve",
     ".file-sql",
+    // Finder's folder metadata, which macOS writes wherever it has shown a folder.
+    ".DS_Store",
 ];
 
 /// One level of the tree, directories first then files, each alphabetical.
@@ -238,6 +240,16 @@ mod tests {
         let dir = repo();
         let entries = list(dir.path(), "").unwrap();
         assert!(entries.iter().all(|entry| entry.name != "target"));
+    }
+
+    #[test]
+    fn finders_folder_metadata_is_not_listed() {
+        // macOS writes a `.DS_Store` into every folder Finder has shown, and it is nothing
+        // anybody opens in an editor.
+        let dir = repo();
+        std::fs::write(dir.path().join(".DS_Store"), b"x").unwrap();
+        let entries = list(dir.path(), "").unwrap();
+        assert!(entries.iter().all(|entry| entry.name != ".DS_Store"));
     }
 
     #[test]

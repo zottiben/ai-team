@@ -85,6 +85,7 @@ export default function App() {
   }, [setupOpen]);
   // A run Today asked for, carried until the workspace has taken it.
   const [openRun, setOpenRun] = useState<number | null>(null);
+  const [openReview, setOpenReview] = useState<number | null>(null);
   const [firstRun, setFirstRun] = useState<boolean | null>(null);
   // Where you last were in each project. A command centre you come back to should be where
   // you left it - resetting to Work every time makes returning feel like starting over.
@@ -386,6 +387,8 @@ export default function App() {
             tick={tick}
             openRun={openRun}
             onOpenedRun={() => setOpenRun(null)}
+            openReview={openReview}
+            onOpenedReview={() => setOpenReview(null)}
             onChanged={() => {
               void loadWorkspaces(inside.slug);
               configured();
@@ -428,6 +431,25 @@ export default function App() {
                   .catch(() => {
                     setPlace({ level: "project", slug: target, workspace: null, view: "work" });
                   });
+              }}
+              // A review opens as itself, in the checkout its run started in - where the
+              // window lists it - and in the main checkout when it has no run.
+              onOpenReview={(id, slug, run) => {
+                setOpenReview(id);
+                const target = slug ?? projects[0]?.slug;
+                if (target === undefined) return;
+                const go = (workspace: string | null) => {
+                  setLastWorkspace((seen) => ({ ...seen, [target]: workspace }));
+                  setLastView((seen) => ({ ...seen, [target]: "review" }));
+                  setPlace({ level: "project", slug: target, workspace, view: "review" });
+                };
+                if (run === null) {
+                  go(null);
+                  return;
+                }
+                void fetchRun(run)
+                  .then((detail) => go(detail.workspace_path ?? null))
+                  .catch(() => go(null));
               }}
             />
           )}

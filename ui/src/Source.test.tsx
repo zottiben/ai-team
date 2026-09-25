@@ -91,6 +91,18 @@ it("shows staged and unstaged apart, because their sum answers neither question"
   expect(screen.getByText("later.rs")).toBeDefined();
 });
 
+it("says which branch beside its heading, not floating mid-header", async () => {
+  // Heading, branch picker and Push were three children spaced apart, so "on <branch>"
+  // sat alone in the middle of the header.
+  stub({});
+  render(<Source project="widget" node={null} />);
+
+  const branch = (await screen.findByLabelText("branch")).closest("label");
+  const heading = screen.getByRole("heading", { name: "Source control" });
+  expect(branch?.parentElement).toBe(heading.parentElement);
+  expect(heading.parentElement?.classList.contains("main__header")).toBe(false);
+});
+
 it("lists untracked files, which have no diff to appear in", async () => {
   // A view built only from `git diff` leaves an agent's new file out of the commit.
   const user = userEvent.setup();

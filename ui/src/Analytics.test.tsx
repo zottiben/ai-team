@@ -15,7 +15,7 @@ function row(over: Partial<AnalyticsRow>): AnalyticsRow {
     attempts: 4,
     accepted: 3,
     rejected: 1,
-    slices_accepted: 3,
+    changes_accepted: 3,
     tokens_in: 1_000,
     tokens_out: 900,
     cache_read: 60_000,
@@ -55,7 +55,7 @@ it("shows what a pairing lands and what it costs in context to land it", async (
   const line = within(await screen.findByRole("row", { name: /backend/ }));
   expect(line.getByText("75%")).toBeDefined(); // accepted, of what was decided
   expect(line.getByText("80%")).toBeDefined(); // gates
-  expect(line.getByText("1.33")).toBeDefined(); // attempts per slice landed
+  expect(line.getByText("1.33")).toBeDefined(); // attempts per task landed
   expect(line.getByText("65k")).toBeDefined(); // every input token sent
   expect(line.getByText("3/4")).toBeDefined(); // the counts behind the rate
 });
@@ -68,7 +68,7 @@ it("a pairing with no history shows a dash, never a zero", async () => {
       attempts: 0,
       accepted: 0,
       rejected: 0,
-      slices_accepted: 0,
+      changes_accepted: 0,
       accepted_rate: null,
       rework: null,
       input_per_accepted: null,

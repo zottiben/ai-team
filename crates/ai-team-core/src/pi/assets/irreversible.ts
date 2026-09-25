@@ -27,7 +27,7 @@ function hasWord(command: string, word: string): boolean {
  * both refused - and a guardrail that blocks searching for a word is one people learn to
  * work around, which is worse than not having it.
  */
-function outsideQuotes(command: string): string {
+export function outsideQuotes(command: string): string {
   return command.replace(/'[^']*'|"[^"]*"/g, '""');
 }
 

@@ -76,6 +76,9 @@ pub struct Item {
     pub detail: Option<String>,
     pub project: Option<String>,
     pub run_id: Option<i64>,
+    /// The review, for a review waiting on somebody: following it opens the review itself
+    /// rather than the run that built it.
+    pub review_id: Option<i64>,
     /// When it started waiting. Ties break on this, oldest first: the thing that has
     /// been ignored longest is the thing most likely to be forgotten entirely.
     pub since: Option<String>,
@@ -141,6 +144,7 @@ fn node_item(node: &crate::model::NodeRun, slug: &str, run_id: i64) -> Option<It
             detail: node.blocked_reason.clone(),
             project: Some(slug.to_string()),
             run_id: Some(run_id),
+            review_id: None,
             since: node.ended_at.clone().or(node.started_at.clone()),
         }),
         NodeStatus::Running => Some(Item {
@@ -159,6 +163,7 @@ fn node_item(node: &crate::model::NodeRun, slug: &str, run_id: i64) -> Option<It
             detail: None,
             project: Some(slug.to_string()),
             run_id: Some(run_id),
+            review_id: None,
             since: node.started_at.clone(),
         }),
         _ => None,
@@ -182,6 +187,7 @@ fn interrupted_item(node: &crate::model::NodeRun, slug: &str, run_id: i64) -> It
         )),
         project: Some(slug.to_string()),
         run_id: Some(run_id),
+        review_id: None,
         since: node.started_at.clone(),
     }
 }
@@ -211,6 +217,7 @@ pub fn from_store(store: &Store) -> Result<Vec<Item>> {
                     detail: Some(format!("run #{} is waiting on you", run.id)),
                     project: Some(slug.clone()),
                     run_id: Some(run.id),
+                    review_id: None,
                     since: Some(approval.at.clone()),
                 });
             }
@@ -269,6 +276,7 @@ pub fn from_store(store: &Store) -> Result<Vec<Item>> {
                 )),
                 project: Some(slug.clone()),
                 run_id: review.run_id,
+                review_id: Some(review.id),
                 since: Some(review.created_at.clone()),
             });
         }
@@ -296,6 +304,7 @@ pub fn from_store(store: &Store) -> Result<Vec<Item>> {
             detail: (!reminder.body.trim().is_empty()).then(|| reminder.body.clone()),
             project: None,
             run_id: None,
+            review_id: None,
             since: reminder.due_at.clone(),
         });
     }
@@ -347,6 +356,7 @@ pub fn from_slice(
         detail: Some(detail.into()),
         project: Some(project.to_string()),
         run_id: None,
+        review_id: None,
         since: None,
     })
 }
@@ -359,6 +369,9 @@ pub struct Checkout {
     repo: String,
     /// Branches whose PR already has an open review, listed as that review.
     reviewed: std::collections::HashSet<String>,
+    /// The plans to ask, named. Empty where ai-team has run nothing with a plan, and only
+    /// then is the checkout's own plan asked for, as the board does.
+    plans: Vec<String>,
 }
 
 /// Every project with a checkout, as [`from_plans`] needs it.
@@ -378,6 +391,7 @@ pub fn checkouts(store: &Store) -> Result<Vec<Checkout>> {
             .filter_map(|review| review.branch)
             .collect();
         found.push(Checkout {
+            plans: store.plans_in_use(project.id)?,
             slug: project.slug,
             repo,
             reviewed,
@@ -386,36 +400,50 @@ pub fn checkouts(store: &Store) -> Result<Vec<Checkout>> {
     Ok(found)
 }
 
-/// What each project's plan is holding: open questions, and finished or blocked slices.
+/// What the plans each project's work is in are holding: open questions, and finished or
+/// blocked slices.
 ///
-/// Best effort per project: a checkout that has moved, or one with no plan yet, must not
-/// empty the list for every other project.
+/// Best effort per plan: a checkout that has moved, or a plan that cannot be read, must not
+/// empty the list for every other one.
 pub async fn from_plans(checkouts: Vec<Checkout>) -> Vec<Item> {
     let mut items = Vec::new();
     for Checkout {
         slug,
         repo,
         reviewed,
+        plans,
     } in checkouts
     {
-        let planner = crate::neighbours::Planner::at(repo);
-        let Ok(questions) = planner.open_questions().await else {
-            continue;
+        // ai-planner's own answer only where ai-team has none: a plan made by hand, in a
+        // checkout the team has not run in yet (rule 7).
+        let named: Vec<Option<String>> = if plans.is_empty() {
+            vec![None]
+        } else {
+            plans.into_iter().map(Some).collect()
         };
-        for question in questions {
-            items.push(from_question(&slug, &question.body, question.asked_at));
-        }
-        // Work an agent finished and left `in_review` is the commonest thing waiting
-        // after a run, and it lives on the plan rather than in ai-team's own tables.
-        for slice in planner.slices().await.unwrap_or_default() {
-            let has_review = slice
-                .branch
-                .as_ref()
-                .is_some_and(|branch| reviewed.contains(branch));
-            if let Some(item) =
-                from_slice(&slug, &slice.key, &slice.title, &slice.status, has_review)
-            {
-                items.push(item);
+        for plan in named {
+            let planner = match plan {
+                Some(plan) => crate::neighbours::Planner::at(&repo).for_plan(plan),
+                None => crate::neighbours::Planner::at(&repo),
+            };
+            let Ok(questions) = planner.open_questions().await else {
+                continue;
+            };
+            for question in questions {
+                items.push(from_question(&slug, &question.body, question.asked_at));
+            }
+            // Work an agent finished and left `in_review` is the commonest thing waiting
+            // after a run, and it lives on the plan rather than in ai-team's own tables.
+            for slice in planner.slices().await.unwrap_or_default() {
+                let has_review = slice
+                    .branch
+                    .as_ref()
+                    .is_some_and(|branch| reviewed.contains(branch));
+                if let Some(item) =
+                    from_slice(&slug, &slice.key, &slice.title, &slice.status, has_review)
+                {
+                    items.push(item);
+                }
             }
         }
     }
@@ -431,6 +459,7 @@ pub fn from_question(project: &str, question: &str, asked: Option<String>) -> It
         detail: Some("the plan is waiting on an answer".into()),
         project: Some(project.to_string()),
         run_id: None,
+        review_id: None,
         since: asked,
     }
 }
@@ -447,6 +476,7 @@ mod tests {
             detail: None,
             project: None,
             run_id: None,
+            review_id: None,
             since: since.map(ToString::to_string),
         }
     }
@@ -729,6 +759,96 @@ mod tests {
     #[test]
     fn a_clock_that_cannot_be_read_does_not_raise_the_alarm() {
         assert_eq!(slipped("whenever", "2026-09-18T04:00:00Z"), 0);
+    }
+
+    #[test]
+    fn a_projects_plans_are_the_ones_its_runs_used_never_one_inferred() {
+        // Asked with no plan named, ai-planner answers with whichever plan the checkout has
+        // resolved to most - on the author's machine a finished plan from weeks before - so
+        // Today listed that plan's questions and slices, and never the ones the team's
+        // runs were working through (rule 7).
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::memory().unwrap();
+        let project = store
+            .create_project(crate::NewProject {
+                name: "Widget".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        store
+            .seed_default_team(project.id, &crate::RoleModelDefault::local_floor())
+            .unwrap();
+        store
+            .attach_repo(
+                project.id,
+                crate::model::NewRepo {
+                    main_path: Some(dir.path().to_string_lossy().into_owned()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        // A project ai-team has planned nothing in names none, and falls back to the plan
+        // its checkout resolves to, as the board does.
+        assert!(checkouts(&store).unwrap()[0].plans.is_empty());
+
+        let side = dir.path().join("side");
+        for (prompt, plan, workspace) in [
+            ("first", "csv", dir.path()),
+            ("then", "json", dir.path()),
+            ("aside", "xml", side.as_path()),
+        ] {
+            let run = store
+                .create_run_in(
+                    project.id,
+                    prompt,
+                    crate::RunTrigger::Manual,
+                    Some(workspace),
+                )
+                .unwrap();
+            store.set_run_plan(run.id, plan).unwrap();
+        }
+        // The newest plan in each checkout ai-team has run in, newest first; the plan a
+        // checkout has moved on from is not asked.
+        assert_eq!(checkouts(&store).unwrap()[0].plans, ["xml", "json"]);
+    }
+
+    #[test]
+    fn a_review_waiting_on_you_says_which_review_it_is() {
+        // Today listed the review, and following it opened the run that built it - a page
+        // of agent activity - so reviewing meant finding it again under Review.
+        let mut store = Store::memory().unwrap();
+        let project = store
+            .create_project(crate::NewProject {
+                name: "Widget".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        store
+            .seed_default_team(project.id, &crate::RoleModelDefault::local_floor())
+            .unwrap();
+        let run = store
+            .create_run(project.id, "build it", crate::RunTrigger::Manual)
+            .unwrap();
+        let review = store
+            .open_review(
+                project.id,
+                "PR1: subtract",
+                Some(run.id),
+                None,
+                Some("w/pr1"),
+            )
+            .unwrap();
+
+        let items = from_store(&store).unwrap();
+        let waiting = items.iter().find(|item| item.kind == "review").unwrap();
+        assert_eq!(waiting.review_id, Some(review.id));
+        assert_eq!(waiting.run_id, Some(run.id));
+        // Everything else is not a review, and says so by having none.
+        assert!(items
+            .iter()
+            .filter(|item| item.kind != "review")
+            .all(|item| item.review_id.is_none()));
     }
 
     #[test]

@@ -21,6 +21,7 @@ function stub(
   run: Partial<Omit<RunDetail, "nodes" | "usage">> = {},
   recoverable = false,
   events?: unknown[],
+  status = "running",
 ) {
   const calls: Array<{ path: string; body?: unknown }> = [];
   vi.stubGlobal(
@@ -87,7 +88,7 @@ function stub(
                 role: "orchestrator",
                 provider: "openai",
                 model: "gpt",
-                status: "running",
+                status,
                 attempt: 1,
                 slice_key: null,
                 worktree_path: "/tmp/widget",
@@ -101,7 +102,7 @@ function stub(
                 role: "frontend",
                 provider: "openai",
                 model: "gpt",
-                status: "running",
+                status,
                 attempt: 2,
                 slice_key: "W2",
                 task_key: "T2",
@@ -271,6 +272,31 @@ it("follows live activity and offers one-click return after the reader scrolls a
   });
   fireEvent.scroll(feed);
   await userEvent.click(screen.getByRole("button", { name: "Jump to live activity" }));
+  expect(scrollTo).toHaveBeenLastCalledWith(expect.objectContaining({ top: 1000 }));
+});
+
+it("a finished turn is not called live, and scrolling away offers its end", async () => {
+  // A run that ended hours ago said "following live" beside a pulsing dot, and the way
+  // back from scrolling up was "Jump to live" - to a stream that had stopped.
+  stub({ status: "done" }, false, undefined, "done");
+  const scrollTo = vi.fn();
+  Object.defineProperty(HTMLElement.prototype, "scrollTo", {
+    configurable: true,
+    value: scrollTo,
+  });
+  render(<AgentActivity runs={[{ ...RUN, status: "done" }]} workspace="/tmp/widget" tick={0} />);
+
+  const feed = await screen.findByRole("log", { name: "orchestrator conversation" });
+  expect(screen.queryByText(/following live/)).toBeNull();
+
+  Object.defineProperties(feed, {
+    scrollHeight: { configurable: true, value: 1000 },
+    clientHeight: { configurable: true, value: 200 },
+    scrollTop: { configurable: true, value: 100 },
+  });
+  fireEvent.scroll(feed);
+  expect(screen.queryByRole("button", { name: "Jump to live activity" })).toBeNull();
+  await userEvent.click(screen.getByRole("button", { name: "Jump to the end of this turn" }));
   expect(scrollTo).toHaveBeenLastCalledWith(expect.objectContaining({ top: 1000 }));
 });
 

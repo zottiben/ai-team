@@ -110,49 +110,64 @@ impl PiEvent {
         (!text.trim().is_empty()).then_some(text)
     }
 
-    /// What this turn spent, with the cache subsets taken out of the input total.
-    ///
-    /// The trap rule 12 records, in Pi's spelling: `input` is a total whose `cacheRead`
-    /// and `cacheWrite` are subsets of it, so storing `input` raw charges a cached prefix
-    /// twice and makes every cost comparison wrong in the same direction.
-    pub fn usage(&self) -> Option<Usage> {
-        let usage = self
-            .data
+    /// The usage figures this event carries: on the event itself, or on its message.
+    fn usage_figures(&self) -> Option<&serde_json::Value> {
+        self.data
             .get("usage")
-            .or_else(|| self.data.get("message")?.get("usage"))?;
+            .or_else(|| self.data.get("message")?.get("usage"))
+    }
+
+    /// Every token of the prompt this step sent, cached or not.
+    ///
+    /// The trap rule 12 records. Pi reports `cacheRead` and `cacheWrite` beside `input`,
+    /// not inside it - a Claude step is `input 1, cacheRead 68881, cacheWrite 257,
+    /// output 319, totalTokens 69458`, a ChatGPT one `input 688, cacheRead 49664,
+    /// output 331, totalTokens 50683` - so reading `input` as the prompt says a session
+    /// 69K tokens deep holds one. `totalTokens` is the figure every provider sums alike,
+    /// so the prompt is read from it, and from the parts only when it is missing.
+    fn prompt_tokens(usage: &serde_json::Value) -> i64 {
         let read = |key: &str| {
             usage
                 .get(key)
                 .and_then(serde_json::Value::as_i64)
                 .unwrap_or(0)
         };
+        match read("totalTokens") {
+            total if total > 0 => (total - read("output")).max(0),
+            _ => read("input") + read("cacheRead") + read("cacheWrite"),
+        }
+    }
 
-        let input = read("input");
+    /// What this step spent, with the cached prompt kept apart from the uncached.
+    ///
+    /// Storing the cache inside the input column would charge a cached prefix twice and
+    /// make every cost comparison wrong in the same direction.
+    pub fn usage(&self) -> Option<Usage> {
+        let usage = self.usage_figures()?;
+        let read = |key: &str| {
+            usage
+                .get(key)
+                .and_then(serde_json::Value::as_i64)
+                .unwrap_or(0)
+        };
         let cache_read = read("cacheRead");
         let cache_write = read("cacheWrite");
         Some(Usage {
-            // Clamped at zero rather than subtracted blind: a future Pi that reports the
-            // cache figures outside the total must not turn into a negative token count.
-            tokens_in: (input - cache_read - cache_write).max(0),
+            // Clamped at zero rather than subtracted blind: a total smaller than its own
+            // parts must not turn into a negative token count.
+            tokens_in: (Self::prompt_tokens(usage) - cache_read - cache_write).max(0),
             tokens_out: read("output"),
             cache_read,
             cache_write,
         })
     }
 
-    /// The latest raw provider input total is current context occupancy. Cache reads and
-    /// writes stay included here: unlike spend accounting, the question is how full the
-    /// session is now, not what this step newly consumed.
+    /// How full the session is now: the whole prompt of its latest step, cached or not.
     pub fn context_tokens(&self) -> Option<i64> {
         if self.kind != "turn_end" {
             return None;
         }
-        self.data
-            .get("message")?
-            .get("usage")?
-            .get("input")?
-            .as_i64()
-            .map(|value| value.max(0))
+        Some(Self::prompt_tokens(self.data.get("message")?.get("usage")?))
     }
 
     /// The model this step ran on, for the step summary.
@@ -356,28 +371,70 @@ mod tests {
     }
 
     #[test]
-    fn cache_reads_and_writes_come_out_of_the_input_total() {
-        // Pi's `input` is a total whose cache figures are subsets of it. Storing it raw
-        // charges a cached prefix twice, and every cost comparison is wrong the same way.
+    fn a_claude_steps_cache_figures_sit_beside_its_input() {
+        // A real claude-subscription step, as Pi reported it. The cached prefix is not
+        // inside `input`: reading `input` as the prompt said a seat 69K tokens into its
+        // session held 1, and taking the cache out of it clamped every step's uncached
+        // input to nothing.
         let e = event(
             r#"{"type":"turn_end","message":{"role":"assistant","content":[],
-                "usage":{"input":14068,"output":4,"cacheRead":9000,"cacheWrite":5000}}}"#,
+                "usage":{"input":1,"output":319,"cacheRead":68881,"cacheWrite":257,
+                         "totalTokens":69458}}}"#,
         );
         let usage = e.usage().expect("usage on turn_end");
-        assert_eq!(usage.tokens_in, 68, "uncached input");
-        assert_eq!(usage.tokens_out, 4);
-        assert_eq!(usage.cache_read, 9_000);
-        assert_eq!(usage.cache_write, 5_000);
+        assert_eq!(usage.tokens_in, 1, "uncached input");
+        assert_eq!(usage.tokens_out, 319);
+        assert_eq!(usage.cache_read, 68_881);
+        assert_eq!(usage.cache_write, 257);
+        assert_eq!(e.context_tokens(), Some(69_139));
+    }
+
+    #[test]
+    fn a_chatgpt_steps_cached_prompt_is_counted_once() {
+        // A real openai-codex step: the same shape, so the same reading.
+        let e = event(
+            r#"{"type":"turn_end","message":{"role":"assistant","content":[],
+                "usage":{"input":688,"output":331,"cacheRead":49664,"cacheWrite":0,
+                         "totalTokens":50683}}}"#,
+        );
+        let usage = e.usage().unwrap();
+        assert_eq!(usage.tokens_in, 688);
+        assert_eq!(usage.cache_read, 49_664);
+        assert_eq!(e.context_tokens(), Some(50_352));
+    }
+
+    #[test]
+    fn a_provider_that_counts_the_cache_inside_input_reads_the_same() {
+        // `totalTokens` is the figure every provider sums alike, so the prompt is read
+        // from it: were `input` ever a total with the cache inside, nothing is charged
+        // twice.
+        let e = event(
+            r#"{"type":"turn_end","message":{"role":"assistant","content":[],
+                "usage":{"input":14068,"output":4,"cacheRead":9000,"cacheWrite":5000,
+                         "totalTokens":14072}}}"#,
+        );
+        assert_eq!(e.usage().unwrap().tokens_in, 68);
         assert_eq!(e.context_tokens(), Some(14_068));
     }
 
     #[test]
-    fn usage_that_would_go_negative_clamps_instead_of_wrapping() {
-        // Unsigned subtraction on a stream we do not control: a future Pi that reports
-        // the cache figures outside the total must not underflow into billions.
+    fn without_a_total_the_cache_is_added_to_input_as_pi_reports_it() {
         let e = event(
             r#"{"type":"turn_end","message":{"role":"assistant","content":[],
                 "usage":{"input":10,"output":1,"cacheRead":9000,"cacheWrite":5000}}}"#,
+        );
+        assert_eq!(e.usage().unwrap().tokens_in, 10);
+        assert_eq!(e.context_tokens(), Some(14_010));
+    }
+
+    #[test]
+    fn usage_that_would_go_negative_clamps_instead_of_wrapping() {
+        // Subtraction on a stream we do not control: a total smaller than its parts must
+        // not underflow into billions.
+        let e = event(
+            r#"{"type":"turn_end","message":{"role":"assistant","content":[],
+                "usage":{"input":10,"output":1,"cacheRead":9000,"cacheWrite":5000,
+                         "totalTokens":11}}}"#,
         );
         assert_eq!(e.usage().unwrap().tokens_in, 0);
     }

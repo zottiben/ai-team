@@ -5,10 +5,10 @@
 // they answer to nobody - which is the one thing the pivot gives away and this gives back.
 //
 // `tool_call` fires after `tool_execution_start` and before the tool runs, and it can
-// refuse. That is the whole seam: two rules, applied in one place, ahead of the only four
-// tools that can reach the filesystem or a remote.
+// refuse. That is the whole seam: three rules, applied in one place, ahead of the only four
+// tools that can reach the filesystem, a remote or the plan.
 //
-// Neither rule is a security boundary, and saying so matters more than the code. A model
+// No rule is a security boundary, and saying so matters more than the code. A model
 // determined to escape has `bash`, and `bash` can spell anything. The containment that
 // actually holds is that the worktree is disposable, the branch is a draft, and nothing
 // in the process is authenticated to publish. These stop the ordinary case: an agent
@@ -17,6 +17,7 @@
 
 import { judge } from "./irreversible.ts";
 import { holdOn } from "./lifeline.ts";
+import { judgePlan, PLAN_ENV } from "./plan.ts";
 import { isInside, worktreeRoot } from "./worktree.ts";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { realpathSync } from "node:fs";
@@ -72,8 +73,10 @@ export function decide(
 ): { block: true; reason: string } | undefined {
   if (toolName === "bash") {
     const command = typeof input.command === "string" ? input.command : "";
-    const verdict = judge(command);
-    return verdict.allowed ? undefined : { block: true, reason: verdict.reason };
+    for (const verdict of [judge(command), judgePlan(command, process.env[PLAN_ENV])]) {
+      if (!verdict.allowed) return { block: true, reason: verdict.reason };
+    }
+    return undefined;
   }
 
   const keys = PATH_TOOLS[toolName];

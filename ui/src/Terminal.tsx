@@ -60,8 +60,10 @@ export function TerminalPane({
   return (
     <div className="terminal">
       <div className="main__header">
-        <h2>Terminal</h2>
-        {id !== null && <span className="faint mono">session {id}</span>}
+        <div>
+          <h2>Terminal</h2>
+          {id !== null && <span className="faint mono">session {id}</span>}
+        </div>
         <button
           type="button"
           className="button"

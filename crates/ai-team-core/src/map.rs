@@ -40,6 +40,8 @@ const SKIP: &[&str] = &[
     ".file-sql",
     ".venv",
     "__pycache__",
+    // Finder's folder metadata, which macOS writes wherever it has shown a folder.
+    ".DS_Store",
 ];
 
 /// How deep the walk goes before it stops describing and starts listing.
@@ -422,6 +424,19 @@ mod tests {
             !map.nodes.iter().any(|node| node.path.starts_with("target")),
             "target/ should not be walked"
         );
+        assert_eq!(map.files, 6);
+    }
+
+    #[test]
+    fn finders_folder_metadata_is_not_a_file_nobody_owns() {
+        // macOS writes a `.DS_Store` into every folder Finder has shown. Counted, each is
+        // a file no zone claims, and the checkout reads as less owned than it is.
+        let dir = checkout();
+        for folder in ["", "crates", "ui"] {
+            std::fs::write(dir.path().join(folder).join(".DS_Store"), b"x").unwrap();
+        }
+        let map = repo_map(dir.path(), &owners()).unwrap();
+        assert_eq!(map.unowned, 1);
         assert_eq!(map.files, 6);
     }
 
