@@ -199,6 +199,24 @@ impl Store {
             .optional()?)
     }
 
+    /// The newest maker row a PR has had in any run of its plan: where it stopped and whose
+    /// work it was, for a run that picks the PR up again. Asked before that run opens a row
+    /// of its own for the PR, so the answer is always an earlier run's.
+    pub fn last_turn_on(&self, plan: &str, slice_key: &str) -> Result<Option<NodeRun>> {
+        let id: Option<i64> = self
+            .db()
+            .conn()
+            .query_row(
+                "SELECT n.id FROM node_run n JOIN run r ON r.id = n.run_id
+                  WHERE r.plan_slug = ?1 AND n.slice_key = ?2 AND n.role <> ?3
+                  ORDER BY n.id DESC LIMIT 1",
+                params![plan, slice_key, crate::VERIFIER_ROLE],
+                |row| row.get(0),
+            )
+            .optional()?;
+        id.map(|id| self.node_run(id)).transpose()
+    }
+
     /// The plans a project's work is in: the newest run's plan in each checkout ai-team has
     /// run in, newest first. Asked of ai-team's runs for the reason
     /// [`Store::plan_in_workspace`] is - ai-planner, asked without a plan, answers with

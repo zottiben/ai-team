@@ -307,10 +307,7 @@ async fn build_pr(
         Start::Fresh => {
             let next = already_built(pr).await?;
             if next == pr.crew.len() {
-                return Err(Error::invalid(format!(
-                    "every task of {} is already on its branch, so nothing is left to build",
-                    pr.slice.key
-                )));
+                return check_again(store, pr, rows).await;
             }
             (next, 0, None)
         }
@@ -360,6 +357,56 @@ async fn build_pr(
     let last =
         last.ok_or_else(|| Error::invalid(format!("{} has nothing to build", pr.slice.key)))?;
     judge(store, pr, rows, last, repairs).await
+}
+
+/// A PR built again whose branch already carries every task.
+///
+/// It stopped at its check or after it - rejected out of repairs, interrupted, over a
+/// budget - and may have been fixed by hand since. Refused as having nothing left to build,
+/// such a PR could never be checked again, and a stopped PR is not one to approve (D5). So
+/// it gets what its check would have given it next: the seat whose work it stopped on takes
+/// one turn with the reason, and then the whole PR is checked.
+async fn check_again(store: &mut Store, pr: &Pr<'_>, rows: &mut Rows) -> Result<Attempted> {
+    let last = match pr.rig.plan.as_deref() {
+        Some(plan) => store.last_turn_on(plan, &pr.slice.key)?,
+        None => None,
+    };
+    let owner = last
+        .as_ref()
+        .and_then(|node| {
+            pr.crew.iter().rev().find(|assignment| {
+                Some(assignment.agent_id) == node.agent_id
+                    && assignment.key() == node.task_key.as_deref()
+            })
+        })
+        .or_else(|| pr.crew.last())
+        .ok_or_else(|| Error::invalid("a PR with no tasks has nobody to check it"))?;
+    let reason = last
+        .and_then(|node| node.blocked_reason)
+        .unwrap_or_else(|| format!("{} stopped before it was accepted.", pr.slice.key));
+
+    let before = git::snapshot(pr.worktree).await?;
+    match take_task_turn(
+        store,
+        pr,
+        rows,
+        owner.agent_id,
+        owner.key(),
+        &format!("{} check", pr.slice.key),
+        &check_again_prompt(pr.slice, &reason),
+    )
+    .await?
+    {
+        Turned::Finished(finished) => {
+            let (node, turn) = *finished;
+            // Finding it already fixed is the common case, and it changes nothing: the
+            // check says whether that was right, as it does after any repair.
+            let subject = format!("{}: fix what stopped it", pr.slice.key);
+            keep(store, pr, &node, &before, &subject).await?;
+            judge(store, pr, rows, (node, turn), 0).await
+        }
+        Turned::Stopped(stopped) => Ok(*stopped),
+    }
 }
 
 /// How many of the PR's tasks, from the first, its branch already carries.
@@ -1162,8 +1209,6 @@ fn verify_prompt(slice: &Slice, crew: &[Assignment], base: &str, evidence: &str)
 }
 
 fn repair_prompt(slice: &Slice, owner: &Assignment, reason: &str) -> String {
-    use std::fmt::Write as _;
-
     let mut prompt = format!(
         "Your work on {} was rejected when {} was checked as a whole. Fix it in this \
          worktree.\n\n{reason}\n\n\
@@ -1174,8 +1219,32 @@ fn repair_prompt(slice: &Slice, owner: &Assignment, reason: &str) -> String {
         slice.key
     );
     // For a seat on another account's model, which starts without the conversation.
-    let _ = write!(
-        prompt,
+    prompt.push_str(&pr_reference(slice));
+    prompt
+}
+
+/// What a seat is asked when a stopped PR, every task built, is picked up again.
+fn check_again_prompt(slice: &Slice, reason: &str) -> String {
+    let mut prompt = format!(
+        "{} stopped before it was accepted, with every task already on its branch. Why it \
+         stopped:\n\n{reason}\n\n\
+         It may have been fixed by hand since. Make sure what stopped it is resolved, fixing \
+         it in this worktree if it is not rather than starting over, and run the project's \
+         own checks yourself before you finish. Do not commit: your changes are committed \
+         for you when you are done.\n",
+        slice.key
+    );
+    // A new run, so a new conversation: the turn has only what it is told.
+    prompt.push_str(&pr_reference(slice));
+    prompt
+}
+
+/// The pull request a repair or a second look is about, for a turn that may start without
+/// the conversation that built it.
+fn pr_reference(slice: &Slice) -> String {
+    use std::fmt::Write as _;
+
+    let mut reference = format!(
         "\nFor reference, the pull request is {} - {}",
         slice.key, slice.title
     );
@@ -1184,10 +1253,10 @@ fn repair_prompt(slice: &Slice, owner: &Assignment, reason: &str) -> String {
         .as_deref()
         .filter(|scope| !scope.trim().is_empty())
     {
-        let _ = write!(prompt, ":\n\n{}", scope.trim());
+        let _ = write!(reference, ":\n\n{}", scope.trim());
     }
-    prompt.push('\n');
-    prompt
+    reference.push('\n');
+    reference
 }
 
 /// What a seat is actually asked to do with its task.
@@ -1665,6 +1734,9 @@ settle() {
 }
 task=$(printf '%s\n' "$prompt" | sed -n 's/^Your task is \(T[0-9]*\): .*/\1/p' | head -n 1)
 case "$prompt" in
+  *"stopped before it was accepted, with every task"*)
+    printf '%s' "$prompt" > "$here/recheck-prompt"
+    settle "what stopped it is resolved" ;;
   *"Check the pull request"*)
     if [ -f "$here/verifier-dies" ]; then
       echo 'Error: Unknown provider "llama.cpp". Use --list-models to see available providers/models.' >&2
@@ -1911,7 +1983,11 @@ esac
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn a_pr_whose_branch_has_every_task_says_so_rather_than_building_one_again() {
+    async fn a_pr_whose_branch_has_every_task_is_checked_again_not_refused() {
+        // A PR that stopped at its check - rejected out of repairs, say - has every task
+        // on its branch. Built again it was refused, "nothing is left to build", so a PR
+        // fixed by hand since could never be checked, and a stopped PR is not one to
+        // approve. It gets the turn its check would have given it next, then the check.
         let mut pr = Fixture::new(TWO_SEATS, "true");
         for (file, subject) in [
             ("T1.txt", "PR1 T1: Pick the range"),
@@ -1922,16 +1998,74 @@ esac
             git(pr.repo.path(), &["commit", "-qm", subject]);
         }
 
-        let (built, _) = pr.try_build(0).await;
+        let (attempted, _) = pr.build(0).await;
 
-        let Err(error) = built else {
-            panic!("there was nothing left to build");
-        };
-        assert!(
-            error.to_string().contains("already on its branch"),
-            "{error}"
+        assert_eq!(attempted.rejection, None, "{:?}", attempted.rejection);
+        // No task is built again: one turn, by the seat whose task came last.
+        let makers = pr.makers();
+        assert_eq!(makers.len(), 1, "{makers:?}");
+        assert_eq!(makers[0].role, "backend");
+        assert_eq!(
+            pr.commits(),
+            ["PR1 T1: Pick the range", "PR1 T2: Keep the range"],
+            "a turn that found nothing to fix commits nothing"
         );
-        assert!(pr.makers().is_empty(), "no task was dispatched again");
+        let prompt = std::fs::read_to_string(pr.support.path().join("recheck-prompt")).unwrap();
+        assert!(
+            prompt.contains("Keep the range") || prompt.contains("PR1"),
+            "{prompt}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_pr_checked_again_goes_back_to_the_seat_and_the_reason_it_stopped_on() {
+        let mut pr = Fixture::new(TWO_SEATS, "true");
+        for (file, subject) in [
+            ("T1.txt", "PR1 T1: Pick the range"),
+            ("T2.txt", "PR1 T2: Keep the range"),
+        ] {
+            std::fs::write(pr.repo.path().join(file), "built\n").unwrap();
+            git(pr.repo.path(), &["add", file]);
+            git(pr.repo.path(), &["commit", "-qm", subject]);
+        }
+        // The run that stopped it: the frontend's T1 was the work its check rejected.
+        pr.rig.plan = Some("range".into());
+        let project = pr.store.run(pr.run_id).unwrap().project_id;
+        let earlier = pr
+            .store
+            .create_run(project, "build PR1", crate::RunTrigger::Manual)
+            .unwrap();
+        pr.store.set_run_plan(earlier.id, "range").unwrap();
+        pr.store.set_run_plan(pr.run_id, "range").unwrap();
+        let frontend = pr.crew[0].agent_id;
+        let stopped = pr
+            .store
+            .dispatch_task(
+                earlier.id,
+                frontend,
+                "PR1",
+                Some("T1"),
+                &ModelRegistry::local_only(),
+            )
+            .unwrap();
+        pr.store
+            .fail_node(
+                stopped.id,
+                "gate `npm test` failed: the range forgets its end",
+            )
+            .unwrap();
+
+        let (attempted, _) = pr.build(0).await;
+
+        assert_eq!(attempted.rejection, None, "{:?}", attempted.rejection);
+        // This run's rows: the one turn, the frontend's, on the task that stopped it.
+        let makers = pr.makers();
+        assert_eq!(makers.len(), 1, "{makers:?}");
+        assert_eq!(makers[0].agent_id, Some(frontend));
+        assert_eq!(makers[0].task_key.as_deref(), Some("T1"));
+        let prompt = std::fs::read_to_string(pr.support.path().join("recheck-prompt")).unwrap();
+        assert!(prompt.contains("the range forgets its end"), "{prompt}");
     }
 
     #[cfg(unix)]
