@@ -369,7 +369,8 @@ pub struct Checkout {
     repo: String,
     /// Branches whose PR already has an open review, listed as that review.
     reviewed: std::collections::HashSet<String>,
-    /// The plans to ask, named: never whichever ai-planner would infer for the checkout.
+    /// The plans to ask, named. Empty where ai-team has run nothing with a plan, and only
+    /// then is the checkout's own plan asked for, as the board does.
     plans: Vec<String>,
 }
 
@@ -413,8 +414,18 @@ pub async fn from_plans(checkouts: Vec<Checkout>) -> Vec<Item> {
         plans,
     } in checkouts
     {
-        for plan in plans {
-            let planner = crate::neighbours::Planner::at(&repo).for_plan(plan);
+        // ai-planner's own answer only where ai-team has none: a plan made by hand, in a
+        // checkout the team has not run in yet (rule 7).
+        let named: Vec<Option<String>> = if plans.is_empty() {
+            vec![None]
+        } else {
+            plans.into_iter().map(Some).collect()
+        };
+        for plan in named {
+            let planner = match plan {
+                Some(plan) => crate::neighbours::Planner::at(&repo).for_plan(plan),
+                None => crate::neighbours::Planner::at(&repo),
+            };
             let Ok(questions) = planner.open_questions().await else {
                 continue;
             };
@@ -777,7 +788,8 @@ mod tests {
             )
             .unwrap();
 
-        // A project ai-team has planned nothing in has no plan to ask.
+        // A project ai-team has planned nothing in names none, and falls back to the plan
+        // its checkout resolves to, as the board does.
         assert!(checkouts(&store).unwrap()[0].plans.is_empty());
 
         let side = dir.path().join("side");
