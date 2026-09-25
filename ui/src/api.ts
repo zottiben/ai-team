@@ -789,8 +789,19 @@ export type DoctorReport = {
   needs_setup: boolean;
 };
 
+// The report being read, shared by whoever asks while it is: it is a few seconds of
+// subprocesses, and the window asks twice as it opens - for Setup and the health banner.
+let reading: Promise<DoctorReport> | null = null;
+
 export function doctor(): Promise<DoctorReport> {
-  return api<DoctorReport>("/doctor");
+  if (reading === null) {
+    const read: Promise<DoctorReport> = api<DoctorReport>("/doctor").finally(() => {
+      // Only its own: a write may already have replaced it with a newer one.
+      if (reading === read) reading = null;
+    });
+    reading = read;
+  }
+  return reading;
 }
 
 /** Only the repairs ai-team owns are expressible here (D17). */
@@ -1115,6 +1126,9 @@ export function post<T>(path: string, body: unknown): Promise<T> {
 
 /** One place that writes, so the token and the error shape are decided once. */
 export async function request<T>(path: string, method: string, body?: unknown): Promise<T> {
+  // A write may change what the doctor reports: whoever asks after one is not handed a
+  // report that was read before it.
+  reading = null;
   const current = token();
   const response = await fetch(`/api${path}`, {
     method,
