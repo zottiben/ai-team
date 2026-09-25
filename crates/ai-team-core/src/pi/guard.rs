@@ -1,6 +1,6 @@
 //! Putting the guard extension where Pi can load it.
 //!
-//! The extension is four TypeScript files compiled into the binary, so a `cargo
+//! The extension is five TypeScript files compiled into the binary, so a `cargo
 //! install`ed ai-team carries its own guard rather than depending on a checkout. They are
 //! written under the data directory once per version and passed to Pi with `--extension`.
 //!
@@ -15,6 +15,7 @@ const GUARD: &str = include_str!("assets/guard.ts");
 const WORKTREE: &str = include_str!("assets/worktree.ts");
 const IRREVERSIBLE: &str = include_str!("assets/irreversible.ts");
 const LIFELINE: &str = include_str!("assets/lifeline.ts");
+const PLAN: &str = include_str!("assets/plan.ts");
 
 /// The files that make up the guard, and their contents.
 const FILES: &[(&str, &str)] = &[
@@ -22,6 +23,7 @@ const FILES: &[(&str, &str)] = &[
     ("worktree.ts", WORKTREE),
     ("irreversible.ts", IRREVERSIBLE),
     ("lifeline.ts", LIFELINE),
+    ("plan.ts", PLAN),
 ];
 
 /// Write the guard into `dir` and return the entry point to hand to `--extension`.
@@ -73,6 +75,7 @@ mod tests {
         assert!(guard.contains("./irreversible.ts"), "{guard}");
         assert!(guard.contains("./lifeline.ts"), "{guard}");
         assert!(guard.contains("./worktree.ts"), "{guard}");
+        assert!(guard.contains("./plan.ts"), "{guard}");
     }
 
     #[test]

@@ -154,4 +154,19 @@ describe("irreversible commands", () => {
     lease();
     assert.equal(decide("bash", {}), undefined);
   });
+
+  test("a seat that only reads the plan cannot move its slice through bash", () => {
+    // Its ai-planner tools are an allow-list; `bash` is not, and a frontend seat moved its
+    // own PR to in_review before ai-team had checked it.
+    lease();
+    process.env.AI_TEAM_PLAN = "read";
+    try {
+      const verdict = decide("bash", { command: "aip slice set PR1 in_review" });
+      assert.ok(verdict, "the slice was moved");
+      assert.match(verdict.reason, /^Refused:/);
+      assert.equal(decide("bash", { command: "aip log 'T3 done' --slice PR1" }), undefined);
+    } finally {
+      delete process.env.AI_TEAM_PLAN;
+    }
+  });
 });

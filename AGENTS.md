@@ -204,7 +204,9 @@ because they publish a CLI and not a server.
 
 Which ai-planner tools a seat gets is an allow-list, the same mechanism as rule 10: a
 maker reads the board and records notes, a planning seat shapes it, nobody gets
-`delete_plan`. A maker that can add slices can give itself work.
+`delete_plan`. A maker that can add slices can give itself work. `bash` reaches `aip`
+around that list, so the guard holds a seat's own `aip` calls to the same line
+(`plan.ts`, told by `AI_TEAM_PLAN`): a maker once moved its own PR to `in_review`.
 
 ### 6. Supervision is a pipe, not a protocol
 A turn is a child process and its stdout is NDJSON, so there is no HTTP client, no
