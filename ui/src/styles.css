@@ -2335,7 +2335,7 @@ button.card:hover {
 .review__head {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
-  align-items: start;
+  align-items: baseline;
   gap: var(--space-1) var(--space-4);
 }
 
