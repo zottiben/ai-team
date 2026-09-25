@@ -2157,6 +2157,15 @@ button.card:hover {
   min-width: 0;
 }
 
+/* One line read left to right - how urgent, where, what - rather than three labels spaced
+   across the card. */
+.today-row__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-3);
+}
+
 .today-row__open {
   flex: none;
   color: var(--accent-action-default);
