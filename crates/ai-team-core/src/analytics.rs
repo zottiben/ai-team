@@ -162,6 +162,28 @@ const CHANGE_KEY: &str = "CASE WHEN n.slice_key IS NOT NULL THEN
         COALESCE(r.plan_slug, '') || char(31) || n.slice_key || char(31) || COALESCE(n.task_key, '')
     END";
 
+/// When a later run's verdict accepted the work this row built, or NULL.
+///
+/// A PR that stops part-way takes every row with it, the tasks already built too; the next
+/// run skips those tasks as on the branch (`already_built`), finishes the rest, and the PR
+/// is accepted - so the skipped tasks' commits are what was accepted, and the verdict is a
+/// fact about the PR (rule 8). Derived here rather than written back, because the row's own
+/// verdict is still the truth about its run. Only a row nothing later rebuilt: a task that
+/// failed and was tried again has a later row, and stays the rejected attempt it was.
+const CARRIED_AT: &str = "CASE WHEN n.status IN ('failed','blocked','cancelled')
+            AND n.slice_key IS NOT NULL
+            AND NOT EXISTS (
+                SELECT 1 FROM node_run l JOIN run lr ON lr.id = l.run_id
+                 WHERE l.id > n.id AND l.slice_key = n.slice_key
+                   AND COALESCE(l.task_key, '') = COALESCE(n.task_key, '')
+                   AND COALESCE(lr.plan_slug, '') = COALESCE(r.plan_slug, '')
+                   AND l.role <> 'verifier')
+        THEN (SELECT MIN(a.ended_at) FROM node_run a JOIN run ar ON ar.id = a.run_id
+               WHERE a.id > n.id AND a.slice_key = n.slice_key AND a.status = 'done'
+                 AND COALESCE(ar.plan_slug, '') = COALESCE(r.plan_slug, '')
+                 AND a.role <> 'verifier')
+    END";
+
 /// Path, plan and slice for [`crate::store::WorkspaceScope::node_sql`], all NULL when no
 /// checkout was asked for.
 type Scoped = (Option<String>, Option<String>, Option<String>);
@@ -196,7 +218,8 @@ pub fn rollup_workspace(
     let in_workspace = crate::store::WorkspaceScope::node_sql("n", "r", 2);
     let sql = format!(
         "WITH maker AS (
-             SELECT n.*, r.project_id, {CHANGE_KEY} AS change_key
+             SELECT n.*, r.project_id, {CHANGE_KEY} AS change_key,
+                    {CARRIED_AT} AS carried_at
                FROM node_run n
                JOIN run r ON r.id = n.run_id
               -- A verifier checks; it does not change anything. Including its turns
@@ -216,7 +239,8 @@ pub fn rollup_workspace(
              SELECT {group} AS grp,
                     n.change_key,
                     MIN(n.started_at) AS first_start,
-                    MIN(CASE WHEN n.status = 'done' THEN n.ended_at END) AS accepted_at
+                    MIN(CASE WHEN n.status = 'done' THEN n.ended_at ELSE n.carried_at END)
+                        AS accepted_at
                FROM maker n
                JOIN run r  ON r.id = n.run_id
                JOIN project p ON p.id = r.project_id
@@ -240,9 +264,10 @@ pub fn rollup_workspace(
          )
          SELECT {group} AS grp,
                 COUNT(*),
-                SUM(CASE WHEN n.status = 'done' THEN 1 ELSE 0 END),
-                SUM(CASE WHEN n.status IN ('failed','blocked','cancelled') THEN 1 ELSE 0 END),
-                COUNT(DISTINCT CASE WHEN n.status = 'done' THEN n.change_key END),
+                SUM(n.status = 'done' OR n.carried_at IS NOT NULL),
+                SUM(n.status IN ('failed','blocked','cancelled') AND n.carried_at IS NULL),
+                COUNT(DISTINCT CASE WHEN n.status = 'done' OR n.carried_at IS NOT NULL
+                                    THEN n.change_key END),
                 SUM(n.tokens_in),
                 SUM(n.tokens_out),
                 SUM(n.tokens_cache_read),
@@ -602,6 +627,80 @@ mod tests {
         assert_eq!(backend.input_per_accepted(), Some(100.0));
         // Each task from its own first attempt, not the PR from its first task.
         assert_eq!(backend.cycle_seconds, 1_800);
+    }
+
+    #[test]
+    fn work_a_later_run_accepted_counts_where_it_was_built() {
+        // A PR stops part-way and every row takes the stop - the tasks already built too.
+        // The next run skips those tasks, finishes the rest, and the PR is accepted: the
+        // skipped tasks' commits are what was accepted, but their rows still said failed,
+        // so the seat that built them read 0 of 2 accepted for work that all landed.
+        let (mut store, project, team, first) = seeded();
+        store.set_run_plan(first, "csv").unwrap();
+        let second = store
+            .create_run(project, "carry on", RunTrigger::Manual)
+            .unwrap()
+            .id;
+        store.set_run_plan(second, "csv").unwrap();
+        let backend = seat(&store, team, "backend");
+        let frontend = seat(&store, team, "frontend");
+        let usage = (100, 50, 0, 0);
+        for (run, agent, task, accepted, when) in [
+            // Built, then taken down by the PR stopping at T2.
+            (
+                first,
+                backend,
+                "T1",
+                false,
+                ("2026-09-18T08:00:00Z", "2026-09-18T08:10:00Z"),
+            ),
+            // The attempt that stopped it, and its retry in the next run.
+            (
+                first,
+                frontend,
+                "T2",
+                false,
+                ("2026-09-18T08:10:00Z", "2026-09-18T08:20:00Z"),
+            ),
+            (
+                second,
+                frontend,
+                "T2",
+                true,
+                ("2026-09-18T09:00:00Z", "2026-09-18T09:20:00Z"),
+            ),
+        ] {
+            attempt_task(
+                &mut store,
+                run,
+                agent,
+                ("PR1", Some(task)),
+                accepted,
+                when,
+                usage,
+            );
+        }
+        // A PR nobody finished stays as it stopped.
+        attempt_task(
+            &mut store,
+            second,
+            backend,
+            ("PR2", Some("T1")),
+            false,
+            ("2026-09-18T09:20:00Z", "2026-09-18T09:30:00Z"),
+            usage,
+        );
+
+        let rows = rollup(&store, By::Agent, Some(project)).unwrap();
+        let backend = find(&rows, "backend");
+        assert_eq!((backend.accepted, backend.rejected), (1, 1));
+        assert_eq!(backend.changes_accepted, 1);
+        // From T1's first start to the PR being accepted in the next run.
+        assert_eq!(backend.cycle_seconds, 4_800);
+        // A retry is still a retry: T2 failed once before it landed.
+        let frontend = find(&rows, "frontend");
+        assert_eq!((frontend.accepted, frontend.rejected), (1, 1));
+        assert_eq!(frontend.rework(), Some(2.0));
     }
 
     #[test]

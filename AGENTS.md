@@ -352,7 +352,9 @@ it: a failing gate names its manifest and the zone owning `ui/package.json` gets
 verifier names one with `OWNER: <role>`; otherwise the last task's owner. It is recorded
 on **that seat's** row, because that is the attempt that was rejected. Acceptance is a fact
 about the PR, so every row stays `running` until the verdict and then takes it - a `done`
-row is what analytics counts as accepted.
+row is what analytics counts as accepted. So is a row a PR's stop took down whose task a
+later run found built and whose PR it then got accepted: analytics derives it
+(`CARRIED_AT`), and the row keeps the verdict its own run gave it.
 
 Two rules the loop broke once each. A model's answer is captured from the **stream**
 (`PiEvent::assistant_message`), never by filtering `Note` rows back out of the event
