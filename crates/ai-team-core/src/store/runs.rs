@@ -199,6 +199,30 @@ impl Store {
             .optional()?)
     }
 
+    /// The plans a project's work is in: the newest run's plan in each checkout ai-team has
+    /// run in, newest first. Asked of ai-team's runs for the reason
+    /// [`Store::plan_in_workspace`] is - ai-planner, asked without a plan, answers with
+    /// whichever it has resolved most, which is how Today came to list a finished plan's
+    /// questions instead of the one being built (rule 7).
+    pub fn plans_in_use(&self, project_id: i64) -> Result<Vec<String>> {
+        let mut stmt = self.db().conn().prepare(
+            "SELECT plan_slug FROM run
+              WHERE id IN (SELECT MAX(id) FROM run
+                            WHERE project_id = ?1 AND plan_slug IS NOT NULL
+                            GROUP BY workspace_path)
+              ORDER BY id DESC",
+        )?;
+        let mut plans: Vec<String> = Vec::new();
+        for plan in stmt.query_map(params![project_id], |row| row.get::<_, String>(0))? {
+            let plan = plan?;
+            // Two checkouts on the same plan - a run and its follow-up - ask it once.
+            if !plans.contains(&plan) {
+                plans.push(plan);
+            }
+        }
+        Ok(plans)
+    }
+
     /// A run's rows as seen from one checkout: all of them from a checkout the run started
     /// in, and only the ones that built or checked the PR a PR's worktree holds.
     pub fn nodes_in_workspace(&self, run_id: i64, workspace: &Path) -> Result<Vec<NodeRun>> {

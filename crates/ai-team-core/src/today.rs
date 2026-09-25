@@ -369,6 +369,8 @@ pub struct Checkout {
     repo: String,
     /// Branches whose PR already has an open review, listed as that review.
     reviewed: std::collections::HashSet<String>,
+    /// The plans to ask, named: never whichever ai-planner would infer for the checkout.
+    plans: Vec<String>,
 }
 
 /// Every project with a checkout, as [`from_plans`] needs it.
@@ -388,6 +390,7 @@ pub fn checkouts(store: &Store) -> Result<Vec<Checkout>> {
             .filter_map(|review| review.branch)
             .collect();
         found.push(Checkout {
+            plans: store.plans_in_use(project.id)?,
             slug: project.slug,
             repo,
             reviewed,
@@ -396,36 +399,40 @@ pub fn checkouts(store: &Store) -> Result<Vec<Checkout>> {
     Ok(found)
 }
 
-/// What each project's plan is holding: open questions, and finished or blocked slices.
+/// What the plans each project's work is in are holding: open questions, and finished or
+/// blocked slices.
 ///
-/// Best effort per project: a checkout that has moved, or one with no plan yet, must not
-/// empty the list for every other project.
+/// Best effort per plan: a checkout that has moved, or a plan that cannot be read, must not
+/// empty the list for every other one.
 pub async fn from_plans(checkouts: Vec<Checkout>) -> Vec<Item> {
     let mut items = Vec::new();
     for Checkout {
         slug,
         repo,
         reviewed,
+        plans,
     } in checkouts
     {
-        let planner = crate::neighbours::Planner::at(repo);
-        let Ok(questions) = planner.open_questions().await else {
-            continue;
-        };
-        for question in questions {
-            items.push(from_question(&slug, &question.body, question.asked_at));
-        }
-        // Work an agent finished and left `in_review` is the commonest thing waiting
-        // after a run, and it lives on the plan rather than in ai-team's own tables.
-        for slice in planner.slices().await.unwrap_or_default() {
-            let has_review = slice
-                .branch
-                .as_ref()
-                .is_some_and(|branch| reviewed.contains(branch));
-            if let Some(item) =
-                from_slice(&slug, &slice.key, &slice.title, &slice.status, has_review)
-            {
-                items.push(item);
+        for plan in plans {
+            let planner = crate::neighbours::Planner::at(&repo).for_plan(plan);
+            let Ok(questions) = planner.open_questions().await else {
+                continue;
+            };
+            for question in questions {
+                items.push(from_question(&slug, &question.body, question.asked_at));
+            }
+            // Work an agent finished and left `in_review` is the commonest thing waiting
+            // after a run, and it lives on the plan rather than in ai-team's own tables.
+            for slice in planner.slices().await.unwrap_or_default() {
+                let has_review = slice
+                    .branch
+                    .as_ref()
+                    .is_some_and(|branch| reviewed.contains(branch));
+                if let Some(item) =
+                    from_slice(&slug, &slice.key, &slice.title, &slice.status, has_review)
+                {
+                    items.push(item);
+                }
             }
         }
     }
@@ -741,6 +748,57 @@ mod tests {
     #[test]
     fn a_clock_that_cannot_be_read_does_not_raise_the_alarm() {
         assert_eq!(slipped("whenever", "2026-09-18T04:00:00Z"), 0);
+    }
+
+    #[test]
+    fn a_projects_plans_are_the_ones_its_runs_used_never_one_inferred() {
+        // Asked with no plan named, ai-planner answers with whichever plan the checkout has
+        // resolved to most - on the author's machine a finished plan from weeks before - so
+        // Today listed that plan's questions and slices, and never the ones the team's
+        // runs were working through (rule 7).
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::memory().unwrap();
+        let project = store
+            .create_project(crate::NewProject {
+                name: "Widget".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        store
+            .seed_default_team(project.id, &crate::RoleModelDefault::local_floor())
+            .unwrap();
+        store
+            .attach_repo(
+                project.id,
+                crate::model::NewRepo {
+                    main_path: Some(dir.path().to_string_lossy().into_owned()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        // A project ai-team has planned nothing in has no plan to ask.
+        assert!(checkouts(&store).unwrap()[0].plans.is_empty());
+
+        let side = dir.path().join("side");
+        for (prompt, plan, workspace) in [
+            ("first", "csv", dir.path()),
+            ("then", "json", dir.path()),
+            ("aside", "xml", side.as_path()),
+        ] {
+            let run = store
+                .create_run_in(
+                    project.id,
+                    prompt,
+                    crate::RunTrigger::Manual,
+                    Some(workspace),
+                )
+                .unwrap();
+            store.set_run_plan(run.id, plan).unwrap();
+        }
+        // The newest plan in each checkout ai-team has run in, newest first; the plan a
+        // checkout has moved on from is not asked.
+        assert_eq!(checkouts(&store).unwrap()[0].plans, ["xml", "json"]);
     }
 
     #[test]
