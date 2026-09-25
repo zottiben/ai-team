@@ -93,7 +93,7 @@ export function Review({
   if (open !== null && detail !== null) {
     return (
       <div className="review">
-        <div className="main__header">
+        <div className="main__header review__head">
           <button type="button" className="button" onClick={() => setOpen(null)}>
             Back
           </button>
@@ -162,7 +162,7 @@ export function Review({
           <button
             type="button"
             key={entry.id}
-            className="card"
+            className="card review__entry"
             onClick={() => {
               setOutcome(null);
               setOpen(entry.id);

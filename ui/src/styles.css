@@ -2322,6 +2322,28 @@ button.card:hover {
   min-height: 0;
 }
 
+/* A review's title with where it is beneath it - the branch, and whatever else says so, a
+   PR's state - rather than both ends of one row racing for the width. */
+.review__entry > .card__row {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+}
+
+/* Back, then the title with the same lines beneath it: placed by column, so whatever
+   follows the title lines up under it however many there are. */
+.review__head {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: var(--space-1) var(--space-4);
+}
+
+.review__head > :not(:first-child) {
+  grid-column: 2;
+  justify-self: start;
+}
+
 .review__actions {
   display: flex;
   gap: var(--space-2);

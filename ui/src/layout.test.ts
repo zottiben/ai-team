@@ -74,3 +74,12 @@ it("a seat's access has a colour of its own and no pulse", () => {
   expect(rule('.status[data-access="writes"]')).toMatch(/--status-color:/);
   expect(css).not.toMatch(/data-access[^{]*::before[^{]*\{[^}]*animation/);
 });
+
+// A review's title with its branch beneath, in the list and open. Marked by class and laid
+// out here so markup that adds to either line - a PR's state beside its branch - falls in
+// under the title rather than taking a column of its own.
+it("a review's branch sits under its title", () => {
+  expect(rule(".review__entry > .card__row")).toMatch(/flex-direction:\s*column/);
+  expect(rule(".review__head")).toMatch(/display:\s*grid/);
+  expect(rule(".review__head > :not(:first-child)")).toMatch(/grid-column:\s*2/);
+});

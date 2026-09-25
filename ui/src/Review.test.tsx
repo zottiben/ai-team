@@ -271,3 +271,19 @@ it("opens the review it was handed, as Today hands one over", async () => {
   expect(await screen.findByText("fn two(x: i32) {}")).toBeDefined();
   expect(opened).toEqual([3]);
 });
+
+it("sets a review's branch under its title, in the list and open", async () => {
+  // Title and branch were two ends of one spaced-out row: in the list the branch started
+  // wherever a title ended, and broke mid-name when the title was long; open, the title
+  // sat between Back and the branch. The layout is the stylesheet's (layout.test.ts);
+  // here, that both are marked for it.
+  const user = userEvent.setup();
+  stub();
+  render(<Review tick={0} />);
+
+  const entry = (await screen.findByText("PR1: subtract")).closest("button");
+  expect(entry?.classList.contains("review__entry")).toBe(true);
+  await openReview(user);
+  const heading = await screen.findByRole("heading", { name: "PR1: subtract" });
+  expect(heading.parentElement?.classList.contains("review__head")).toBe(true);
+});
