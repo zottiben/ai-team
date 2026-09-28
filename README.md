@@ -28,7 +28,7 @@ Until the first release is tagged there is nothing to download, so the script fa
 to building from source and needs a Rust toolchain ([rustup.rs](https://rustup.rs)).
 
 ```sh
-ait init      # register this checkout and create a local-only machine profile
+ait init      # register this checkout; choose a provider in Settings (local is optional)
 ait doctor    # paths, provider policy/reachability, and the embedded frontend
 ait ui        # open the window in a browser
 ```

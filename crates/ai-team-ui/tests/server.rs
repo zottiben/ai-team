@@ -10,6 +10,160 @@ use std::net::{SocketAddr, TcpStream};
 
 use ai_team_ui::{ServeOptions, Server, TOKEN_HEADER, TOKEN_QUERY};
 
+#[test]
+fn chats_are_a_first_class_project_collection_not_the_run_list() {
+    let (h, _dir) = Harness::with_store();
+    let response = h.get("/api/chats?project=widget");
+    assert_eq!(response.status, 200);
+    let chats: serde_json::Value = serde_json::from_str(&response.body)
+        .expect("the chat collection must be a JSON API, not the SPA fallback");
+    assert_eq!(
+        chats,
+        serde_json::json!([]),
+        "an existing run is not a chat"
+    );
+}
+
+#[test]
+fn creating_a_chat_validates_repository_membership_before_writing() {
+    let repo = tempfile::tempdir().unwrap();
+    let unrelated = tempfile::tempdir().unwrap();
+    assert!(std::process::Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(repo.path())
+        .status()
+        .unwrap()
+        .success());
+    let (h, _dir) = Harness::with_repo(repo.path());
+    let invalid = serde_json::json!({"project":"widget", "workspace": unrelated.path(), "provider":"openai", "model":"gpt-5", "reasoning":"high"});
+    assert_eq!(h.post("/api/chats", &invalid.to_string()).status, 400);
+    assert_eq!(
+        h.get("/api/chats?project=widget").json(),
+        serde_json::json!([])
+    );
+    let response = h.post(
+        "/api/chats",
+        r#"{"project":"widget","provider":"openai","model":"gpt-5","reasoning":"high"}"#,
+    );
+    assert_eq!(response.status, 200, "{}", response.body);
+    let created = response.json();
+    assert_eq!(
+        created["workspace_path"],
+        repo.path()
+            .canonicalize()
+            .unwrap()
+            .to_string_lossy()
+            .as_ref()
+    );
+    assert_eq!(
+        h.get(&format!("/api/chats/{}", created["id"])).json()["state"],
+        "empty"
+    );
+}
+
+#[test]
+fn chats_keep_their_history_and_commands_scoped_to_the_exact_active_turn() {
+    use ai_team_core::{ModelRegistry, NewChat, NodeStatus, Provider, Reasoning, Store};
+    let (h, dir) = Harness::with_store();
+    let mut store = Store::open(&dir.path().join("team.db")).unwrap();
+    let project = store.find_project("widget").unwrap();
+    let make = || NewChat {
+        project_id: project.id,
+        workspace: dir.path().to_path_buf(),
+        provider: Provider::Local,
+        model: "test-model".into(),
+        reasoning: Reasoning::High,
+    };
+    let first = store.create_chat(make()).unwrap();
+    let other = store.create_chat(make()).unwrap();
+    let receipt = store
+        .begin_chat_turn(
+            first.id,
+            "First message",
+            "first",
+            &ModelRegistry::local_only(),
+        )
+        .unwrap();
+    assert_eq!(
+        h.get_anonymous(&format!("/api/chats/{}", first.id)).status,
+        401
+    );
+    let detail = h.get(&format!("/api/chats/{}", first.id)).json();
+    assert_eq!(detail["state"], "running");
+    assert_eq!(detail["turns"][0]["run"]["prompt"], "First message");
+    assert!(detail["turns"][0]["node"].get("pi_pid").is_none());
+    let target = format!(r#"{{"node_id":{}}}"#, receipt.node_id);
+    assert_eq!(
+        h.post(&format!("/api/chats/{}/stop", other.id), &target)
+            .status,
+        400
+    );
+    assert!(!store.chat(first.id).unwrap().stop_requested);
+    assert_eq!(
+        h.post(&format!("/api/chats/{}/stop", first.id), &target)
+            .status,
+        200
+    );
+    assert_eq!(
+        h.get(&format!("/api/chats/{}", first.id)).json()["state"],
+        "stopping"
+    );
+    assert_eq!(
+        h.get(&format!("/api/chats/{}/events", other.id)).json(),
+        serde_json::json!([])
+    );
+    let events = h.get(&format!("/api/chats/{}/events", first.id)).json();
+    assert_eq!(events[0]["message"], "First message");
+    store
+        .finish_chat_turn(
+            first.id,
+            receipt.node_id,
+            NodeStatus::Cancelled,
+            Some("Stopped by you"),
+        )
+        .unwrap();
+    assert_eq!(
+        h.get(&format!("/api/chats/{}", first.id)).json()["state"],
+        "stopped"
+    );
+    assert_eq!(
+        h.post(&format!("/api/chats/{}/resume", first.id), &target)
+            .status,
+        400
+    );
+    let renamed = h.json_method(
+        "PATCH",
+        &format!("/api/chats/{}", first.id),
+        r#"{"title":"My chat"}"#,
+    );
+    assert_eq!(renamed.status, 200);
+    assert_eq!(renamed.json()["title"], "My chat");
+    assert_eq!(
+        h.json_method(
+            "PATCH",
+            &format!("/api/chats/{}", first.id),
+            r#"{"archived":true}"#
+        )
+        .status,
+        200
+    );
+    assert_eq!(
+        h.get("/api/chats?project=widget")
+            .json()
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        h.get(&format!("/api/chats/{}", first.id)).json()["turns"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
 struct Harness {
     addr: SocketAddr,
     token: String,
@@ -179,10 +333,14 @@ impl Harness {
 
     /// POST with a JSON body, for the routes that change something.
     fn post(&self, path: &str, body: &str) -> Response {
+        self.json_method("POST", path, body)
+    }
+
+    fn json_method(&self, method: &str, path: &str, body: &str) -> Response {
         let mut stream = TcpStream::connect(self.addr).unwrap();
         write!(
             stream,
-            "POST {path} HTTP/1.1\r\nHost: {}\r\n{TOKEN_HEADER}: {}\r\n\
+            "{method} {path} HTTP/1.1\r\nHost: {}\r\n{TOKEN_HEADER}: {}\r\n\
              content-type: application/json\r\ncontent-length: {}\r\n\
              Connection: close\r\n\r\n{body}",
             self.addr,

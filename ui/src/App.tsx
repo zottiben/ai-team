@@ -1,14 +1,14 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Analytics } from "./Analytics";
+import { ChatView } from "./Chat";
 import { Notifications } from "./Notifications";
 import { Projects } from "./Projects";
 import { Roster } from "./Roster";
 import { Schedule } from "./Schedule";
 import { Settings } from "./Settings";
-import { HealthBanner, Setup } from "./Setup";
+import { Setup } from "./Setup";
 import { Today } from "./Today";
-import { UpdateBanner } from "./Update";
 import {
   Workspace,
   WORKSPACE_VIEWS,
@@ -16,461 +16,519 @@ import {
   type WorkspaceView,
 } from "./Workspace";
 import {
-  doctor as doctorReport,
-  health,
+  doctor,
   projects as fetchProjects,
-  run as fetchRun,
   subscribe,
-  worktrees as fetchWorktrees,
-  type Health,
-  type Notification as TeamNotification,
+  worktrees,
   type Project,
   type Worktree,
 } from "./api";
+import { chats as fetchChats, type Chat } from "./chat-api";
 import { apply, followSystem, stored, type Theme } from "./theme";
+import "./chat.css";
 
-/**
- * The shell, and the two levels the window has (D18).
- *
- * The views named here answer questions *across* projects, and none of them takes one -
- * "what should I do now" and "which pairing earns its seat" are not questions about a
- * repository. Selecting a project hands over to [`Workspace`], which owns everything about
- * that one.
- *
- * It used to be a flat list of twelve views each taking a project as a filter, which made
- * every one answer a slightly different question depending on a selection elsewhere, and
- * made the thing somebody actually does - sit in one repository and run a team - no more
- * prominent than the schedule.
- */
-const GLOBAL_VIEWS = {
-  today: "Today",
-  analytics: "Analytics",
-  schedule: "Schedule",
-  projects: "Projects",
-  team: "Default team",
-  settings: "Settings",
-} as const;
+type Page =
+  | "chat"
+  | "projects"
+  | "settings"
+  | "schedule"
+  | "today"
+  | "analytics"
+  | "team"
+  | "tools";
+const LAST_CHAT = "ai-team.last-chat";
 
-type GlobalView = keyof typeof GLOBAL_VIEWS;
-
-/** Where you are: across everything, or inside one project. */
-type Place =
-  | { level: "global"; view: GlobalView }
-  | { level: "project"; slug: string; workspace: string | null; view: WorkspaceView };
+function restored(): { project: string | null; chat: number | null } {
+  try {
+    const value: unknown = JSON.parse(
+      localStorage.getItem(LAST_CHAT) ?? "null",
+    );
+    if (
+      value &&
+      typeof value === "object" &&
+      "project" in value &&
+      "chat" in value &&
+      typeof value.project === "string"
+    ) {
+      return {
+        project: value.project,
+        chat: typeof value.chat === "number" ? value.chat : null,
+      };
+    }
+  } catch {
+    /* An old or unavailable preference must not prevent opening the app. */
+  }
+  return { project: null, chat: null };
+}
 
 export default function App() {
-  const [info, setInfo] = useState<Health | null>(null);
+  const [initial] = useState(restored);
   const [projects, setProjects] = useState<Project[]>([]);
-  const [workspaces, setWorkspaces] = useState<Record<string, Worktree[]>>({});
-  const [place, setPlace] = useState<Place>({ level: "global", view: "today" });
-  const [setupOpen, setSetupOpen] = useState(false);
-  const [overlay, setOverlay] = useState<null | "about">(null);
-  const [theme, setTheme] = useState<Theme>(stored);
-  const [problem, setProblem] = useState<string | null>(null);
-  // Bumped on every server tick, so views re-read without each owning a subscription.
+  const [conversations, setConversations] = useState<Record<string, Chat[]>>(
+    {},
+  );
+  const [projectSlug, setProjectSlug] = useState<string | null>(
+    initial.project,
+  );
+  const [chatId, setChatId] = useState<number | null>(initial.chat);
+  const [page, setPage] = useState<Page>("chat");
   const [tick, setTick] = useState(0);
-  // A run Today asked for, carried until the workspace has taken it.
+  const [theme, setTheme] = useState<Theme>(stored);
+  const [setup, setSetup] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  const [more, setMore] = useState(false);
+  const [filter, setFilter] = useState("");
+  const [trees, setTrees] = useState<Worktree[]>([]);
+  const [workspace, setWorkspace] = useState<string | null>(null);
+  const [tool, setTool] = useState<WorkspaceView>("editor");
   const [openRun, setOpenRun] = useState<number | null>(null);
-  const [firstRun, setFirstRun] = useState<boolean | null>(null);
-  // Where you last were in each project. A command centre you come back to should be where
-  // you left it - resetting to Work every time makes returning feel like starting over.
-  const [lastView, setLastView] = useState<Record<string, WorkspaceView>>({});
-  const [lastWorkspace, setLastWorkspace] = useState<Record<string, string | null>>({});
+  const generation = useRef(0);
+  const checkedRestore = useRef(false);
 
+  const changed = useCallback(() => setTick((value) => value + 1), []);
   const refresh = useCallback(async () => {
+    const request = ++generation.current;
     try {
-      setProjects(await fetchProjects());
+      const list = await fetchProjects();
+      const lists = await Promise.all(
+        list.map(
+          async (project) =>
+            [project.slug, await fetchChats(project.slug)] as const,
+        ),
+      );
+      if (request !== generation.current) return;
+      setProjects(list);
+      setConversations(Object.fromEntries(lists));
+      setProjectSlug((current) =>
+        list.some((project) => project.slug === current)
+          ? current
+          : (list[0]?.slug ?? null),
+      );
       setProblem(null);
     } catch (error: unknown) {
-      setProblem(error instanceof Error ? error.message : String(error));
+      if (request === generation.current)
+        setProblem(error instanceof Error ? error.message : String(error));
     }
   }, []);
 
   useEffect(() => {
-    void health().then(setInfo).catch(() => {});
     void refresh();
-  }, [refresh]);
-
-  const loadWorkspaces = useCallback(async (slug: string) => {
-    try {
-      const found = await fetchWorktrees(slug);
-      setWorkspaces((current) => ({ ...current, [slug]: found }));
-    } catch {
-      // The project still opens. Its surfaces will report the precise checkout error;
-      // the sidebar does not replace the whole window with it.
-      setWorkspaces((current) => ({ ...current, [slug]: [] }));
-    }
-  }, []);
-
+  }, [refresh, tick]);
+  useEffect(() => subscribe(changed), [changed]);
   useEffect(() => {
-    for (const project of projects) {
-      if (workspaces[project.slug] === undefined) void loadWorkspaces(project.slug);
-    }
-  }, [loadWorkspaces, projects, workspaces]);
-
+    let current = true;
+    void doctor()
+      .then((report) => {
+        if (current) setSetup(report.needs_setup);
+      })
+      .catch((error: unknown) => {
+        if (current)
+          setProblem(error instanceof Error ? error.message : String(error));
+      });
+    return () => {
+      current = false;
+    };
+  }, []);
   useEffect(() => {
     apply(theme);
     return followSystem(() => theme);
   }, [theme]);
-
-  // Asked once, on mount. A machine that needs setting up opens on setup rather than on an
-  // empty Today, which is the confusing first impression this replaces (M6-S27).
   useEffect(() => {
-    void doctorReport()
-      .then((report) => {
-        setFirstRun(report.needs_setup);
-        if (report.needs_setup) setSetupOpen(true);
+    if (!projectSlug) return;
+    try {
+      localStorage.setItem(
+        LAST_CHAT,
+        JSON.stringify({ project: projectSlug, chat: chatId }),
+      );
+    } catch {
+      /* Navigation remains usable when storage is disabled. */
+    }
+  }, [projectSlug, chatId]);
+  useEffect(() => {
+    const current = projectSlug ? conversations[projectSlug] : undefined;
+    if (!current || checkedRestore.current) return;
+    checkedRestore.current = true;
+    if (chatId !== null && !current.some((chat) => chat.id === chatId))
+      setChatId(null);
+  }, [conversations, projectSlug, chatId]);
+  useEffect(() => {
+    if (page !== "tools" || !projectSlug) return;
+    let current = true;
+    void worktrees(projectSlug)
+      .then((found) => {
+        if (!current) return;
+        setTrees(found);
+        setWorkspace((path) =>
+          found.some((tree) => tree.path === path)
+            ? path
+            : (found.find((tree) => tree.main)?.path ?? found[0]?.path ?? null),
+        );
       })
-      .catch(() => setFirstRun(false));
-  }, []);
-
-  // One subscription for the whole window: `ait ui` and `ait run` are separate processes
-  // sharing a SQLite file, so the tick says the database changed and each view re-reads
-  // whatever it is showing (M3-S11).
-  useEffect(() => {
-    return subscribe(() => {
-      void refresh();
-      setTick((value) => value + 1);
-    });
-  }, [refresh]);
-
-  // Esc closes what the shell owns. The workspace handles its own, innermost first.
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      if (overlay !== null) setOverlay(null);
-      else if (setupOpen) setSetupOpen(false);
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [overlay, setupOpen]);
-
-  const inside = place.level === "project" ? projects.find((p) => p.slug === place.slug) : undefined;
-  const insideWorkspace =
-    inside === undefined || place.level !== "project"
-      ? undefined
-      : place.workspace === null
-        ? workspaces[inside.slug]?.find((workspace) => workspace.main)
-        : workspaces[inside.slug]?.find((workspace) => workspace.path === place.workspace);
-
-  const openNotification = useCallback(
-    (notification: TeamNotification) => {
-      const project = projects.find((entry) => entry.id === notification.project_id);
-      if (project === undefined) return;
-      if (notification.run_id !== null) setOpenRun(notification.run_id);
-      setLastWorkspace((seen) => ({
-        ...seen,
-        [project.slug]: notification.workspace_path,
-      }));
-      setLastView((seen) => ({ ...seen, [project.slug]: "work" }));
-      setPlace({
-        level: "project",
-        slug: project.slug,
-        workspace: notification.workspace_path,
-        view: "work",
+      .catch((error: unknown) => {
+        if (current)
+          setProblem(error instanceof Error ? error.message : String(error));
       });
-    },
-    [projects],
-  );
+    return () => {
+      current = false;
+    };
+  }, [projectSlug, page]);
 
-  // Worktree state changes much less often than events. Polling `awt` on every event tick
-  // would spawn two processes hundreds of times during a turn, so refresh only the active
-  // repository on a human-scale cadence.
-  useEffect(() => {
-    if (inside === undefined) return undefined;
-    const timer = setInterval(() => void loadWorkspaces(inside.slug), 5000);
-    return () => clearInterval(timer);
-  }, [inside, loadWorkspaces]);
+  const project = projects.find((entry) => entry.slug === projectSlug);
+  const selectedTree = trees.find((tree) => tree.path === workspace);
+  const navigate = (slug: string, id: number | null) => {
+    setProjectSlug(slug);
+    setChatId(id);
+    setPage("chat");
+    setSetup(false);
+  };
+  const newChat = () => {
+    if (projectSlug) navigate(projectSlug, null);
+    else setPage("projects");
+  };
 
   return (
-    <div className="shell">
-      <aside className="sidebar">
-        <div className="sidebar__brand">
-          <h1>ai-team</h1>
-          <span className="sidebar__version">{info?.version ?? ""}</span>
+    <div className="chat-shell">
+      <nav className="app-rail" aria-label="Application">
+        {(
+          [
+            ["chat", "Chats", "chat"],
+            ["projects", "Projects", "folder"],
+            ["schedule", "Schedule", "clock"],
+          ] as const
+        ).map(([target, label, icon]) => (
+          <button
+            key={target}
+            type="button"
+            title={label}
+            aria-label={label}
+            aria-current={!setup && page === target ? "page" : undefined}
+            onClick={() => {
+              setPage(target);
+              setSetup(false);
+            }}
+          >
+            <Icon name={icon} />
+          </button>
+        ))}
+        <button
+          type="button"
+          aria-label="More tools"
+          title="More tools"
+          aria-expanded={more}
+          onClick={() => setMore(!more)}
+        >
+          <Icon name="more" />
+        </button>
+        <div className="app-rail-bottom">
+          <button
+            type="button"
+            aria-label="Setup"
+            title="Setup"
+            onClick={() => setSetup(true)}
+          >
+            <Icon name="help" />
+          </button>
+          <button
+            type="button"
+            title="Settings"
+            aria-label="Settings"
+            aria-current={!setup && page === "settings" ? "page" : undefined}
+            onClick={() => {
+              setPage("settings");
+              setSetup(false);
+            }}
+          >
+            <Icon name="settings" />
+          </button>
         </div>
-
-        {/* Inside a project, its own navigation replaces the global list rather than sitting
-            beside it: two lists of views is two places to look for the same thing. */}
-        {inside === undefined ? (
-          <nav className="sidebar__section" aria-label="Everything">
-            <span className="sidebar__label">Everything</span>
-            {(Object.keys(GLOBAL_VIEWS) as GlobalView[]).map((option) => (
-              <button
-                type="button"
-                key={option}
-                className="nav-item"
-                aria-current={place.level === "global" && place.view === option}
-                onClick={() => setPlace({ level: "global", view: option })}
-              >
-                <span>{GLOBAL_VIEWS[option]}</span>
-              </button>
-            ))}
-          </nav>
-        ) : (
-          <nav className="sidebar__section" aria-label={inside.name}>
+      </nav>
+      <aside className="chat-sidebar">
+        <div className="chat-brand">
+          <strong>ai-team</strong>
+          <Notifications
+            tick={tick}
+            onOpen={(notification) => {
+              const owner = projects.find(
+                (candidate) => candidate.id === notification.project_id,
+              );
+              if (!owner) return;
+              setProjectSlug(owner.slug);
+              setWorkspace(notification.workspace_path);
+              setOpenRun(notification.run_id);
+              setTool("work");
+              setPage("tools");
+              setSetup(false);
+            }}
+          />
+        </div>
+        <button type="button" className="chat-new" onClick={newChat}>
+          <Icon name="edit" />
+          New chat
+        </button>
+        <input
+          className="chat-search"
+          aria-label="Find chats"
+          placeholder="Find a chat…"
+          value={filter}
+          onChange={(event) => setFilter(event.target.value)}
+        />
+        <div
+          className="chat-projects"
+          role="navigation"
+          aria-label="Projects and chats"
+        >
+          <div className="chat-section-heading">
+            <span>Projects</span>
             <button
               type="button"
-              className="nav-item sidebar__back"
-              onClick={() => setPlace({ level: "global", view: "today" })}
+              aria-label="Add project"
+              title="Add project"
+              onClick={() => {
+                setPage("projects");
+                setSetup(false);
+              }}
             >
-              <span>← Everything</span>
+              +
             </button>
-            <span className="sidebar__label">
-              {inside.name}
-              {insideWorkspace !== undefined && (
-                <span className="sidebar__workspace-label mono">
-                  {insideWorkspace.main
-                    ? "main"
-                    : insideWorkspace.branch ?? insideWorkspace.name}
-                </span>
-              )}
-            </span>
-            {WORKSPACE_VIEWS.map((option) => (
+          </div>
+          {projects.map((entry) => (
+            <div className="chat-project" key={entry.id}>
               <button
                 type="button"
-                key={option}
+                className="chat-project-name"
+                aria-current={
+                  page === "chat" &&
+                  entry.slug === projectSlug &&
+                  chatId === null
+                    ? "page"
+                    : undefined
+                }
+                onClick={() => navigate(entry.slug, null)}
+              >
+                <Icon name="folder" />
+                <span>{entry.name}</span>
+              </button>
+              <div
+                className="chat-thread-list"
+                aria-label={`${entry.name} chats`}
+              >
+                {(conversations[entry.slug] ?? [])
+                  .filter((chat) =>
+                    chat.title.toLowerCase().includes(filter.toLowerCase()),
+                  )
+                  .map((chat) => (
+                    <button
+                      type="button"
+                      key={chat.id}
+                      title={chat.title}
+                      aria-current={
+                        page === "chat" &&
+                        projectSlug === entry.slug &&
+                        chatId === chat.id
+                          ? "page"
+                          : undefined
+                      }
+                      onClick={() => navigate(entry.slug, chat.id)}
+                    >
+                      <span>{chat.title}</span>
+                      {chat.active_node_id !== null && (
+                        <span className="chat-pulse" aria-label="Active turn" />
+                      )}
+                    </button>
+                  ))}
+                {conversations[entry.slug]?.length === 0 && (
+                  <span className="faint">No chats yet</span>
+                )}
+              </div>
+            </div>
+          ))}
+          {projects.length === 0 && (
+            <p className="faint">Add a project to start a conversation.</p>
+          )}
+        </div>
+        {more && (
+          <nav className="chat-secondary" aria-label="More tools">
+            {(
+              [
+                ["today", "Today"],
+                ["analytics", "Analytics"],
+                ["team", "Default team"],
+                ["tools", "Project tools"],
+              ] as const
+            ).map(([target, label]) => (
+              <button
+                type="button"
+                key={target}
                 className="nav-item"
-                aria-current={place.level === "project" && place.view === option}
                 onClick={() => {
-                  setLastView((seen) => ({ ...seen, [inside.slug]: option }));
-                  setPlace({
-                    level: "project",
-                    slug: inside.slug,
-                    workspace: place.level === "project" ? place.workspace : null,
-                    view: option,
-                  });
+                  setPage(target);
+                  setSetup(false);
                 }}
               >
-                <span>{workspaceViewName(option)}</span>
+                {label}
               </button>
             ))}
           </nav>
         )}
-
-        <nav className="sidebar__section" aria-label="Projects">
-          <span className="sidebar__label">Projects</span>
-          {projects.map((entry) => {
-            const trees = workspaces[entry.slug];
-            const currentPath =
-              place.level === "project" && place.slug === entry.slug ? place.workspace : undefined;
-            return (
-              <div className="sidebar-project" key={entry.id}>
-                <button
-                  type="button"
-                  className="nav-item sidebar-project__repo"
-                  aria-current={inside?.id === entry.id}
-                  onClick={() => {
-                    const workspace =
-                      lastWorkspace[entry.slug] ?? trees?.find((tree) => tree.main)?.path ?? null;
-                    setPlace({
-                      level: "project",
-                      slug: entry.slug,
-                      workspace,
-                      view: lastView[entry.slug] ?? "overview",
-                    });
-                  }}
-                >
-                  <span>{entry.name}</span>
-                  <span className="nav-item__count">
-                    {entry.open_runs > 0 ? entry.open_runs : ""}
-                  </span>
-                </button>
-                <div className="sidebar-project__workspaces" aria-label={`${entry.name} workspaces`}>
-                  {trees === undefined && <span className="faint">reading checkouts…</span>}
-                  {trees?.map((workspace) => {
-                    const selected =
-                      inside?.id === entry.id &&
-                      (currentPath === workspace.path || (currentPath === null && workspace.main));
-                    return (
-                      <button
-                        type="button"
-                        key={workspace.path}
-                        className="nav-item nav-item--workspace"
-                        aria-current={selected}
-                        title={workspace.path}
-                        onClick={() => {
-                          setLastWorkspace((seen) => ({
-                            ...seen,
-                            [entry.slug]: workspace.path,
-                          }));
-                          setPlace({
-                            level: "project",
-                            slug: entry.slug,
-                            workspace: workspace.path,
-                            view: lastView[entry.slug] ?? "overview",
-                          });
-                        }}
-                      >
-                        <span className="workspace-dot" data-status={workspace.status} />
-                        <span>{workspace.main ? "main" : workspace.branch ?? workspace.name}</span>
-                        {workspace.lease_holder !== null && (
-                          <span className="nav-item__lease" title={workspace.lease_holder}>
-                            {workspace.lease_holder.startsWith("orphaned:") ? "!" : "leased"}
-                          </span>
-                        )}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            );
-          })}
-          {projects.length === 0 && (
-            <span className="faint">None yet - add one from Projects.</span>
-          )}
-        </nav>
-
-        <div className="sidebar__section" style={{ marginTop: "auto" }}>
-          <Notifications tick={tick} onOpen={openNotification} />
-          {/* Visible from every page, because a machine that cannot run anything is worth
-              interrupting whatever somebody is looking at. */}
-          <HealthBanner tick={tick} onOpen={() => setSetupOpen(true)} />
-          {firstRun === true && !setupOpen && (
-            <button type="button" className="nav-item" onClick={() => setSetupOpen(true)}>
-              <span>Finish setting up</span>
+        <div className="chat-sidebar-footer">
+          <span>Powered by Pi</span>
+          {project && (
+            <button
+              className="button"
+              onClick={() => {
+                setPage("tools");
+                setSetup(false);
+              }}
+            >
+              Project tools
             </button>
           )}
-          <UpdateBanner />
-          <button type="button" className="nav-item" onClick={() => setOverlay("about")}>
-            <span>About</span>
-            <span className="kbd">Esc</span>
-          </button>
         </div>
       </aside>
-
-      {/* Setup is a full-window state rather than a view, because it is what you are doing
-          rather than somewhere you are - and it has to be reachable from inside a project
-          as well as from the global list. */}
-      {setupOpen ? (
-        <main className="main">
-          <Setup
-            onReady={() => {
-              setFirstRun(false);
-              setSetupOpen(false);
-              void refresh();
-              setTick((value) => value + 1);
-            }}
-          />
-        </main>
-      ) : inside !== undefined && place.level === "project" ? (
-        insideWorkspace === undefined ? (
+      <div className="chat-main">
+        {problem && (
+          <p className="error chat-notice" role="alert">
+            {problem}
+          </p>
+        )}
+        {setup ? (
           <main className="main">
-            <p className="empty">Reading this repository's workspaces…</p>
+            <Setup
+              onReady={() => {
+                setSetup(false);
+                changed();
+              }}
+            />
           </main>
-        ) : (
-          <Workspace
-            project={inside}
-            workspace={insideWorkspace}
-            view={place.view}
-            tick={tick}
-            openRun={openRun}
-            onOpenedRun={() => setOpenRun(null)}
-            onChanged={() => {
-              void loadWorkspaces(inside.slug);
-              setTick((value) => value + 1);
-            }}
-            onGo={(view) => {
-              setLastView((seen) => ({ ...seen, [inside.slug]: view }));
-              setPlace({
-                level: "project",
-                slug: inside.slug,
-                workspace: place.workspace,
-                view,
-              });
-            }}
-            onTeamStarted={() => setTick((value) => value + 1)}
-          />
-        )
-      ) : (
-        <main className="main">
-          {problem !== null && <p className="error">{problem}</p>}
-
-          {place.level === "global" && place.view === "today" && (
-            <Today
+        ) : page === "chat" ? (
+          project ? (
+            <ChatView
+              key={`${project.slug}:${chatId ?? "new"}`}
+              id={chatId}
+              project={project}
               tick={tick}
-              // Today spans projects, so following an item has to say which one - it enters
-              // that project and opens the run there, rather than rendering a run in a
-              // second place that would drift from the first.
-              onOpenRun={(id, slug) => {
-                setOpenRun(id);
-                const target = slug ?? projects[0]?.slug;
-                if (target === undefined) return;
-                void fetchRun(id)
-                  .then((detail) => {
-                    const workspace =
-                      detail.workspace_path ??
-                      detail.nodes.find((node) => node.worktree_path !== null)?.worktree_path ??
-                      null;
-                    setLastWorkspace((seen) => ({ ...seen, [target]: workspace }));
-                    setPlace({ level: "project", slug: target, workspace, view: "work" });
-                  })
-                  .catch(() => {
-                    setPlace({ level: "project", slug: target, workspace: null, view: "work" });
-                  });
+              onCreated={(id) => {
+                setChatId(id);
+                changed();
               }}
-            />
-          )}
-
-          {place.level === "global" && place.view === "analytics" && <Analytics tick={tick} />}
-
-          {place.level === "global" && place.view === "schedule" && <Schedule tick={tick} />}
-
-          {place.level === "global" && place.view === "projects" && (
-            <Projects
-              onChanged={() => {
-                void refresh();
-                setTick((value) => value + 1);
+              onChanged={changed}
+              onArchived={() => {
+                setChatId(null);
+                changed();
               }}
+              onSettings={() => setPage("settings")}
             />
-          )}
-
-          {place.level === "global" && place.view === "team" && (
-            <Roster onChanged={() => setTick((value) => value + 1)} />
-          )}
-
-          {place.level === "global" && place.view === "settings" && (
-            <Settings
-              theme={theme}
-              onTheme={setTheme}
-              onChanged={() => setTick((value) => value + 1)}
-            />
-          )}
-        </main>
-      )}
-
-      {overlay === "about" && (
-        <div
-          className="scrim"
-          role="presentation"
-          onClick={(event) => event.target === event.currentTarget && setOverlay(null)}
-        >
-          <div className="overlay" role="dialog" aria-modal="true" aria-label="About ai-team">
-            <h2 style={{ margin: 0 }}>ai-team</h2>
-            <p className="muted">
-              A team of agents, working your plan in leased worktrees. This window is a view
-              over the same database the CLI writes - nothing here holds state of its own.
-            </p>
-            <dl className="mono">
-              <dt className="faint">version</dt>
-              <dd>{info?.version ?? "unknown"}</dd>
-              <dt className="faint">frontend</dt>
-              <dd>
-                {info?.bundle_embedded === true
-                  ? `${info.bundle_files} files compiled in`
-                  : "not compiled in"}
-              </dd>
-            </dl>
-            <button
-              type="button"
-              className="button button--primary"
-              onClick={() => setOverlay(null)}
-            >
-              Close
-            </button>
-          </div>
-        </div>
-      )}
+          ) : (
+            <main className="chat-welcome">
+              <h1>What should we build?</h1>
+              <p>Choose a project. Start with one agent.</p>
+              <button
+                className="button button--primary"
+                onClick={() => setPage("projects")}
+              >
+                Add a project
+              </button>
+            </main>
+          )
+        ) : page === "tools" ? (
+          project ? (
+            <>
+              <nav className="project-tool-tabs" aria-label="Project tools">
+                <select
+                  aria-label="Project checkout"
+                  value={workspace ?? ""}
+                  onChange={(event) => setWorkspace(event.target.value)}
+                >
+                  {trees.map((tree) => (
+                    <option key={tree.path} value={tree.path}>
+                      {tree.main ? "main" : (tree.branch ?? tree.name)}
+                    </option>
+                  ))}
+                </select>
+                {WORKSPACE_VIEWS.map((view) => (
+                  <button
+                    className="button"
+                    key={view}
+                    aria-pressed={view === tool}
+                    onClick={() => setTool(view)}
+                  >
+                    {workspaceViewName(view)}
+                  </button>
+                ))}
+              </nav>
+              {selectedTree ? (
+                <Workspace
+                  project={project}
+                  workspace={selectedTree}
+                  view={tool}
+                  tick={tick}
+                  openRun={openRun}
+                  onOpenedRun={() => setOpenRun(null)}
+                  onChanged={changed}
+                  onGo={setTool}
+                  onTeamStarted={changed}
+                />
+              ) : (
+                <p className="empty">Reading project checkouts…</p>
+              )}
+            </>
+          ) : (
+            <p className="empty">Add a project to use its tools.</p>
+          )
+        ) : (
+          <main className="main">
+            {page === "projects" && <Projects onChanged={changed} />}
+            {page === "settings" && (
+              <Settings theme={theme} onTheme={setTheme} onChanged={changed} />
+            )}
+            {page === "schedule" && <Schedule tick={tick} />}
+            {page === "team" && <Roster onChanged={changed} />}
+            {page === "analytics" && <Analytics tick={tick} />}
+            {page === "today" && (
+              <Today
+                tick={tick}
+                onOpenRun={(id, slug) => {
+                  setOpenRun(id);
+                  if (slug) setProjectSlug(slug);
+                  setTool("work");
+                  setPage("tools");
+                }}
+              />
+            )}
+          </main>
+        )}
+      </div>
     </div>
+  );
+}
+
+function Icon({
+  name,
+}: {
+  name: "chat" | "folder" | "clock" | "more" | "help" | "settings" | "edit";
+}) {
+  const paths = {
+    chat: "M4 4h16v12H9l-5 4V4Z",
+    folder: "M3 6h7l2 2h9v12H3V6Z",
+    clock: "M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18M12 7v6l4 2",
+    more: "M5 12h1M11 12h1M17 12h1",
+    help: "M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18M9 9a3 3 0 1 1 5 2c-2 1-2 2-2 3M12 17h.01",
+    settings: "M4 7h16M4 17h16M8 4v6M16 14v6",
+    edit: "M14 4H4v16h16V10M10 14l2-5 6-6 3 3-6 6-5 2Z",
+  };
+  return (
+    <svg
+      width="20"
+      height="20"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d={paths[name]} />
+    </svg>
   );
 }

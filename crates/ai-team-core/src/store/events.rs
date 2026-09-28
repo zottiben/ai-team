@@ -92,6 +92,21 @@ impl Store {
         Ok(rows)
     }
 
+    pub fn chat_events(&self, chat_id: i64, after: i64, limit: i64) -> Result<Vec<Event>> {
+        self.chat(chat_id)?;
+        let mut stmt = self.db().conn().prepare(&format!(
+            "{EVENT_SELECT} WHERE run_id IN (SELECT run_id FROM chat_turn WHERE chat_id = ?1)
+             AND id > ?2 ORDER BY id LIMIT ?3"
+        ))?;
+        let events = stmt
+            .query_map(
+                params![chat_id, after.max(0), limit.clamp(1, 500)],
+                event_from_row,
+            )?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(events)
+    }
+
     pub fn node_events(&self, node_run_id: i64, limit: i64) -> Result<Vec<Event>> {
         let mut stmt = self.db().conn().prepare(&format!(
             "{EVENT_SELECT} WHERE node_run_id = ?1 ORDER BY id LIMIT ?2"

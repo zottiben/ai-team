@@ -11,6 +11,7 @@
 mod api;
 mod assets;
 mod auth;
+mod chats;
 mod error;
 mod health;
 mod state;

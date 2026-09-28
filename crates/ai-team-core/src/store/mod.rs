@@ -6,6 +6,7 @@
 //! inventing three slightly different ideas of what a run is.
 
 mod agents;
+mod chats;
 mod events;
 mod notifications;
 mod projects;

@@ -290,7 +290,7 @@ impl PiProcess {
             .map_err(|e| Error::invalid(format!("waiting for pi: {e}")))?;
         outcome.exit_code = status.code();
         outcome.stderr = stderr_tail.join("\n");
-        outcome.failed |= latest_provider_turn_failed;
+        outcome.failed |= latest_provider_turn_failed || !status.success();
 
         // A turn that never settled is not a turn that succeeded, whatever its exit code:
         // the stream is the record, and a truncated one means the child died mid-turn.
@@ -298,6 +298,30 @@ impl PiProcess {
             outcome.failed = true;
         }
         Ok(outcome)
+    }
+
+    pub(crate) fn pid(&self) -> i64 {
+        i64::from(self.pid)
+    }
+
+    /// Cancellation is complete only after the child is reaped. Escalate a stubborn
+    /// process group so a stopped chat cannot release its checkout while tools still write.
+    pub(crate) async fn terminate(&mut self) -> Result<()> {
+        self.stop();
+        let waited =
+            tokio::time::timeout(std::time::Duration::from_secs(2), self.child.wait()).await;
+        // A child can exit while a tool ignores TERM. Kill remaining group members too.
+        #[cfg(unix)]
+        if let Some(pid) = rustix::process::Pid::from_raw(self.pid) {
+            let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
+        }
+        if let Ok(result) = waited {
+            result?;
+        } else {
+            self.child.start_kill()?;
+            self.child.wait().await?;
+        }
+        Ok(())
     }
 
     /// Stop the turn and everything it started.

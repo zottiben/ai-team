@@ -1,435 +1,274 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
+import { beforeEach, expect, it, vi } from "vitest";
 
 import App from "./App";
+import type { Chat } from "./chat-api";
 
-/** A fetch that answers each API path from a fixture. */
-function stubApi(routes: Record<string, unknown>) {
-  vi.stubGlobal(
-    "fetch",
-    vi.fn((input: string) => {
-      const path = String(input).replace(/^\/api/, "").replace(/\?.*$/, "");
-      const body = routes[path];
-      if (body === undefined) {
-        return Promise.resolve({ ok: false, status: 404, json: async () => ({ error: path }) });
-      }
-      return Promise.resolve({ ok: true, json: async () => body });
-    }),
-  );
-}
+const state = vi.hoisted(() => ({
+  setup: false,
+  fail: false,
+  subscribe: null as (() => void) | null,
+  chats: [] as Chat[],
+}));
+vi.mock("./api", async (original) => ({
+  ...(await original<typeof import("./api")>()),
+  projects: () =>
+    state.fail
+      ? Promise.reject(new Error("Server unreachable"))
+      : Promise.resolve([
+          {
+            id: 1,
+            slug: "demo",
+            name: "Demo project",
+            repo_path: "/demo",
+            team_id: null,
+          },
+          {
+            id: 2,
+            slug: "other",
+            name: "Other project",
+            repo_path: "/other",
+            team_id: null,
+          },
+        ]),
+  doctor: () => Promise.resolve({ needs_setup: state.setup }),
+  subscribe: (callback: () => void) => {
+    state.subscribe = callback;
+    return () => {
+      state.subscribe = null;
+    };
+  },
+  worktrees: () =>
+    Promise.resolve([
+      {
+        name: "main",
+        path: "/demo",
+        main: true,
+        branch: "main",
+        status: "main",
+      },
+      {
+        name: "task",
+        path: "/demo-task",
+        main: false,
+        branch: "feature",
+        status: "linked",
+      },
+    ]),
+}));
+vi.mock("./chat-api", () => ({
+  chats: (slug: string) => Promise.resolve(slug === "demo" ? state.chats : []),
+}));
+vi.mock("./Chat", () => ({
+  ChatView: ({
+    id,
+    project,
+    onCreated,
+  }: {
+    id: number | null;
+    project: { name: string };
+    onCreated: (id: number) => void;
+  }) => (
+    <section>
+      <h1>
+        {project.name} / {id ?? "New chat"}
+      </h1>
+      <button onClick={() => onCreated(99)}>Test creation</button>
+    </section>
+  ),
+}));
+vi.mock("./Notifications", () => ({ Notifications: () => null }));
+vi.mock("./Projects", () => ({ Projects: () => <h1>Register projects</h1> }));
+vi.mock("./Setup", () => ({ Setup: () => <h1>Welcome setup</h1> }));
+vi.mock("./Settings", () => ({
+  Settings: ({ onTheme }: { onTheme: (theme: "light") => void }) => (
+    <section>
+      <h1>Settings content</h1>
+      <button onClick={() => onTheme("light")}>Light</button>
+    </section>
+  ),
+}));
+vi.mock("./Schedule", () => ({ Schedule: () => <h1>Schedule content</h1> }));
+vi.mock("./Roster", () => ({ Roster: () => <h1>Default team</h1> }));
+vi.mock("./Analytics", () => ({ Analytics: () => <h1>Analytics content</h1> }));
+vi.mock("./Today", () => ({ Today: () => <h1>Today content</h1> }));
+vi.mock("./Workspace", () => ({
+  WORKSPACE_VIEWS: ["editor", "terminal", "source"],
+  workspaceViewName: (value: string) => value,
+  Workspace: ({
+    workspace,
+    view,
+  }: {
+    workspace: { path: string };
+    view: string;
+  }) => (
+    <h1>
+      {workspace.path} / {view}
+    </h1>
+  ),
+}));
 
-/** EventSource does not exist in jsdom, and the shell opens one on mount. */
-class FakeEventSource {
-  static last: FakeEventSource | null = null;
-  onmessage: (() => void) | null = null;
-  onerror: (() => void) | null = null;
-  closed = false;
-  constructor() {
-    FakeEventSource.last = this;
-  }
-  close() {
-    this.closed = true;
-  }
+function conversation(id: number, title: string): Chat {
+  return {
+    id,
+    title,
+    project_id: 1,
+    workspace_path: "/demo",
+    provider: "openai",
+    model: "gpt-5",
+    reasoning: "high",
+    active_node_id: null,
+    live_text: "",
+    stop_requested: false,
+    archived: false,
+    rev: 0,
+    created_at: "2026-01-01",
+    updated_at: "2026-01-01",
+  };
 }
 
 beforeEach(() => {
-  vi.stubGlobal("EventSource", FakeEventSource);
-  FakeEventSource.last = null;
-});
-
-afterEach(() => {
-  vi.unstubAllGlobals();
-  document.documentElement.removeAttribute("data-theme");
+  state.setup = false;
+  state.fail = false;
+  state.chats = [
+    conversation(1, "First conversation"),
+    conversation(2, "Second conversation"),
+  ];
   localStorage.clear();
+  document.documentElement.removeAttribute("data-theme");
 });
 
-const HEALTH = { version: "0.1.0", bundle_embedded: true, bundle_files: 3 };
-const READY = {
-  version: "0.1.0",
-  checks: [],
-  severity: "fine",
-  can_run: true,
-  needs_setup: false,
-};
-const WIDGET = {
-  id: 1,
-  slug: "widget",
-  name: "Widget",
-  kind: "repo",
-  status: "active",
-  open_runs: 1,
-};
-
-/** What the overview reads. Entering a project lands there, so every test that opens
- *  one needs these whether or not it is about them. */
-const CHECKOUT = {
-  "/worktrees": [
-    {
-      name: "main",
-      path: "/tmp/widget",
-      status: "main",
-      lease_holder: null,
-      processes: [],
-      branch: "main",
-      main: true,
-    },
-    {
-      name: "1",
-      path: "/tmp/widget-task",
-      status: "in-use",
-      lease_holder: null,
-      processes: [],
-      branch: "feature/task",
-      main: false,
-    },
-  ],
-  "/map": {
-    root: "widget",
-    files: 0,
-    unowned: 0,
-    truncated: false,
-    nodes: [],
-    edges: [],
-    zones: [],
-  },
-  "/roster": { project: "widget", team: "Widget team", seats: [], available: [] },
-  "/models": { models: [], error: null },
-  "/crew": [],
-  "/analytics": [],
-  "/board": { plan: null, slices: [], next_step: null },
-};
-
-/** A machine that is set up, with one project and one run in it. */
-function working(over: Record<string, unknown> = {}) {
-  stubApi({
-    "/health": HEALTH,
-    "/doctor": READY,
-    "/projects": [WIDGET],
-    "/today": [],
-    ...CHECKOUT,
-    "/runs": [
-      {
-        id: 7,
-        project_id: 1,
-        prompt: "add subtract",
-        status: "running",
-        trigger: "manual",
-        created_at: "",
-        started_at: null,
-        ended_at: null,
-      },
-    ],
-    ...over,
+it("opens chat-first with real chats beneath their project, not a run list", async () => {
+  render(<App />);
+  await screen.findByRole("heading", { name: "Demo project / New chat" });
+  const sidebar = screen.getByRole("navigation", {
+    name: "Projects and chats",
   });
-}
+  expect(
+    within(sidebar).getByRole("button", { name: "First conversation" }),
+  ).not.toBeNull();
+  expect(screen.queryByRole("heading", { name: "Today content" })).toBeNull();
+});
 
-it("opens on setup when this machine has not been set up", async () => {
-  // The confusing first impression this replaces: a fresh install opened on an empty Today
-  // with no indication that nothing could run or what to do about it.
-  stubApi({
-    "/health": HEALTH,
-    "/projects": [],
-    "/runs": [],
-    "/today": [],
-    "/doctor": {
-      version: "0.1.0",
-      checks: [
-        {
-          id: "database",
-          label: "Database",
-          severity: "blocking",
-          detail: "not created yet",
-          fix: { by: "itself", action: "create_database", describe: "Create it" },
-        },
-      ],
-      severity: "blocking",
-      can_run: false,
-      needs_setup: true,
-    },
-    "/settings": { profile_path: "/x", providers: [], fallback: [], context: [] },
+it("selects a persisted chat and restores it after reload", async () => {
+  const view = render(<App />);
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Second conversation" }),
+  );
+  await screen.findByRole("heading", { name: "Demo project / 2" });
+  view.unmount();
+  render(<App />);
+  await screen.findByRole("heading", { name: "Demo project / 2" });
+});
+
+it("does not turn a just-created chat back into an empty draft before the list refreshes", async () => {
+  render(<App />);
+  fireEvent.click(await screen.findByRole("button", { name: "Test creation" }));
+  await screen.findByRole("heading", { name: "Demo project / 99" });
+  await act(async () => state.subscribe?.());
+  expect(
+    screen.getByRole("heading", { name: "Demo project / 99" }),
+  ).not.toBeNull();
+});
+
+it("changing project starts a scoped draft and never carries the previous chat id", async () => {
+  render(<App />);
+  fireEvent.click(
+    await screen.findByRole("button", { name: "First conversation" }),
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Other project" }));
+  await screen.findByRole("heading", { name: "Other project / New chat" });
+});
+
+it("discards an invalid restored chat instead of displaying another project's id", async () => {
+  localStorage.setItem(
+    "ai-team.last-chat",
+    JSON.stringify({ project: "other", chat: 1 }),
+  );
+  render(<App />);
+  await screen.findByRole("heading", { name: "Other project / New chat" });
+});
+
+it("new chat stays in the chosen project", async () => {
+  render(<App />);
+  fireEvent.click(
+    await screen.findByRole("button", { name: "First conversation" }),
+  );
+  fireEvent.click(screen.getByRole("button", { name: "New chat" }));
+  await screen.findByRole("heading", { name: "Demo project / New chat" });
+});
+
+it("preserves onboarding, project registration, and Settings entry points", async () => {
+  state.setup = true;
+  render(<App />);
+  await screen.findByRole("heading", { name: "Welcome setup" });
+  fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+  await screen.findByRole("heading", { name: "Settings content" });
+  fireEvent.click(screen.getByRole("button", { name: "Add project" }));
+  await screen.findByRole("heading", { name: "Register projects" });
+});
+
+it("retains project tools with explicit checkout ownership", async () => {
+  render(<App />);
+  fireEvent.click(await screen.findByRole("button", { name: "Project tools" }));
+  await screen.findByRole("heading", { name: "/demo / editor" });
+  fireEvent.change(screen.getByRole("combobox", { name: "Project checkout" }), {
+    target: { value: "/demo-task" },
   });
-  render(<App />);
-  expect(await screen.findByText(/Let's get you set up/)).toBeDefined();
+  fireEvent.click(screen.getByRole("button", { name: "terminal" }));
+  await screen.findByRole("heading", { name: "/demo-task / terminal" });
 });
 
-it("opens on Today, because that is the question you have when you open the window", async () => {
-  working();
+it("keeps schedule and less frequent tools accessible without replacing chat navigation", async () => {
   render(<App />);
-  expect(await screen.findByText(/Nothing is waiting on you/)).toBeDefined();
-  expect(screen.queryByText(/Let's get you set up/)).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Schedule" }));
+  await screen.findByRole("heading", { name: "Schedule content" });
+  fireEvent.click(screen.getByRole("button", { name: "More tools" }));
+  fireEvent.click(screen.getByRole("button", { name: "Today" }));
+  await screen.findByRole("heading", { name: "Today content" });
 });
 
-it("the global views do not take a project", async () => {
-  // D18. Every one of these used to be silently scoped by a selection elsewhere, which made
-  // each answer a slightly different question depending on something off screen.
-  working();
+it("refreshes persisted chat titles on a database tick", async () => {
   render(<App />);
-
-  const everything = within(await screen.findByLabelText("Everything"));
-  for (const name of ["Today", "Analytics", "Schedule", "Projects", "Settings"]) {
-    expect(everything.getByText(name)).toBeDefined();
-  }
-  // And the project-level ones are not offered until you are in a project.
-  for (const name of ["Board", "Review", "Editor", "Terminal", "Source"]) {
-    expect(everything.queryByText(name)).toBeNull();
-  }
+  await screen.findByRole("button", { name: "First conversation" });
+  state.chats = [conversation(1, "Renamed conversation")];
+  await act(async () => state.subscribe?.());
+  await screen.findByRole("button", { name: "Renamed conversation" });
+  expect(
+    screen.queryByRole("button", { name: "First conversation" }),
+  ).toBeNull();
 });
 
-it("selecting a project enters it, and leaves the global views alone", async () => {
-  const user = userEvent.setup();
-  working();
+it("filters chats locally and remembers the theme through existing Settings", async () => {
   render(<App />);
-
-  await user.click(
-    within(await screen.findByRole("navigation", { name: "Projects" })).getByRole("button", {
-      name: /Widget/,
-    }),
-  );
-
-  // Its own navigation replaces the global list: two lists of views is two places to look
-  // for the same thing.
-  const area = within(await screen.findByLabelText("Widget"));
-  expect(area.getByText("Work")).toBeDefined();
-  expect(area.getByText("Board")).toBeDefined();
-  expect(screen.queryByLabelText("Everything")).toBeNull();
-
-  // And the way back out.
-  await user.click(area.getByText("← Everything"));
-  expect(await screen.findByLabelText("Everything")).toBeDefined();
-});
-
-it("shows task worktrees beneath their repository and scopes the whole workspace when selected", async () => {
-  const user = userEvent.setup();
-  working();
-  render(<App />);
-
-  const nested = within(await screen.findByLabelText("Widget workspaces"));
-  await user.click(await nested.findByText("feature/task"));
-  await screen.findByText(/every path, and the seat whose zone claims it/i);
-
-  const calls = vi.mocked(fetch).mock.calls.map(([url]) => String(url));
-  for (const route of ["/api/map?", "/api/board?", "/api/crew?", "/api/runs?"]) {
-    const call = calls.find((url) => url.startsWith(route) && url.includes("widget-task"));
-    expect(call, `${route} was not scoped to the selected checkout`).toBeDefined();
-  }
-});
-
-it("starting from a child checkout launches the team there and stays there", async () => {
-  const user = userEvent.setup();
-  working();
-  render(<App />);
-
-  const nested = within(await screen.findByLabelText("Widget workspaces"));
-  await user.click(await nested.findByText("feature/task"));
-  await user.click(within(screen.getByLabelText("Widget")).getByText("Work"));
-  await user.type(await screen.findByRole("textbox"), "build the whole feature");
-  await user.click(screen.getByRole("button", { name: "Start" }));
-
-  await waitFor(() => {
-    const call = vi
-      .mocked(fetch)
-      .mock.calls.find(
-        ([url, init]) => String(url) === "/api/runs" && init?.method === "POST",
-      );
-    expect(call).toBeDefined();
-    expect(JSON.parse(String(call?.[1]?.body))).toEqual({
-      project: "widget",
-      workspace: "/tmp/widget-task",
-      prompt: "build the whole feature",
-      approval_required: true,
-    });
+  await screen.findByRole("button", { name: "First conversation" });
+  fireEvent.change(screen.getByRole("textbox", { name: "Find chats" }), {
+    target: { value: "Second" },
   });
-  expect(nested.getByText("feature/task").closest("button")?.getAttribute("aria-current")).toBe(
-    "true",
+  expect(
+    screen.queryByRole("button", { name: "First conversation" }),
+  ).toBeNull();
+  expect(
+    screen.getByRole("button", { name: "Second conversation" }),
+  ).not.toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+  fireEvent.click(screen.getByRole("button", { name: "Light" }));
+  await waitFor(() =>
+    expect(document.documentElement.dataset.theme).toBe("light"),
   );
 });
 
-it("entering a project starts on the overview, which says what the repository is", async () => {
-  // What the checkout is comes before what you were last doing to it: the landing view
-  // answers "whose is this, and how much of it can the team be given".
-  const user = userEvent.setup();
-  working();
+it("reports an unreachable server instead of pretending the chat list is empty", async () => {
+  state.fail = true;
   render(<App />);
-
-  await user.click(
-    within(await screen.findByRole("navigation", { name: "Projects" })).getByRole("button", {
-      name: /Widget/,
-    }),
+  expect((await screen.findByRole("alert")).textContent).toContain(
+    "Server unreachable",
   );
-  expect(await screen.findByText(/every path, and the seat whose zone claims it/i)).toBeDefined();
-});
-
-it("Work is one click away, and still lists the runs", async () => {
-  const user = userEvent.setup();
-  working();
-  render(<App />);
-
-  await user.click(
-    within(await screen.findByRole("navigation", { name: "Projects" })).getByRole("button", {
-      name: /Widget/,
-    }),
-  );
-  await user.click(within(screen.getByLabelText("Widget")).getByText("Work"));
-  expect(await screen.findByText("add subtract")).toBeDefined();
-});
-
-it("coming back to a project keeps where you were in it", async () => {
-  const user = userEvent.setup();
-  working({
-    "/board": { plan: null, slices: [], next_step: "Run `aip new` in it." },
-  });
-  render(<App />);
-
-  await user.click(
-    within(await screen.findByRole("navigation", { name: "Projects" })).getByRole("button", {
-      name: /Widget/,
-    }),
-  );
-  await user.click(within(screen.getByLabelText("Widget")).getByText("Board"));
-  await screen.findByText(/aip new/);
-
-  // Out and back in.
-  await user.click(within(screen.getByLabelText("Widget")).getByText("← Everything"));
-  await user.click(
-    within(await screen.findByRole("navigation", { name: "Projects" })).getByRole("button", {
-      name: /Widget/,
-    }),
-  );
-  expect(await screen.findByText(/aip new/)).toBeDefined();
-});
-
-it("following an item from Today enters the project it belongs to", async () => {
-  // Today spans projects, so the id alone is not enough - guessing would open the wrong
-  // workspace, and rendering the run in a second place would drift from the first.
-  const user = userEvent.setup();
-  working({
-    "/today": [
-      {
-        urgency: "failed",
-        kind: "node",
-        title: "backend failed on S1",
-        detail: null,
-        project: "widget",
-        run_id: 7,
-        since: null,
-      },
-    ],
-    "/runs/7": {
-      id: 7,
-      project_id: 1,
-      prompt: "add subtract",
-      status: "failed",
-      trigger: "manual",
-      created_at: "",
-      started_at: null,
-      ended_at: null,
-      nodes: [],
-      usage: { tokens_in: 0, tokens_out: 0, cache_read: 0, cache_write: 0 },
-    },
-    "/runs/7/events": [],
-    "/runs/7/approvals": [],
-  });
-  render(<App />);
-
-  await user.click(await screen.findByText("backend failed on S1"));
-  expect(await screen.findByLabelText("Widget")).toBeDefined();
-  expect(await screen.findByText("Run #7")).toBeDefined();
-});
-
-it("Escape closes the innermost surface first", async () => {
-  const user = userEvent.setup();
-  working();
-  render(<App />);
-
-  await user.click(await screen.findByText("About"));
-  expect(await screen.findByRole("dialog")).toBeDefined();
-
-  await user.keyboard("{Escape}");
-  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-});
-
-it("the theme is remembered, and every colour follows it", async () => {
-  // The switch lives in Settings now; this is about the attribute, which is the whole
-  // mechanism - every surface resolves a token rather than naming a colour.
-  const user = userEvent.setup();
-  working({
-    "/settings": {
-      profile_path: "/x",
-      providers: [],
-      fallback: ["claude", "openai", "zai", "local"],
-      context: [],
-    },
-  });
-
-  const { unmount } = render(<App />);
-  await user.click(await screen.findByText("Settings"));
-  await user.click(await screen.findByText("light"));
-  expect(document.documentElement.dataset.theme).toBe("light");
-
-  unmount();
-  render(<App />);
-  await waitFor(() => expect(document.documentElement.dataset.theme).toBe("light"));
-});
-
-it("re-reads when the server says something changed", async () => {
-  const user = userEvent.setup();
-  working();
-  render(<App />);
-  await user.click(
-    within(await screen.findByRole("navigation", { name: "Projects" })).getByRole("button", {
-      name: /Widget/,
-    }),
-  );
-  // On Work, because the run list is what this is about - the overview is the landing
-  // view but it is not where runs are read.
-  await user.click(within(screen.getByLabelText("Widget")).getByText("Work"));
-  await screen.findByText("add subtract");
-
-  // A run started from the CLI, in another process entirely.
-  working({
-    "/runs": [
-      {
-        id: 7,
-        project_id: 1,
-        prompt: "add subtract",
-        status: "done",
-        trigger: "manual",
-        created_at: "",
-        started_at: null,
-        ended_at: null,
-      },
-      {
-        id: 8,
-        project_id: 1,
-        prompt: "second",
-        status: "running",
-        trigger: "manual",
-        created_at: "",
-        started_at: null,
-        ended_at: null,
-      },
-    ],
-  });
-  FakeEventSource.last?.onmessage?.();
-
-  expect(await screen.findByText("second")).toBeDefined();
-});
-
-it("says so when the server cannot be reached", async () => {
-  // The failure mode worth rendering: the page loaded from the bundle, so the binary is
-  // fine, but the API refused it - which is almost always a stale token after a restart.
-  vi.stubGlobal(
-    "fetch",
-    vi.fn().mockResolvedValue({
-      ok: false,
-      status: 401,
-      json: async () => ({ error: "unauthorized" }),
-    }),
-  );
-
-  render(<App />);
-  // More than one surface says so, which is right: the shell cannot list projects and Today
-  // cannot list anything either, and each reports what it found.
-  expect((await screen.findAllByText("unauthorized")).length).toBeGreaterThan(0);
 });

@@ -39,6 +39,7 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/runs/{id}", get(run))
         .route("/runs/{id}/events", get(run_events))
         .merge(node_routes())
+        .merge(crate::chats::routes())
         .route("/events", get(stream))
         .route("/runs/{id}/approve-plan", axum::routing::post(approve_plan))
         .route("/runs/{id}/approvals", get(approvals))
@@ -163,7 +164,7 @@ struct TreeQuery {
 /// A path sent by the browser is never trusted merely because `/worktrees` returned it
 /// earlier. `Worktrees::resolve` asks git on every request, which accepts linked
 /// worktrees outside the main checkout while refusing an unrelated directory.
-async fn worktree_for(
+pub(crate) async fn worktree_for(
     state: &AppState,
     project: &str,
     node: Option<i64>,
@@ -2983,7 +2984,7 @@ fn default_event_limit() -> i64 {
 /// payloads can carry encrypted reasoning signatures and enormous tool results, neither of
 /// which belong in a browser rendering what the team is doing.
 #[derive(Debug, Serialize)]
-struct ActivityEvent {
+pub(crate) struct ActivityEvent {
     id: i64,
     node_run_id: Option<i64>,
     kind: ai_team_core::EventKind,
@@ -3449,6 +3450,7 @@ async fn read_notification(
 /// this endpoint knowing what every surface renders.
 #[derive(Debug, Serialize)]
 struct Tick {
+    chat_revision: i64,
     latest_event: i64,
     latest_notification: i64,
     open_runs: usize,
@@ -3463,6 +3465,7 @@ async fn stream(
             async move {
                 state.deliver_notifications().await;
                 let tick = state.tick().unwrap_or(Tick {
+                    chat_revision: -1,
                     latest_event: -1,
                     latest_notification: -1,
                     open_runs: 0,
@@ -3534,6 +3537,7 @@ impl AppState {
         let latest_event = store.latest_event_id()?;
         let latest_notification = store.latest_notification_id()?;
         Ok(Tick {
+            chat_revision: store.chat_revision()?,
             latest_event,
             latest_notification,
             open_runs,

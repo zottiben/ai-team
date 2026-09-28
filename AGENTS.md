@@ -90,9 +90,9 @@ forbids some providers outright. Never introduce a metered API key path.
 
 A machine profile (`~/.config/ai-team/machine.toml`) allows or denies each provider and is
 enforced **at dispatch**, not only in the UI picker — a scheduled unattended run must not be
-able to reach a denied provider. The legacy `ait init` creates a local-only default; the
-refactor must make local inference explicit opt-in without changing working OAuth/provider
-flows or existing explicit choices. Its `fallback` array is a total ranking; a denied
+able to reach a denied provider. Fresh profiles make every provider, including local,
+explicit opt-in. Existing profiles and working OAuth/model setup are preserved.
+Its `fallback` array is a total ranking; a denied
 preference uses the first allowed, implemented provider
 and records a Note event. Do not fall back on a transient health failure: that would silently
 send work to a different account. Every child process must also remove inherited metered

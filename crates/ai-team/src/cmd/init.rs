@@ -13,7 +13,7 @@ pub(crate) fn run(args: InitArgs) -> Result<()> {
     let (profile_path, profile_created) = ai_team_core::ensure_machine_profile()?;
     if profile_created {
         println!(
-            "Created {} (local allowed; account providers denied)",
+            "Created {} (providers are opt-in; choose one in Settings)",
             profile_path.display()
         );
     }

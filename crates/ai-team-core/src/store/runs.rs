@@ -721,6 +721,12 @@ impl Store {
     ) -> Result<NodeRun> {
         let at = now();
         self.db_mut().write(|tx| {
+            let mut owners = tx.prepare("SELECT workspace_path FROM chat WHERE active_node_id IS NOT NULL AND active_node_id != ?1")?;
+            let paths = owners.query_map([node_run_id], |row| row.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            if paths.iter().any(|path| crate::same_worktree(path, worktree_path)) {
+                return Err(Error::invalid("a chat turn owns this checkout; wait or select another worktree"));
+            }
+            drop(owners);
             let changed = tx.execute(
                 "UPDATE node_run SET worktree_path = ?2, branch = ?3, lease_id = ?4,
                                      rev = rev + 1, updated_at = ?5
@@ -930,6 +936,21 @@ impl Store {
         self.node_run(node_run_id)
     }
 
+    pub(crate) fn attach_pi_process(&mut self, node_run_id: i64, pid: i64) -> Result<()> {
+        let identity = crate::chat::process_identity(pid);
+        self.db_mut().write(|tx| {
+            tx.execute(
+                "UPDATE node_run SET pi_pid = ?2 WHERE id = ?1",
+                params![node_run_id, pid],
+            )?;
+            tx.execute(
+                "UPDATE chat SET pi_identity = ?2 WHERE active_node_id = ?1",
+                params![node_run_id, identity],
+            )?;
+            Ok(())
+        })
+    }
+
     /// Claim supervision of one running node with a compare-and-swap on its previous
     /// owner. A restarted app passes the dead pid it observed; two windows cannot both
     /// turn that observation into a live continuation.
@@ -1126,7 +1147,7 @@ const NODE_SELECT: &str = "SELECT id, run_id, agent_id, role, provider, model, s
      tokens_in, tokens_out, tokens_cache_read, tokens_cache_write, turns, blocked_reason, \
      started_at, ended_at, rev, created_at, updated_at, context_tokens, session_retired_at, \
      session_resetting_at, pushed_at, pr_url, merge_requested_at, delivery_claim, \
-     delivery_claimed_at, delivery_error, supervisor_pid FROM node_run";
+     delivery_claimed_at, delivery_error, supervisor_pid, pi_pid FROM node_run";
 
 fn node_from_row(r: &Row<'_>) -> rusqlite::Result<NodeRun> {
     Ok(NodeRun {
@@ -1152,6 +1173,7 @@ fn node_from_row(r: &Row<'_>) -> rusqlite::Result<NodeRun> {
         session_retired_at: non_empty(r.get(28)?),
         session_resetting_at: non_empty(r.get(29)?),
         supervisor_pid: r.get(36)?,
+        pi_pid: r.get(37)?,
         context_tokens: r.get(27)?,
         eve_port: r.get(13)?,
         eve_token: non_empty(r.get(14)?),

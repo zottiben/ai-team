@@ -352,6 +352,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn differently_cased_paths_only_share_ownership_on_a_case_insensitive_filesystem() {
+        let dir = tempfile::tempdir().unwrap();
+        let mixed = dir.path().join("ChatCheckout");
+        let folded = dir.path().join("chatcheckout");
+        std::fs::create_dir(&mixed).unwrap();
+        assert_eq!(
+            same_worktree(&mixed.to_string_lossy(), &folded.to_string_lossy()),
+            folded.exists()
+        );
+    }
+
+    #[test]
     fn the_pool_json_shape_is_what_awt_actually_prints() {
         // Captured from `awt status --json` v0.2.0 rather than written from the docs.
         let pool: Pool = serde_json::from_str(

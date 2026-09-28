@@ -392,6 +392,34 @@ impl Seat<'_> {
     }
 }
 
+/// A solo chat uses the same provider mapping, guard and context configuration as seats,
+/// but is not instructed to work on a planner slice or inside a specialist's zone.
+pub(crate) fn conversation_turn(
+    chat: &crate::Chat,
+    node: &crate::NodeRun,
+    support: &Path,
+    sources: &[ContextSource],
+    prompt: String,
+) -> Result<PiTurn> {
+    let worktree = Path::new(&chat.workspace_path);
+    let mut turn = PiTurn::new(worktree, prompt);
+    turn.provider = Some(provider_name(node.provider).into());
+    turn.model = Some(node.model.clone());
+    turn.thinking = Some(thinking(chat.reasoning).into());
+    turn.guard = Some(super::guard::install_at(support)?);
+    turn.mcp_config = write_mcp_config(support, "assistant", worktree, sources, None)?;
+    turn.environment = context_environment(sources);
+    turn.instructions = Some(format!(
+        "You are the Pi coding agent in this ai-team conversation. Work only in the selected \
+         checkout. Answer questions directly; do not invent a plan or require team execution. \
+         When editing code, run the relevant project checks and report their actual results. \
+         Keep changes in the checkout for the person to inspect; do not commit, publish, \
+         create a pull request, or delete working files without their explicit direction.{}",
+        crate::house::section(&crate::house::read_for(worktree, &[]))
+    ));
+    Ok(turn)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
