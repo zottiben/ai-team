@@ -96,6 +96,15 @@ impl Store {
     }
 }
 
+struct Binding {
+    role: String,
+    slice: Option<String>,
+    read_only: Option<bool>,
+    member_access: Option<String>,
+    worktree: Option<String>,
+    lease: Option<String>,
+}
+
 fn scope(
     conn: &Connection,
     chat: i64,
@@ -112,22 +121,47 @@ fn scope(
     let PlanActor::Agent(node) = actor else {
         return Ok((PlanAccess::Human, None));
     };
-    let binding: Option<(String, Option<String>, Option<bool>)> = conn.query_row(
-        "SELECT n.role, n.slice_key, a.read_only FROM chat c
+    let binding = conn.query_row(
+        "SELECT n.role, n.slice_key, a.read_only, m.plan_access, n.worktree_path, s.worktree_path FROM chat c
          JOIN chat_turn t ON t.chat_id = c.id AND t.node_id = c.active_node_id
-         JOIN node_run n ON n.id = t.node_id LEFT JOIN agent a ON a.id = n.agent_id
-         WHERE c.id = ?1 AND n.id = ?2 AND n.status = 'running' AND c.archived = 0 AND c.stop_requested = 0",
-        [chat, node], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-    ).optional()?;
-    let (role, slice, read_only) = binding
-        .ok_or_else(|| Error::invalid("this agent no longer owns an active turn in this chat"))?;
-    let access = match role.as_str() {
-        "assistant" | "orchestrator" | "planner" => PlanAccess::Planner,
-        "verifier" | "reviewer" => PlanAccess::Reader,
-        _ if read_only == Some(true) => PlanAccess::Reader,
-        _ => PlanAccess::Maker,
+         JOIN run r ON r.id = t.run_id
+         JOIN node_run n ON n.run_id = t.run_id LEFT JOIN agent a ON a.id = n.agent_id
+         LEFT JOIN chat_team_run tr ON tr.run_id = t.run_id
+         LEFT JOIN chat_team_node m ON m.node_id = n.id AND m.run_id = tr.run_id
+         LEFT JOIN chat_build_slice s ON s.run_id = tr.run_id AND s.slice_key = n.slice_key AND s.lease_state = 'leased'
+         WHERE c.id = ?1 AND n.id = ?2 AND n.status = 'running' AND c.archived = 0 AND c.stop_requested = 0
+           AND r.status = 'running'
+           AND ((tr.run_id IS NULL AND n.id = t.node_id)
+             OR (tr.chat_id = c.id AND tr.control_node_id = t.node_id AND m.plan_access IS NOT NULL
+                 AND tr.phase IN ('grounding', 'planning', 'building')
+                 AND (m.plan_access != 'planner' OR tr.phase != 'building')
+                 AND (m.plan_access NOT IN ('maker', 'reader') OR (tr.phase = 'building'
+                     AND s.worktree_path IS NOT NULL AND n.worktree_path IS NOT NULL))))",
+        [chat, node], |row| Ok(Binding { role: row.get(0)?, slice: row.get(1)?, read_only: row.get(2)?, member_access: row.get(3)?, worktree: row.get(4)?, lease: row.get(5)? }),
+    ).optional()?.ok_or_else(|| Error::invalid("this agent no longer owns an active turn in this chat"))?;
+    let access = if let Some(access) = &binding.member_access {
+        PlanAccess::from_member(access)?
+    } else {
+        match binding.role.as_str() {
+            "assistant" | "orchestrator" | "planner" => PlanAccess::Planner,
+            "verifier" | "reviewer" => PlanAccess::Reader,
+            _ if binding.read_only == Some(true) => PlanAccess::Reader,
+            _ => PlanAccess::Maker,
+        }
     };
-    Ok((access, slice))
+    if binding.member_access.is_some()
+        && matches!(access, PlanAccess::Maker | PlanAccess::Reader)
+        && !binding
+            .worktree
+            .as_deref()
+            .zip(binding.lease.as_deref())
+            .is_some_and(|(worktree, lease)| crate::same_worktree(worktree, lease))
+    {
+        return Err(Error::invalid(
+            "this agent is not attached to its assigned lease",
+        ));
+    }
+    Ok((access, binding.slice))
 }
 
 fn authorize(access: PlanAccess, slice: Option<&str>, action: &PlanAction) -> Result<()> {

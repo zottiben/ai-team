@@ -73,6 +73,26 @@ macro_rules! sql_enum {
 }
 
 sql_enum! {
+    #[derive(Default)]
+    ChatMode {
+        #[default]
+        Single => "single",
+        Team => "team",
+    }
+}
+
+sql_enum! {
+    ChatTeamPhase {
+        Grounding => "grounding",
+        Planning => "planning",
+        AwaitingApproval => "awaiting_approval",
+        Building => "building",
+        Blocked => "blocked",
+        Finished => "finished",
+    }
+}
+
+sql_enum! {
     /// What kind of container this project is (D6). A project is not a repo: a triage
     /// session across four services and a one-file chore are both projects.
     ProjectKind {

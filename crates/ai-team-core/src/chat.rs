@@ -1,4 +1,7 @@
-//! Durable solo conversations. A chat owns its checkout and addresses, not a team's latest run.
+//! Durable conversations. A chat owns its checkout and addresses, not a team's latest run.
+
+mod team;
+pub use team::{ChatTeamMember, ChatTeamRun};
 
 use std::path::{Path, PathBuf};
 
@@ -17,6 +20,8 @@ pub struct Chat {
     pub provider: Provider,
     pub model: String,
     pub reasoning: Reasoning,
+    #[serde(default)]
+    pub mode: crate::ChatMode,
     pub active_node_id: Option<i64>,
     pub live_text: String,
     #[serde(skip)]
@@ -43,6 +48,8 @@ pub struct NewChat {
 pub struct ChatTurn {
     pub run: Run,
     pub node: NodeRun,
+    pub team: Option<ChatTeamRun>,
+    pub members: Vec<ChatTeamMember>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -112,6 +119,14 @@ impl Chat {
 /// Resume a durable, already-claimed turn. No leasing, committing or returning a checkout.
 pub async fn drive_chat(db: &Path, chat_id: i64, node_id: i64, recovering: bool) -> Result<()> {
     let mut store = Store::open(db)?;
+    if store
+        .chat_team_run(store.node_run(node_id)?.run_id)?
+        .is_some()
+    {
+        return Err(Error::invalid(
+            "a team execution needs its team controller, not the solo driver",
+        ));
+    }
     let result = drive(&mut store, chat_id, node_id, recovering).await;
     if let Err(error) = &result {
         if let Err(cleanup) = store.fail_chat_worker(chat_id, node_id, &error.to_string()) {

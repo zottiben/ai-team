@@ -655,6 +655,7 @@ impl Store {
                 ],
             )?;
             let node_id = tx.last_insert_rowid();
+            super::chat_teams::register_member(tx, run_id, node_id, &agent, slice_key)?;
             if let Some(summary) = resolution.notice() {
                 let payload = serde_json::to_string(&serde_json::json!({
                     "requested": {
@@ -719,9 +720,23 @@ impl Store {
         branch: Option<&str>,
         lease_id: Option<&str>,
     ) -> Result<NodeRun> {
+        let canonical = self
+            .chat_team_run(self.node_run(node_run_id)?.run_id)?
+            .map(|_| {
+                std::fs::canonicalize(worktree_path).map(|path| path.to_string_lossy().into_owned())
+            })
+            .transpose()?;
+        let worktree_path = canonical.as_deref().unwrap_or(worktree_path);
         let at = now();
         self.db_mut().write(|tx| {
-            let mut owners = tx.prepare("SELECT workspace_path FROM chat WHERE active_node_id IS NOT NULL AND active_node_id != ?1")?;
+            let mut owners = tx.prepare(
+                "SELECT c.workspace_path FROM chat c WHERE c.active_node_id IS NOT NULL AND c.active_node_id != ?1
+                 AND NOT EXISTS(SELECT 1 FROM chat_team_run tr JOIN chat_team_node m ON m.run_id = tr.run_id
+                   JOIN node_run n ON n.id = m.node_id AND n.run_id = tr.run_id
+                   WHERE tr.chat_id = c.id AND tr.control_node_id = c.active_node_id AND m.node_id = ?1
+                     AND m.plan_access IN ('coordinator', 'planner') AND n.status IN ('queued', 'running')
+                     AND tr.phase IN ('grounding', 'planning', 'building') AND c.stop_requested = 0)"
+            )?;
             let paths = owners.query_map([node_run_id], |row| row.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
             if paths.iter().any(|path| crate::same_worktree(path, worktree_path)) {
                 return Err(Error::invalid("a chat turn owns this checkout; wait or select another worktree"));
@@ -945,6 +960,10 @@ impl Store {
             )?;
             tx.execute(
                 "UPDATE chat SET pi_identity = ?2 WHERE active_node_id = ?1",
+                params![node_run_id, identity],
+            )?;
+            tx.execute(
+                "UPDATE chat_team_node SET pi_identity = ?2 WHERE node_id = ?1",
                 params![node_run_id, identity],
             )?;
             Ok(())

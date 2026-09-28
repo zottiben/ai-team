@@ -21,6 +21,7 @@ pub enum PlanActor {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlanAccess {
+    Coordinator,
     Reader,
     Maker,
     Planner,
@@ -28,8 +29,43 @@ pub enum PlanAccess {
 }
 
 impl PlanAccess {
+    pub(crate) fn for_team_agent(agent: &crate::Agent) -> Self {
+        match agent.role.as_str() {
+            crate::ROOT_ROLE => Self::Coordinator,
+            "planner" => Self::Planner,
+            "verifier" | "reviewer" => Self::Reader,
+            _ if agent.read_only => Self::Reader,
+            _ => Self::Maker,
+        }
+    }
+
+    pub(crate) fn member_name(self) -> crate::Result<&'static str> {
+        match self {
+            Self::Coordinator => Ok("coordinator"),
+            Self::Reader => Ok("reader"),
+            Self::Maker => Ok("maker"),
+            Self::Planner => Ok("planner"),
+            Self::Human => Err(crate::Error::invalid(
+                "an agent cannot inherit human permissions",
+            )),
+        }
+    }
+
+    pub(crate) fn from_member(value: &str) -> crate::Result<Self> {
+        match value {
+            "coordinator" => Ok(Self::Coordinator),
+            "reader" => Ok(Self::Reader),
+            "maker" => Ok(Self::Maker),
+            "planner" => Ok(Self::Planner),
+            _ => Err(crate::Error::invalid(
+                "invalid team member planning permissions",
+            )),
+        }
+    }
+
     pub fn tools(self) -> &'static [&'static str] {
         match self {
+            Self::Coordinator => &["get_plan", "open_question", "append_log"],
             Self::Reader => &["get_plan"],
             Self::Maker => &[
                 "get_plan",

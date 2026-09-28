@@ -45,7 +45,7 @@ mod util;
 mod workflow;
 
 pub use analytics::{rollup, rollup_workspace, By, Row};
-pub use chat::{drive_chat, Chat, ChatSubmission, ChatTurn, NewChat};
+pub use chat::{drive_chat, Chat, ChatSubmission, ChatTeamMember, ChatTeamRun, ChatTurn, NewChat};
 pub mod planning;
 pub use context::{figma_links, parse_url, Source, CLICKUP_READ_TOOLS, FIGMA_READ_TOOLS};
 pub use crew::{of_project as crew_of, of_workspace as crew_of_workspace, Doing, Member};
@@ -73,12 +73,12 @@ pub use machine::{
 };
 pub use map::{repo_map, MapEdge, MapNode, MapZone, Owner, RepoMap};
 pub use model::{
-    Agent, CommentStatus, DeliveryAction, DeliveryPolicy, DeliverySettings, DiffSide, Event,
-    EventKind, Guardrails, NewAgent, NewComment, NewEvent, NewNotification, NewProject,
-    NewReminder, NewRepo, NodeRun, NodeStatus, Notification, OnFailure, Project, ProjectKind,
-    ProjectRepo, ProjectSource, ProjectStatus, Provider, Reasoning, Recur, Reminder, ReminderKind,
-    ReminderStatus, RemoteDeliveryStatus, Review, ReviewComment, ReviewStatus, Run, RunStatus,
-    RunTrigger, Team, ToolEffect, ToolPolicy, Usage,
+    Agent, ChatMode, ChatTeamPhase, CommentStatus, DeliveryAction, DeliveryPolicy,
+    DeliverySettings, DiffSide, Event, EventKind, Guardrails, NewAgent, NewComment, NewEvent,
+    NewNotification, NewProject, NewReminder, NewRepo, NodeRun, NodeStatus, Notification,
+    OnFailure, Project, ProjectKind, ProjectRepo, ProjectSource, ProjectStatus, Provider,
+    Reasoning, Recur, Reminder, ReminderKind, ReminderStatus, RemoteDeliveryStatus, Review,
+    ReviewComment, ReviewStatus, Run, RunStatus, RunTrigger, Team, ToolEffect, ToolPolicy, Usage,
 };
 pub use neighbours::{
     apply_patch_cached, branches, checkout, commit_staged, current_branch, file_sql_available,
