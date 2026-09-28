@@ -7,6 +7,7 @@ import {
 } from "react";
 
 import { BoardMarkdown } from "./BoardMarkdown";
+import { ChatPlanning } from "./ChatPlan";
 import { models, type ModelChoice, type Project, type RunEvent } from "./api";
 import {
   archiveChat,
@@ -411,6 +412,7 @@ export function ChatView({
                 </p>
               </section>
             </div>
+            {detail && <ChatPlanning key={detail.id} chatId={detail.id} tick={tick} archived={detail.archived} onChanged={onChanged} />}
             <section className="chat-overview-card">
               <h3>Turns</h3>
               {!detail?.turns.length ? (

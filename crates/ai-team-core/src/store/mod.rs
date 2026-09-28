@@ -9,6 +9,7 @@ mod agents;
 mod chats;
 mod events;
 mod notifications;
+mod planning;
 mod projects;
 mod reminders;
 mod reviews;

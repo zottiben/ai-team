@@ -46,6 +46,7 @@ mod workflow;
 
 pub use analytics::{rollup, rollup_workspace, By, Row};
 pub use chat::{drive_chat, Chat, ChatSubmission, ChatTurn, NewChat};
+pub mod planning;
 pub use context::{figma_links, parse_url, Source, CLICKUP_READ_TOOLS, FIGMA_READ_TOOLS};
 pub use crew::{of_project as crew_of, of_workspace as crew_of_workspace, Doing, Member};
 pub use daemon::{once as tick_once, serve as serve_schedule};

@@ -1,0 +1,115 @@
+.chat-planning {
+  margin-block: 20px;
+}
+.plan-controls {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+.plan-controls:disabled {
+  opacity: 0.75;
+}
+.plan-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-block: 16px 10px;
+}
+.plan-heading h3,
+.plan-heading h4,
+.plan-heading h5 {
+  margin: 0;
+}
+.plan-heading h4 {
+  font-size: var(--text-md);
+}
+.plan-heading h5 {
+  font-size: var(--text-sm);
+}
+.plan-form {
+  display: grid;
+  gap: 12px;
+  margin-block: 16px;
+  max-width: 780px;
+}
+.plan-form label,
+.plan-status label,
+.plan-heading label {
+  display: grid;
+  gap: 6px;
+  font-size: var(--text-sm);
+  color: var(--text-primary-muted);
+}
+.plan-form input,
+.plan-form textarea,
+.plan-status input,
+.plan-status select,
+.plan-heading select {
+  border: 1px solid var(--border-subtle-default);
+  border-radius: 6px;
+  padding: 8px 10px;
+  background: var(--surface-canvas-default);
+  color: var(--text-primary-default);
+  font: inherit;
+  min-width: 0;
+}
+.plan-form textarea {
+  resize: vertical;
+}
+.plan-form input:focus-visible,
+.plan-form textarea:focus-visible,
+.plan-status input:focus-visible,
+.plan-status select:focus-visible,
+.plan-heading select:focus-visible {
+  outline: 2px solid var(--border-focus-default);
+  outline-offset: 2px;
+}
+.plan-actions,
+.plan-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 10px;
+}
+.plan-status {
+  margin-top: 12px;
+}
+.plan-item {
+  border: 1px solid var(--border-subtle-default);
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin-block: 12px;
+  overflow-wrap: anywhere;
+}
+.plan-item .plan-heading {
+  margin-top: 0;
+}
+.plan-progress {
+  display: grid;
+  gap: 7px;
+  margin-block: 16px;
+}
+.plan-progress progress {
+  width: 100%;
+  height: 7px;
+  accent-color: var(--status-running-default);
+}
+.chat-planning details {
+  margin-block: 12px;
+}
+.chat-planning summary {
+  color: var(--text-primary-muted);
+  cursor: pointer;
+  font-size: var(--text-sm);
+}
+.plan-log {
+  list-style: none;
+  padding: 0;
+}
+.plan-log li {
+  padding-block: 8px;
+  border-bottom: 1px solid var(--border-subtle-default);
+}

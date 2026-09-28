@@ -41,7 +41,9 @@ rustix = { version = "1", features = ["process"] }
 # `bundled` on purpose: the whole point of the install story is a Rust toolchain and
 # nothing else, and a system libsqlite3 of unknown vintage is exactly the kind of
 # per-machine difference that produces a bug report nobody can reproduce.
-rusqlite = { version = "0.40", features = ["bundled"] }
+# Match the pinned planner engine: Cargo permits only one libsqlite3-sys links owner.
+rusqlite = { version = "0.37", features = ["bundled"] }
+ai-planner-core = { git = "https://github.com/zottiben/ai-planner", rev = "de4902eddd0632692dd3678c4bfc556aabcb238e", default-features = false }
 time = { version = "0.3", features = ["formatting", "parsing", "macros"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "signal"] }
 

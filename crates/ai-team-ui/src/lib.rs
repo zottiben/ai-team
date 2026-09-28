@@ -11,9 +11,11 @@
 mod api;
 mod assets;
 mod auth;
+mod chat_plans;
 mod chats;
 mod error;
 mod health;
+pub mod plan_mcp;
 mod state;
 
 use std::net::{Ipv4Addr, SocketAddr};

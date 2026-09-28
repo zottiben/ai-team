@@ -164,6 +164,58 @@ fn chats_keep_their_history_and_commands_scoped_to_the_exact_active_turn() {
     );
 }
 
+#[test]
+fn a_chat_plan_is_native_scoped_and_revision_checked() {
+    let (h, dir) = Harness::with_store();
+    let mut store = ai_team_core::Store::open(&dir.path().join("team.db")).unwrap();
+    let project = store.find_project("widget").unwrap();
+    let chat = store
+        .create_chat(ai_team_core::NewChat {
+            project_id: project.id,
+            workspace: dir.path().into(),
+            provider: ai_team_core::Provider::Local,
+            model: "fixture".into(),
+            reasoning: ai_team_core::Reasoning::High,
+        })
+        .unwrap();
+    let route = format!("/api/chats/{}/plan", chat.id);
+    assert_eq!(h.get_anonymous(&route).status, 401);
+    let empty = h.get(&route).json();
+    assert_eq!(empty["chat_id"], chat.id);
+    assert!(empty["bundle"].is_null());
+    assert!(!store.planning_path().unwrap().exists());
+    let created = h.post(
+        &route,
+        r#"{"action":"create_plan","expect_revision":0,"title":"Scoped plan"}"#,
+    );
+    assert_eq!(created.status, 200, "{}", created.body);
+    let snapshot = created.json();
+    let question = serde_json::json!({"action":"open_question","expect_revision": snapshot["revision"], "body":"Which colour?"}).to_string();
+    let asked = h.post(&route, &question);
+    assert_eq!(asked.status, 200, "{}", asked.body);
+    assert_eq!(
+        h.post(&route, &question).status,
+        400,
+        "a stale repeat must not duplicate a question"
+    );
+    let asked = asked.json();
+    let answer = serde_json::json!({"action":"answer_question","expect_revision": asked["revision"],
+        "question_id": asked["bundle"]["questions"][0]["id"], "answer":"Use the existing theme"});
+    assert_eq!(h.post(&route, &answer.to_string()).status, 200);
+    assert_eq!(
+        h.get(&route).json()["bundle"]["questions"][0]["answer"],
+        "Use the existing theme"
+    );
+    assert_eq!(
+        h.post(
+            &route,
+            r#"{"action":"create_plan","expect_revision":0,"title":"Forged","plan_id":999}"#
+        )
+        .status,
+        422
+    );
+}
+
 struct Harness {
     addr: SocketAddr,
     token: String,

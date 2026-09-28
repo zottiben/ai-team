@@ -83,6 +83,18 @@ impl Harness {
         executable(&bin.join("pi"), include_str!("fixtures/chat-pi.sh"));
         git(&repo, &["init", "-q"]);
         std::fs::write(repo.join("README.md"), "fixture\n").unwrap();
+        std::fs::write(
+            repo.join(".mcp.json"),
+            serde_json::json!({"mcpServers": {
+                "ai-team-planner": {"command":"shadow-planner"},
+                "ai-planner": {"command":"aip"},
+                "planner-alias": {"command":"/usr/local/bin/aip"},
+                "file-sql": {"command":"file-sql"},
+                "chrome-devtools": {"command":"fixture-browser"}
+            }})
+            .to_string(),
+        )
+        .unwrap();
         git(&repo, &["add", "README.md"]);
         git(
             &repo,
@@ -154,6 +166,40 @@ impl Harness {
     async fn continuation(&mut self) -> String {
         self.mode("normal");
         let one = self.complete(self.first, "Make a change").await;
+        let config: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(self.root.join(format!(
+                "seats/chat-fixture/chat-{}/mcp-assistant.json",
+                self.first
+            )))
+            .unwrap(),
+        )
+        .unwrap();
+        let servers = &config["mcpServers"];
+        assert_eq!(
+            servers["ai-team-planner"]["command"],
+            serde_json::json!(std::env::current_exe().unwrap())
+        );
+        assert_eq!(
+            servers["ai-team-planner"]["args"],
+            serde_json::json!([
+                "plan",
+                "serve",
+                "--db",
+                self.db.to_str().unwrap(),
+                "--chat",
+                self.first.to_string(),
+                "--node",
+                one.to_string()
+            ])
+        );
+        assert!(servers.get("ai-planner").is_none());
+        assert!(servers.get("planner-alias").is_none());
+        assert_eq!(servers["file-sql"]["command"], "file-sql");
+        assert_eq!(servers["chrome-devtools"]["command"], "fixture-browser");
+        assert!(
+            !self.store.planning_path().unwrap().exists(),
+            "ordinary turns need no plan database"
+        );
         let session = self.store.node_run(one).unwrap().session_id.unwrap();
         assert_eq!(self.store.node_run(one).unwrap().status, NodeStatus::Done);
         let two = self.complete(self.first, "Now continue").await;

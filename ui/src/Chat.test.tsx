@@ -22,6 +22,10 @@ const service = vi.hoisted(() => ({
   archiveChat: vi.fn(),
 }));
 vi.mock("./chat-api", () => service);
+vi.mock("./plan-api", async (original) => ({
+  ...(await original<typeof import("./plan-api")>()),
+  chatPlan: (id: number) => Promise.resolve({ chat_id: id, project_id: 1, revision: 0, bundle: null }),
+}));
 vi.mock("./api", async (original) => ({
   ...(await original<typeof import("./api")>()),
   models: () =>

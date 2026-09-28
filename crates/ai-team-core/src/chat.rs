@@ -177,8 +177,14 @@ async fn drive(store: &mut Store, chat_id: i64, node_id: i64, recovering: bool) 
     } else {
         run.prompt
     };
-    let turn =
-        crate::pi::conversation_turn(&chat, &node, &support, &registry.context_sources(), prompt)?;
+    let turn = crate::pi::conversation_turn(
+        &chat,
+        &node,
+        &support,
+        &registry.context_sources(),
+        prompt,
+        store.path(),
+    )?;
     let observer = Store::open(store.path())?;
     let stop = async move {
         loop {

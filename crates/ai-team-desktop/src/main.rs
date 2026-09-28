@@ -23,6 +23,21 @@ use tauri::{WebviewUrl, WebviewWindowBuilder};
 use ai_team_ui::{ServeOptions, Server};
 
 fn main() {
+    if let Some(command) = ai_team_ui::plan_mcp::desktop_command() {
+        let result: Result<()> = (|| {
+            let command = command?;
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()?
+                .block_on(command.run())?;
+            Ok(())
+        })();
+        if let Err(error) = result {
+            eprintln!("ai-team planner: {error:#}");
+            std::process::exit(1);
+        }
+        return;
+    }
     // The first thing that happens, and the reason this app could see any of the
     // operator's tools at all: launched from Finder or the Dock, this process inherits
     // launchd's `PATH=/usr/bin:/bin:/usr/sbin:/sbin` and cannot find `pi`, `aip`, `awt`,

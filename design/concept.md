@@ -102,6 +102,12 @@ project/plan. UI and Rust dispatch call the service directly, not through MCP or
 subprocess per operation. Additional CLI commands can serve diagnostics or
 headless workflows without duplicating the entire old CLI surface.
 
+Chat MCP discovery is explicit: generated planning/context servers and unrelated
+checkout MCP servers are included; global MCP discovery is not inherited. This
+prevents standalone planning from silently reappearing alongside the scoped tools.
+It changes which servers a chat sees, not the operator's registrations or extensions.
+Future toolbox onboarding can offer previewed, approved imports.
+
 MCP is an interface, not a security boundary. Server-side validation and policy
 still matter; an unrestricted shell cannot be contained by hiding a tool name.
 `awt`, file-sql and read-only context integrations are not part of this absorption.

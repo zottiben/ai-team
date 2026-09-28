@@ -40,6 +40,7 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/runs/{id}/events", get(run_events))
         .merge(node_routes())
         .merge(crate::chats::routes())
+        .merge(crate::chat_plans::routes())
         .route("/events", get(stream))
         .route("/runs/{id}/approve-plan", axum::routing::post(approve_plan))
         .route("/runs/{id}/approvals", get(approvals))
@@ -3451,6 +3452,7 @@ async fn read_notification(
 #[derive(Debug, Serialize)]
 struct Tick {
     chat_revision: i64,
+    planning_revision: i64,
     latest_event: i64,
     latest_notification: i64,
     open_runs: usize,
@@ -3466,6 +3468,7 @@ async fn stream(
                 state.deliver_notifications().await;
                 let tick = state.tick().unwrap_or(Tick {
                     chat_revision: -1,
+                    planning_revision: -1,
                     latest_event: -1,
                     latest_notification: -1,
                     open_runs: 0,
@@ -3538,6 +3541,9 @@ impl AppState {
         let latest_notification = store.latest_notification_id()?;
         Ok(Tick {
             chat_revision: store.chat_revision()?,
+            // A broken/foreign planner store must not freeze the conversation feed.
+            // The plan endpoint reports its real error; other cursors keep moving.
+            planning_revision: store.planning_revision().unwrap_or(-1),
             latest_event,
             latest_notification,
             open_runs,
@@ -3548,6 +3554,20 @@ impl AppState {
 #[cfg(test)]
 mod activity_event_tests {
     use super::*;
+
+    #[test]
+    fn a_broken_planner_does_not_freeze_chat_and_event_ticks() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ai_team_core::Store::init(&dir.path().join("team.db")).unwrap();
+        std::fs::write(store.planning_path().unwrap(), "not an owned planner").unwrap();
+        let state = AppState::new("test").with_store(store);
+        let tick = state
+            .tick()
+            .expect("planning faults must not stop other cursors");
+        assert_eq!(tick.planning_revision, -1);
+        assert_eq!(tick.chat_revision, 0);
+        assert_eq!(tick.latest_event, -1);
+    }
 
     fn event(kind: ai_team_core::EventKind, actor: &str, payload: serde_json::Value) -> Event {
         Event {
