@@ -1,5 +1,7 @@
 //! One transaction accepts a prompt, reserves the checkout and creates its evidence.
 
+mod context;
+
 use rusqlite::{params, OptionalExtension, Row};
 
 use super::Store;

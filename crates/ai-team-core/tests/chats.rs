@@ -320,6 +320,26 @@ impl Harness {
         assert!(prompts.contains("Last user request:\nRecover this request"));
     }
 
+    async fn normal_exit_cleans_tools(&mut self) {
+        for mode in ["orphan", "inherited-pipes"] {
+            self.mode(mode);
+            tokio::time::timeout(Duration::from_secs(5), self.complete(self.first, mode))
+                .await
+                .expect("a tool kept the exited parent's pipes open");
+            let pid = std::fs::read_to_string(self.root.join("orphan.pid")).unwrap();
+            until(|| {
+                let output = Command::new("ps")
+                    .args(["-o", "stat=", "-p", pid.trim()])
+                    .output()
+                    .unwrap();
+                let status = String::from_utf8_lossy(&output.stdout);
+                status.trim().is_empty() || status.trim().starts_with('Z')
+            })
+            .await;
+            std::fs::remove_file(self.root.join("orphan.pid")).unwrap();
+        }
+    }
+
     async fn failed_outcomes(&mut self) {
         self.mode("fail");
         let failure = self.complete(self.first, "Report failure truthfully").await;
@@ -346,6 +366,16 @@ impl Harness {
 impl Drop for Harness {
     fn drop(&mut self) {
         // A failing assertion must not leave fake tool processes on the developer's Mac.
+        if let Ok(group) = std::fs::read_to_string(self.root.join("orphan.group")) {
+            if let Some(pid) = group
+                .trim()
+                .parse()
+                .ok()
+                .and_then(rustix::process::Pid::from_raw)
+            {
+                let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
+            }
+        }
         for id in [self.first, self.other] {
             if let Ok(turns) = self.store.chat_turns(id) {
                 for turn in turns {
@@ -374,6 +404,7 @@ async fn conversations_continue_stop_recover_and_keep_other_chats_and_standalone
     harness.cancellation().await;
     harness.isolation_and_recovery(&session).await;
     harness.failed_outcomes().await;
+    harness.normal_exit_cleans_tools().await;
     assert!(!harness.root.join("planner-touched").exists());
     assert!(!harness.root.join("lease-touched").exists());
     assert!(

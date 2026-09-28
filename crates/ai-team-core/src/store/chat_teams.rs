@@ -1,5 +1,7 @@
 //! A chat's controller and its explicitly enrolled execution attempts.
 
+mod control;
+
 use rusqlite::{params, OptionalExtension, Transaction};
 
 use super::Store;

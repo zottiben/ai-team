@@ -9,6 +9,7 @@
 //! What ai-team still owns is unchanged: which seat runs, on what model, in which
 //! worktree, under what budget, and what is written to the database.
 
+mod chat_team;
 mod event;
 mod guard;
 mod ingest;
@@ -18,6 +19,7 @@ mod process;
 mod seat;
 mod turn;
 
+pub(crate) use chat_team::planning_turn as chat_team_planning_turn;
 pub use event::Disposition as PiDisposition;
 pub use event::PiEvent;
 pub use guard::{install as install_guard, install_at as install_guard_at};

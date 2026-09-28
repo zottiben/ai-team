@@ -241,9 +241,17 @@ impl PiProcess {
         let mut stderr_tail = Vec::new();
         let mut out_open = true;
         let mut err_open = true;
+        let mut exited = None;
 
         while out_open || err_open {
             tokio::select! {
+                status = self.child.wait(), if exited.is_none() => {
+                    exited = Some(status.map_err(|e| Error::invalid(format!("waiting for pi: {e}")))?);
+                    // A descendant can inherit a pipe and prevent EOF after Pi exits.
+                    // Kill it now, then drain the already-buffered stream evidence.
+                    self.kill_group();
+                    self.pid = 0;
+                }
                 line = out.next_line(), if out_open => match line {
                     Ok(Some(line)) => {
                         let Some(event) = PiEvent::parse(&line) else { continue };
@@ -283,11 +291,18 @@ impl PiProcess {
             }
         }
 
-        let status = self
-            .child
-            .wait()
-            .await
-            .map_err(|e| Error::invalid(format!("waiting for pi: {e}")))?;
+        let status = match exited {
+            Some(status) => status,
+            None => self
+                .child
+                .wait()
+                .await
+                .map_err(|e| Error::invalid(format!("waiting for pi: {e}")))?,
+        };
+        // A settled/failed Pi process may leave tools or MCP servers behind. Reap the
+        // whole group before its caller can release the checkout, even on a clean exit.
+        self.kill_group();
+        self.pid = 0;
         outcome.exit_code = status.code();
         outcome.stderr = stderr_tail.join("\n");
         outcome.failed |= latest_provider_turn_failed || !status.success();
@@ -311,17 +326,22 @@ impl PiProcess {
         let waited =
             tokio::time::timeout(std::time::Duration::from_secs(2), self.child.wait()).await;
         // A child can exit while a tool ignores TERM. Kill remaining group members too.
-        #[cfg(unix)]
-        if let Some(pid) = rustix::process::Pid::from_raw(self.pid) {
-            let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
-        }
+        self.kill_group();
         if let Ok(result) = waited {
             result?;
         } else {
             self.child.start_kill()?;
             self.child.wait().await?;
         }
+        self.pid = 0;
         Ok(())
+    }
+
+    fn kill_group(&self) {
+        #[cfg(unix)]
+        if let Some(pid) = rustix::process::Pid::from_raw(self.pid) {
+            let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
+        }
     }
 
     /// Stop the turn and everything it started.
@@ -346,7 +366,9 @@ impl PiProcess {
 
 impl Drop for PiProcess {
     fn drop(&mut self) {
-        self.stop();
+        // Normal cancellation uses terminate() and its grace period. Dropping means
+        // unwinding/aborting: TERM alone can leave tool descendants writing forever.
+        self.kill_group();
     }
 }
 

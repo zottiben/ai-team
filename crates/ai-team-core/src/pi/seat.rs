@@ -277,7 +277,7 @@ fn grant_handoff_tool(config: &mut Value) -> Result<()> {
 /// Planning runs in adapter-exclusive mode so a checkout cannot replace the generated
 /// ClickUp/Figma allow-lists or offer a browser when required context fails. Unrelated
 /// repository servers are copied into that exclusive config rather than discarded.
-fn merge_safe_project_servers(
+pub(super) fn merge_safe_project_servers(
     worktree: &Path,
     config: &mut Value,
     exclude_browsers: bool,

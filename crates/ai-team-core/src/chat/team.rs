@@ -1,8 +1,22 @@
 //! Persisted team execution identity, separate from any individual Pi turn.
 
+mod planning;
+pub use planning::drive_chat_team_planning;
+
 use serde::Serialize;
 
 use crate::{ChatTeamPhase, NodeRun};
+
+/// A task-local CAS receipt. A phase transition advances it; old callbacks (even in
+/// the same desktop PID) cannot settle or release a newer controller's execution.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct TeamControl {
+    pub chat_id: i64,
+    pub run_id: i64,
+    pub node_id: i64,
+    pub revision: i64,
+    pub owner: Option<i64>,
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ChatTeamRun {

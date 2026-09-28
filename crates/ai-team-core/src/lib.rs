@@ -45,7 +45,10 @@ mod util;
 mod workflow;
 
 pub use analytics::{rollup, rollup_workspace, By, Row};
-pub use chat::{drive_chat, Chat, ChatSubmission, ChatTeamMember, ChatTeamRun, ChatTurn, NewChat};
+pub use chat::{
+    drive_chat, drive_chat_team_planning, Chat, ChatSubmission, ChatTeamMember, ChatTeamRun,
+    ChatTurn, NewChat,
+};
 pub mod planning;
 pub use context::{figma_links, parse_url, Source, CLICKUP_READ_TOOLS, FIGMA_READ_TOOLS};
 pub use crew::{of_project as crew_of, of_workspace as crew_of_workspace, Doing, Member};

@@ -17,6 +17,39 @@ struct Client {
     next: u64,
 }
 impl Client {
+    async fn connect(db: &Path, home: &Path, chat: i64, node: i64) -> Self {
+        let mut child = command(db, home, chat, node)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .unwrap();
+        let mut client = Self {
+            stdin: child.stdin.take().unwrap(),
+            lines: BufReader::new(child.stdout.take().unwrap()).lines(),
+            child,
+            next: 0,
+        };
+        let hello = client.request("initialize", json!({"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"1"}})).await;
+        assert_eq!(hello["serverInfo"]["name"], "ai-team-planner");
+        client
+            .send(json!({"jsonrpc":"2.0","method":"notifications/initialized"}))
+            .await;
+        client
+    }
+
+    async fn close(self) {
+        let Self {
+            mut child, stdin, ..
+        } = self;
+        drop(stdin);
+        assert!(tokio::time::timeout(Duration::from_secs(5), child.wait())
+            .await
+            .unwrap()
+            .unwrap()
+            .success());
+    }
+
     async fn send(&mut self, value: Value) {
         self.stdin
             .write_all(format!("{value}\n").as_bytes())
@@ -237,6 +270,94 @@ async fn embedded_mcp_round_trip_is_scoped_revocable_and_independent_of_aip() {
             .unwrap()
             .success()
     );
+    assert_standalone_untouched(home);
+}
+
+#[tokio::test]
+async fn team_members_use_distinct_revocable_stdio_scopes_after_the_coordinator_settles() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path();
+    let (mut store, chat, other, solo) = fixture(home);
+    store
+        .finish_chat_turn(chat.id, solo.node_id, NodeStatus::Done, None)
+        .unwrap();
+    let team = store.seed_default_team(chat.project_id).unwrap();
+    let current = store.chat(chat.id).unwrap();
+    store
+        .set_chat_mode(chat.id, ai_team_core::ChatMode::Team, current.rev)
+        .unwrap();
+    let turn = store
+        .begin_chat_turn(chat.id, "Team plan", "team", &ModelRegistry::local_only())
+        .unwrap();
+    let db = store.path().to_path_buf();
+    let mut coordinator = Client::connect(&db, home, chat.id, turn.node_id).await;
+    let tools = coordinator.request("tools/list", json!({})).await;
+    let names: Vec<_> = tools["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|tool| tool["name"].as_str().unwrap())
+        .collect();
+    assert!(names.contains(&"get_plan"));
+    assert!(names.contains(&"open_question"));
+    assert!(!names.contains(&"create_plan"));
+    assert_eq!(
+        coordinator
+            .call(
+                "create_plan",
+                json!({"expect_revision":0,"title":"Forbidden"})
+            )
+            .await["isError"],
+        true
+    );
+    let planner = store
+        .agents(team.id)
+        .unwrap()
+        .into_iter()
+        .find(|agent| agent.role == "planner")
+        .unwrap();
+    let planning = store
+        .dispatch(turn.run_id, planner.id, None, &ModelRegistry::local_only())
+        .unwrap();
+    store
+        .attach_worktree(planning.id, &chat.workspace_path, None, None)
+        .unwrap();
+    store
+        .set_node_status(planning.id, NodeStatus::Running)
+        .unwrap();
+    let mut writer = Client::connect(&db, home, chat.id, planning.id).await;
+    store
+        .set_node_status(turn.node_id, NodeStatus::Done)
+        .unwrap();
+    assert_eq!(
+        coordinator.call("get_plan", json!({})).await["isError"],
+        true
+    );
+    assert_eq!(
+        writer
+            .call(
+                "create_plan",
+                json!({"expect_revision":0,"title":"Planner-owned work"})
+            )
+            .await["isError"],
+        false
+    );
+    let plan = writer.plan().await;
+    assert_eq!(plan["chat_id"], chat.id);
+    assert_eq!(plan["bundle"]["plan"]["title"], "Planner-owned work");
+    assert_eq!(
+        writer.call("get_plan", json!({"chat":other.id})).await["isError"],
+        true
+    );
+    assert!(store
+        .chat_plan(other.id, PlanActor::Human)
+        .unwrap()
+        .bundle
+        .is_none());
+    store.request_chat_stop(chat.id, turn.node_id).unwrap();
+    assert_eq!(writer.call("get_plan", json!({})).await["isError"], true);
+    coordinator.close().await;
+    writer.close().await;
     assert_standalone_untouched(home);
 }
 

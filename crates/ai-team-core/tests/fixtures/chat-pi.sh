@@ -25,6 +25,15 @@ if [ "$mode" = slow ]; then
   printf '{"type":"tool_execution_start","toolName":"bash","toolCallId":"slow-tool","args":{"command":"slow test"}}\n'
   while :; do sleep 1; done
 fi
+if [ "$mode" = orphan ] || [ "$mode" = inherited-pipes ]; then
+  echo "$$" > "$CHAT_TEST_ROOT/orphan.group"
+  if [ "$mode" = orphan ]; then
+    sh -c 'trap "" TERM; echo $$ > "$CHAT_TEST_ROOT/orphan.pid"; while :; do sleep 1; done' >/dev/null 2>&1 &
+  else
+    sh -c 'trap "" TERM; echo $$ > "$CHAT_TEST_ROOT/orphan.pid"; while :; do sleep 1; done' &
+  fi
+  while [ ! -s "$CHAT_TEST_ROOT/orphan.pid" ]; do sleep 0.01; done
+fi
 if [ "$mode" = fail ]; then
   printf '{"type":"turn_end","message":{"role":"assistant","content":[],"stopReason":"error"}}\n'
 else

@@ -76,7 +76,16 @@ where
     }
 
     let mut process = PiProcess::start(&turn)?;
-    store.attach_pi_process(node_run_id, process.pid())?;
+    if let Err(error) = store.attach_pi_process(node_run_id, process.pid()) {
+        // The process already exists, even though its identity could not be persisted.
+        // Do not let failure reconciliation release the checkout before it is reaped.
+        process.terminate().await.map_err(|cleanup| {
+            Error::invalid(format!(
+                "{error}; terminating unregistered Pi also failed: {cleanup}"
+            ))
+        })?;
+        return Err(error);
+    }
     let (tx, mut rx) = mpsc::unbounded_channel::<PiEvent>();
 
     // The child is driven here and ingested below. `drive` owns the pipes and the

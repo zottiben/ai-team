@@ -1,7 +1,7 @@
 //! Durable conversations. A chat owns its checkout and addresses, not a team's latest run.
 
-mod team;
-pub use team::{ChatTeamMember, ChatTeamRun};
+pub(crate) mod team;
+pub use team::{drive_chat_team_planning, ChatTeamMember, ChatTeamRun};
 
 use std::path::{Path, PathBuf};
 
@@ -192,6 +192,7 @@ async fn drive(store: &mut Store, chat_id: i64, node_id: i64, recovering: bool) 
     } else {
         run.prompt
     };
+    let prompt = format!("{}{prompt}", store.chat_turn_context(chat_id, node_id)?);
     let turn = crate::pi::conversation_turn(
         &chat,
         &node,
