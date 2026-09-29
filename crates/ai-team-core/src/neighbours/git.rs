@@ -40,6 +40,13 @@ pub(crate) async fn prepare_branch_from(
     }
 }
 
+/// A chat approval names a new draft branch. Never reset an existing draft as -B would.
+pub(crate) async fn prepare_new_branch(worktree: &Path, branch: &str, base: &str) -> Result<()> {
+    git(worktree, &["checkout", "-b", branch, base])
+        .await
+        .map(drop)
+}
+
 /// Commit everything in a worktree onto a branch.
 ///
 /// `None` means there was nothing to commit, which is a real outcome worth reporting:

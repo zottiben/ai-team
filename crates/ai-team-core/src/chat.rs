@@ -1,7 +1,10 @@
 //! Durable conversations. A chat owns its checkout and addresses, not a team's latest run.
 
 pub(crate) mod team;
-pub use team::{drive_chat_team_planning, ChatTeamMember, ChatTeamRun};
+pub use team::{
+    drive_chat_team_planning, ChatBuildApproval, ChatBuildControl, ChatBuildReview, ChatBuildSlice,
+    ChatBuildStart, ChatTeamMember, ChatTeamRun,
+};
 
 use std::path::{Path, PathBuf};
 

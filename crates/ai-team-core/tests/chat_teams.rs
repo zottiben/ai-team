@@ -133,9 +133,14 @@ impl Fixture {
                 [run_id],
             )
             .unwrap();
+        let maker = self
+            .agents()
+            .into_iter()
+            .find(|agent| !agent.read_only)
+            .unwrap();
         self.conn().execute(
-            "INSERT INTO chat_build_slice (run_id, slice_key, planner_slice_id, approved_rev, worktree_path, lease_state) VALUES (?1, 'S1', ?2, ?3, ?4, 'leased')",
-            rusqlite::params![run_id, slice.id, slice.rev, lease],
+            "INSERT INTO chat_build_slice (run_id, slice_key, planner_slice_id, approved_rev, worktree_path, lease_state, assigned_agent_id, assigned_agent_rev, agent_snapshot) VALUES (?1, 'S1', ?2, ?3, ?4, 'leased', ?5, ?6, ?7)",
+            rusqlite::params![run_id, slice.id, slice.rev, lease, maker.id, maker.rev, serde_json::to_string(&maker).unwrap()],
         ).unwrap();
         (lease, plan)
     }

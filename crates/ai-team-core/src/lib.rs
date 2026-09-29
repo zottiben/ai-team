@@ -46,7 +46,8 @@ mod workflow;
 
 pub use analytics::{rollup, rollup_workspace, By, Row};
 pub use chat::{
-    drive_chat, drive_chat_team_planning, Chat, ChatSubmission, ChatTeamMember, ChatTeamRun,
+    drive_chat, drive_chat_team_planning, Chat, ChatBuildApproval, ChatBuildControl,
+    ChatBuildReview, ChatBuildSlice, ChatBuildStart, ChatSubmission, ChatTeamMember, ChatTeamRun,
     ChatTurn, NewChat,
 };
 pub mod planning;

@@ -1,5 +1,7 @@
 //! Serialize scoped mutations through the team store; the pinned engine owns plan rows.
 
+pub(super) mod build;
+mod claims;
 mod engine;
 mod writes;
 
@@ -66,6 +68,7 @@ impl Store {
         self.db_mut().write(|tx| {
             let (access, slice) = scope(tx, chat_id, actor, true)?;
             authorize(access, slice.as_deref(), &action)?;
+            build::freeze(tx, chat_id, access, &action)?;
             let create = matches!(action, PlanAction::CreatePlan { .. });
             let mut store = engine::open(&path, create)?
                 .ok_or_else(|| Error::invalid("this chat has no plan yet"))?;

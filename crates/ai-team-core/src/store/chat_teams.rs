@@ -1,5 +1,6 @@
 //! A chat's controller and its explicitly enrolled execution attempts.
 
+pub(super) mod build;
 mod control;
 
 use rusqlite::{params, OptionalExtension, Transaction};
@@ -126,6 +127,26 @@ pub(super) fn register_member(
             return Err(Error::invalid(
                 "a team worker needs an approved, leased slice in this run",
             ));
+        }
+        let busy: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM node_run WHERE run_id = ?1 AND id != ?2
+            AND status IN ('queued','running') AND (slice_key = ?3 OR agent_id = ?4))",
+            params![run_id, node_id, slice, agent.id],
+            |row| row.get(0),
+        )?;
+        if busy {
+            return Err(Error::invalid(
+                "a team worker already owns this lease or seat; wait for it to settle",
+            ));
+        }
+        if access == PlanAccess::Maker {
+            let approval = build::read(tx, run_id, slice.unwrap_or_default())?;
+            let assigned = build::approved_agent(tx, &approval)?;
+            if assigned.id != agent.id {
+                return Err(Error::invalid(
+                    "this maker was not approved for the assigned slice",
+                ));
+            }
         }
     } else if access == PlanAccess::Planner && phase == "building" {
         return Err(Error::invalid(

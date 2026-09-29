@@ -337,13 +337,7 @@ impl Store {
     }
 
     pub fn agents(&self, team_id: i64) -> Result<Vec<Agent>> {
-        let mut stmt = self.db().conn().prepare(&format!(
-            "{AGENT_SELECT} WHERE team_id = ?1 ORDER BY ord, role"
-        ))?;
-        let rows = stmt
-            .query_map(params![team_id], agent_from_row)?
-            .collect::<rusqlite::Result<_>>()?;
-        Ok(rows)
+        agents_in(self.db().conn(), team_id)
     }
 
     /// Replace the configurable part of a seat while keeping its identity and history.
@@ -705,6 +699,16 @@ fn team_from_row(r: &Row<'_>) -> rusqlite::Result<Team> {
         created_at: r.get(17)?,
         updated_at: r.get(18)?,
     })
+}
+
+pub(super) fn agents_in(conn: &rusqlite::Connection, team_id: i64) -> Result<Vec<Agent>> {
+    let mut stmt = conn.prepare(&format!(
+        "{AGENT_SELECT} WHERE team_id = ?1 ORDER BY ord, role"
+    ))?;
+    let rows = stmt
+        .query_map(params![team_id], agent_from_row)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
 }
 
 const AGENT_SELECT: &str = "SELECT id, team_id, ord, role, name, purpose, provider, model, \
