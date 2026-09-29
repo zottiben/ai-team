@@ -242,6 +242,11 @@ async fn approvals_and_journaled_leases_preserve_exact_scope_and_files() {
     failed_preparations_retain_evidence_and_never_reset_files().await;
     a_partial_claim_commit_is_reconciled_without_a_second_lease().await;
     a_reused_seat_id_cannot_inherit_approval().await;
+    install_worker_runtime(&bin);
+    parallel_workers_commit_and_return_without_touching_solo().await;
+    repairs_inherit_only_the_makers_session().await;
+    failed_work_is_retained_and_does_not_poison_siblings().await;
+    cancelled_workers_and_gates_reap_their_groups().await;
     assert!(!env.path().join("unexpected-aip").exists());
     assert!(!env.path().join("unexpected-pi").exists());
 }
@@ -785,10 +790,407 @@ async fn stop_during_acquisition_retains_the_returned_lease() {
     std::fs::write(f.dir.path().join("awt-release"), "resume fixture").unwrap();
     assert!(worker.await.unwrap().is_err());
     assert_eq!(f.lease().lease_state, "retained");
-    assert!(f.lease().worktree_path.is_some());
+    // Stop may kill awt before it prints the path. The durable holder still identifies
+    // the uncertain acquisition and the lease must never be guessed safe to return.
+    assert!(f.lease().lease_holder.is_some());
     assert!(f.plan().bundle.unwrap().slices[0].claimed_by.is_none());
     assert!(f.store.chat(f.chat.id).unwrap().active_node_id.is_some());
     f.no_return();
+}
+
+fn install_worker_runtime(bin: &Path) {
+    let config = PathBuf::from(std::env::var("XDG_CONFIG_HOME").unwrap()).join("ai-team");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(
+        config.join("machine.toml"),
+        DEFAULT_MACHINE_PROFILE.replace("local = false", "local = true"),
+    )
+    .unwrap();
+    std::env::set_var("ANTHROPIC_API_KEY", "must-not-reach-children");
+    std::env::set_var("OPENAI_API_KEY", "must-not-reach-children");
+    for (name, body) in [
+        ("awt", include_str!("fixtures/chat-worker-awt.mjs")),
+        ("pi", include_str!("fixtures/chat-worker-pi.mjs")),
+    ] {
+        let script = bin.join(format!("{name}.mjs"));
+        std::fs::write(&script, body).unwrap();
+        std::fs::write(
+            bin.join(name),
+            format!("#!/bin/sh\nexec node '{}' \"$@\"\n", script.display()),
+        )
+        .unwrap();
+    }
+}
+
+fn worker_fixture(mode: &str) -> Fixture {
+    let f = Fixture::new();
+    f.activate_awt("normal");
+    std::fs::write(f.dir.path().join("worker-mode"), mode).unwrap();
+    std::fs::write(
+        f.repo.join("package.json"),
+        r#"{"scripts":{"test":"node check.mjs"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        f.repo.join("check.mjs"),
+        include_str!("fixtures/chat-worker-gate.mjs"),
+    )
+    .unwrap();
+    std::fs::create_dir_all(f.repo.join("crates/dist")).unwrap();
+    std::fs::write(f.repo.join("crates/dist/base.txt"), "tracked output\n").unwrap();
+    std::fs::write(f.repo.join("crates/old name-é.txt"), "original source\n").unwrap();
+    git(&f.repo, &["add", "."]);
+    commit(&f.repo);
+    f
+}
+
+fn calls(f: &Fixture) -> Vec<serde_json::Value> {
+    std::fs::read_to_string(f.dir.path().join("worker-calls"))
+        .unwrap_or_default()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect()
+}
+
+async fn parallel_workers_commit_and_return_without_touching_solo() {
+    let mut f = worker_fixture("success");
+    f.add_slice("S2", vec!["crates/**"]);
+    f.add_slice("S3", vec!["ui/**"]);
+    let base = git(&f.repo, &["rev-parse", "HEAD"]);
+    let source_branch = git(&f.repo, &["symbolic-ref", "HEAD"]);
+    let start = f.approve().await;
+    drive_chat_team_build(f.store.path(), start.clone())
+        .await
+        .unwrap();
+    assert!(drive_chat_team_build(f.store.path(), start).await.is_err());
+    let run = f.store.run(f.turn.run_id).unwrap();
+    assert_eq!(run.status, RunStatus::Done);
+    assert!(f.store.chat(f.chat.id).unwrap().active_node_id.is_none());
+    assert_eq!(git(&f.repo, &["rev-parse", "HEAD"]), base);
+    assert_eq!(git(&f.repo, &["symbolic-ref", "HEAD"]), source_branch);
+    assert!(git(&f.repo, &["status", "--porcelain"]).is_empty());
+    let records = calls(&f);
+    assert_eq!(records.len(), 6, "three makers and three scoped verifiers");
+    let makers: Vec<_> = records
+        .iter()
+        .filter(|call| call["role"] != "verifier")
+        .map(|call| call["key"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        makers.last(),
+        Some(&"S2"),
+        "busy backend work must be deferred, not dropped"
+    );
+    let configs: std::collections::HashSet<_> = records
+        .iter()
+        .map(|call| call["configPath"].as_str().unwrap())
+        .collect();
+    assert_eq!(configs.len(), 6);
+    for slice in f.store.chat_build_slices(run.id).unwrap() {
+        assert_eq!(slice.build_status, "verified");
+        assert_eq!(slice.lease_state, "released");
+        assert!(slice.release_started);
+        let branch = slice.branch.unwrap();
+        let sha = slice.commit_sha.unwrap();
+        assert_eq!(git(&f.repo, &["rev-parse", &branch]), sha);
+        assert_eq!(git(&f.repo, &["rev-parse", &format!("{sha}^")]), base);
+        let files = git(
+            &f.repo,
+            &["diff-tree", "--no-commit-id", "--name-only", "-r", &sha],
+        );
+        assert!(files.contains(&format!("{}.txt", slice.slice_key)));
+        assert!(!files.contains("dist/"));
+    }
+    for slice in f.plan().bundle.unwrap().slices {
+        assert_eq!(slice.status, PlanStatus::InReview);
+        assert!(slice.claimed_by.is_none());
+    }
+    for column in ["candidate_sha", "commit_sha"] {
+        assert!(f
+            .conn()
+            .execute(
+                &format!("UPDATE chat_build_slice SET {column} = 'rewritten'"),
+                []
+            )
+            .is_err());
+    }
+    let reviews = f.store.reviews(Some(f.chat.project_id), true).unwrap();
+    assert_eq!(reviews.len(), 3);
+    assert!(reviews
+        .iter()
+        .all(|review| review.base_sha.as_deref() == Some(&base) && review.head_sha.is_some()));
+    assert!(f
+        .store
+        .chat_team_members(run.id)
+        .unwrap()
+        .iter()
+        .all(|member| !member.pi_alive()));
+    return_to_solo_keeps_delivery_evidence(&mut f).await;
+}
+
+async fn return_to_solo_keeps_delivery_evidence(f: &mut Fixture) {
+    let chat = f.store.chat(f.chat.id).unwrap();
+    f.store
+        .set_chat_mode(chat.id, ChatMode::Single, chat.rev)
+        .unwrap();
+    let turn = f
+        .store
+        .begin_chat_turn(
+            chat.id,
+            "Review those draft branches",
+            "solo-after-build",
+            &ModelRegistry::local_only(),
+        )
+        .unwrap();
+    drive_chat(f.store.path(), chat.id, turn.node_id, false)
+        .await
+        .unwrap();
+    let prompt =
+        std::fs::read_to_string(f.dir.path().join(format!("worker-{}.prompt", turn.node_id)))
+            .unwrap();
+    assert!(prompt.contains("Recorded verified team drafts"));
+    assert!(prompt.contains("NOT merged into this chat's solo checkout"));
+    for slice in f.store.chat_build_slices(f.turn.run_id).unwrap() {
+        assert!(prompt.contains(slice.commit_sha.as_deref().unwrap()));
+        assert!(prompt.contains(slice.branch.as_deref().unwrap()));
+    }
+}
+
+async fn repairs_inherit_only_the_makers_session() {
+    let mut f = worker_fixture("repair");
+    let start = f.approve().await;
+    drive_chat_team_build(f.store.path(), start).await.unwrap();
+    let records = calls(&f);
+    let makers: Vec<_> = records
+        .iter()
+        .filter(|call| call["role"] == "backend")
+        .collect();
+    assert_eq!(makers.len(), 2);
+    assert_ne!(makers[0]["id"], makers[1]["id"]);
+    assert_eq!(makers[0]["session"], makers[1]["session"]);
+    let reader = records
+        .iter()
+        .find(|call| call["role"] == "verifier")
+        .unwrap();
+    assert_ne!(reader["session"], makers[0]["session"]);
+    let nodes: Vec<_> = f
+        .store
+        .node_runs(f.turn.run_id)
+        .unwrap()
+        .into_iter()
+        .filter(|node| node.role == "backend")
+        .collect();
+    assert_eq!(nodes[0].status, NodeStatus::Failed);
+    assert_eq!(nodes[1].attempt, nodes[0].attempt + 1);
+    assert!(nodes[1].stream_cursor > nodes[0].stream_cursor);
+    assert!(nodes.iter().all(|node| node.usage.tokens_out > 0));
+    assert!(
+        std::fs::read_to_string(f.dir.path().join(format!("worker-{}.prompt", nodes[1].id)))
+            .unwrap()
+            .contains("implementation is BAD")
+    );
+}
+
+async fn failed_work_is_retained_and_does_not_poison_siblings() {
+    for mode in [
+        "tracked-output",
+        "siblings",
+        "noop",
+        "outside",
+        "reject",
+        "echo-only",
+        "exit-fail",
+        "verifier-edit",
+        "gate-edit",
+        "rename",
+        "orphan-gate",
+        "settle-fail",
+        "return-fail",
+        "board-fail",
+        "staged-only",
+        "node-cap",
+    ] {
+        let mut f = worker_fixture(mode);
+        f.conn()
+            .execute("UPDATE run SET max_repairs = 0", [])
+            .unwrap();
+        if mode == "siblings" {
+            f.add_slice("S3", vec!["ui/**"]);
+        }
+        if mode == "node-cap" {
+            f.conn()
+                .execute("UPDATE run SET budget_tokens_node = 1", [])
+                .unwrap();
+        }
+        if mode == "settle-fail" {
+            f.conn().execute_batch("CREATE TRIGGER reject_worker_settlement BEFORE UPDATE ON node_run WHEN NEW.role = 'backend' AND NEW.status = 'failed' BEGIN SELECT RAISE(ABORT, 'injected member settlement failure'); END;").unwrap();
+        }
+        if mode == "board-fail" {
+            f.conn().execute_batch("CREATE TRIGGER reject_board_event BEFORE INSERT ON event WHEN NEW.summary LIKE 'S1: draft ready for human review%' BEGIN SELECT RAISE(ABORT, 'injected board settlement failure'); END;").unwrap();
+        }
+        let start = f.approve().await;
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(20),
+            drive_chat_team_build(f.store.path(), start),
+        )
+        .await
+        .unwrap();
+        if matches!(mode, "rename" | "orphan-gate" | "tracked-output") {
+            outcome.unwrap();
+            if mode == "rename" {
+                let sha = f.lease().commit_sha.unwrap();
+                let files = git(&f.repo, &["ls-tree", "-r", "--name-only", &sha]);
+                assert!(files.contains("new name"));
+                assert!(!files.contains("old name"));
+            } else if mode == "tracked-output" {
+                let sha = f.lease().commit_sha.unwrap();
+                assert!(git(&f.repo, &["ls-tree", "-r", "--name-only", &sha]).contains("crates/dist/new.txt"), "new files in committed generated directories are source, not disposable gate output");
+            } else {
+                assert_process_dead(&f.dir.path().join("gate-tool.pid")).await;
+            }
+            continue;
+        }
+        assert!(outcome.is_err(), "{mode} must not be reported as verified");
+        if mode == "settle-fail" {
+            let error = outcome.unwrap_err().to_string();
+            assert!(
+                error.contains("Implemented S1."),
+                "original worker failure disappeared: {error}"
+            );
+            assert!(error.contains("injected member settlement failure"));
+            assert_eq!(f.lease().lease_state, "retained");
+            continue;
+        }
+        if matches!(mode, "return-fail" | "board-fail") {
+            assert_eq!(f.lease().build_status, "verified");
+            assert!(f.lease().release_started && f.lease().commit_sha.is_some());
+            let returned = mode == "board-fail";
+            assert_eq!(
+                f.lease().lease_state,
+                if returned { "released" } else { "retained" }
+            );
+            let board = f.plan().bundle.unwrap().slices.remove(0);
+            assert_eq!(board.status, PlanStatus::InReview);
+            assert_eq!(
+                board.claimed_by.is_none(),
+                returned,
+                "a failed return must retain its planner claim"
+            );
+            assert!(f.store.chat(f.chat.id).unwrap().active_node_id.is_some());
+            continue;
+        }
+        if mode == "staged-only" {
+            assert!(git(
+                Path::new(f.lease().worktree_path.as_deref().unwrap()),
+                &["show", ":crates/staged-only.txt"]
+            )
+            .contains("preserve staged-only work"));
+        }
+        if mode == "node-cap" {
+            assert!(calls(&f).iter().all(|call| call["role"] != "verifier"));
+            assert!(!f.dir.path().join("gate-calls").exists());
+        }
+        assert_eq!(f.lease().lease_state, "retained", "{mode}");
+        assert_eq!(f.lease().build_status, "failed", "{mode}");
+        assert!(f.lease().commit_sha.is_none());
+        assert!(f.store.chat(f.chat.id).unwrap().active_node_id.is_some());
+        assert_eq!(
+            f.store.chat_team_run(f.turn.run_id).unwrap().unwrap().phase,
+            ChatTeamPhase::Blocked
+        );
+        assert!(Path::new(f.lease().worktree_path.as_deref().unwrap()).is_dir());
+        if mode == "siblings" {
+            let other = f.store.chat_build_slices(f.turn.run_id).unwrap().remove(1);
+            assert_eq!(other.build_status, "verified");
+            assert_eq!(other.lease_state, "released");
+        }
+        assert!(git(&f.repo, &["status", "--porcelain"]).is_empty());
+    }
+}
+
+async fn cancelled_workers_and_gates_reap_their_groups() {
+    for mode in ["slow-maker", "slow-gate"] {
+        let mut f = worker_fixture(mode);
+        let start = f.approve().await;
+        let db = f.store.path().to_owned();
+        let worker = tokio::spawn(async move { drive_chat_team_build(&db, start).await });
+        let marker = if mode == "slow-maker" {
+            "worker-waiting"
+        } else {
+            "gate-waiting"
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while !f.dir.path().join(marker).exists() {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        f.store
+            .request_chat_stop(f.chat.id, f.turn.node_id)
+            .unwrap();
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(6), worker)
+                .await
+                .unwrap()
+                .unwrap()
+                .is_err()
+        );
+        assert_process_dead(&f.dir.path().join(if mode == "slow-maker" {
+            "worker-tool.pid"
+        } else {
+            "gate-tool.pid"
+        }))
+        .await;
+        assert_eq!(f.lease().lease_state, "retained");
+        assert_eq!(f.lease().build_status, "stopped");
+        assert!(
+            !f.store
+                .events(f.turn.run_id, None, 500)
+                .unwrap()
+                .iter()
+                .any(|event| event.summary.starts_with("gate `")
+                    && event
+                        .payload
+                        .as_ref()
+                        .is_some_and(|payload| payload["passed"] == false)),
+            "operator cancellation is not a failed project gate"
+        );
+        assert!(std::fs::read_to_string(
+            Path::new(f.lease().worktree_path.as_deref().unwrap()).join("crates/S1.txt")
+        )
+        .unwrap()
+        .contains("GOOD"));
+        assert!(!std::fs::read_to_string(f.dir.path().join("pool-calls"))
+            .unwrap()
+            .contains("return"));
+        assert!(f
+            .store
+            .chat_team_members(f.turn.run_id)
+            .unwrap()
+            .iter()
+            .all(|member| !member.pi_alive()));
+    }
+}
+
+async fn assert_process_dead(file: &Path) {
+    let pid = std::fs::read_to_string(file).unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(4), async {
+        loop {
+            let output = Command::new("ps")
+                .args(["-p", pid.trim(), "-o", "stat="])
+                .output()
+                .unwrap();
+            let state = String::from_utf8_lossy(&output.stdout);
+            if !output.status.success() || state.trim().is_empty() || state.trim().starts_with('Z')
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
 }
 
 async fn a_reused_seat_id_cannot_inherit_approval() {

@@ -66,8 +66,9 @@ impl crate::Store {
             .await?;
         let approved = self.reserve_chat_build_lease(control, key)?;
         let mut returned = None;
+        let watch = super::execution::Watch::new(self.path(), control);
         let result = async {
-            let lease = worktrees.lease(approved.lease_holder.as_deref().ok_or_else(|| crate::Error::invalid("this approval has no lease holder"))?).await?;
+            let lease = worktrees.lease_until(approved.lease_holder.as_deref().ok_or_else(|| crate::Error::invalid("this approval has no lease holder"))?, watch.wait()).await?;
             let path = lease.path().to_path_buf();
             // Lease::Drop calls awt return --force. From here on even errors/panics must
             // preserve the checkout; acquisition intent already names its holder.
@@ -115,6 +116,12 @@ pub struct ChatBuildSlice {
     pub lease_holder: Option<String>,
     pub branch: Option<String>,
     pub lease_state: String,
+    pub build_status: String,
+    pub candidate_sha: Option<String>,
+    pub commit_sha: Option<String>,
+    pub maker_node_id: Option<i64>,
+    pub verifier_node_id: Option<i64>,
+    pub release_started: bool,
     pub reason: Option<String>,
     pub rev: i64,
 }

@@ -1,10 +1,12 @@
 //! Persisted team execution identity, separate from any individual Pi turn.
 
 mod build;
+mod execution;
 mod planning;
 pub use build::{
     ChatBuildApproval, ChatBuildControl, ChatBuildReview, ChatBuildSlice, ChatBuildStart,
 };
+pub use execution::drive_chat_team_build;
 pub use planning::drive_chat_team_planning;
 
 use serde::Serialize;

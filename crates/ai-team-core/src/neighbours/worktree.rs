@@ -146,8 +146,15 @@ impl Worktrees {
     /// Lease a worktree. `--lease` prints only the path on stdout and puts its banners
     /// on stderr, which is the contract this depends on.
     pub async fn lease(&self, holder: &str) -> Result<Lease> {
+        self.lease_until(holder, std::future::pending()).await
+    }
+
+    pub(crate) async fn lease_until<S>(&self, holder: &str, stop: S) -> Result<Lease>
+    where
+        S: std::future::Future<Output = String> + Send,
+    {
         let path = self
-            .output(&["get", "--lease", "--lease-holder", holder])
+            .output_until(&["get", "--lease", "--lease-holder", holder], stop)
             .await?;
         let path = PathBuf::from(path.trim());
         if !path.is_dir() {
@@ -306,19 +313,30 @@ impl Worktrees {
     }
 
     async fn output(&self, args: &[&str]) -> Result<String> {
-        let output = Command::new("awt")
-            .args(args)
-            .current_dir(&self.repo)
-            .stdin(Stdio::null())
-            .kill_on_drop(true)
-            .output()
-            .await
-            .map_err(|error| {
-                Error::invalid(format!(
-                    "could not run `awt`: {error}. ai-worktree is a separate tool; install \
-                     it from its own repo."
-                ))
-            })?;
+        self.output_until(args, std::future::pending()).await
+    }
+
+    async fn output_until<S>(&self, args: &[&str], stop: S) -> Result<String>
+    where
+        S: std::future::Future<Output = String> + Send,
+    {
+        let output = crate::command::run(
+            Command::new("awt").args(args).current_dir(&self.repo),
+            std::time::Duration::from_secs(600),
+            8 * 1024 * 1024,
+            stop,
+        )
+        .await
+        .map_err(|error| {
+            if matches!(&error, Error::Io(io) if io.kind() == std::io::ErrorKind::NotFound) {
+                Error::invalid(format!("could not run `awt`: {error}. ai-worktree is a separate tool; install it from its own repo."))
+            } else { error }
+        })?;
+        if output.truncated {
+            return Err(Error::invalid(
+                "awt output exceeded the capture limit; retain any uncertain acquisition",
+            ));
+        }
         if !output.status.success() {
             return Err(Error::invalid(format!(
                 "`awt {}` failed: {}",

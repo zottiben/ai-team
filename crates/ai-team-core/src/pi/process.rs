@@ -40,6 +40,12 @@ const METERED_MODEL_ENV: &[&str] = &[
     "GEMINI_API_KEY",
 ];
 
+pub(crate) fn strip_metered_env(command: &mut Command) {
+    for key in METERED_MODEL_ENV {
+        command.env_remove(key);
+    }
+}
+
 /// How a seat is invoked.
 ///
 /// Every field is a Pi flag rather than generated TypeScript, which is the practical
@@ -170,9 +176,7 @@ impl PiProcess {
         }
 
         let mut command = Command::new("pi");
-        for key in METERED_MODEL_ENV {
-            command.env_remove(key);
-        }
+        strip_metered_env(&mut command);
         command
             .args(turn.args())
             .current_dir(&turn.worktree)

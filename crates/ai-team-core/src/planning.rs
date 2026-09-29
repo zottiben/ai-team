@@ -90,6 +90,22 @@ impl PlanAccess {
     }
 }
 
+pub(crate) fn slice_touches(scope: &str) -> Vec<String> {
+    scope
+        .lines()
+        .rev()
+        .find_map(|line| line.trim().strip_prefix("Touches:"))
+        .map(|paths| {
+            paths
+                .split(',')
+                .map(str::trim)
+                .filter(|path| !path.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Every mutation carries the revision read from this chat's plan. Unknown fields are
 /// rejected, including attempted cwd/project/plan overrides in an agent's tool call.
 #[derive(Debug, Clone, Deserialize)]

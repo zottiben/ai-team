@@ -6,7 +6,8 @@ use crate::chat::team::TeamControl;
 use crate::{ChatBuildControl, ChatBuildSlice, ChatBuildStart, Error, Result, Store};
 
 const SELECT: &str = "SELECT run_id, slice_key, planner_slice_id, approved_rev, assigned_agent_id, assigned_agent_rev,
-    agent_snapshot, worktree_path, lease_holder, branch, lease_state, reason, rev FROM chat_build_slice";
+    agent_snapshot, worktree_path, lease_holder, branch, lease_state, reason, rev,
+    build_status, candidate_sha, commit_sha, maker_node_id, verifier_node_id, release_started FROM chat_build_slice";
 
 impl Store {
     pub fn chat_build_slices(&self, run: i64) -> Result<Vec<ChatBuildSlice>> {
@@ -198,5 +199,11 @@ fn from_row(row: &Row<'_>) -> rusqlite::Result<ChatBuildSlice> {
         lease_state: row.get(10)?,
         reason: row.get(11)?,
         rev: row.get(12)?,
+        build_status: row.get(13)?,
+        candidate_sha: row.get(14)?,
+        commit_sha: row.get(15)?,
+        maker_node_id: row.get(16)?,
+        verifier_node_id: row.get(17)?,
+        release_started: row.get(18)?,
     })
 }

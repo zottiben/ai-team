@@ -2,8 +2,8 @@
 
 pub(crate) mod team;
 pub use team::{
-    drive_chat_team_planning, ChatBuildApproval, ChatBuildControl, ChatBuildReview, ChatBuildSlice,
-    ChatBuildStart, ChatTeamMember, ChatTeamRun,
+    drive_chat_team_build, drive_chat_team_planning, ChatBuildApproval, ChatBuildControl,
+    ChatBuildReview, ChatBuildSlice, ChatBuildStart, ChatTeamMember, ChatTeamRun,
 };
 
 use std::path::{Path, PathBuf};
