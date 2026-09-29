@@ -174,6 +174,9 @@ impl Store {
     /// Submit the review. Approving with unresolved comments is refused: the two states
     /// contradict each other, and the node reading this would not know which to believe.
     pub fn submit_review(&mut self, id: i64, status: ReviewStatus) -> Result<Review> {
+        if let Some(run) = self.review(id)?.run_id {
+            self.require_legacy_run(run)?;
+        }
         if status == ReviewStatus::Approved {
             let unresolved = self.unresolved_count(id)?;
             if unresolved > 0 {

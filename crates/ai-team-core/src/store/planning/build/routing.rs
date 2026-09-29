@@ -3,7 +3,11 @@ use crate::{Agent, Error, Result};
 
 /// Every touched path must have the same unambiguous maker, not merely the first
 /// path with an owner. Broad globs must not hide a more-specific seat underneath.
-pub(super) fn maker<'a>(roster: &'a [Agent], slice: &ai_planner_core::Slice) -> Result<&'a Agent> {
+pub(super) fn maker<'a>(
+    roster: &'a [Agent],
+    slice: &ai_planner_core::Slice,
+    workspace: &std::path::Path,
+) -> Result<&'a Agent> {
     let paths: Vec<_> = slice
         .scope_md
         .lines()
@@ -29,6 +33,12 @@ pub(super) fn maker<'a>(roster: &'a [Agent], slice: &ai_planner_core::Slice) -> 
         .collect();
     let mut assigned = None;
     for path in paths {
+        if !path.ends_with('/') && !path.contains(['*', '?']) && workspace.join(path).is_dir() {
+            return Err(Error::invalid(format!(
+                "{}: {path} is a directory; use {path}/** to name its files explicitly",
+                slice.key
+            )));
+        }
         let mut matches: Vec<_> = makers
             .iter()
             .filter_map(|agent| {

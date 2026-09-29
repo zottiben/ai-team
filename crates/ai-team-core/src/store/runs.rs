@@ -475,6 +475,7 @@ impl Store {
         expected_reason: &str,
         not_newer_than: Option<&str>,
     ) -> Result<Run> {
+        self.require_legacy_run(id)?;
         let at = now();
         let changed = self.db_mut().write(|tx| {
             Ok(tx.execute(
@@ -506,6 +507,7 @@ impl Store {
         body: &str,
         not_newer_than: Option<&str>,
     ) -> Result<Run> {
+        self.require_legacy_run(id)?;
         let body = body.trim();
         if body.is_empty() {
             return Err(Error::invalid("say something"));
@@ -760,6 +762,7 @@ impl Store {
     /// so two app windows cannot both push/create/merge the same branch.
     pub fn claim_delivery(&mut self, node_run_id: i64, action: DeliveryAction) -> Result<bool> {
         let node = self.node_run(node_run_id)?;
+        self.require_legacy_run(node.run_id)?;
         let already_done = match action {
             DeliveryAction::Push => node.pushed_at.is_some(),
             DeliveryAction::Pr => node.pr_url.is_some(),
@@ -875,6 +878,7 @@ impl Store {
     }
 
     pub fn claim_node_session_reset(&mut self, node_run_id: i64) -> Result<NodeRun> {
+        self.require_legacy_run(self.node_run(node_run_id)?.run_id)?;
         let at = now();
         let changed = self.db_mut().write(|tx| {
             Ok(tx.execute(
@@ -980,6 +984,7 @@ impl Store {
         previous_pid: Option<i64>,
     ) -> Result<NodeRun> {
         let node = self.node_run(node_run_id)?;
+        self.require_legacy_run(node.run_id)?;
         if node.supervisor_pid == Some(supervisor_pid) {
             return Ok(node);
         }

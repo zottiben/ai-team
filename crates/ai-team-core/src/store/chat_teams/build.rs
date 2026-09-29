@@ -21,11 +21,13 @@ impl Store {
     }
 
     pub fn claim_chat_build(&mut self, start: &ChatBuildStart) -> Result<ChatBuildControl> {
+        let ownership =
+            crate::chat::team::ownership::Ownership::acquire(self.path(), start.run_id)?;
         let pid = i64::from(std::process::id());
         let identity = crate::chat::process_identity(pid)
             .ok_or_else(|| Error::invalid("could not identify the build controller"))?;
         let base = self.db_mut().write(|tx| {
-            let changed = tx.execute("UPDATE chat_team_run SET supervisor_pid = ?5, supervisor_identity = ?6, rev = rev + 1
+            let changed = tx.execute("UPDATE chat_team_run SET supervisor_pid = ?5, supervisor_identity = ?6, controller_protocol = 1, quiescent = 0, rev = rev + 1
                 WHERE run_id = ?1 AND chat_id = ?2 AND control_node_id = ?3 AND rev = ?4 AND supervisor_pid IS NULL
                 AND phase = 'building' AND approved_revision IS NOT NULL AND base_sha IS NOT NULL
                 AND EXISTS (SELECT 1 FROM chat WHERE id = ?2 AND active_node_id = ?3 AND stop_requested = 0 AND archived = 0)
@@ -43,6 +45,8 @@ impl Store {
                 owner: Some(pid),
             },
             base_sha: base,
+            ownership,
+            recovering: false,
         })
     }
 

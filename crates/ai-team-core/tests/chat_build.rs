@@ -12,6 +12,13 @@ use ai_team_core::{
     *,
 };
 use tempfile::TempDir;
+#[path = "chat_build/recovery.rs"]
+mod recovery_tests;
+use recovery_tests::{
+    abandoned_tasks_lose_their_lock_but_do_not_certify_cleanup,
+    recover_publication_return_and_acquisition_evidence,
+    recovery_does_not_invent_quiescence_or_restart_a_model,
+};
 
 struct Fixture {
     dir: TempDir,
@@ -230,6 +237,8 @@ async fn approvals_and_journaled_leases_preserve_exact_scope_and_files() {
         "PATH",
         format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
     );
+    legacy_controls_cannot_reinterpret_a_chat_run().await;
+    bare_directories_are_rejected_before_approval().await;
     review_conflicts_and_dirty_files().await;
     question_answers_are_not_approval().await;
     routing_rejects_unowned_mixed_and_ambiguous_work().await;
@@ -243,12 +252,79 @@ async fn approvals_and_journaled_leases_preserve_exact_scope_and_files() {
     a_partial_claim_commit_is_reconciled_without_a_second_lease().await;
     a_reused_seat_id_cannot_inherit_approval().await;
     install_worker_runtime(&bin);
+    recovery_does_not_invent_quiescence_or_restart_a_model().await;
     parallel_workers_commit_and_return_without_touching_solo().await;
     repairs_inherit_only_the_makers_session().await;
     failed_work_is_retained_and_does_not_poison_siblings().await;
     cancelled_workers_and_gates_reap_their_groups().await;
+    abandoned_tasks_lose_their_lock_but_do_not_certify_cleanup().await;
+    recover_publication_return_and_acquisition_evidence().await;
     assert!(!env.path().join("unexpected-aip").exists());
     assert!(!env.path().join("unexpected-pi").exists());
+}
+
+async fn bare_directories_are_rejected_before_approval() {
+    let mut f = Fixture::new();
+    std::fs::create_dir_all(f.repo.join("ui/src")).unwrap();
+    std::fs::write(f.repo.join("ui/src/app.ts"), "source\n").unwrap();
+    git(&f.repo, &["add", "."]);
+    commit(&f.repo);
+    f.add_slice("S2", vec!["ui/src"]);
+    let approval = f.approval().await;
+    f.rejected(&approval, "ui/src/**").await;
+}
+
+async fn legacy_controls_cannot_reinterpret_a_chat_run() {
+    let mut f = Fixture::new();
+    let run = f.store.run(f.turn.run_id).unwrap();
+    let orchestrator = Orchestrator {
+        db_path: f.store.path().into(),
+        project_dir: f.dir.path().join("support"),
+        repo: f.repo.clone(),
+        run_id: run.id,
+        team_id: run.team_id.unwrap(),
+        registry: f.registry.clone(),
+        parallel_width: 2,
+        planner: Planner::at(&f.repo).for_plan("chat-1"),
+        worktrees: Worktrees::at(&f.repo),
+    };
+    let error = orchestrator
+        .build_slices(&mut f.store, |_| {})
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("chat controls"),
+        "legacy dispatcher reached beyond its boundary: {error}"
+    );
+    for error in [
+        claim_plan_approval(&mut f.store, run.id).unwrap_err(),
+        claim_session_reset(&mut f.store, run.id, f.turn.node_id).unwrap_err(),
+        f.store
+            .claim_node_supervision(f.turn.node_id, 12, None)
+            .unwrap_err(),
+    ] {
+        assert!(error.to_string().contains("chat controls"));
+    }
+    assert!(continue_approved_run_at(f.store.path(), run.id)
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("chat controls"));
+    let review = f
+        .store
+        .open_review(
+            f.chat.project_id,
+            "team draft",
+            Some(run.id),
+            Some(f.turn.node_id),
+            None,
+        )
+        .unwrap();
+    assert!(pending_review(&f.store, review.id)
+        .unwrap_err()
+        .to_string()
+        .contains("chat controls"));
+    assert_eq!(f.store.run(run.id).unwrap().rev, run.rev);
 }
 
 async fn review_conflicts_and_dirty_files() {

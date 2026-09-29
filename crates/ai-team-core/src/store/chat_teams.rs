@@ -2,6 +2,7 @@
 
 pub(super) mod build;
 mod control;
+mod recovery;
 mod results;
 
 use rusqlite::{params, OptionalExtension, Transaction};
@@ -11,17 +12,43 @@ use crate::planning::PlanAccess;
 use crate::{Agent, ChatTeamMember, ChatTeamRun, Error, Result};
 
 impl Store {
+    /// Legacy planning, steering and delivery must not reinterpret owned chat runs.
+    pub(crate) fn require_legacy_run(&self, run: i64) -> Result<()> {
+        let chat: bool = self.db().conn().query_row(
+            "SELECT EXISTS(SELECT 1 FROM chat_turn WHERE run_id = ?1)",
+            [run],
+            |row| row.get(0),
+        )?;
+        if chat {
+            return Err(Error::invalid(
+                "this execution belongs to a chat; use its chat controls",
+            ));
+        }
+        Ok(())
+    }
+
     pub fn chat_team_run(&self, run_id: i64) -> Result<Option<ChatTeamRun>> {
-        Ok(self.db().conn().query_row(
+        let found = self.db().conn().query_row(
             "SELECT run_id, chat_id, control_node_id, phase, base_sha, approved_revision,
-                    reason, rev, supervisor_pid, supervisor_identity FROM chat_team_run WHERE run_id = ?1",
-            [run_id], |row| Ok(ChatTeamRun {
+                    reason, rev, supervisor_pid, supervisor_identity, controller_protocol, quiescent FROM chat_team_run WHERE run_id = ?1",
+            [run_id], |row| Ok((ChatTeamRun {
                 run_id: row.get(0)?, chat_id: row.get(1)?, control_node_id: row.get(2)?,
                 phase: row.get(3)?, base_sha: row.get(4)?, approved_revision: row.get(5)?,
                 reason: row.get(6)?, rev: row.get(7)?, supervisor_pid: row.get(8)?,
-                supervisor_identity: row.get(9)?,
-            }),
-        ).optional()?)
+                supervisor_identity: row.get(9)?, quiescent: row.get(11)?, controller_lock: None,
+            }, row.get::<_, bool>(10)?)),
+        ).optional()?;
+        found
+            .map(|(mut execution, protocol)| {
+                if protocol {
+                    execution.controller_lock = Some(crate::chat::team::ownership::lock_path(
+                        self.path(),
+                        run_id,
+                    )?);
+                }
+                Ok(execution)
+            })
+            .transpose()
     }
 
     pub fn chat_team_members(&self, run_id: i64) -> Result<Vec<ChatTeamMember>> {

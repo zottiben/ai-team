@@ -441,14 +441,17 @@ pub async fn push(worktree: &Path) -> Result<String> {
 }
 
 async fn git(worktree: &Path, args: &[&str]) -> Result<String> {
-    let output = Command::new("git")
-        .args(args)
-        .current_dir(worktree)
-        .stdin(Stdio::null())
-        .kill_on_drop(true)
-        .output()
-        .await
-        .map_err(|error| Error::invalid(format!("could not run git: {error}")))?;
+    let output = crate::command::run(
+        Command::new("git").args(args).current_dir(worktree),
+        std::time::Duration::from_secs(120),
+        8 * 1024 * 1024,
+        std::future::pending(),
+    )
+    .await
+    .map_err(|error| Error::invalid(format!("could not run git: {error}")))?;
+    if output.truncated {
+        return Err(Error::invalid("git metadata exceeded its capture limit"));
+    }
     if !output.status.success() {
         return Err(Error::invalid(format!(
             "`git {}` failed in {}: {}",

@@ -238,6 +238,9 @@ pub struct Pending {
 /// Read what submitting this review would act on, without acting on it.
 pub fn pending(store: &Store, review_id: i64) -> Result<Pending> {
     let review = store.review(review_id)?;
+    if let Some(run) = review.run_id {
+        store.require_legacy_run(run)?;
+    }
     if review.submitted_at.is_some() {
         return Err(Error::invalid("that review has already been submitted"));
     }

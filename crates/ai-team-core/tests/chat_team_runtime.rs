@@ -462,6 +462,24 @@ impl Harness {
             .unwrap();
     }
 
+    async fn settlement_failure_keeps_the_original_context_error(&mut self) {
+        self.mode("contextfail");
+        let turn = self.submit("preserve both errors");
+        let conn = rusqlite::Connection::open(&self.db).unwrap();
+        conn.execute_batch("CREATE TRIGGER reject_planning_settlement BEFORE UPDATE ON node_run WHEN NEW.status = 'failed' BEGIN SELECT RAISE(ABORT, 'injected planning settlement failure'); END;").unwrap();
+        let error = drive_chat_team_planning(&self.db, self.chat, turn.node_id)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("CONTEXT_UNAVAILABLE:"),
+            "original planning failure disappeared: {error}"
+        );
+        assert!(error.contains("injected planning settlement failure"));
+        conn.execute_batch("DROP TRIGGER reject_planning_settlement")
+            .unwrap();
+    }
+
     async fn failures_block_without_false_approval(&mut self) {
         for (mode, calls) in [("contextfail", 1), ("empty", 1), ("plannerexitfail", 2)] {
             self.mode(mode);
@@ -528,6 +546,8 @@ async fn team_planning_runs_real_children_then_pauses_and_stops_without_legacy_d
     h.failures_block_without_false_approval().await;
     h.policy_and_budget_are_checked_before_spending().await;
     h.missing_plan_is_not_an_approval_pause().await;
+    h.settlement_failure_keeps_the_original_context_error()
+        .await;
     assert_eq!(
         std::fs::read_to_string(h.repo.join("dirty.txt")).unwrap(),
         "keep my uncommitted solo work\n"

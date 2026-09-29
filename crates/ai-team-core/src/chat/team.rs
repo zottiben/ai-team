@@ -2,12 +2,15 @@
 
 mod build;
 mod execution;
+pub(crate) mod ownership;
 mod planning;
+mod recovery;
 pub use build::{
     ChatBuildApproval, ChatBuildControl, ChatBuildReview, ChatBuildSlice, ChatBuildStart,
 };
 pub use execution::drive_chat_team_build;
 pub use planning::drive_chat_team_planning;
+pub use recovery::{reconcile_chat_team_build, ChatBuildRecovery, ChatBuildRecoveryReport};
 
 use serde::Serialize;
 
@@ -34,6 +37,9 @@ pub struct ChatTeamRun {
     pub approved_revision: Option<i64>,
     pub reason: Option<String>,
     pub rev: i64,
+    pub quiescent: bool,
+    #[serde(skip)]
+    pub(crate) controller_lock: Option<std::path::PathBuf>,
     #[serde(skip)]
     pub(crate) supervisor_pid: Option<i64>,
     #[serde(skip)]
@@ -42,7 +48,13 @@ pub struct ChatTeamRun {
 
 impl ChatTeamRun {
     pub fn supervisor_alive(&self) -> bool {
-        super::process_matches(self.supervisor_pid, self.supervisor_identity.as_deref())
+        if self.supervisor_pid.is_none() {
+            return false;
+        }
+        self.controller_lock.as_ref().map_or_else(
+            || super::process_matches(self.supervisor_pid, self.supervisor_identity.as_deref()),
+            |path| ownership::held(path).unwrap_or(true),
+        )
     }
 }
 

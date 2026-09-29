@@ -71,7 +71,7 @@ impl Store {
             if !roster.iter().any(|agent| agent.role == crate::VERIFIER_ROLE && agent.enabled && agent.read_only) {
                 return Err(Error::invalid("a build needs an enabled read-only verifier"));
             }
-            let assignments = ready.iter().map(|slice| routing::maker(&roster, slice)).collect::<Result<Vec<_>>>()?;
+            let assignments = ready.iter().map(|slice| routing::maker(&roster, slice, Path::new(&chat.workspace_path))).collect::<Result<Vec<_>>>()?;
             let (head, dirty) = checkout(Path::new(&chat.workspace_path))?;
             if head != approval.expect_head { return Err(Error::invalid("the reviewed checkout HEAD changed; review it again")); }
             if !dirty.is_empty() { return Err(Error::invalid("the checkout is dirty; commit or stash your files explicitly before approving a build")); }
@@ -81,7 +81,7 @@ impl Store {
                         serde_json::to_string(agent)?, format!("ai-team/chat-{chat_id}/run-{}/slice-{}", run.id, slice.id),
                         format!("ai-team chat-{chat_id} run-{} slice-{}", run.id, slice.id)])?;
             }
-            tx.execute("UPDATE chat_team_run SET phase = 'building', base_sha = ?2, approved_revision = ?3, reason = NULL, rev = rev + 1 WHERE run_id = ?1",
+            tx.execute("UPDATE chat_team_run SET phase = 'building', base_sha = ?2, approved_revision = ?3, reason = NULL, quiescent = 0, rev = rev + 1 WHERE run_id = ?1",
                 params![run.id, head, plan.revision])?;
             tx.execute("UPDATE run SET status = 'running', plan_slug = ?3, blocked_reason = NULL, rev = rev + 1, updated_at = ?2 WHERE id = ?1", params![run.id, crate::now(), bundle.plan.slug])?;
             tx.execute("INSERT INTO event (run_id, node_run_id, at, kind, actor, summary, payload_json) VALUES (?1, ?2, ?3, 'note', 'human', 'Approved the reviewed team build', ?4)",

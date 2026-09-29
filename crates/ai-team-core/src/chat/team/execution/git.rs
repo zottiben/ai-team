@@ -8,7 +8,11 @@ use tokio::process::Command;
 
 const OUTPUT_DIRS: [&str; 5] = ["target", "node_modules", "vendor", "dist", ".output"];
 
-pub(super) async fn text(path: &Path, args: &[&str], watch: &Watch) -> Result<String> {
+pub(in crate::chat::team) async fn text(
+    path: &Path,
+    args: &[&str],
+    watch: &Watch,
+) -> Result<String> {
     String::from_utf8(raw(path, args, None, watch).await?)
         .map(|text| text.trim_end().to_string())
         .map_err(|_| Error::invalid("git returned non-UTF-8 metadata"))
@@ -48,7 +52,12 @@ async fn raw(path: &Path, args: &[&str], index: Option<&Path>, watch: &Watch) ->
     Ok(output.stdout)
 }
 
-pub(super) async fn bound(path: &Path, head: &str, branch: &str, watch: &Watch) -> Result<()> {
+pub(in crate::chat::team) async fn bound(
+    path: &Path,
+    head: &str,
+    branch: &str,
+    watch: &Watch,
+) -> Result<()> {
     if text(path, &["rev-parse", "HEAD"], watch).await? != head
         || text(path, &["symbolic-ref", "--short", "HEAD"], watch).await? != branch
     {
@@ -59,7 +68,7 @@ pub(super) async fn bound(path: &Path, head: &str, branch: &str, watch: &Watch) 
     Ok(())
 }
 
-pub(super) async fn snapshot(path: &Path, watch: &Watch) -> Result<String> {
+pub(in crate::chat::team) async fn snapshot(path: &Path, watch: &Watch) -> Result<String> {
     let dir = tempfile::tempdir_in(
         watch
             .db
@@ -181,7 +190,7 @@ pub(super) async fn candidate(
     .await
 }
 
-pub(super) async fn publish_local(
+pub(in crate::chat::team) async fn publish_local(
     path: &Path,
     branch: &str,
     sha: &str,

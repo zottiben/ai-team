@@ -128,7 +128,8 @@ async fn take_turn(
     let outcome = match result {
         Ok((_, outcome)) => outcome,
         Err(error) => {
-            store.settle_chat_team_member(
+            settle_attempt(
+                store,
                 control,
                 node,
                 NodeStatus::Failed,
@@ -150,11 +151,28 @@ async fn take_turn(
     if reason.is_some() && status == NodeStatus::Done {
         status = NodeStatus::Failed;
     }
-    store.settle_chat_team_member(control, node, status, reason.as_deref())?;
+    settle_attempt(store, control, node, status, reason.as_deref())?;
     if let Some(reason) = reason {
         return Err(Error::invalid(reason));
     }
     Ok(said)
+}
+
+fn settle_attempt(
+    store: &mut Store,
+    control: &TeamControl,
+    node: i64,
+    status: NodeStatus,
+    reason: Option<&str>,
+) -> Result<()> {
+    store
+        .settle_chat_team_member(control, node, status, reason)
+        .map_err(|cleanup| {
+            Error::invalid(format!(
+                "{}; settling the planning attempt also failed: {cleanup}",
+                reason.unwrap_or("The planning turn finished")
+            ))
+        })
 }
 
 fn stop_reason(store: &Store, control: &TeamControl, node: i64) -> Result<Option<String>> {

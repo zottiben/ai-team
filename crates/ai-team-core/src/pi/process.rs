@@ -160,6 +160,7 @@ impl PiTurn {
 pub struct PiProcess {
     child: Child,
     pid: i32,
+    owner: Option<std::sync::Arc<crate::chat::team::ownership::Ownership>>,
 }
 
 impl PiProcess {
@@ -215,7 +216,11 @@ impl PiProcess {
             ))
         })?;
         let pid = child.id().unwrap_or(0).cast_signed();
-        Ok(PiProcess { child, pid })
+        Ok(PiProcess {
+            child,
+            pid,
+            owner: crate::chat::team::ownership::current(),
+        })
     }
 
     /// Read the turn to its end, handing every parsed event to `on_event`.
@@ -370,6 +375,11 @@ impl PiProcess {
 
 impl Drop for PiProcess {
     fn drop(&mut self) {
+        if self.pid != 0 {
+            if let Some(owner) = &self.owner {
+                owner.doubt();
+            }
+        }
         // Normal cancellation uses terminate() and its grace period. Dropping means
         // unwinding/aborting: TERM alone can leave tool descendants writing forever.
         self.kill_group();

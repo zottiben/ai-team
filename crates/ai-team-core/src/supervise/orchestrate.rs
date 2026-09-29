@@ -153,6 +153,7 @@ impl Orchestrator {
     where
         F: FnMut(&crate::PiEvent) + Send,
     {
+        store.require_legacy_run(self.run_id)?;
         let agents = store.agents(self.team_id)?;
         let orchestrator = agents
             .iter()
@@ -253,6 +254,7 @@ impl Orchestrator {
     /// board. Rust still decides what is dispatched; the model only acknowledges the
     /// transition and calls out any last coordination concern in the same session.
     pub async fn acknowledge_plan_approval(&self, store: &mut Store) -> Result<TurnOutcome> {
+        store.require_legacy_run(self.run_id)?;
         let coordinator = store
             .node_runs(self.run_id)?
             .into_iter()
@@ -286,6 +288,7 @@ impl Orchestrator {
         store: &mut Store,
         node_id: i64,
     ) -> Result<()> {
+        store.require_legacy_run(self.run_id)?;
         let node = store.node_run(node_id)?;
         if node.run_id != self.run_id || node.role != ROOT_ROLE {
             return Err(Error::invalid("that node is not this run's orchestrator"));
@@ -361,6 +364,7 @@ impl Orchestrator {
     where
         F: FnMut(&str) + Send,
     {
+        store.require_legacy_run(self.run_id)?;
         let offered = self.offered().await?;
         let (routed, unrouted) = self.routable(store, offered)?;
         let mut out = Orchestration {
@@ -536,6 +540,7 @@ impl Orchestrator {
     /// overwrite evidence left by the interrupted process. The persisted node, planner
     /// claim and awt lease must all agree before a model is started.
     pub async fn resume_node(&self, store: &mut Store, node_id: i64) -> Result<Dispatched> {
+        store.require_legacy_run(self.run_id)?;
         let node = store.node_run(node_id)?;
         if node.run_id != self.run_id || node.status != NodeStatus::Running {
             return Err(Error::invalid(

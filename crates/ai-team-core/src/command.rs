@@ -21,6 +21,7 @@ pub(crate) struct Output {
 struct Process {
     child: Child,
     pid: i32,
+    owner: Option<std::sync::Arc<crate::chat::team::ownership::Ownership>>,
 }
 impl Process {
     fn kill_group(&self) {
@@ -39,6 +40,11 @@ impl Process {
 }
 impl Drop for Process {
     fn drop(&mut self) {
+        if self.pid != 0 {
+            if let Some(owner) = &self.owner {
+                owner.doubt();
+            }
+        }
         self.kill_group();
     }
 }
@@ -62,7 +68,11 @@ where
     command.process_group(0);
     let child = command.spawn()?;
     let pid = child.id().unwrap_or(0).cast_signed();
-    let mut process = Process { child, pid };
+    let mut process = Process {
+        child,
+        pid,
+        owner: crate::chat::team::ownership::current(),
+    };
     let mut out = process
         .child
         .stdout

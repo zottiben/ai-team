@@ -39,6 +39,8 @@ pub struct ChatBuildStart {
 pub struct ChatBuildControl {
     pub(crate) receipt: TeamControl,
     pub(crate) base_sha: String,
+    pub(crate) ownership: std::sync::Arc<super::ownership::Ownership>,
+    pub(crate) recovering: bool,
 }
 
 impl crate::Store {
@@ -68,7 +70,14 @@ impl crate::Store {
         let mut returned = None;
         let watch = super::execution::Watch::new(self.path(), control);
         let result = async {
-            let lease = worktrees.lease_until(approved.lease_holder.as_deref().ok_or_else(|| crate::Error::invalid("this approval has no lease holder"))?, watch.wait()).await?;
+            let lease = worktrees
+                .lease_until(
+                    approved.lease_holder.as_deref().ok_or_else(|| {
+                        crate::Error::invalid("this approval has no lease holder")
+                    })?,
+                    watch.wait(),
+                )
+                .await?;
             let path = lease.path().to_path_buf();
             // Lease::Drop calls awt return --force. From here on even errors/panics must
             // preserve the checkout; acquisition intent already names its holder.
@@ -79,9 +88,18 @@ impl crate::Store {
             if !crate::neighbours::git::porcelain(&path).await?.is_empty() {
                 return Err(crate::Error::invalid("awt returned a dirty worktree; keep it for inspection rather than resetting it"));
             }
-            crate::neighbours::git::prepare_new_branch(&path, approved.branch.as_deref().ok_or_else(|| crate::Error::invalid("this approval has no draft branch"))?, &control.base_sha).await?;
+            crate::neighbours::git::prepare_new_branch(
+                &path,
+                approved
+                    .branch
+                    .as_deref()
+                    .ok_or_else(|| crate::Error::invalid("this approval has no draft branch"))?,
+                &control.base_sha,
+            )
+            .await?;
             self.claim_chat_build_slice(control, key)
-        }.await;
+        };
+        let result = control.ownership.track(result).await;
         if let Err(error) = &result {
             self.retain_chat_build_lease(
                 control,

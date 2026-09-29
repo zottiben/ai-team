@@ -1,7 +1,7 @@
 //! Approved work only: bounded parallel makers, one verifier seat, and explicit cleanup.
 //! No legacy planner/dispatcher, remote delivery, or merge into the solo checkout.
 
-mod git;
+pub(super) mod git;
 mod worker;
 
 use crate::{ChatBuildControl, ChatBuildStart, Error, Result, Store};
@@ -16,9 +16,9 @@ use tokio::{sync::Semaphore, task::JoinHandle};
 #[derive(Clone)]
 pub(super) struct Watch {
     db: PathBuf,
-    control: ChatBuildControl,
+    pub(super) control: ChatBuildControl,
     node: Option<i64>,
-    cleanup: bool,
+    pub(super) cleanup: bool,
 }
 impl Watch {
     pub(super) fn new(db: &Path, control: &ChatBuildControl) -> Self {
@@ -133,14 +133,22 @@ async fn build(store: &mut Store, control: &ChatBuildControl) -> Result<()> {
             let task_key = key.clone();
             wave.0.push((
                 key,
-                tokio::spawn(async move { worker::run(&db, &receipt, &task_key, seat).await }),
+                tokio::spawn(async move {
+                    receipt
+                        .ownership
+                        .track(worker::run(&db, &receipt, &task_key, seat))
+                        .await
+                }),
             ));
         }
         for (key, task) in &mut wave.0 {
             let failure = match task.await {
                 Ok(Ok(())) => None,
                 Ok(Err(error)) => Some(error.to_string()),
-                Err(error) => Some(format!("worker task failed: {error}")),
+                Err(error) => {
+                    control.ownership.doubt();
+                    Some(format!("worker task failed: {error}"))
+                }
             };
             if let Some(reason) = failure {
                 // Reporting is fallible too. Never ? out of this loop and detach siblings.

@@ -10,7 +10,7 @@ impl Store {
         control: &ChatBuildControl,
         key: &str,
     ) -> Result<ai_planner_core::Slice> {
-        build::check(self.db().conn(), control, false)?;
+        build::check(self.db().conn(), control, control.recovering)?;
         let approved = build::read(self.db().conn(), control.receipt.run_id, key)?;
         let chat = self.chat(control.receipt.chat_id)?;
         let store = engine::open(&self.planning_path()?, false)?
@@ -18,7 +18,14 @@ impl Store {
         let plan =
             engine::find(&store, &chat)?.ok_or_else(|| Error::invalid("this chat has no plan"))?;
         let slice = store.slice_by_id(approved.planner_slice_id)?;
-        if slice.plan_id != plan.id || slice.key != key || !owned(&slice, &approved, chat.id) {
+        if slice.plan_id != plan.id
+            || slice.key != key
+            || ((!control.recovering || slice.claimed_by.is_some())
+                && !owned(&slice, &approved, chat.id))
+            || (control.recovering
+                && approved.candidate_sha.is_some()
+                && slice.branch != approved.branch)
+        {
             return Err(Error::invalid(
                 "the approved build no longer holds this exact slice claim",
             ));

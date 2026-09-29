@@ -21,6 +21,7 @@ try {
     git(process.cwd(), 'worktree', 'add', '--detach', lease, 'HEAD');
     entries.push({ name: path.basename(lease), path: lease, status: 'leased', leaseHolder: args[args.indexOf('--lease-holder') + 1], processes: [] });
     fs.writeFileSync(state, JSON.stringify(entries));
+    if (fs.readFileSync(path.join(root, 'worker-mode'), 'utf8').trim() === 'acquire-fail') throw Error('injected acquisition failure after leasing');
     console.log(lease);
   } else if (args[0] === 'status') {
     console.log(JSON.stringify({ worktrees: entries }));
