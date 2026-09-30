@@ -5,12 +5,18 @@ mod tests;
 
 use rusqlite::{params, Connection};
 
-use crate::chat::team::TeamControl;
+use crate::chat::team::{ownership::Ownership, TeamControl};
 use crate::{ChatTeamPhase, Error, NodeStatus, Result, Store};
+use std::sync::Arc;
 
 impl Store {
-    pub(crate) fn claim_chat_team_planning(&mut self, chat: i64, node: i64) -> Result<TeamControl> {
+    pub(crate) fn claim_chat_team_planning(
+        &mut self,
+        chat: i64,
+        node: i64,
+    ) -> Result<(TeamControl, Arc<Ownership>)> {
         let run = self.node_run(node)?.run_id;
+        let ownership = Ownership::acquire(self.path(), run)?;
         let team = self
             .chat_team_run(run)?
             .filter(|team| team.chat_id == chat && team.control_node_id == node)
@@ -22,7 +28,7 @@ impl Store {
             .ok_or_else(|| Error::invalid("could not identify the team controller process"))?;
         self.db_mut().write(|tx| {
             let changed = tx.execute(
-                "UPDATE chat_team_run SET rev = rev + 1 WHERE run_id = ?1 AND rev = 1 AND phase = 'grounding'
+                "UPDATE chat_team_run SET controller_protocol = 1, child_journal = 1, child_epoch = child_epoch + 1, quiescent = 0, rev = rev + 1 WHERE run_id = ?1 AND rev = 1 AND phase = 'grounding'
                  AND supervisor_pid = ?2 AND supervisor_identity = ?3
                  AND EXISTS (SELECT 1 FROM chat c JOIN run r ON r.id = ?1
                      WHERE c.id = chat_team_run.chat_id AND c.active_node_id = chat_team_run.control_node_id
@@ -32,13 +38,17 @@ impl Store {
             if changed != 1 { return Err(Error::invalid("this team controller was already started or needs explicit recovery")); }
             Ok(())
         })?;
-        Ok(TeamControl {
-            chat_id: chat,
-            run_id: run,
-            node_id: node,
-            revision: team.rev + 1,
-            owner: Some(pid),
-        })
+        ownership.bind(self)?;
+        Ok((
+            TeamControl {
+                chat_id: chat,
+                run_id: run,
+                node_id: node,
+                revision: team.rev + 1,
+                owner: Some(pid),
+            },
+            ownership,
+        ))
     }
 
     pub(crate) fn check_chat_team_control(&self, control: &TeamControl) -> Result<()> {
@@ -124,13 +134,15 @@ impl Store {
             check(tx, control)?;
             let leases: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM chat_build_slice WHERE run_id = ?1)", [control.run_id], |row| row.get(0))?;
             if leases { return Err(Error::invalid("a build needs lease-aware cleanup, not planning cleanup")); }
+            let undrained: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM chat_child WHERE run_id = ?1 AND state != 'drained')", [control.run_id], |row| row.get(0))?;
+            if undrained { return Err(Error::invalid("planning has undrained child evidence; retain the checkout for recovery")); }
             let stopped: bool = tx.query_row("SELECT stop_requested FROM chat WHERE id = ?1", [control.chat_id], |row| row.get(0))?;
             let cancelled = stopped || phase == ChatTeamPhase::Finished;
             let actual = if cancelled { ChatTeamPhase::Finished } else { phase };
             let message = if cancelled { "Stopped by you. The chat, plan and working files are kept." } else { reason };
             let at = crate::now();
             tx.execute("UPDATE chat_team_run SET phase = ?2, reason = ?3, supervisor_pid = NULL,
-                supervisor_identity = NULL, rev = rev + 1 WHERE run_id = ?1", params![control.run_id, actual, message])?;
+                supervisor_identity = NULL, quiescent = child_journal, rev = rev + 1 WHERE run_id = ?1", params![control.run_id, actual, message])?;
             tx.execute("UPDATE run SET status = ?2, blocked_reason = ?3, ended_at = ?4, updated_at = ?5,
                 plan_slug = CASE WHEN ?6 = 'awaiting_approval' THEN ?7 ELSE plan_slug END, rev = rev + 1 WHERE id = ?1",
                 params![control.run_id, if cancelled { "cancelled" } else { "blocked" }, message, cancelled.then_some(&at), at,

@@ -41,6 +41,10 @@ const METERED_MODEL_ENV: &[&str] = &[
 ];
 
 pub(crate) fn strip_metered_env(command: &mut Command) {
+    strip_metered_std_env(command.as_std_mut());
+}
+
+pub(crate) fn strip_metered_std_env(command: &mut std::process::Command) {
     for key in METERED_MODEL_ENV {
         command.env_remove(key);
     }
@@ -159,6 +163,7 @@ impl PiTurn {
 #[derive(Debug)]
 pub struct PiProcess {
     child: Child,
+    receipt: Option<crate::chat::team::children::Receipt>,
     pid: i32,
     owner: Option<std::sync::Arc<crate::chat::team::ownership::Ownership>>,
 }
@@ -209,15 +214,17 @@ impl PiProcess {
         #[cfg(unix)]
         command.process_group(0);
 
-        let child = command.spawn().map_err(|e| {
-            Error::invalid(format!(
-                "starting `pi`: {e}. ai-team drives Pi as its runtime (D20) and does not \
+        let (child, receipt) =
+            crate::chat::team::children::spawn(&mut command, "pi").map_err(|e| {
+                Error::invalid(format!(
+                    "starting `pi`: {e}. ai-team drives Pi as its runtime (D20) and does not \
                  install it - `pi --version` should work in this shell."
-            ))
-        })?;
+                ))
+            })?;
         let pid = child.id().unwrap_or(0).cast_signed();
         Ok(PiProcess {
             child,
+            receipt,
             pid,
             owner: crate::chat::team::ownership::current(),
         })
@@ -312,6 +319,9 @@ impl PiProcess {
         // whole group before its caller can release the checkout, even on a clean exit.
         self.kill_group();
         self.pid = 0;
+        if let Some(receipt) = &mut self.receipt {
+            receipt.finish().await?;
+        }
         outcome.exit_code = status.code();
         outcome.stderr = stderr_tail.join("\n");
         outcome.failed |= latest_provider_turn_failed || !status.success();
@@ -343,6 +353,9 @@ impl PiProcess {
             self.child.wait().await?;
         }
         self.pid = 0;
+        if let Some(receipt) = &mut self.receipt {
+            receipt.finish().await?;
+        }
         Ok(())
     }
 

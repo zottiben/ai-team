@@ -27,7 +27,7 @@ impl Store {
         let identity = crate::chat::process_identity(pid)
             .ok_or_else(|| Error::invalid("could not identify the build controller"))?;
         let base = self.db_mut().write(|tx| {
-            let changed = tx.execute("UPDATE chat_team_run SET supervisor_pid = ?5, supervisor_identity = ?6, controller_protocol = 1, quiescent = 0, rev = rev + 1
+            let changed = tx.execute("UPDATE chat_team_run SET supervisor_pid = ?5, supervisor_identity = ?6, controller_protocol = 1, child_journal = 1, child_epoch = child_epoch + 1, quiescent = 0, rev = rev + 1
                 WHERE run_id = ?1 AND chat_id = ?2 AND control_node_id = ?3 AND rev = ?4 AND supervisor_pid IS NULL
                 AND phase = 'building' AND approved_revision IS NOT NULL AND base_sha IS NOT NULL
                 AND EXISTS (SELECT 1 FROM chat WHERE id = ?2 AND active_node_id = ?3 AND stop_requested = 0 AND archived = 0)
@@ -36,6 +36,7 @@ impl Store {
             if changed != 1 { return Err(Error::invalid("the approved build was already started, stopped, or changed")); }
             Ok(tx.query_row("SELECT base_sha FROM chat_team_run WHERE run_id = ?1", [start.run_id], |row| row.get(0))?)
         })?;
+        ownership.bind(self)?;
         Ok(ChatBuildControl {
             receipt: TeamControl {
                 chat_id: start.chat_id,

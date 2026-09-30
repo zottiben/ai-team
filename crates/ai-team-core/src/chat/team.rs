@@ -1,7 +1,9 @@
 //! Persisted team execution identity, separate from any individual Pi turn.
 
 mod build;
+pub(crate) mod children;
 mod execution;
+mod interrupted;
 pub(crate) mod ownership;
 mod planning;
 mod recovery;
@@ -9,6 +11,7 @@ pub use build::{
     ChatBuildApproval, ChatBuildControl, ChatBuildReview, ChatBuildSlice, ChatBuildStart,
 };
 pub use execution::drive_chat_team_build;
+pub use interrupted::recover_chat_team_processes;
 pub use planning::drive_chat_team_planning;
 pub use recovery::{reconcile_chat_team_build, ChatBuildRecovery, ChatBuildRecoveryReport};
 

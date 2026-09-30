@@ -1,7 +1,7 @@
 use super::*;
 use crate::{ChatMode, ModelRegistry, NewChat, NewProject, Provider, Reasoning};
 
-fn setup() -> (tempfile::TempDir, Store, TeamControl) {
+fn setup() -> (tempfile::TempDir, Store, TeamControl, Arc<Ownership>) {
     let dir = tempfile::tempdir().unwrap();
     let mut store = Store::init(&dir.path().join("team.db")).unwrap();
     let project = store
@@ -26,15 +26,15 @@ fn setup() -> (tempfile::TempDir, Store, TeamControl) {
     let turn = store
         .begin_chat_turn(chat.id, "plan", "one", &ModelRegistry::local_only())
         .unwrap();
-    let control = store
+    let (control, owner) = store
         .claim_chat_team_planning(chat.id, turn.node_id)
         .unwrap();
-    (dir, store, control)
+    (dir, store, control, owner)
 }
 
 #[test]
 fn a_stale_callback_in_the_same_process_cannot_park_or_release_the_new_phase() {
-    let (_dir, mut store, mut control) = setup();
+    let (_dir, mut store, mut control, _owner) = setup();
     let mut stale = control;
     store.start_chat_team_planner(&mut control).unwrap();
     assert!(store
@@ -56,7 +56,7 @@ fn a_stale_callback_in_the_same_process_cannot_park_or_release_the_new_phase() {
 
 #[test]
 fn stop_wins_the_race_with_a_successful_planning_pause() {
-    let (_dir, mut store, mut control) = setup();
+    let (_dir, mut store, mut control, _owner) = setup();
     store
         .request_chat_stop(control.chat_id, control.node_id)
         .unwrap();
@@ -79,7 +79,7 @@ fn stop_wins_the_race_with_a_successful_planning_pause() {
 
 #[test]
 fn planning_cleanup_never_releases_build_bookkeeping() {
-    let (_dir, mut store, mut control) = setup();
+    let (_dir, mut store, mut control, _owner) = setup();
     store.db_mut().write(|tx| {
         tx.execute("INSERT INTO chat_build_slice (run_id, slice_key, planner_slice_id, approved_rev) VALUES (?1, 'S1', 1, 1)", [control.run_id])?;
         Ok(())

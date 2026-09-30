@@ -35,6 +35,7 @@ printf '{"type":"session","id":"%s","cwd":"%s"}\n' "$session" "$PWD"
 printf '{"type":"message_end","message":{"role":"user","content":[{"type":"text","text":"CONTEXT_UNAVAILABLE: echoed prompt is not a verdict"}]}}\n'
 mode=$(cat "$TEAM_TEST_ROOT/mode")
 if [ "$mode" = "slow-$role" ]; then
+  printf '{"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"Still reading the proposed work"}}\n'
   trap 'exit 0' TERM
   sh -c 'trap "" TERM; echo $$ > "$TEAM_TEST_ROOT/tool.pid"; while :; do sleep 1; done' &
   printf '{"type":"tool_execution_start","toolName":"bash","args":{"command":"slow read"}}\n'

@@ -1,7 +1,9 @@
 //! A chat's controller and its explicitly enrolled execution attempts.
 
 pub(super) mod build;
+mod children;
 mod control;
+mod interrupted;
 mod recovery;
 mod results;
 

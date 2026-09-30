@@ -12,6 +12,8 @@ use ai_team_core::{
     *,
 };
 use tempfile::TempDir;
+#[path = "chat_build/children.rs"]
+mod children_tests;
 #[path = "chat_build/recovery.rs"]
 mod recovery_tests;
 use recovery_tests::{
@@ -252,6 +254,8 @@ async fn approvals_and_journaled_leases_preserve_exact_scope_and_files() {
     a_partial_claim_commit_is_reconciled_without_a_second_lease().await;
     a_reused_seat_id_cannot_inherit_approval().await;
     install_worker_runtime(&bin);
+    children_tests::killed_hosts_drain_only_their_recorded_children().await;
+    children_tests::unknown_spawns_and_reused_pids_are_not_guessed_dead().await;
     recovery_does_not_invent_quiescence_or_restart_a_model().await;
     parallel_workers_commit_and_return_without_touching_solo().await;
     repairs_inherit_only_the_makers_session().await;

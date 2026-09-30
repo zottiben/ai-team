@@ -5,7 +5,7 @@ use std::{
     fs::{File, OpenOptions, TryLockError},
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicI64, Ordering},
         Arc,
     },
 };
@@ -15,6 +15,9 @@ tokio::task_local! { static OWNER: Arc<Ownership>; }
 #[derive(Debug)]
 pub(crate) struct Ownership {
     _file: File,
+    pub(crate) db: PathBuf,
+    pub(crate) run: i64,
+    epoch: AtomicI64,
     uncertain: AtomicBool,
 }
 impl Ownership {
@@ -43,7 +46,7 @@ impl Ownership {
                 // receipts require local, independent file-description semantics.
                 let probe = OpenOptions::new().read(true).write(true).open(&path)?;
                 match probe.try_lock() {
-                    Err(TryLockError::WouldBlock) => Ok(Arc::new(Self { _file: file, uncertain: AtomicBool::new(false) })),
+                    Err(TryLockError::WouldBlock) => Ok(Arc::new(Self { _file: file, db: db.canonicalize()?, run, epoch: AtomicI64::new(0), uncertain: AtomicBool::new(false) })),
                     Err(TryLockError::Error(error)) => Err(error.into()),
                     Ok(()) => Err(Error::invalid("controller storage does not provide independent file locks; use a local data directory")),
                 }
@@ -53,6 +56,14 @@ impl Ownership {
             )),
             Err(TryLockError::Error(error)) => Err(error.into()),
         }
+    }
+    pub(crate) fn bind(&self, store: &crate::Store) -> Result<()> {
+        self.epoch
+            .store(store.chat_child_epoch(self.run)?, Ordering::SeqCst);
+        Ok(())
+    }
+    pub(crate) fn epoch(&self) -> i64 {
+        self.epoch.load(Ordering::SeqCst)
     }
     pub(crate) fn quiescent(&self) -> bool {
         !self.uncertain.load(Ordering::SeqCst)

@@ -44,7 +44,7 @@ impl Store {
         let identity = crate::chat::process_identity(pid)
             .ok_or_else(|| Error::invalid("could not identify the recovery controller"))?;
         self.db_mut().write(|tx| {
-            if tx.execute("UPDATE chat_team_run SET phase = 'building', supervisor_pid = ?5, supervisor_identity = ?6, controller_protocol = 1, quiescent = 0, rev = rev + 1
+            if tx.execute("UPDATE chat_team_run SET phase = 'building', supervisor_pid = ?5, supervisor_identity = ?6, controller_protocol = 1, child_journal = 1, child_epoch = child_epoch + 1, quiescent = 0, rev = rev + 1
                 WHERE run_id = ?1 AND chat_id = ?2 AND control_node_id = ?3 AND rev = ?4 AND phase IN ('building','blocked') AND quiescent = 1 AND supervisor_pid IS NULL
                 AND approved_revision IS NOT NULL AND base_sha IS NOT NULL
                 AND EXISTS(SELECT 1 FROM chat WHERE id = ?2 AND active_node_id = ?3 AND archived = 0)
@@ -54,6 +54,7 @@ impl Store {
             tx.execute("UPDATE run SET status = 'blocked', blocked_reason = 'Reconciling recorded build evidence', rev = rev + 1, updated_at = ?2 WHERE id = ?1", params![target.run_id, crate::now()])?;
             Ok(())
         })?;
+        ownership.bind(self)?;
         Ok(ChatBuildControl {
             receipt: TeamControl {
                 chat_id: target.chat_id,

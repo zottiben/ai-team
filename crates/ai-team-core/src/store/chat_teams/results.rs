@@ -182,12 +182,14 @@ impl Store {
             build::check(tx, control, true)?;
             let (retained, failed): (bool, bool) = tx.query_row("SELECT EXISTS(SELECT 1 FROM chat_build_slice WHERE run_id = ?1 AND lease_state != 'released'), EXISTS(SELECT 1 FROM chat_build_slice WHERE run_id = ?1 AND build_status != 'verified')", [control.receipt.run_id], |row| Ok((row.get(0)?, row.get(1)?)))?;
             let stopped: bool = tx.query_row("SELECT stop_requested FROM chat WHERE id = ?1", [control.receipt.chat_id], |row| row.get(0))?;
-            let blocked = retained || reason.is_some();
+            let undrained: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM chat_child WHERE run_id = ?1 AND state != 'drained')", [control.receipt.run_id], |row| row.get(0))?;
+            let quiescent = control.ownership.quiescent() && !undrained;
+            let blocked = retained || reason.is_some() || !quiescent;
             let status = if blocked { "blocked" } else if stopped { "cancelled" } else if failed { "failed" } else { "done" };
             let message = reason.unwrap_or(if retained { "Work retained for explicit recovery; no lease was silently discarded." } else if failed { "Some approved work did not finish." } else { "Verified drafts are ready for review; nothing was merged or published." });
             let at = crate::now();
             tx.execute("UPDATE node_run SET status = 'failed', blocked_reason = ?2, pi_pid = NULL, supervisor_pid = NULL, ended_at = ?3, updated_at = ?3, rev = rev + 1 WHERE run_id = ?1 AND status IN ('queued','running')", params![control.receipt.run_id, message, at])?;
-            tx.execute("UPDATE chat_team_run SET phase = ?2, reason = ?3, supervisor_pid = NULL, supervisor_identity = NULL, quiescent = ?4, rev = rev + 1 WHERE run_id = ?1", params![control.receipt.run_id, if blocked { "blocked" } else { "finished" }, message, control.ownership.quiescent()])?;
+            tx.execute("UPDATE chat_team_run SET phase = ?2, reason = ?3, supervisor_pid = NULL, supervisor_identity = NULL, quiescent = ?4, rev = rev + 1 WHERE run_id = ?1", params![control.receipt.run_id, if blocked { "blocked" } else { "finished" }, message, quiescent])?;
             tx.execute("UPDATE run SET status = ?2, blocked_reason = ?3, ended_at = ?4, updated_at = ?5, rev = rev + 1 WHERE id = ?1", params![control.receipt.run_id, status, (status != "done").then_some(message), (!blocked).then_some(&at), at])?;
             tx.execute("UPDATE chat SET active_node_id = CASE WHEN ?2 THEN active_node_id ELSE NULL END, stop_requested = 0, live_text = '', supervisor_identity = NULL, pi_identity = NULL, rev = rev + 1, updated_at = ?3 WHERE id = ?1", params![control.receipt.chat_id, blocked, at])?;
             tx.execute("INSERT INTO event (run_id, at, kind, actor, summary) VALUES (?1, ?2, 'note', 'ai-team', ?3)", params![control.receipt.run_id, at, message])?;

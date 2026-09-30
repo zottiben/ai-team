@@ -20,6 +20,7 @@ pub(crate) struct Output {
 
 struct Process {
     child: Child,
+    receipt: Option<crate::chat::team::children::Receipt>,
     pid: i32,
     owner: Option<std::sync::Arc<crate::chat::team::ownership::Ownership>>,
 }
@@ -35,6 +36,9 @@ impl Process {
         self.child.start_kill()?;
         self.child.wait().await?;
         self.pid = 0;
+        if let Some(receipt) = &mut self.receipt {
+            receipt.finish().await?;
+        }
         Ok(())
     }
 }
@@ -66,10 +70,11 @@ where
         .kill_on_drop(true);
     #[cfg(unix)]
     command.process_group(0);
-    let child = command.spawn()?;
+    let (child, receipt) = crate::chat::team::children::spawn(command, "command")?;
     let pid = child.id().unwrap_or(0).cast_signed();
     let mut process = Process {
         child,
+        receipt,
         pid,
         owner: crate::chat::team::ownership::current(),
     };
@@ -116,6 +121,9 @@ where
             })?;
             return Err(error);
         }
+    }
+    if let Some(receipt) = &mut process.receipt {
+        receipt.finish().await?;
     }
     Ok(Output {
         status: exited.ok_or_else(|| Error::invalid("command never exited"))?,

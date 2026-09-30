@@ -13,8 +13,8 @@ use crate::{ChatTeamPhase, Error, ModelRegistry, NodeStatus, Result, RunStatus, 
 /// Recovery and the approved-build driver are separate operations, not a replay here.
 pub async fn drive_chat_team_planning(db: &Path, chat_id: i64, node_id: i64) -> Result<()> {
     let mut store = Store::open(db)?;
-    let mut control = store.claim_chat_team_planning(chat_id, node_id)?;
-    let result = plan(&mut store, &mut control).await;
+    let (mut control, ownership) = store.claim_chat_team_planning(chat_id, node_id)?;
+    let result = ownership.track(plan(&mut store, &mut control)).await;
     let (phase, reason) = match &result {
         Ok(()) => (ChatTeamPhase::AwaitingApproval, "Review this chat's plan and questions in Overview. No build has been approved or started.".to_string()),
         Err(error) => (ChatTeamPhase::Blocked, error.to_string()),

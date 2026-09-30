@@ -402,6 +402,72 @@ impl Harness {
         std::fs::remove_file(self.dir.path().join("tool.pid")).unwrap();
     }
 
+    async fn aborted_planning_task_is_recoverable(&mut self, role: &str) {
+        self.mode(&format!("slow-{role}"));
+        let turn = self.submit(&format!("Abort {role}"));
+        let task = self.spawn(turn.node_id);
+        until(|| {
+            self.dir.path().join("tool.pid").exists()
+                && self
+                    .store
+                    .chat_team_members(turn.run_id)
+                    .unwrap()
+                    .iter()
+                    .any(|member| {
+                        member.node.role == role
+                            && member.node.session_id.is_some()
+                            && !member.live_text.is_empty()
+                    })
+        })
+        .await;
+        let before = self.calls();
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        until(|| {
+            !self
+                .store
+                .chat_team_run(turn.run_id)
+                .unwrap()
+                .unwrap()
+                .supervisor_alive()
+        })
+        .await;
+        let execution = self.store.chat_team_run(turn.run_id).unwrap().unwrap();
+        assert!(!execution.quiescent);
+        let recovered = ai_team_core::recover_chat_team_processes(
+            &self.db,
+            &ai_team_core::ChatBuildRecovery {
+                chat_id: self.chat,
+                run_id: turn.run_id,
+                node_id: turn.node_id,
+                expect_revision: execution.rev,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(recovered.quiescent && !recovered.supervisor_alive());
+        assert_eq!(recovered.phase, ChatTeamPhase::Blocked);
+        assert!(
+            self.store.chat(self.chat).unwrap().live_text.is_empty(),
+            "recovery left a stale live preview"
+        );
+        assert_eq!(self.calls(), before);
+        assert!(self
+            .store
+            .chat_team_members(turn.run_id)
+            .unwrap()
+            .iter()
+            .filter(|member| member.node.role == role)
+            .all(|member| member.node.session_id.is_some() && !member.pi_alive()));
+        let pid = std::fs::read_to_string(self.dir.path().join("tool.pid")).unwrap();
+        until(|| dead(pid.trim())).await;
+        self.store
+            .stop_chat_team_planning(self.chat, turn.node_id, recovered.rev)
+            .unwrap();
+        assert!(self.store.chat(self.chat).unwrap().active_node_id.is_none());
+        std::fs::remove_file(self.dir.path().join("tool.pid")).unwrap();
+    }
+
     async fn policy_and_budget_are_checked_before_spending(&mut self) {
         self.mode("normal");
         let before = self.calls();
@@ -543,6 +609,8 @@ async fn team_planning_runs_real_children_then_pauses_and_stops_without_legacy_d
     h.return_to_solo().await;
     h.cancel("orchestrator").await;
     h.cancel("planner").await;
+    h.aborted_planning_task_is_recoverable("orchestrator").await;
+    h.aborted_planning_task_is_recoverable("planner").await;
     h.failures_block_without_false_approval().await;
     h.policy_and_budget_are_checked_before_spending().await;
     h.missing_plan_is_not_an_approval_pause().await;

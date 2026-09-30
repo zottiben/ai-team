@@ -38,7 +38,8 @@ if (role !== 'verifier') {
   }
   if (mode === 'tracked-output') fs.renameSync('crates/dist/base.txt', 'crates/dist/new.txt');
   if (mode === 'rename') fs.renameSync('crates/old name-é.txt', 'crates/new name-é.txt');
-  if (mode === 'slow-maker') {
+  if (mode === 'slow-maker' || mode === 'settled-maker') {
+    if (mode === 'settled-maker') emit({type:'agent_settled'});
     const child = spawn('sh', ['-c', 'trap "" TERM; while :; do sleep 1; done'], { stdio: 'ignore' });
     fs.writeFileSync(path.join(root, 'worker-tool.pid'), String(child.pid));
     fs.writeFileSync(path.join(root, 'worker-waiting'), id);

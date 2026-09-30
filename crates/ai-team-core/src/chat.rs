@@ -2,9 +2,10 @@
 
 pub(crate) mod team;
 pub use team::{
-    drive_chat_team_build, drive_chat_team_planning, reconcile_chat_team_build, ChatBuildApproval,
-    ChatBuildControl, ChatBuildRecovery, ChatBuildRecoveryReport, ChatBuildReview, ChatBuildSlice,
-    ChatBuildStart, ChatTeamMember, ChatTeamRun,
+    drive_chat_team_build, drive_chat_team_planning, reconcile_chat_team_build,
+    recover_chat_team_processes, ChatBuildApproval, ChatBuildControl, ChatBuildRecovery,
+    ChatBuildRecoveryReport, ChatBuildReview, ChatBuildSlice, ChatBuildStart, ChatTeamMember,
+    ChatTeamRun,
 };
 
 use std::path::{Path, PathBuf};
@@ -67,7 +68,9 @@ pub struct ChatSubmission {
 /// A PID alone is not identity after a restart or reboot. Keep the OS-reported start
 /// instant too; if the OS cannot answer, fail closed rather than guessing a writer died.
 pub(crate) fn process_identity(pid: i64) -> Option<String> {
-    let output = std::process::Command::new("ps")
+    let mut command = std::process::Command::new("ps");
+    crate::pi::strip_metered_std_env(&mut command);
+    let output = command
         .args(["-p", &pid.to_string(), "-o", "lstart="])
         .env("LC_ALL", "C")
         .stdin(std::process::Stdio::null())

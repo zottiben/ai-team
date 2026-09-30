@@ -6,7 +6,7 @@ use crate::{
 
 fn fixture() -> (tempfile::TempDir, Store, i64) {
     let dir = tempfile::tempdir().unwrap();
-    let mut store = Store::memory().unwrap();
+    let mut store = Store::init(&dir.path().join("team.db")).unwrap();
     let project = store
         .create_project(NewProject {
             name: "Context".into(),
@@ -73,7 +73,7 @@ fn mode_context_bridges_both_directions_and_includes_later_team_peers() {
         "Review the two proposed slices.",
     );
     store.set_node_status(peer.id, NodeStatus::Done).unwrap();
-    let mut controller = store.claim_chat_team_planning(chat, team.node_id).unwrap();
+    let (mut controller, _owner) = store.claim_chat_team_planning(chat, team.node_id).unwrap();
     store
         .park_chat_team_planning(&mut controller, ChatTeamPhase::Finished, "stop")
         .unwrap();
