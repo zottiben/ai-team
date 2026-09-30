@@ -46,6 +46,10 @@ if (role !== 'verifier') {
     await new Promise(() => { setInterval(() => {}, 1000); });
   }
 }
+if (role === 'verifier' && mode === 'slow-verifier') {
+  fs.writeFileSync(path.join(root, 'verifier-waiting'), id);
+  await new Promise(() => { setInterval(() => {}, 1000); });
+}
 await new Promise(r => setTimeout(r, key === 'S1' ? 300 : 160));
 if (role === 'verifier' && mode === 'verifier-edit') fs.appendFileSync(`crates/${key}.txt`, 'unverified change\n');
 if (!(role === 'verifier' && mode === 'echo-only')) emit({type:'message_end', message:{role:'assistant', content:[{type:'text', text:role === 'verifier' ? (mode === 'reject' ? 'Missing wiring.\nVERDICT: reject' : 'Existence, substance and wiring checked.\nVERDICT: pass') : `Implemented ${key}.`} ]}});

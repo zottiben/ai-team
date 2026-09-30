@@ -15,10 +15,28 @@ fn child_host() {
         run_id: values[2],
         revision: values[3],
     };
-    tokio::runtime::Runtime::new()
-        .unwrap()
-        .block_on(drive_chat_team_build(Path::new(&db), start))
-        .unwrap();
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    if let Ok(revision) = std::env::var("TEAM_CHILD_HOST_SLICE_REV") {
+        runtime
+            .block_on(resume_chat_team_slice(
+                Path::new(&db),
+                &ChatBuildResume {
+                    target: ChatBuildRecovery {
+                        chat_id: start.chat_id,
+                        run_id: start.run_id,
+                        node_id: start.node_id,
+                        expect_revision: start.revision,
+                    },
+                    slice_key: "S1".into(),
+                    expect_slice_revision: revision.parse().unwrap(),
+                },
+            ))
+            .unwrap();
+    } else {
+        runtime
+            .block_on(drive_chat_team_build(Path::new(&db), start))
+            .unwrap();
+    }
 }
 
 fn target(f: &Fixture) -> ChatBuildRecovery {
@@ -33,106 +51,195 @@ fn target(f: &Fixture) -> ChatBuildRecovery {
 pub(super) async fn killed_hosts_drain_only_their_recorded_children() {
     a_failed_identity_registration_keeps_the_known_pid().await;
     for mode in ["slow-maker", "slow-gate", "settled-maker"] {
-        let mut f = worker_fixture(mode);
-        let start = f.approve().await;
-        let mut host = spawn_host(&f, &start);
-        let _cleanup = HostCleanup {
-            db: f.store.path().to_owned(),
-            pid: host.id().unwrap(),
-            identity: identity(host.id().unwrap()).unwrap(),
-        };
-        let marker = if mode == "slow-gate" {
-            "gate-waiting"
-        } else {
-            "worker-waiting"
-        };
-        tokio::time::timeout(std::time::Duration::from_secs(30), async {
-            while !f.dir.path().join(marker).exists() {
-                assert!(
-                    host.try_wait().unwrap().is_none(),
-                    "host exited before {marker}"
-                );
-                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-            }
-        })
-        .await
-        .unwrap();
-        if mode == "settled-maker" {
-            // Fault injection: terminal node evidence and process cleanup are separate.
-            // Recovery must clear process references on terminal members too.
-            f.conn()
-                .execute(
-                    "UPDATE node_run SET status = 'done' WHERE run_id = ?1 AND role = 'backend'",
-                    [f.turn.run_id],
-                )
-                .unwrap();
-        }
-        assert!(f
-            .store
-            .chat_team_run(f.turn.run_id)
-            .unwrap()
-            .unwrap()
-            .supervisor_alive());
-        assert!(
-            recover_chat_team_processes(f.store.path(), &target(&f))
-                .await
-                .is_err(),
-            "cannot steal a live host"
-        );
-        host.kill().await.unwrap();
-        host.wait().await.unwrap();
-        let before = calls(&f);
-        assert!(!f
-            .store
-            .chat_team_run(f.turn.run_id)
-            .unwrap()
-            .unwrap()
-            .supervisor_alive());
-        let stale = target(&f);
-        let result = recover_chat_team_processes(f.store.path(), &stale)
-            .await
-            .unwrap();
-        assert!(result.quiescent);
-        assert_eq!(result.phase, ChatTeamPhase::Blocked);
-        assert!(f.store.chat(f.chat.id).unwrap().active_node_id.is_some());
-        assert!(recover_chat_team_processes(f.store.path(), &stale)
-            .await
-            .is_err());
-        assert_process_dead(&f.dir.path().join(if mode == "slow-gate" {
-            "gate-tool.pid"
-        } else {
-            "worker-tool.pid"
-        }))
-        .await;
-        assert_eq!(calls(&f), before, "recovery cannot restart a model");
-        let open: i64 = f
-            .conn()
-            .query_row(
-                "SELECT COUNT(*) FROM chat_child WHERE state != 'drained'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(open, 0);
-        let path = f.lease().worktree_path.unwrap();
-        assert_eq!(
-            std::fs::read_to_string(Path::new(&path).join("crates/S1.txt")).unwrap(),
-            "GOOD\n"
-        );
-        assert!(!std::fs::read_to_string(f.dir.path().join("pool-calls"))
-            .unwrap()
-            .contains("return"));
-        assert!(f
-            .store
-            .node_runs(f.turn.run_id)
-            .unwrap()
-            .iter()
-            .all(|node| node.pi_pid.is_none()));
+        killed_host(mode).await;
     }
 }
 
-fn spawn_host(f: &Fixture, start: &ChatBuildStart) -> tokio::process::Child {
-    tokio::process::Command::new(std::env::current_exe().unwrap())
+async fn killed_host(mode: &str) {
+    let mut f = worker_fixture(mode);
+    let start = f.approve().await;
+    let mut host = spawn_host(&f, &start, None);
+    let _cleanup = HostCleanup {
+        db: f.store.path().to_owned(),
+        pid: host.id().unwrap(),
+        identity: identity(host.id().unwrap()).unwrap(),
+    };
+    let marker = if mode == "slow-gate" {
+        "gate-waiting"
+    } else {
+        "worker-waiting"
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        while !f.dir.path().join(marker).exists() {
+            assert!(
+                host.try_wait().unwrap().is_none(),
+                "host exited before {marker}"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    if mode == "settled-maker" {
+        // Fault injection: terminal node evidence and process cleanup are separate.
+        // Recovery must clear process references on terminal members too.
+        f.conn()
+            .execute(
+                "UPDATE node_run SET status = 'done' WHERE run_id = ?1 AND role = 'backend'",
+                [f.turn.run_id],
+            )
+            .unwrap();
+    }
+    assert!(f
+        .store
+        .chat_team_run(f.turn.run_id)
+        .unwrap()
+        .unwrap()
+        .supervisor_alive());
+    assert!(
+        recover_chat_team_processes(f.store.path(), &target(&f))
+            .await
+            .is_err(),
+        "cannot steal a live host"
+    );
+    host.kill().await.unwrap();
+    host.wait().await.unwrap();
+    let before = calls(&f);
+    assert!(!f
+        .store
+        .chat_team_run(f.turn.run_id)
+        .unwrap()
+        .unwrap()
+        .supervisor_alive());
+    let stale = target(&f);
+    let result = recover_chat_team_processes(f.store.path(), &stale)
+        .await
+        .unwrap();
+    assert!(result.quiescent);
+    assert_eq!(result.phase, ChatTeamPhase::Blocked);
+    assert!(f.store.chat(f.chat.id).unwrap().active_node_id.is_some());
+    assert!(recover_chat_team_processes(f.store.path(), &stale)
+        .await
+        .is_err());
+    assert_process_dead(&f.dir.path().join(if mode == "slow-gate" {
+        "gate-tool.pid"
+    } else {
+        "worker-tool.pid"
+    }))
+    .await;
+    assert_eq!(calls(&f), before, "recovery cannot restart a model");
+    let open: i64 = f
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM chat_child WHERE state != 'drained'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(open, 0);
+    let path = f.lease().worktree_path.unwrap();
+    assert_eq!(
+        std::fs::read_to_string(Path::new(&path).join("crates/S1.txt")).unwrap(),
+        "GOOD\n"
+    );
+    assert!(!std::fs::read_to_string(f.dir.path().join("pool-calls"))
+        .unwrap()
+        .contains("return"));
+    assert!(f
+        .store
+        .node_runs(f.turn.run_id)
+        .unwrap()
+        .iter()
+        .all(|node| node.pi_pid.is_none()));
+    if mode == "slow-maker" {
+        crash_a_continuation_then_finish(&mut f).await;
+    }
+}
+
+async fn crash_a_continuation_then_finish(f: &mut Fixture) {
+    let before = f.lease();
+    let session = f
+        .store
+        .node_run(before.maker_node_id.unwrap())
+        .unwrap()
+        .session_id
+        .unwrap();
+    std::fs::remove_file(f.dir.path().join("worker-waiting")).unwrap();
+    let reviewed = target(f);
+    let start = ChatBuildStart {
+        chat_id: reviewed.chat_id,
+        run_id: reviewed.run_id,
+        node_id: reviewed.node_id,
+        revision: reviewed.expect_revision,
+    };
+    let mut host = spawn_host(f, &start, Some(before.rev));
+    let _cleanup = HostCleanup {
+        db: f.store.path().to_owned(),
+        pid: host.id().unwrap(),
+        identity: identity(host.id().unwrap()).unwrap(),
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        loop {
+            assert!(
+                host.try_wait().unwrap().is_none(),
+                "continuation host exited early"
+            );
+            if f.dir.path().join("worker-waiting").exists()
+                && f.lease().maker_node_id != before.maker_node_id
+                && f.store
+                    .node_run(f.lease().maker_node_id.unwrap())
+                    .unwrap()
+                    .session_id
+                    .is_some()
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    host.kill().await.unwrap();
+    host.wait().await.unwrap();
+    recover_chat_team_processes(f.store.path(), &target(f))
+        .await
+        .unwrap();
+    std::fs::write(f.dir.path().join("worker-mode"), "success").unwrap();
+    resume_chat_team_slice(
+        f.store.path(),
+        &ChatBuildResume {
+            target: target(f),
+            slice_key: "S1".into(),
+            expect_slice_revision: f.lease().rev,
+        },
+    )
+    .await
+    .unwrap();
+    let row = f.lease();
+    let final_node = f.store.node_run(row.maker_node_id.unwrap()).unwrap();
+    assert_eq!(final_node.attempt, 3);
+    assert_eq!(final_node.session_id.as_deref(), Some(session.as_str()));
+    assert_eq!(row.lease_state, "released");
+    assert_eq!(row.worktree_path, before.worktree_path);
+    assert_eq!(row.branch, before.branch);
+    assert_eq!(
+        std::fs::read_to_string(f.dir.path().join("pool-calls"))
+            .unwrap()
+            .lines()
+            .filter(|s| s.starts_with("[\"get\","))
+            .count(),
+        1
+    );
+}
+
+fn spawn_host(f: &Fixture, start: &ChatBuildStart, resume: Option<i64>) -> tokio::process::Child {
+    let mut command = tokio::process::Command::new(std::env::current_exe().unwrap());
+    if let Some(revision) = resume {
+        command.env("TEAM_CHILD_HOST_SLICE_REV", revision.to_string());
+    } else {
+        command.env_remove("TEAM_CHILD_HOST_SLICE_REV");
+    }
+    command
         .args(["--ignored", "--exact", "children_tests::child_host"])
         .env("TEAM_CHILD_HOST_DB", f.store.path())
         .env(

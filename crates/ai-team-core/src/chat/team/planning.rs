@@ -40,7 +40,10 @@ async fn plan(store: &mut Store, control: &mut TeamControl) -> Result<()> {
         .find_map(|repo| repo.main_path)
         .ok_or_else(|| Error::invalid("this chat's project has no checkout"))?;
     let workspace = crate::Worktrees::at(repo)
-        .resolve(Path::new(&chat.workspace_path))
+        .resolve_until(
+            Path::new(&chat.workspace_path),
+            until_stopped(Store::open(store.path())?, *control, control.node_id),
+        )
         .await?;
     if !crate::same_worktree(&workspace.to_string_lossy(), &chat.workspace_path) {
         return Err(Error::invalid("this chat's checkout changed"));
@@ -97,17 +100,7 @@ async fn take_turn(
         &ModelRegistry::load()?,
         prompt,
     )?;
-    let observer = Store::open(store.path())?;
-    let watched = *control;
-    let stop = async move {
-        loop {
-            match stop_reason(&observer, &watched, node) {
-                Ok(Some(reason)) => return reason,
-                Err(error) => return format!("Stopped because team supervision failed: {error}"),
-                Ok(None) => tokio::time::sleep(Duration::from_millis(100)).await,
-            }
-        }
-    };
+    let stop = until_stopped(Store::open(store.path())?, *control, node);
     let mut said = String::new();
     let mut context_failure = None;
     let result = crate::pi::run_until(
@@ -173,6 +166,16 @@ fn settle_attempt(
                 reason.unwrap_or("The planning turn finished")
             ))
         })
+}
+
+async fn until_stopped(observer: Store, control: TeamControl, node: i64) -> String {
+    loop {
+        match stop_reason(&observer, &control, node) {
+            Ok(Some(reason)) => return reason,
+            Err(error) => return format!("Stopped because team supervision failed: {error}"),
+            Ok(None) => tokio::time::sleep(Duration::from_millis(100)).await,
+        }
+    }
 }
 
 fn stop_reason(store: &Store, control: &TeamControl, node: i64) -> Result<Option<String>> {

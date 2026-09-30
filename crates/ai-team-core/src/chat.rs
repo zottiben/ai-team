@@ -3,9 +3,9 @@
 pub(crate) mod team;
 pub use team::{
     drive_chat_team_build, drive_chat_team_planning, reconcile_chat_team_build,
-    recover_chat_team_processes, ChatBuildApproval, ChatBuildControl, ChatBuildRecovery,
-    ChatBuildRecoveryReport, ChatBuildReview, ChatBuildSlice, ChatBuildStart, ChatTeamMember,
-    ChatTeamRun,
+    recover_chat_team_processes, resume_chat_team_slice, ChatBuildApproval, ChatBuildControl,
+    ChatBuildRecovery, ChatBuildRecoveryReport, ChatBuildResume, ChatBuildReview, ChatBuildSlice,
+    ChatBuildStart, ChatTeamMember, ChatTeamRun,
 };
 
 use std::path::{Path, PathBuf};

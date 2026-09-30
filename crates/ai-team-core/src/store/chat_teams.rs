@@ -2,6 +2,7 @@
 
 pub(super) mod build;
 mod children;
+mod continuation;
 mod control;
 mod interrupted;
 mod recovery;

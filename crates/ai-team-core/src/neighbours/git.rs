@@ -41,8 +41,16 @@ pub(crate) async fn prepare_branch_from(
 }
 
 /// A chat approval names a new draft branch. Never reset an existing draft as -B would.
-pub(crate) async fn prepare_new_branch(worktree: &Path, branch: &str, base: &str) -> Result<()> {
-    git(worktree, &["checkout", "-b", branch, base])
+pub(crate) async fn prepare_new_branch<S>(
+    worktree: &Path,
+    branch: &str,
+    base: &str,
+    stop: S,
+) -> Result<()>
+where
+    S: std::future::Future<Output = String> + Send,
+{
+    git_until(worktree, &["checkout", "-b", branch, base], stop)
         .await
         .map(drop)
 }
@@ -377,8 +385,14 @@ pub async fn commit(worktree: &Path, message: &str) -> Result<String> {
 /// A detached worktree is still a workspace. Its branch is absent rather than invented,
 /// but its path must remain in the result or the window would make a real checkout
 /// impossible to select.
-pub(crate) async fn worktrees(repo: &Path) -> Result<Vec<(String, Option<String>)>> {
-    let listed = git(repo, &["worktree", "list", "--porcelain"]).await?;
+pub(crate) async fn worktrees_until<S>(
+    repo: &Path,
+    stop: S,
+) -> Result<Vec<(String, Option<String>)>>
+where
+    S: std::future::Future<Output = String> + Send,
+{
+    let listed = git_until(repo, &["worktree", "list", "--porcelain"], stop).await?;
     let mut found = Vec::new();
     let mut path: Option<String> = None;
     let mut branch: Option<String> = None;
@@ -441,11 +455,18 @@ pub async fn push(worktree: &Path) -> Result<String> {
 }
 
 async fn git(worktree: &Path, args: &[&str]) -> Result<String> {
+    git_until(worktree, args, std::future::pending()).await
+}
+
+async fn git_until<S>(worktree: &Path, args: &[&str], stop: S) -> Result<String>
+where
+    S: std::future::Future<Output = String> + Send,
+{
     let output = crate::command::run(
         Command::new("git").args(args).current_dir(worktree),
         std::time::Duration::from_secs(120),
         8 * 1024 * 1024,
-        std::future::pending(),
+        stop,
     )
     .await
     .map_err(|error| Error::invalid(format!("could not run git: {error}")))?;

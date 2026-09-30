@@ -112,7 +112,7 @@ impl Store {
     ) -> Result<()> {
         self.db_mut().write(|tx| {
             build::check(tx, control, true)?;
-            if tx.execute("UPDATE chat_build_slice SET commit_sha = ?3, build_status = 'verified', rev = rev + 1 WHERE run_id = ?1 AND slice_key = ?2 AND (build_status = 'running' OR ?4) AND commit_sha IS NULL AND candidate_sha = ?3", params![control.receipt.run_id, key, sha, control.recovering])? != 1 { return Err(Error::invalid("this candidate no longer belongs to the worker")); }
+            if tx.execute("UPDATE chat_build_slice SET commit_sha = ?3, build_status = 'verified', reason = NULL, rev = rev + 1 WHERE run_id = ?1 AND slice_key = ?2 AND (build_status = 'running' OR ?4) AND commit_sha IS NULL AND candidate_sha = ?3", params![control.receipt.run_id, key, sha, control.recovering])? != 1 { return Err(Error::invalid("this candidate no longer belongs to the worker")); }
             tx.execute("INSERT INTO review (project_id, run_id, node_run_id, title, branch, base_sha, head_sha, created_at, updated_at)
                 SELECT c.project_id, s.run_id, s.maker_node_id, s.slice_key || ': verified draft', s.branch, t.base_sha, s.commit_sha, ?3, ?3
                 FROM chat_build_slice s JOIN chat_team_run t ON t.run_id = s.run_id JOIN chat c ON c.id = t.chat_id

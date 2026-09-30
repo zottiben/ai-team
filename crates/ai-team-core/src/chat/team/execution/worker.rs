@@ -23,29 +23,34 @@ pub(super) async fn run(
         .prepare_chat_build_slice(control, key, &ModelRegistry::load()?)
         .await?;
     let approved = store.begin_chat_slice_worker(control, key)?;
-    let slice = store.owned_chat_build_slice(control, key)?;
-    let path = PathBuf::from(
-        approved
-            .worktree_path
-            .as_deref()
-            .ok_or_else(|| Error::invalid("missing approved lease"))?,
-    );
-    let branch = approved
-        .branch
-        .clone()
-        .ok_or_else(|| Error::invalid("missing draft branch"))?;
-    let maker = store.chat_build_agent(control, key)?;
-    let mut worker = Worker {
+    let mut worker = Worker::load(store, watch, approved, verifier)?;
+    worker.build(None, 0, None).await?;
+    worker.return_verified().await
+}
+
+pub(in crate::chat::team) async fn resume(
+    db: &Path,
+    control: &mut ChatBuildControl,
+    request: &crate::ChatBuildResume,
+) -> Result<()> {
+    let store = Store::open(db)?;
+    let approved = store
+        .chat_build_slices(control.receipt.run_id)?
+        .into_iter()
+        .find(|row| row.slice_key == request.slice_key)
+        .ok_or_else(|| Error::invalid("the retained slice disappeared"))?;
+    let mut worker = Worker::load(
         store,
-        watch,
+        Watch::new(db, control),
         approved,
-        slice,
-        path,
-        branch,
-        maker,
-        verifier,
-    };
-    worker.build().await?;
+        Arc::new(Semaphore::new(1)),
+    )?;
+    let (previous, used, tree) = worker.validate_continuation().await?;
+    worker.approved = worker
+        .store
+        .activate_chat_slice_continuation(control, request)?;
+    worker.watch.control = control.clone();
+    worker.build(previous, used, Some(tree)).await?;
     worker.return_verified().await
 }
 
@@ -61,7 +66,142 @@ struct Worker {
 }
 
 impl Worker {
-    async fn build(&mut self) -> Result<()> {
+    fn load(
+        store: Store,
+        watch: Watch,
+        approved: ChatBuildSlice,
+        verifier: Arc<Semaphore>,
+    ) -> Result<Self> {
+        let key = &approved.slice_key;
+        let slice = store.held_chat_build_slice(&watch.control, key)?;
+        let path = PathBuf::from(
+            approved
+                .worktree_path
+                .as_deref()
+                .ok_or_else(|| Error::invalid("missing approved lease"))?,
+        );
+        let branch = approved
+            .branch
+            .clone()
+            .ok_or_else(|| Error::invalid("missing draft branch"))?;
+        let maker = store.chat_build_agent(&watch.control, key)?;
+        Ok(Self {
+            store,
+            watch,
+            approved,
+            slice,
+            path,
+            branch,
+            maker,
+            verifier,
+        })
+    }
+
+    async fn validate_continuation(&mut self) -> Result<(Option<i64>, i64, String)> {
+        self.watch.check()?;
+        self.source_unchanged().await?;
+        self.validate_lease().await?;
+        git::bound(
+            &self.path,
+            &self.watch.control.base_sha,
+            &self.branch,
+            &self.watch,
+        )
+        .await?;
+        let tree = git::snapshot(&self.path, &self.watch).await?;
+        self.scope(&tree, false).await?;
+        self.preserve_index(&tree).await?;
+        let resolution = ModelRegistry::load()?.resolve(&self.maker)?;
+        let attempts: Vec<_> = self
+            .store
+            .chat_team_members(self.approved.run_id)?
+            .into_iter()
+            .filter(|m| {
+                m.node.slice_key.as_deref() == Some(&self.slice.key)
+                    && m.node.agent_id == Some(self.maker.id)
+            })
+            .map(|m| m.node)
+            .collect();
+        let used =
+            i64::try_from(attempts.len()).map_err(|_| Error::invalid("too many maker attempts"))?;
+        if used > self.store.run(self.approved.run_id)?.max_repairs {
+            return Err(Error::invalid(
+                "the original maker attempt allowance is spent; continuation cannot reset it",
+            ));
+        }
+        let previous = attempts.iter().max_by_key(|node| node.id);
+        if previous.map(|node| node.id) != self.approved.maker_node_id {
+            return Err(Error::invalid(
+                "the latest maker evidence is incomplete; inspect it before continuing",
+            ));
+        }
+        if let Some(node) = previous {
+            if let Some(limit) = crate::node_may_continue(&self.store, node.id)? {
+                return Err(Error::invalid(limit.reason));
+            }
+            if node.session_retired_at.is_some()
+                || (node.session_id.is_some()
+                    && (node.provider != resolution.provider || node.model != resolution.model))
+            {
+                return Err(Error::invalid(
+                    "the original maker session cannot continue under this model policy",
+                ));
+            }
+        }
+        Ok((
+            previous
+                .filter(|node| node.session_id.is_some())
+                .map(|node| node.id),
+            used,
+            tree,
+        ))
+    }
+
+    async fn validate_lease(&mut self) -> Result<()> {
+        let pool = self.pool()?;
+        let watch = self.watch.clone();
+        pool.resolve_until(&self.path, watch.clone().wait()).await?;
+        let entries = pool.pool_until(|| watch.clone().wait()).await?;
+        let entry = entries
+            .iter()
+            .find(|entry| crate::same_worktree(&entry.path, &self.path.to_string_lossy()))
+            .ok_or_else(|| Error::invalid("the retained worktree is not in the pool"))?;
+        if entry.main
+            || entry.status != "leased"
+            || entry.lease_holder != self.approved.lease_holder
+            || self.approved.lease_holder.is_none()
+            || !entry.processes.is_empty()
+        {
+            return Err(Error::invalid(
+                "the retained lease has another/unknown holder or live processes; leave it alone",
+            ));
+        }
+        Ok(())
+    }
+
+    async fn preserve_index(&mut self, tree: &str) -> Result<()> {
+        let base_tree = git::text(
+            &self.path,
+            &[
+                "rev-parse",
+                &format!("{}^{{tree}}", self.watch.control.base_sha),
+            ],
+            &self.watch,
+        )
+        .await?;
+        let index = git::text(&self.path, &["write-tree"], &self.watch).await?;
+        if index != base_tree && index != tree {
+            return Err(Error::invalid("the real index contains a different staged tree; keep it for inspection rather than overwriting staged work"));
+        }
+        Ok(())
+    }
+
+    async fn build(
+        &mut self,
+        mut previous: Option<i64>,
+        used_attempts: i64,
+        retained_tree: Option<String>,
+    ) -> Result<()> {
         let base = self.watch.control.base_sha.clone();
         git::bound(&self.path, &base, &self.branch, &self.watch).await?;
         let base_tree = git::text(
@@ -70,6 +210,12 @@ impl Worker {
             &self.watch,
         )
         .await?;
+        let before_setup = git::snapshot(&self.path, &self.watch).await?;
+        if before_setup != retained_tree.as_deref().unwrap_or(&base_tree) {
+            return Err(Error::invalid(
+                "the lease changed before dependency setup; inspect it before continuing",
+            ));
+        }
         let setup =
             crate::gates::prepare_dependencies_until(&self.path, || self.watch.clone().wait())
                 .await?;
@@ -79,12 +225,15 @@ impl Worker {
                 &format!("Prepared dependencies: {}", setup.join(", ")),
             )?;
         }
-        if git::snapshot(&self.path, &self.watch).await? != base_tree {
+        if git::snapshot(&self.path, &self.watch).await? != before_setup {
             return Err(Error::invalid("dependency setup changed source; retain it for inspection before spending a model turn"));
         }
-        let max_repairs = self.store.run(self.approved.run_id)?.max_repairs;
-        let mut previous = None;
-        let mut prompt = format!("Build only your approved slice {}. Read the assigned scope and house rules in your instructions. Leave the work uncommitted for independent checks.", self.slice.key);
+        let max_repairs = self.store.run(self.approved.run_id)?.max_repairs - used_attempts;
+        let mut prompt = if retained_tree.is_some() {
+            format!("Continue the same approved slice {} in this retained lease and original conversation. The previous attempt was interrupted or rejected; its current files are preserved, not verified. Inspect and finish them without resetting, discarding or committing prior work. Previous outcome: {}", self.slice.key, self.approved.reason.as_deref().unwrap_or("interrupted execution"))
+        } else {
+            format!("Build only your approved slice {}. Read the assigned scope and house rules in your instructions. Leave the work uncommitted for independent checks.", self.slice.key)
+        };
         for repair in 0..=max_repairs {
             let (node, _) = self
                 .take_turn(self.maker.id, false, previous, prompt)
@@ -184,14 +333,19 @@ impl Worker {
         )
         .await?;
         let candidate = git::snapshot(&self.path, &self.watch).await?;
+        self.scope(&candidate, true).await?;
+        self.verify(maker, candidate).await
+    }
+
+    async fn scope(&mut self, candidate: &str, require_change: bool) -> Result<()> {
         let changes = git::changes(
             &self.path,
             &self.watch.control.base_sha,
-            &candidate,
+            candidate,
             &self.watch,
         )
         .await?;
-        if changes.is_empty() {
+        if require_change && changes.is_empty() {
             return Err(Error::invalid("the maker finished without changing a file"));
         }
         let touches = crate::planning::slice_touches(&self.slice.scope_md)
@@ -214,6 +368,10 @@ impl Worker {
                 )));
             }
         }
+        Ok(())
+    }
+
+    async fn verify(&mut self, maker: i64, candidate: String) -> Result<String> {
         let gates = crate::gates::discover_gates(&self.path);
         if gates.is_empty() {
             return Err(Error::invalid(
@@ -285,7 +443,7 @@ impl Worker {
         prompt: String,
     ) -> Result<(i64, String)> {
         self.source_unchanged().await?;
-        self.pool()?.resolve(&self.path).await?;
+        self.validate_lease().await?;
         git::bound(
             &self.path,
             &self.watch.control.base_sha,
@@ -294,6 +452,13 @@ impl Worker {
         )
         .await?;
         self.watch.check()?;
+        let tree = git::snapshot(&self.path, &self.watch).await?;
+        self.scope(&tree, false).await?;
+        if !reader {
+            self.preserve_index(&tree).await?;
+        }
+        self.store
+            .chat_build_agent(&self.watch.control, &self.slice.key)?;
         self.store
             .owned_chat_build_slice(&self.watch.control, &self.slice.key)?;
         let node = self.store.dispatch(

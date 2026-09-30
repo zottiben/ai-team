@@ -257,8 +257,8 @@ impl Store {
             )?;
             if chat.mode == ChatMode::Team {
                 tx.execute(
-                    "INSERT INTO chat_team_run (run_id, chat_id, control_node_id, phase, supervisor_pid, supervisor_identity)
-                     VALUES (?1, ?2, ?3, 'grounding', ?4, ?5)",
+                    "INSERT INTO chat_team_run (run_id, chat_id, control_node_id, phase, supervisor_pid, supervisor_identity, controller_protocol, child_journal)
+                     VALUES (?1, ?2, ?3, 'grounding', ?4, ?5, 1, 1)",
                     params![run_id, id, node_id, i64::from(std::process::id()), identity],
                 )?;
                 super::chat_teams::register_member(tx, run_id, node_id, &agent, None)?;

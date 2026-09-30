@@ -48,9 +48,9 @@ mod workflow;
 pub use analytics::{rollup, rollup_workspace, By, Row};
 pub use chat::{
     drive_chat, drive_chat_team_build, drive_chat_team_planning, reconcile_chat_team_build,
-    recover_chat_team_processes, Chat, ChatBuildApproval, ChatBuildControl, ChatBuildRecovery,
-    ChatBuildRecoveryReport, ChatBuildReview, ChatBuildSlice, ChatBuildStart, ChatSubmission,
-    ChatTeamMember, ChatTeamRun, ChatTurn, NewChat,
+    recover_chat_team_processes, resume_chat_team_slice, Chat, ChatBuildApproval, ChatBuildControl,
+    ChatBuildRecovery, ChatBuildRecoveryReport, ChatBuildResume, ChatBuildReview, ChatBuildSlice,
+    ChatBuildStart, ChatSubmission, ChatTeamMember, ChatTeamRun, ChatTurn, NewChat,
 };
 pub mod planning;
 pub use context::{figma_links, parse_url, Source, CLICKUP_READ_TOOLS, FIGMA_READ_TOOLS};

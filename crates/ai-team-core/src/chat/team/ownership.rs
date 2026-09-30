@@ -14,7 +14,7 @@ tokio::task_local! { static OWNER: Arc<Ownership>; }
 
 #[derive(Debug)]
 pub(crate) struct Ownership {
-    _file: File,
+    file: File,
     pub(crate) db: PathBuf,
     pub(crate) run: i64,
     epoch: AtomicI64,
@@ -46,7 +46,7 @@ impl Ownership {
                 // receipts require local, independent file-description semantics.
                 let probe = OpenOptions::new().read(true).write(true).open(&path)?;
                 match probe.try_lock() {
-                    Err(TryLockError::WouldBlock) => Ok(Arc::new(Self { _file: file, db: db.canonicalize()?, run, epoch: AtomicI64::new(0), uncertain: AtomicBool::new(false) })),
+                    Err(TryLockError::WouldBlock) => Ok(Arc::new(Self { file, db: db.canonicalize()?, run, epoch: AtomicI64::new(0), uncertain: AtomicBool::new(false) })),
                     Err(TryLockError::Error(error)) => Err(error.into()),
                     Ok(()) => Err(Error::invalid("controller storage does not provide independent file locks; use a local data directory")),
                 }
@@ -79,6 +79,17 @@ impl Ownership {
     }
 }
 
+impl Drop for Ownership {
+    fn drop(&mut self) {
+        // Closing the last Rust receipt is not necessarily the last OS descriptor:
+        // a concurrent fork can inherit it until exec, even with CLOEXEC. Unlock
+        // explicitly only here, after every controller/worker receipt has gone.
+        if let Err(error) = self.file.unlock() {
+            eprintln!("could not unlock team controller {}: {error}", self.run);
+        }
+    }
+}
+
 pub(crate) fn current() -> Option<Arc<Ownership>> {
     OWNER.try_with(Arc::clone).ok()
 }
@@ -94,9 +105,18 @@ pub(crate) fn lock_path(db: &Path, run: i64) -> Result<PathBuf> {
 }
 
 pub(crate) fn held(path: &Path) -> Result<bool> {
-    let file = OpenOptions::new().read(true).write(true).open(path)?;
+    let file = match OpenOptions::new().read(true).write(true).open(path) {
+        Ok(file) => file,
+        // A newly reserved execution may not have opened its lock yet. This is
+        // task liveness only, never proof that children are drained.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.into()),
+    };
     match file.try_lock() {
-        Ok(()) => Ok(false),
+        Ok(()) => {
+            file.unlock()?;
+            Ok(false)
+        }
         Err(TryLockError::WouldBlock) => Ok(true),
         Err(TryLockError::Error(error)) => Err(error.into()),
     }
@@ -105,6 +125,31 @@ pub(crate) fn held(path: &Path) -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    #[test]
+    fn an_inherited_descriptor_is_not_a_controller_receipt() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("team.sqlite");
+        std::fs::write(&db, "fixture").unwrap();
+        let owner = Ownership::acquire(&db, 1).unwrap();
+        // Make the fork-to-exec inheritance window deterministic: the unrelated
+        // child retains this descriptor after exec, but owns no Rust receipt.
+        rustix::io::fcntl_setfd(&owner.file, rustix::io::FdFlags::empty()).unwrap();
+        let mut child = std::process::Command::new("sleep")
+            .arg("2")
+            .spawn()
+            .unwrap();
+        rustix::io::fcntl_setfd(&owner.file, rustix::io::FdFlags::CLOEXEC).unwrap();
+        drop(owner);
+        let still_held = held(&lock_path(&db, 1).unwrap()).unwrap();
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert!(
+            !still_held,
+            "an unrelated inherited fd retained a dead controller's lock"
+        );
+    }
+
     #[test]
     fn a_task_lock_is_not_a_live_pid_and_survives_cloned_receipts() {
         let dir = tempfile::tempdir().unwrap();

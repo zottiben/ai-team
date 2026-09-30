@@ -241,7 +241,10 @@ fn controller_identity_outlives_the_coordinators_pi_turn() {
     assert!(coordinator.agent_id.is_some());
     let execution = f.store.chat_team_run(turn.run_id).unwrap().unwrap();
     assert_eq!(execution.phase, ChatTeamPhase::Grounding);
-    assert!(execution.supervisor_alive());
+    assert!(
+        !execution.supervisor_alive(),
+        "reservation is not a controller task"
+    );
     assert_eq!(f.access(coordinator.id).unwrap(), PlanAccess::Coordinator);
     assert!(!PlanAccess::Coordinator.tools().contains(&"add_slice"));
     let run = f.store.run(turn.run_id).unwrap();
@@ -265,12 +268,14 @@ fn controller_identity_outlives_the_coordinators_pi_turn() {
         .unwrap();
     assert!(f.access(coordinator.id).is_err());
     assert_eq!(f.access(planner.id).unwrap(), PlanAccess::Planner);
-    assert!(f
-        .store
-        .chat_team_run(turn.run_id)
-        .unwrap()
-        .unwrap()
-        .supervisor_alive());
+    assert_eq!(
+        f.store
+            .chat_team_run(turn.run_id)
+            .unwrap()
+            .unwrap()
+            .control_node_id,
+        coordinator.id
+    );
     assert!(f.plan(PlanActor::Agent(planner.id)).bundle.is_some());
     assert_eq!(f.store.chat_team_members(turn.run_id).unwrap().len(), 2);
 }

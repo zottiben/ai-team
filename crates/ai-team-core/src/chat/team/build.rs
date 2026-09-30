@@ -52,6 +52,18 @@ impl crate::Store {
         key: &str,
         registry: &crate::ModelRegistry,
     ) -> crate::Result<ai_planner_core::Slice> {
+        control
+            .ownership
+            .track(self.prepare_owned_chat_slice(control, key, registry))
+            .await
+    }
+
+    async fn prepare_owned_chat_slice(
+        &mut self,
+        control: &ChatBuildControl,
+        key: &str,
+        registry: &crate::ModelRegistry,
+    ) -> crate::Result<ai_planner_core::Slice> {
         if let Some(limit) = crate::run_may_continue(self, control.receipt.run_id)? {
             return Err(crate::Error::invalid(limit.reason));
         }
@@ -63,19 +75,22 @@ impl crate::Store {
             .find_map(|repo| repo.main_path)
             .ok_or_else(|| crate::Error::invalid("this project has no checkout"))?;
         let worktrees = crate::Worktrees::at(repo);
+        let watch = super::execution::Watch::new(self.path(), control);
         worktrees
-            .resolve(std::path::Path::new(&chat.workspace_path))
+            .resolve_until(
+                std::path::Path::new(&chat.workspace_path),
+                watch.clone().wait(),
+            )
             .await?;
         let approved = self.reserve_chat_build_lease(control, key)?;
         let mut returned = None;
-        let watch = super::execution::Watch::new(self.path(), control);
         let result = async {
             let lease = worktrees
                 .lease_until(
                     approved.lease_holder.as_deref().ok_or_else(|| {
                         crate::Error::invalid("this approval has no lease holder")
                     })?,
-                    watch.wait(),
+                    watch.clone().wait(),
                 )
                 .await?;
             let path = lease.path().to_path_buf();
@@ -83,9 +98,12 @@ impl crate::Store {
             // preserve the checkout; acquisition intent already names its holder.
             lease.preserve();
             returned = Some(path.clone());
-            let path = worktrees.resolve(&path).await?;
+            let path = worktrees.resolve_until(&path, watch.clone().wait()).await?;
             self.record_chat_build_lease(control, key, &path.to_string_lossy())?;
-            if !crate::neighbours::git::porcelain(&path).await?.is_empty() {
+            if !super::execution::git::text(&path, &["status", "--porcelain"], &watch)
+                .await?
+                .is_empty()
+            {
                 return Err(crate::Error::invalid("awt returned a dirty worktree; keep it for inspection rather than resetting it"));
             }
             crate::neighbours::git::prepare_new_branch(
@@ -95,11 +113,12 @@ impl crate::Store {
                     .as_deref()
                     .ok_or_else(|| crate::Error::invalid("this approval has no draft branch"))?,
                 &control.base_sha,
+                watch.clone().wait(),
             )
             .await?;
             self.claim_chat_build_slice(control, key)
         };
-        let result = control.ownership.track(result).await;
+        let result = result.await;
         if let Err(error) = &result {
             self.retain_chat_build_lease(
                 control,

@@ -2,6 +2,7 @@
 
 mod build;
 pub(crate) mod children;
+mod continuation;
 mod execution;
 mod interrupted;
 pub(crate) mod ownership;
@@ -10,6 +11,7 @@ mod recovery;
 pub use build::{
     ChatBuildApproval, ChatBuildControl, ChatBuildReview, ChatBuildSlice, ChatBuildStart,
 };
+pub use continuation::{resume_chat_team_slice, ChatBuildResume};
 pub use execution::drive_chat_team_build;
 pub use interrupted::recover_chat_team_processes;
 pub use planning::drive_chat_team_planning;

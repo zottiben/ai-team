@@ -56,7 +56,7 @@ impl Store {
         control: &ChatBuildControl,
         key: &str,
     ) -> Result<crate::Agent> {
-        check(self.db().conn(), control, false)?;
+        check(self.db().conn(), control, control.recovering)?;
         approved_agent(
             self.db().conn(),
             &read(self.db().conn(), control.receipt.run_id, key)?,

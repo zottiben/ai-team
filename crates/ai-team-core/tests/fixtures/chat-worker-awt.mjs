@@ -4,6 +4,10 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 const root = process.env.BUILD_TEST_ROOT;
 const args = process.argv.slice(2);
+if (args[0] === 'status' && fs.readFileSync(path.join(root, 'worker-mode'), 'utf8').trim() === 'slow-status') {
+  fs.writeFileSync(path.join(root, 'status-waiting.pid'), String(process.pid));
+  await new Promise(() => { setInterval(() => {}, 1000); });
+}
 const lock = path.join(root, 'pool-lock');
 let acquired = false;
 for (let i = 0; i < 1000; i++) {

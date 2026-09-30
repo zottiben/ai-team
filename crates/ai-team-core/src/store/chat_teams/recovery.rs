@@ -9,6 +9,14 @@ impl Store {
         &mut self,
         target: &ChatBuildRecovery,
     ) -> Result<ChatBuildControl> {
+        self.claim_quiescent_chat_build(target, None)
+    }
+
+    pub(crate) fn claim_quiescent_chat_build(
+        &mut self,
+        target: &ChatBuildRecovery,
+        resume: Option<&crate::ChatBuildResume>,
+    ) -> Result<ChatBuildControl> {
         let ownership = Ownership::acquire(self.path(), target.run_id)?;
         let execution = self
             .chat_team_run(target.run_id)?
@@ -44,6 +52,15 @@ impl Store {
         let identity = crate::chat::process_identity(pid)
             .ok_or_else(|| Error::invalid("could not identify the recovery controller"))?;
         self.db_mut().write(|tx| {
+            if let Some(request) = resume {
+                let row = build::read(tx, target.run_id, &request.slice_key)?;
+                super::continuation::resumable(&row, request.expect_slice_revision)?;
+                build::approved_agent(tx, &row)?;
+                // Consume the old stop in the same transaction as the exact claim.
+                // Any stop arriving after this point wins over validation/dispatch.
+                tx.execute("UPDATE chat SET stop_requested = 0, rev = rev + 1 WHERE id = ?1", [target.chat_id])?;
+                tx.execute("INSERT INTO event (run_id,at,kind,actor,summary) VALUES (?1,?2,'note','human',?3)", params![target.run_id,crate::now(),format!("Requested continuation of retained slice {}", request.slice_key)])?;
+            }
             if tx.execute("UPDATE chat_team_run SET phase = 'building', supervisor_pid = ?5, supervisor_identity = ?6, controller_protocol = 1, child_journal = 1, child_epoch = child_epoch + 1, quiescent = 0, rev = rev + 1
                 WHERE run_id = ?1 AND chat_id = ?2 AND control_node_id = ?3 AND rev = ?4 AND phase IN ('building','blocked') AND quiescent = 1 AND supervisor_pid IS NULL
                 AND approved_revision IS NOT NULL AND base_sha IS NOT NULL

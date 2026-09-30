@@ -605,6 +605,31 @@ impl Drop for Harness {
 async fn team_planning_runs_real_children_then_pauses_and_stops_without_legacy_dispatch() {
     let mut h = Harness::new();
     h.seed_solo_history();
+    // A reservation is durable before the controller task exists. Recovery must
+    // defeat a late callback without relying on the still-live desktop PID.
+    let turn = h.submit("Reserved but never dispatched");
+    let execution = h.store.chat_team_run(turn.run_id).unwrap().unwrap();
+    assert!(
+        !execution.supervisor_alive(),
+        "an unclaimed reservation has no live controller task"
+    );
+    let target = ai_team_core::ChatBuildRecovery {
+        chat_id: h.chat,
+        run_id: turn.run_id,
+        node_id: turn.node_id,
+        expect_revision: execution.rev,
+    };
+    let recovered = ai_team_core::recover_chat_team_processes(&h.db, &target)
+        .await
+        .unwrap();
+    assert!(recovered.quiescent);
+    assert!(drive_chat_team_planning(&h.db, h.chat, turn.node_id)
+        .await
+        .is_err());
+    assert_eq!(h.calls(), 0);
+    h.store
+        .stop_chat_team_planning(h.chat, turn.node_id, recovered.rev)
+        .unwrap();
     h.plan_and_pause().await;
     h.return_to_solo().await;
     h.cancel("orchestrator").await;

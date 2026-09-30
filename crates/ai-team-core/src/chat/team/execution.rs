@@ -3,6 +3,7 @@
 
 pub(super) mod git;
 mod worker;
+pub(super) use worker::resume;
 
 use crate::{ChatBuildControl, ChatBuildStart, Error, Result, Store};
 use std::{
@@ -38,7 +39,11 @@ impl Watch {
                 "Stopped by you; unfinished work is kept for recovery.",
             ));
         }
-        store.check_chat_build(&self.control)?;
+        if self.control.recovering {
+            store.check_chat_build_cleanup(&self.control)?;
+        } else {
+            store.check_chat_build(&self.control)?;
+        }
         let exceeded = match self.node {
             Some(node) => crate::node_may_continue(store, node)?,
             None => crate::run_may_continue(store, self.control.receipt.run_id)?,
