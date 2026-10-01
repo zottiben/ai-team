@@ -73,6 +73,26 @@ macro_rules! sql_enum {
 }
 
 sql_enum! {
+    #[derive(Default)]
+    ChatMode {
+        #[default]
+        Single => "single",
+        Team => "team",
+    }
+}
+
+sql_enum! {
+    ChatTeamPhase {
+        Grounding => "grounding",
+        Planning => "planning",
+        AwaitingApproval => "awaiting_approval",
+        Building => "building",
+        Blocked => "blocked",
+        Finished => "finished",
+    }
+}
+
+sql_enum! {
     /// What kind of container this project is (D6). A project is not a repo: a triage
     /// session across four services and a one-file chore are both projects.
     ProjectKind {
@@ -549,6 +569,9 @@ pub struct NodeRun {
     /// reduces it to the useful question: can this interrupted turn be resumed?
     #[serde(skip_serializing)]
     pub supervisor_pid: Option<i64>,
+    /// A surviving orphan must not be duplicated when its supervisor disappears.
+    #[serde(skip_serializing)]
+    pub pi_pid: Option<i64>,
     /// Latest provider-reported context occupancy for this session, including caches.
     /// Unlike `usage`, this is a snapshot rather than a cumulative spend counter.
     pub context_tokens: Option<i64>,

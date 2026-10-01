@@ -11,8 +11,11 @@
 mod api;
 mod assets;
 mod auth;
+mod chat_plans;
+mod chats;
 mod error;
 mod health;
+pub mod plan_mcp;
 mod state;
 
 use std::net::{Ipv4Addr, SocketAddr};
@@ -76,7 +79,8 @@ pub struct ServeOptions {
 ///
 /// Split in two so a caller can print and open the real URL - which it cannot know
 /// until the OS has assigned the port and the token has been minted - before it blocks
-/// on [`Server::serve`].
+/// on [`Server::serve`]. Binding also completes one journalled process-drain pass;
+/// this can delay opening the window, but never starts agents or settles leases.
 #[derive(Debug)]
 pub struct Server {
     addr: SocketAddr,
@@ -104,15 +108,20 @@ impl Server {
             state = state.with_store(store);
         }
 
-        let api = api::routes().route_layer(axum::middleware::from_fn_with_state(
-            state.clone(),
-            auth::require_token,
-        ));
+        let api = api::routes()
+            .route_layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                chats::recover_on_attach,
+            ))
+            .route_layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                auth::require_token,
+            ));
 
         let router = Router::new()
             .nest("/api", api)
             .fallback(assets::serve)
-            .with_state(state);
+            .with_state(state.clone());
 
         // Loopback only, and deliberately not configurable. This API will be able to
         // dispatch agents against real worktrees; it is not something to expose by flag.
@@ -125,6 +134,7 @@ impl Server {
                 ))
             })?;
         let addr = listener.local_addr()?;
+        state.recover_chats().await;
 
         Ok(Server {
             addr,

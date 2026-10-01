@@ -54,6 +54,12 @@ impl Store {
             if at_work(tx, &worktree)? {
                 return Ok(None);
             }
+            super::chat_teams::kept::check_unlocated(
+                tx,
+                restack.project_id,
+                Some(&worktree),
+                None,
+            )?;
             if tried(tx, &restack)? {
                 return Ok(None);
             }
@@ -191,6 +197,16 @@ fn tried(conn: &rusqlite::Connection, restack: &NewRestack<'_>) -> Result<bool> 
 /// A turn whose supervisor died is neither - it is the crash that left it `running` - and
 /// counting it would hold the worktree for good.
 fn at_work(conn: &rusqlite::Connection, worktree: &str) -> Result<bool> {
+    let mut protected = conn.prepare(
+        "SELECT workspace_path FROM chat WHERE active_node_id IS NOT NULL
+         UNION SELECT worktree_path FROM chat_build_slice
+           WHERE lease_state != 'released' AND worktree_path IS NOT NULL",
+    )?;
+    for path in protected.query_map([], |row| row.get::<_, String>(0))? {
+        if crate::neighbours::same_worktree(&path?, worktree) {
+            return Ok(true);
+        }
+    }
     let mut rows = conn.prepare(
         "SELECT status, supervisor_pid FROM node_run
           WHERE worktree_path = ?1 AND status IN ('queued', 'running', 'parked')",
@@ -251,6 +267,35 @@ mod tests {
             backend,
             checkout: tempfile::tempdir().unwrap(),
         }
+    }
+
+    #[test]
+    fn a_chat_checkout_does_not_become_a_restack_when_its_host_dies() {
+        let mut s = stack();
+        let chat = s
+            .store
+            .create_chat(crate::NewChat {
+                project_id: s.project,
+                workspace: s.checkout.path().into(),
+                provider: crate::Provider::Local,
+                model: "fixture".into(),
+                reasoning: crate::Reasoning::High,
+            })
+            .unwrap();
+        let turn = s
+            .store
+            .begin_chat_turn(chat.id, "hello", "one", &ModelRegistry::local_only())
+            .unwrap();
+        s.store
+            .db()
+            .conn()
+            .execute(
+                "UPDATE node_run SET supervisor_pid = 999999999 WHERE id = ?1",
+                [turn.node_id],
+            )
+            .unwrap();
+        let path = s.checkout.path().to_string_lossy().into_owned();
+        assert!(s.open(&path, "new-parent").is_none());
     }
 
     impl Stack {

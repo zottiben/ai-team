@@ -67,7 +67,7 @@ pub enum Fix {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Action {
-    /// Write the default machine profile - local allowed, accounts denied.
+    /// Write the default machine profile; every provider is an explicit choice.
     CreateMachineProfile,
     /// Create the database and run every migration.
     CreateDatabase,
@@ -373,7 +373,9 @@ fn machine_profile(paths: &Paths) -> Check {
         ),
         fix: Fix::Itself {
             action: Action::CreateMachineProfile,
-            describe: "Create it with local models allowed and every account denied".into(),
+            describe:
+                "Create it, then choose your providers in Settings (local models are optional)"
+                    .into(),
         },
     }
 }

@@ -1,8 +1,17 @@
 # ai-team — project knowledge
 
-A local desktop platform where one prompt to an orchestrator is planned and built by a
-configurable team of AI agents, working through the ai-planner board. For one engineer,
-on their own machine.
+A local, Codex-shaped desktop coding application: persistent chats, one Pi agent by
+default, optional team execution, and a command Overview for every chat. Planning and
+project tooling are being integrated into ai-team. For one engineer, on their own machine.
+
+**Refactor contract:** `design/concept.md` and plan `codex-shaped-ai-team` define the target;
+the implementation below still describes the pre-refactor runtime. Preserve model/OAuth
+setup; local inference becomes opt-in. Keep standalone `aip`, its data and registrations
+untouched. No legacy project/history migration is required, but develop with isolated
+state rather than resetting the current app. Agents use ai-team's built-in planning MCP.
+Finish the remaining refactor directly on `main` (operator decision D21). Landing unfinished
+code is not acceptance or a release. The operator will update the installed app and test
+only after the remaining build is complete; do not install or release early.
 
 **Stack:** Rust 1.98.1 (pinned), edition 2021, workspace shaped like `ai-planner`.
 React 19 + Vite 8 + TypeScript, built to static assets and embedded in the binary.
@@ -64,7 +73,7 @@ There is no `BUILD_PLAN.md` or `HANDOFF.md`. The plan is a row in ai-planner:
 
 ```sh
 aip status            # where you are, what is next
-aip show              # the whole plan: decisions, gotchas, slices
+aip show -p codex-shaped-ai-team   # current refactor decisions, gotchas and slices
 aip resume            # after a context clear
 ```
 
@@ -73,10 +82,11 @@ isn't covered, ask and record it with `aip decision add`.
 
 ## Hard rules
 
-These thirteen are the rules an agent will otherwise get wrong. They were decided in the
-first build plan, retired when `1f53679` became the baseline, so the `D` and `M` tags name
-that plan's decisions and slices - not anything `aip decision ls` will find. This file is
-now their only record.
+The runtime rules below preserve lessons from the existing implementation. The historical
+`D`, `M` and `PW` tags name earlier plans, not the current refactor's decisions. Legacy
+PR/task execution remains separate from chat execution: its clocks, restacking and delivery
+must never settle or release chat-owned work. Where product scope changes, the approved
+refactor contract takes precedence, not weaker safety or access to standalone tools' state.
 
 ### 1. Subscription-backed models only (D8)
 The entire point is to stop managing balances across several accounts, and the work machine
@@ -91,8 +101,10 @@ forbids some providers outright. Never introduce a metered API key path.
 
 A machine profile (`~/.config/ai-team/machine.toml`) allows or denies each provider and is
 enforced **at dispatch**, not only in the UI picker — a scheduled unattended run must not be
-able to reach a denied provider. `ait init` creates the local-only default. Its `fallback`
-array is a total ranking; a denied preference uses the first allowed, implemented provider
+able to reach a denied provider. Fresh profiles make every provider, including local,
+explicit opt-in. Existing profiles and working OAuth/model setup are preserved.
+Its `fallback` array is a total ranking; a denied
+preference uses the first allowed, implemented provider
 and records a Note event. Do not fall back on a transient health failure: that would silently
 send work to a different account. Every child process must also remove inherited metered
 credentials and cloud-Claude routing flags; not emitting `ANTHROPIC_API_KEY` is
@@ -163,7 +175,9 @@ it. Two properties it enforces that are easy to undo by accident:
 
 Also: a retry is a **new `node_run` row** (attempt + 1), never an edit. The first attempt's
 evidence is what analytics is made of. And `run.plan_slug` / `node_run.slice_key` are
-*references* into ai-planner — never copy a plan or slice into this database (D4).
+*references* into the legacy external planner. The refactor gives built-in planning its
+own authoritative store, isolated from standalone ai-planner; never create two writable
+copies of the same ai-team plan.
 
 ### 4. The guard is what holds a seat to its lease (D3, D20)
 Pi arrives with `bash`, `read`, `write` and `edit` already built, and they answer to
@@ -191,16 +205,17 @@ The guard is `node --test`ed on **both** CI legs, because its macOS behaviour is
 author cannot see (D12): `/tmp` is a symlink, APFS folds case, and a path that does not
 exist yet is still a path `write` is about to create.
 
-### 5. Never vendor the neighbours (D4)
-`ai-planner` (MCP + HTTP), `ai-worktree` (`awt` CLI), `file-sql` (MCP), ClickUp and Figma
-(MCP, **read-only**) are used over their own interfaces. A change that makes any of them
-impossible to run standalone is the wrong change.
+### 5. Built-in planning/tooling must not disturb standalone neighbours
+The refactor integrates ai-planner and ai-toolbox engines and native UI capabilities.
+Do not replace `aip`, share its mutable database, rewrite its global MCP registration or
+change unrelated projects. New planning commands use an ai-team namespace, not `aip`.
+Agents use ai-team's built-in planning MCP; UI/dispatch call its service directly.
 
-Pi runs **stdio** MCP servers, so a neighbour that publishes one is reached through it
-rather than through a wrapper: `aip serve --root <checkout>` is the planning seats' MCP
-server, with `--root` deliberately the checkout and not the lease - a plan written inside
-a copy is a plan nobody finds again. `awt` and `git` are still driven from `neighbours/`,
-because they publish a CLI and not a server.
+The legacy planning seats run `aip serve --root <checkout>` over stdio MCP. Until replaced,
+keep the root on the initiating checkout, not the temporary maker lease. Built-in planning
+must retain explicit chat/project/plan scope rather than guessing from a lease's cwd.
+`ai-worktree` (`awt` CLI), `file-sql` (MCP), ClickUp and Figma (MCP, **read-only**) remain
+external integrations. `awt` and `git` remain driven through their CLI interfaces.
 
 Which ai-planner tools a seat gets is an allow-list, the same mechanism as rule 10: a
 maker reads the board and records notes, a planning seat shapes it, nobody gets
@@ -251,7 +266,7 @@ hands it to its crew - one Pi process per task turn, one turn at a time in each 
 agent shelling out to `awt` and spawning sibling agents would be the supervisor's job done
 with no budget or failure isolation around it.
 
-The only dependency ai-planner records is a **stack**: a slice's `base_branch` naming
+The legacy workflow's only dependency ai-planner records is a **stack**: a slice's `base_branch` naming
 another slice's `branch` (PW9). Its MCP server cannot set one, so a planner seat writes
 `Stacks on: PR1` in the scope and `stack.rs` writes the base through the CLI. **Every PR's
 branch lives under its plan's slug**: right after planning, before anything is built, a
@@ -263,6 +278,9 @@ builds once its parent is **built**
 (`in_review`/`done`), not merged; the board is read again after every wave so it is
 picked up in the same run. Never add a deps table here: that is plan structure, and
 copying it is what D4 forbids.
+Chat execution currently dispatches only the exact ready slices the human approved;
+blocked/dependent work cannot silently inherit that approval. Keep plan structure in its
+planning engine, not a second scheduling graph in run state.
 
 **A run that plans starts on a fresh branch.** Its checkout is fetched and put on
 `ai-team/run-<id>`, cut from `origin/<default>`; a checkout with uncommitted work, or with
@@ -463,5 +481,8 @@ noise that crowds out the slice. Deepest-first under the 16k budget so the most 
 survives a cut; shallowest-first in the prompt so it reads as qualifying what came above.
 A turn with no slice behind it gets all of them, because nothing narrows what it may edit.
 
-ai-team never writes these files and never learns them (Q16). Read what is there, say
-nothing when there is nothing.
+Agent dispatch reads these files; it does not silently rewrite or learn them. The built-in
+toolbox is the explicit user-controlled authoring exception: project onboarding scans and
+offers configuration/repair with an exact preview, approval and stale-edit protection.
+Preserve canonical shared files and cross-harness support; do not apply setup merely
+because a project was added.

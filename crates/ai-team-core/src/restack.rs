@@ -106,6 +106,7 @@ async fn watch_repo(
     {
         let store = crate::Store::open(db)?;
         for (run_id, key, worktree) in held {
+            store.require_legacy_run(run_id)?;
             let Ok(run) = store.run(run_id) else { continue };
             let (Some(plan), Some(root)) = (run.plan_slug, run.workspace_path) else {
                 continue;

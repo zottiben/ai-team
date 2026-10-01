@@ -33,6 +33,9 @@ struct Inner {
     /// two windows approving a board-owned legacy plan must not both observe its holds
     /// before either has released them.
     run_start: tokio::sync::Mutex<()>,
+    /// One attachment pass, shared by requests. Never loop over uncertain drains.
+    chat_recovery:
+        tokio::sync::OnceCell<std::result::Result<Vec<ai_team_core::ChatRecoveryEntry>, String>>,
     /// Where to look for a database that is not open yet. Named rather than resolved on
     /// demand so this server knows which database it serves - and so a test can point at
     /// its own instead of the developer's home.
@@ -75,6 +78,7 @@ impl AppState {
                 terminals: ai_team_core::Terminals::new(),
                 credentials: ai_team_core::CredentialStore::default(),
                 host: ai_team_core::Host::Cli,
+                chat_recovery: tokio::sync::OnceCell::new(),
             }),
         }
     }
@@ -92,6 +96,7 @@ impl AppState {
                 terminals: ai_team_core::Terminals::new(),
                 credentials: self.inner.credentials.clone(),
                 host,
+                chat_recovery: tokio::sync::OnceCell::new(),
             }),
         }
     }
@@ -105,6 +110,7 @@ impl AppState {
                 store: Mutex::new(None),
                 run_start: tokio::sync::Mutex::new(()),
                 db_path,
+                chat_recovery: tokio::sync::OnceCell::new(),
                 lsp: ai_team_core::Pool::new(),
                 terminals: ai_team_core::Terminals::new(),
                 credentials: self.inner.credentials.clone(),
@@ -119,6 +125,7 @@ impl AppState {
             inner: Arc::new(Inner {
                 token: self.inner.token.clone(),
                 store: Mutex::new(Some(store)),
+                chat_recovery: tokio::sync::OnceCell::new(),
                 run_start: tokio::sync::Mutex::new(()),
                 db_path: self.inner.db_path.clone(),
                 lsp: ai_team_core::Pool::new(),
@@ -140,9 +147,58 @@ impl AppState {
                 lsp: ai_team_core::Pool::new(),
                 terminals: ai_team_core::Terminals::new(),
                 credentials,
+                chat_recovery: tokio::sync::OnceCell::new(),
                 host: self.inner.host,
             }),
         }
+    }
+
+    pub(crate) async fn recover_chats(&self) {
+        let Ok(db) = self.database_path() else {
+            return;
+        };
+        // In-memory fixtures have no persistent controller locks or separate store.
+        if db == std::path::Path::new(":memory:") {
+            return;
+        }
+        self.inner
+            .chat_recovery
+            .get_or_init(|| async {
+                let result = ai_team_core::recover_abandoned_chat_teams(&db)
+                    .await
+                    .map_err(|error| error.to_string());
+                match &result {
+                    Ok(entries) => {
+                        for entry in entries {
+                            if let Some(reason) = &entry.reason {
+                                if matches!(
+                                    entry.state,
+                                    ai_team_core::ChatRecoveryState::NeedsInspection
+                                        | ai_team_core::ChatRecoveryState::Recovered
+                                ) {
+                                    eprintln!(
+                                        "chat {} run {} attachment recovery: {reason}",
+                                        entry.target.chat_id, entry.target.run_id
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        eprintln!("chat attachment recovery: {error}; no work was resumed");
+                    }
+                }
+                result
+            })
+            .await;
+    }
+
+    pub(crate) fn chat_recovery_error(&self) -> Option<String> {
+        self.inner
+            .chat_recovery
+            .get()
+            .and_then(|result| result.as_ref().err())
+            .cloned()
     }
 
     pub(crate) fn credentials(&self) -> &ai_team_core::CredentialStore {

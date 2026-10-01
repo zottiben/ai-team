@@ -1,116 +1,163 @@
 # ai-team — Concept
 
-> Status: draft · Author: zottiben · Last updated: 2026-09-24
+> Approved product direction · 2026-09-28
+> Delivery plan: `codex-shaped-ai-team` in ai-planner.
 
-## Elevator pitch
+## Product
 
-A desktop platform where you give one prompt to an orchestrator and a configured team of
-AI agents plans it as pull requests, builds each in a worktree of its own, verifies its own
-work, and brings you a diff to review — with the plan living on your ai-planner board the
-whole time.
+A local, chat-first desktop coding application modeled on Codex's design, workflows
+and desktop capabilities. Start a conversation in a project, let an agent work,
+inspect the result, and continue steering without starting over.
 
-## Core fantasy
+Three differences define ai-team:
 
-You stop being the for-loop. You describe intent, review work, and steer — and the thing
-you steer is a team that gets better at your codebase every week, not a chat window that
-forgets.
+1. **Teams are optional.** Start with one agent; choose a configured team for work
+   that benefits from it, including from an existing conversation.
+2. **Every agent uses Pi.** Reuse the Pi harness and the working subscription/model
+   integrations rather than introducing a second executor.
+3. **Every chat has an Overview.** A dedicated command surface for that chat's
+   plan, agents, approvals, execution controls and delivery.
 
-## Unique hook
+Keep the ai-team name and identity. Codex is the interaction and visual reference,
+not a reason to preserve the old dashboard-first product with different colours.
 
-Everyone else ships an agent. This ships an **org**, and it is honest about the two graphs
-that implies:
+## Primary experience
 
-- the **org graph** — a stable, configurable team of specialists with owned zones,
-  persistent context and per-agent model routing. That is what ai-team adds.
-- the **work graph** — the plan that splits, merges and gets cancelled as evidence arrives.
-  That already exists as ai-planner, and ai-team works *through* it rather than beside it.
+### Projects and chats
 
-The second hook: it runs entirely on the subscriptions you already pay for. No metered API
-keys, no balances to top up across several accounts, and a per-machine profile so the work
-machine can deny a provider the personal machine allows.
+The shell leads with projects and their chats, a clear New chat action, and a
+spacious conversation canvas. A compact composer exposes project, local/worktree
+context, model, permissions and Single agent / Team selection. Secondary tools
+stay accessible without competing with the conversation.
 
-## Target audience
+A chat is a durable user workspace, **not** a run or a Pi session. It survives
+settled turns, retries, completed runs and entry into team execution. Runs and
+agent sessions are execution records beneath it. Returning to a chat restores its
+history and working context; switching projects never silently redirects a reply.
 
-One engineer — the author — running several projects at once and wanting to work at the
-level of intent. Not a team product, not a hosted service, not a framework for other people
-to extend. Everything runs locally on the machine it is installed on.
+Use restrained hierarchy, typography, spacing and semantic light/dark tokens in
+line with the reference app. Inspect working, approval, error and review states,
+not just its empty screen. Keyboard operation and reduced motion remain supported.
 
-## Core loop
+### Chat and Overview
 
-**Moment to moment:** prompt → the orchestrator plans onto the board, one user story per
-pull request → each PR is built in its own worktree, its tasks taken in turn by the seats
-that own them → a verifier on a different model checks the whole PR → a diff arrives in
-your review queue → you comment → the responsible agent picks the comments up, in that
-PR's worktree → when the PR a stacked one sits on moves or merges, the orchestrator rebases
-the stacked one onto it there, and ai-team publishes the result.
+Every chat has sibling **Chat | Overview** tabs. Chat is the conversational
+surface; Overview commands the same work, not the project's latest run.
 
-**Session:** open Today, see the one right next thing across every project, unblock it.
+Overview contains:
+- the plan, questions, approvals and evidence-backed progress;
+- live agent activity, including the current tool/command and elapsed time;
+- applicable stop, resume and retry controls with explicit target and effect;
+- changes, review findings and delivery state.
 
-**Long term:** review feedback becomes project rules, so the team stops making the same
-mistake twice and the accepted-change rate climbs.
+For a single-agent chat, show the useful subset rather than an empty team
+organisation chart. Team configuration describes who the agents are; live activity
+describes what they are doing. Never turn token usage into a completion percentage.
 
-## Pillars
+### Solo and team work
 
-1. **The org graph is ours, in Rust; the agent loop is eve's.** Routing, budgets, failure
-   isolation, state and observability live in SQLite where we can see them. Every agent
-   runs as an eve node - one runtime, no second executor. *Design test:* if a capability
-   would only ever be visible inside a vendor's process, it belongs in Rust instead.
+New chats default to one Pi agent. Team execution is explicit and can be selected
+before the first prompt or introduced later without losing the chat's history.
+Planning and approval support the work; they are not mandatory ceremony for every
+question or small edit.
 
-2. **Never build a graph where a loop would do.** A node earns a seat only if it needs a
-   different model, a different tool surface, or is a read-only reviewer. *Design test:* if
-   collapsing two nodes into one loses nothing, collapse them. Default team is six.
+Rust supervises execution, routes team work, manages worktrees and enforces policy.
+An agent does not become the process supervisor by spawning its own sibling seats.
+Retain trustworthy event streaming, interrupted-turn recovery, budget snapshots,
+verification evidence and human-controlled publishing while changing the UX.
 
-3. **The harness is the product.** Tool gateway, maker-≠-checker verification, compiled
-   context, guardrails, observability, routing, feedback. *Design test:* a new feature must
-   name which harness layer it strengthens, or it is decoration.
+### Project onboarding and tooling
 
-4. **Reuse, don't absorb.** ai-planner, ai-worktree, file-sql and Claude Code are used over
-   their own interfaces and never vendored. *Design test:* if a change would make one of
-   them impossible to run standalone, it is the wrong change.
+Adding a project uses the built-in toolbox to scan its stack, harness setup,
+installed tools, health and worktree consistency. Present recommendations and
+configuration/repair choices as part of onboarding, not as a separate application.
 
-5. **Evidence over vibes.** Completion is gated on the project's own checks, and the
-   headline metric is accepted-change rate and cost per accepted change — never tokens.
-   *Design test:* a page that reports activity rather than accepted outcomes is not done.
+Scanning is automatic; file changes are previewed and approved. Apply the approved
+changes, reject stale previews, preserve local edits, and show any manual follow-up
+such as missing credentials. Do not silently install software or rewrite global
+harness configuration merely because a project was added.
 
-## Anti-pillars
+The UI must cover the **full toolbox capability set**, not just its existing HTTP
+routes: discovery/inventory, recommendations, scaffolding, hooks, MCP presets,
+skills, rules/templates, layout migration, diagnosis/repair, worktree convergence,
+and explicit user-level setup. Retain cross-harness support and canonical shared
+files. No toolbox CLI port for agents is required. Catalogue assets must ship or
+be managed by ai-team without requiring a separate toolbox installation.
 
-- NOT a cloud service. Nothing is deployed; everything runs on this machine.
-- NOT metered. If a provider can only be reached with a pay-per-token API key, it is out.
-- NOT a framework with an extension API for other people.
-- NOT a 34-agent roster. Roles are added when a real handoff demands one.
-- NOT a replacement for ai-planner, awt, file-sql or skelly.
-- NOT a chat app that happens to edit files.
+## Built-in planning and standalone isolation
 
-## Scope & non-goals
+Planning becomes native ai-team functionality, reusing the planner engine where
+practical. Humans work through the UI. UI, dispatch and agent interfaces share one
+authoritative planning service for **ai-team-owned plans**.
 
-- In scope: team configuration, orchestration, one worktree per pull request, verification,
-  diff review with comments, Today, analytics, reminders, and an editing surface good enough
-  to live in.
-- Non-goals: multi-user, hosting, billing, mobile, and any model access that does not run
-  through a provider already configured on this machine.
+The installed standalone ai-planner remains independent: other projects still use
+it. Do not replace or modify `aip`, its database, global registrations or defaults.
+Do not share its mutable store, auto-import its projects, or redirect clients into
+ai-team. New planning commands use an ai-team namespace, not `aip`.
 
-## MVP & scope tiers
+**Agent interface:** keep structured MCP tools hosted by ai-team (for example
+`ait plan serve`), with a distinct server name and
+seat-local configuration. Keep role tool allow-lists and scope calls to the chat's
+project/plan. UI and Rust dispatch call the service directly, not through MCP or a
+subprocess per operation. Additional CLI commands can serve diagnostics or
+headless workflows without duplicating the entire old CLI surface.
 
-- **MVP** (M0–M2): a prompt produces a plan on the board, two agents build slices in
-  parallel worktrees, a verifier gates them, and the result is inspectable from the CLI.
-- **v1** (M3–M5): the full window — Console, Board, Today, Review, Analytics, Reminders —
-  plus the IDE surface (tree, editor, LSP, terminal, source control), installed by one curl
-  and updatable from the GUI.
-- **Later / maybe:** remote agents on other machines, a second human, ClickUp write-back
-  beyond status, voice.
+Chat MCP discovery is explicit: generated planning/context servers and unrelated
+checkout MCP servers are included; global MCP discovery is not inherited. This
+prevents standalone planning from silently reappearing alongside the scoped tools.
+It changes which servers a chat sees, not the operator's registrations or extensions.
+Future toolbox onboarding can offer previewed, approved imports.
 
-## Risks & open questions
+MCP is an interface, not a security boundary. Server-side validation and policy
+still matter; an unrestricted shell cannot be contained by hiding a tool name.
+`awt`, file-sql and read-only context integrations are not part of this absorption.
 
-- **The Claude-subscription bridge.** The AI SDK provider does not auto-bridge tools, so a
-  Claude node's tools must be handed to the Claude Agent SDK as an in-process MCP server -
-  the pattern pi-claude-subscription already proves. Verified working end to end. It is only
-  available to us because ai-team generates the eve project and therefore owns both sides of
-  the bridge (D7). This is the load-bearing bet; M1 exists to retire it before anything is
-  built on top.
-- **Durability cost, accepted.** Claude Code runs its own loop inside one eve step, so a
-  crash mid-turn loses that turn. Pi has the same property today.
-- **Cold-node prefix.** A Claude node's measured floor is ~64k tokens, but it is a cached
-  prefix: the warm call read 61,416 cached and wrote 2,686. It costs rate limit on a cold
-  node, not dollars. Favour long-lived nodes over short-lived ones.
-- **IDE scope.** M4 roughly doubles the surface area. It is in v1, but it lands after the
-  control plane is genuinely useful, so a slip there does not block daily use.
+## Model access and setup — preserve what works
+
+Keep the existing provider/model behavior, Pi catalogue integration, OAuth sign-in
+and Settings setup. Preserve subscription-backed access, machine provider
+restrictions and credential handling; this redesign is not an authentication
+rewrite or an opening for metered API keys.
+
+**Local inference is opt-in.** A fresh installation must not require an ailocal
+server, model download or local runtime setup. Only use local models/fallbacks
+when the operator has explicitly enabled and configured them. Respect existing
+explicit model choices.
+
+## Initial scope and later work
+
+| Initial desktop scope | Direction |
+| --- | --- |
+| Projects and persistent chats | Codex-like navigation, history, search and organisation |
+| Conversations | Live assistant/tool activity, steering and follow-ups, context/model controls |
+| Execution | Local and isolated worktrees, setup, continuation and handoff |
+| Review and delivery | Diffs, inline feedback, staging, commits and GitHub delivery |
+| Working tools | Terminal, editor/file access, skills, MCP and notifications |
+| Background work | Scheduled tasks, visible results and actionable attention |
+| Planning and project setup | Built-in planner and full toolbox UI |
+| Settings | Preserve working model/OAuth flows; make local setup optional |
+
+Remote capabilities are revisited **after the first round of desktop testing and
+usage**. Mobile, voice, computer-use/browser automation and general-purpose rich
+document/image features are not requirements for this first delivery. Keep later
+capabilities explicit in the parity inventory instead of implying they shipped.
+
+Codex-like permission controls must describe actual enforcement. The current Pi
+guard is not an OS sandbox; do not claim Codex-equivalent sandbox protection merely
+because a selector looks the same. Design and test any stronger boundary explicitly.
+
+## Rollout boundaries
+
+macOS remains the primary desktop target; keep Linux checks working. Retain the
+current application and its data during development, using isolated refactor/test
+state. Other applications and repositories are not a test fixture.
+
+The operator accepts a **fresh start for ai-team projects and history** when the
+refactor is ready for usage/testing. Legacy project/run migration is not a delivery
+requirement. Fresh project state does not mean resetting working OAuth credentials
+or model configuration, deleting source checkouts, or touching standalone planner
+projects. Any cutover/reset is deliberate, not a side effect of launching a build.
+
+This direction replaces the former mandatory-team, dashboard-first and
+never-integrate-planner/toolbox product constraints. It does not waive runtime
+safety, truthful evidence, user control over writes or separation of unrelated data.

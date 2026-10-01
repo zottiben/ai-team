@@ -68,6 +68,21 @@ pub enum Error {
     Invalid(String),
 }
 
+impl From<ai_planner_core::Error> for Error {
+    fn from(error: ai_planner_core::Error) -> Self {
+        use ai_planner_core::Error as Planning;
+        match error {
+            Planning::Sqlite(error) => Self::Sqlite(error),
+            Planning::Io(error) => Self::Io(error),
+            Planning::Json(error) => Self::Json(error),
+            Planning::NoDatabase(_) | Planning::UnknownRepo(_) => {
+                Self::invalid("the embedded planning store is unavailable; refresh this chat")
+            }
+            error => Self::invalid(format!("planning: {error}")),
+        }
+    }
+}
+
 impl Error {
     pub fn invalid(msg: impl Into<String>) -> Self {
         Error::Invalid(msg.into())

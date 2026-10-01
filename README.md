@@ -1,15 +1,15 @@
 # ai-team
 
-One prompt to an orchestrator, planned and built by a configurable team of AI agents,
-working through your [ai-planner](https://github.com/zottiben/ai-planner) board. For one
-engineer, on their own machine.
+A local Pi-powered coding workspace with persistent chats, built-in planning and a
+command Overview for each conversation. For one engineer, on their own machine.
+Optional team execution is being brought into the same chat-first workflow.
 
 It runs entirely on the subscriptions you already pay for - no metered API keys, and a
 per-machine profile so the work machine can deny a provider the personal machine allows.
 
-> **Status: early.** `M0-S1` is in - the workspace, the gates, CI and the install and
-> release skeleton. `ait ui` serves a page that reports its own version and nothing else
-> yet. The store lands in `M0-S2`; the agents in M1.
+> **Development refactor.** Solo chats and chat-owned planning are implemented in this
+> checkout. The legacy team CLI below remains separate until team execution is integrated.
+> Test with isolated state; building this checkout does not replace the installed app.
 
 Built for **macOS**, and developed on Linux — both are supported and both are gated in
 CI on every push.
@@ -28,10 +28,28 @@ Until the first release is tagged there is nothing to download, so the script fa
 to building from source and needs a Rust toolchain ([rustup.rs](https://rustup.rs)).
 
 ```sh
-ait init      # register this checkout and create a local-only machine profile
+ait init      # register this checkout; choose a provider in Settings (local is optional)
 ait doctor    # paths, provider policy/reachability, and the embedded frontend
 ait ui        # open the window in a browser
 ```
+
+### Chats and built-in planning (development refactor)
+
+The development UI starts with persistent solo Pi chats. Each has **Chat | Overview**
+tabs. Overview can create an optional plan, edit scope and work slices, track reported
+progress, and answer human questions. Ordinary conversations need no plan; status and
+answers do not automatically execute work, verify changes, or approve tools.
+
+Planning uses a pinned planner engine, not the installed `aip`. Its data is beside the
+explicit team database as `<database>.planning.sqlite`; keep both together when backing
+up state. Chat-scoped MCP is served by the running ai-team binary itself. It accepts
+only the active chat/attempt and its allowed operations. Standalone planner data,
+configuration and global registrations are not changed or imported.
+
+Chat MCP uses generated planning/context definitions and unrelated checkout servers;
+it intentionally does not inherit global MCP discovery. Provider/OAuth settings and
+operator Pi extensions are preserved. The legacy team CLI below is still separate from
+chat planning; promoting an existing chat to a team is a later refactor slice.
 
 ### The team
 
@@ -93,8 +111,8 @@ delete, and none of those tools is reachable.
 ### Machine provider policy
 
 Team rows are portable preferences; `~/.config/ai-team/machine.toml` is the permission
-boundary on this machine. `ait init` creates a fail-closed default that allows only the
-loopback ai-local gateway. Account-backed providers have to be enabled deliberately:
+boundary on this machine. `ait init` creates a fail-closed default with every provider
+opt-in, including the loopback ai-local gateway. Enable only the providers you want:
 
 ```toml
 version = 1

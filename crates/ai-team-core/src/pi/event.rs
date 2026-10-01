@@ -189,16 +189,24 @@ impl PiEvent {
 
     /// Whether a finished tool call reported failure.
     ///
-    /// Pi marks it on the result rather than as its own event type, so a result that is
-    /// not inspected reads as success - which is how a turn full of refused tool calls
-    /// ends up recorded as a clean run.
+    /// Pi's wire flag is top-level. Older transports and MCP adapters also put error
+    /// evidence inside the result; adapter failures can carry isError=false and a
+    /// structured details.error. Never infer an error from quoted text content.
     fn tool_failed(&self) -> bool {
         let result = self.data.get("result");
         let flagged = result
             .and_then(|r| r.get("isError"))
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(false);
-        flagged
+        self.data
+            .get("isError")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+            || flagged
+            || result
+                .and_then(|r| r.pointer("/details/error"))
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|error| !error.is_empty())
             || result
                 .and_then(|r| r.get("error"))
                 .is_some_and(|e| !e.is_null())
@@ -221,13 +229,31 @@ impl PiEvent {
             return None;
         }
         let tool = self.tool_name();
-        if crate::context::CLICKUP_READ_TOOLS.contains(&tool)
-            || crate::context::FIGMA_READ_TOOLS.contains(&tool)
-        {
-            Some(format!("CONTEXT_UNAVAILABLE: {tool} failed"))
-        } else {
-            None
+        for (source, reads) in [
+            ("clickup", crate::context::CLICKUP_READ_TOOLS),
+            ("figma", crate::context::FIGMA_READ_TOOLS),
+        ] {
+            let direct = reads.contains(&tool)
+                || [format!("{source}_"), format!("mcp__{source}__")]
+                    .iter()
+                    .any(|prefix| {
+                        tool.strip_prefix(prefix)
+                            .is_some_and(|name| reads.contains(&name))
+                    });
+            if direct {
+                return Some(format!("CONTEXT_UNAVAILABLE: {tool} failed"));
+            }
+            let details = &self.data["result"]["details"];
+            // A missing lazy tool uses hintServer; auth failures have their own modes.
+            // The known target plus structured failure matters, not a mode allow-list.
+            let server = details["server"]
+                .as_str()
+                .or_else(|| details["hintServer"].as_str());
+            if (tool == "mcp" || tool == format!("mcp__{source}")) && server == Some(source) {
+                return Some(format!("CONTEXT_UNAVAILABLE: {source} via {tool} failed"));
+            }
         }
+        None
     }
 
     /// One line of what happened, or nothing worth a row.
@@ -464,8 +490,8 @@ mod tests {
 
     #[test]
     fn a_failed_tool_call_is_recorded_as_failed() {
-        // Pi marks failure on the result rather than as its own event type, so a result
-        // nobody inspects reads as success - and a turn of refused calls looks clean.
+        // Keep the older result-level flag as well as the wire-level flag below;
+        // otherwise a turn of refused calls can look clean.
         let ok =
             event(r#"{"type":"tool_execution_end","toolName":"bash","result":{"content":[]}}"#);
         assert_eq!(
@@ -506,6 +532,49 @@ mod tests {
         let ordinary =
             event(r#"{"type":"tool_execution_end","toolName":"bash","result":{"isError":true}}"#);
         assert!(ordinary.context_tool_failure().is_none());
+    }
+
+    #[test]
+    fn context_failures_use_wire_flags_namespaces_and_gateway_metadata() {
+        for raw in [
+            r#"{"type":"tool_execution_end","toolName":"figma_get_design_context","isError":true,"result":{"content":[]}}"#,
+            r#"{"type":"tool_execution_end","toolName":"mcp__clickup__clickup_get_task","isError":true,"result":{"content":[]}}"#,
+            r#"{"type":"tool_execution_end","toolName":"clickup_clickup_get_task","isError":false,"result":{"details":{"server":"clickup","error":"tool_error"}}}"#,
+            r#"{"type":"tool_execution_end","toolName":"mcp","isError":false,"result":{"details":{"mode":"connect","server":"figma","error":"auth_required"}}}"#,
+            r#"{"type":"tool_execution_end","toolName":"mcp","isError":false,"result":{"details":{"mode":"call","server":"clickup","error":"server_backoff"}}}"#,
+            r#"{"type":"tool_execution_end","toolName":"mcp","result":{"details":{"mode":"auth-start","server":"clickup","error":"auth_start_failed"}}}"#,
+            r#"{"type":"tool_execution_end","toolName":"mcp","result":{"details":{"mode":"auth-complete","server":"figma","error":"auth_complete_failed"}}}"#,
+            r#"{"type":"tool_execution_end","toolName":"mcp","result":{"details":{"mode":"call","hintServer":"figma","error":"tool_not_found"}}}"#,
+        ] {
+            let failed = event(raw);
+            assert!(
+                failed.context_tool_failure().is_some(),
+                "missed wire failure: {raw}"
+            );
+            assert_eq!(
+                failed.classify(),
+                Disposition::Record(
+                    EventKind::ToolResult,
+                    format!("{} failed", failed.tool_name())
+                )
+            );
+        }
+        for raw in [
+            r#"{"type":"tool_execution_end","toolName":"unrelated_get_design_context","isError":true}"#,
+            r#"{"type":"tool_execution_end","toolName":"mcp","isError":true,"result":{"details":{"mode":"call","server":"other","error":"tool_error"}}}"#,
+            r#"{"type":"tool_execution_end","toolName":"mcp","result":{"details":{"mode":"connect","server":"figma"},"content":[{"type":"text","text":"Error: quoted ticket text"}]}}"#,
+            r#"{"type":"message_end","toolName":"clickup_get_task","isError":true}"#,
+            r#"{"type":"tool_execution_end","toolName":"mcp","result":{"details":{"server":"other","hintServer":"figma","error":"tool_error"}}}"#,
+        ] {
+            assert!(
+                event(raw).context_tool_failure().is_none(),
+                "not a required-source failure: {raw}"
+            );
+        }
+        assert!(!event(
+            r#"{"type":"tool_execution_end","toolName":"write_handoff","isError":true}"#
+        )
+        .wrote_planner_handoff());
     }
 
     #[test]

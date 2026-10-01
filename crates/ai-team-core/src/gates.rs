@@ -11,7 +11,6 @@
 //! gate gets silently dropped.
 
 use std::path::Path;
-use std::process::Stdio;
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -166,30 +165,35 @@ pub(crate) fn discover_dependency_setup(worktree: &Path) -> Vec<DependencySetup>
 /// managers retain their ordinary shared caches, while ignored dependency directories
 /// remain in awt's pooled checkout across `git clean -fd` returns.
 pub(crate) async fn prepare_dependencies(worktree: &Path) -> Result<Vec<String>> {
+    prepare_dependencies_until(worktree, std::future::pending).await
+}
+
+pub(crate) async fn prepare_dependencies_until<F, S>(
+    worktree: &Path,
+    mut stop: F,
+) -> Result<Vec<String>>
+where
+    F: FnMut() -> S,
+    S: std::future::Future<Output = String> + Send,
+{
     let steps = discover_dependency_setup(worktree);
     let mut completed = Vec::new();
     for step in steps {
         let command = step.command();
-        let output = Command::new(&step.program)
-            .args(&step.args)
-            .current_dir(worktree.join(&step.dir))
-            .stdin(Stdio::null())
-            .kill_on_drop(true)
-            .output();
-        let output = match tokio::time::timeout(GATE_TIMEOUT, output).await {
-            Ok(Ok(output)) => output,
-            Ok(Err(error)) => {
-                return Err(crate::Error::invalid(format!(
-                    "could not prepare dependencies with `{command}`: {error}"
-                )))
-            }
-            Err(_) => {
-                return Err(crate::Error::invalid(format!(
-                    "dependency setup `{command}` was still running after {} minutes",
-                    GATE_TIMEOUT.as_secs() / 60
-                )))
-            }
-        };
+        let output = crate::command::run(
+            Command::new(&step.program)
+                .args(&step.args)
+                .current_dir(worktree.join(&step.dir)),
+            GATE_TIMEOUT,
+            64_000,
+            stop(),
+        )
+        .await
+        .map_err(|error| {
+            crate::Error::invalid(format!(
+                "could not prepare dependencies with `{command}`: {error}"
+            ))
+        })?;
         if !output.status.success() {
             let mut detail = String::from_utf8_lossy(&output.stdout).into_owned();
             detail.push_str(&String::from_utf8_lossy(&output.stderr));
@@ -285,34 +289,32 @@ pub async fn run_gates(worktree: &Path, gates: &[Gate]) -> Result<Vec<GateResult
 }
 
 async fn run_one(worktree: &Path, gate: &Gate) -> Result<GateResult> {
-    let dir = worktree.join(&gate.dir);
-    let output = Command::new(&gate.program)
-        .args(&gate.args)
-        .current_dir(&dir)
-        .stdin(Stdio::null())
-        .kill_on_drop(true)
-        .output();
+    run_one_until(worktree, gate, std::future::pending()).await
+}
 
-    let output = match tokio::time::timeout(GATE_TIMEOUT, output).await {
-        Ok(Ok(output)) => output,
-        Ok(Err(error)) => {
-            // A missing toolchain is a real answer: the gate did not pass, and saying
-            // why beats reporting a green nobody earned.
+pub(crate) async fn run_one_until<S>(worktree: &Path, gate: &Gate, stop: S) -> Result<GateResult>
+where
+    S: std::future::Future<Output = String> + Send,
+{
+    let output = match crate::command::run(
+        Command::new(&gate.program)
+            .args(&gate.args)
+            .current_dir(worktree.join(&gate.dir)),
+        GATE_TIMEOUT,
+        64_000,
+        stop,
+    )
+    .await
+    {
+        Ok(output) => output,
+        Err(error) if matches!(&error, crate::Error::Io(io) if io.kind() == std::io::ErrorKind::Interrupted) => {
+            return Err(error)
+        }
+        Err(error) => {
             return Ok(GateResult {
                 gate: gate.clone(),
                 passed: false,
                 output: format!("could not run `{}`: {error}", gate.command()),
-            });
-        }
-        Err(_) => {
-            return Ok(GateResult {
-                gate: gate.clone(),
-                passed: false,
-                output: format!(
-                    "`{}` was still running after {} minutes",
-                    gate.command(),
-                    GATE_TIMEOUT.as_secs() / 60
-                ),
             })
         }
     };
@@ -333,7 +335,10 @@ fn tail(text: &str, max: usize) -> String {
     if text.len() <= max {
         return text.to_string();
     }
-    let cut = text.len() - max;
+    let mut cut = text.len() - max;
+    while !text.is_char_boundary(cut) {
+        cut += 1;
+    }
     // Start at a line boundary, so the output does not open mid-token.
     let start = text[cut..]
         .find('\n')
@@ -539,6 +544,52 @@ mod tests {
             "{:?}",
             results[0]
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_cancelled_gate_is_not_a_failed_project_check() {
+        let dir = tempfile::tempdir().unwrap();
+        let gate = Gate {
+            kind: GateKind::Test,
+            dir: ".".into(),
+            program: "sh".into(),
+            args: vec!["-c".into(), "sleep 10".into()],
+        };
+        let result = run_one_until(
+            dir.path(),
+            &gate,
+            std::future::ready("Stopped by you".into()),
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "cancellation must not produce a failed GateResult"
+        );
+        assert!(result.unwrap_err().to_string().contains("Stopped by you"));
+    }
+
+    #[test]
+    fn a_multibyte_log_can_be_truncated_inside_a_code_point() {
+        assert!(tail(&"é".repeat(100), 51).contains('é'));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_finished_gate_reaps_tools_that_hold_its_pipes_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let gate = Gate {
+            kind: GateKind::Test,
+            dir: ".".into(),
+            program: "sh".into(),
+            args: vec![
+                "-c".into(),
+                "sh -c 'trap \"\" TERM; sleep 3' & echo evidence; exit 0".into(),
+            ],
+        };
+        let result = tokio::time::timeout(Duration::from_secs(1), run_one(dir.path(), &gate)).await;
+        assert!(result.is_ok(), "a tool kept the exited gate's pipes open");
+        assert!(result.unwrap().unwrap().output.contains("evidence"));
     }
 
     #[test]

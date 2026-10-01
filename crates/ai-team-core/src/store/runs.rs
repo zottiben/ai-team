@@ -118,6 +118,20 @@ impl Store {
         Ok(rows)
     }
 
+    /// Legacy run surfaces exclude chat executions before applying their history window.
+    /// Chat history is selected by its durable identity, not these project-wide lists.
+    pub fn legacy_runs(&self, project_id: Option<i64>, limit: i64) -> Result<Vec<Run>> {
+        let mut stmt = self.db().conn().prepare(&format!(
+            "{RUN_SELECT} WHERE (?1 IS NULL OR project_id = ?1)
+             AND NOT EXISTS(SELECT 1 FROM chat_turn WHERE run_id = run.id)
+             ORDER BY id DESC LIMIT ?2"
+        ))?;
+        let rows = stmt
+            .query_map(params![project_id, limit], run_from_row)?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(rows)
+    }
+
     /// What one checkout's surfaces are about (PW1).
     ///
     /// The pull request a worktree holds is read from the newest maker turn that built in
@@ -150,7 +164,7 @@ impl Store {
         Ok(WorkspaceScope { path, pr })
     }
 
-    /// Newest runs that belong to one checkout (see [`WorkspaceScope`]).
+    /// Newest legacy runs that belong to one checkout (see [`WorkspaceScope`]).
     ///
     /// This filters before applying the limit. Filtering a bounded project-wide list in
     /// Rust lets a busy sibling workspace hide this one's latest run entirely.
@@ -164,6 +178,7 @@ impl Store {
         let (path, plan, slice) = scope.params();
         let mut stmt = self.db().conn().prepare(&format!(
             "{RUN_SELECT} WHERE project_id = ?1 AND {}
+             AND NOT EXISTS(SELECT 1 FROM chat_turn WHERE run_id = run.id)
              ORDER BY id DESC LIMIT ?5",
             WorkspaceScope::run_sql("run", 2)
         ))?;
@@ -189,6 +204,7 @@ impl Store {
             .query_row(
                 &format!(
                     "SELECT plan_slug FROM run WHERE project_id = ?1 AND plan_slug IS NOT NULL
+                        AND NOT EXISTS(SELECT 1 FROM chat_turn WHERE run_id = run.id)
                         AND {}
                       ORDER BY id DESC LIMIT 1",
                     WorkspaceScope::run_sql("run", 2)
@@ -209,6 +225,7 @@ impl Store {
             .query_row(
                 "SELECT n.id FROM node_run n JOIN run r ON r.id = n.run_id
                   WHERE r.plan_slug = ?1 AND n.slice_key = ?2 AND n.role <> ?3
+                    AND NOT EXISTS(SELECT 1 FROM chat_turn WHERE run_id = r.id)
                   ORDER BY n.id DESC LIMIT 1",
                 params![plan, slice_key, crate::VERIFIER_ROLE],
                 |row| row.get(0),
@@ -227,6 +244,7 @@ impl Store {
             "SELECT plan_slug FROM run
               WHERE id IN (SELECT MAX(id) FROM run
                             WHERE project_id = ?1 AND plan_slug IS NOT NULL
+                              AND NOT EXISTS(SELECT 1 FROM chat_turn WHERE run_id = run.id)
                             GROUP BY workspace_path)
               ORDER BY id DESC",
         )?;
@@ -615,6 +633,7 @@ impl Store {
         expected_reason: &str,
         not_newer_than: Option<&str>,
     ) -> Result<Run> {
+        self.require_legacy_run(id)?;
         let at = now();
         let changed = self.db_mut().write(|tx| {
             Ok(tx.execute(
@@ -646,6 +665,7 @@ impl Store {
         body: &str,
         not_newer_than: Option<&str>,
     ) -> Result<Run> {
+        self.require_legacy_run(id)?;
         let body = body.trim();
         if body.is_empty() {
             return Err(Error::invalid("say something"));
@@ -920,6 +940,7 @@ impl Store {
                 ],
             )?;
             let node_id = tx.last_insert_rowid();
+            super::chat_teams::register_member(tx, run_id, node_id, &agent, slice_key)?;
             if let Some(summary) = resolution.notice() {
                 let payload = serde_json::to_string(&serde_json::json!({
                     "requested": {
@@ -966,6 +987,7 @@ impl Store {
                 &format!(
                     "{NODE_SELECT} WHERE worktree_path = ?1 AND slice_key IS NOT NULL
                        AND branch IS NOT NULL
+                       AND NOT EXISTS(SELECT 1 FROM chat_turn WHERE run_id = node_run.run_id)
                      ORDER BY id DESC LIMIT 1"
                 ),
                 params![worktree],
@@ -1006,9 +1028,36 @@ impl Store {
         branch: Option<&str>,
         lease_id: Option<&str>,
     ) -> Result<NodeRun> {
+        if self
+            .chat_team_run(self.node_run(node_run_id)?.run_id)?
+            .is_some()
+        {
+            std::fs::canonicalize(worktree_path)?;
+        }
         let worktree_path = resolved(Path::new(worktree_path));
+        let worktree_path = worktree_path.as_str();
         let at = now();
         self.db_mut().write(|tx| {
+            let (run, project): (i64, i64) = tx.query_row("SELECT n.run_id, r.project_id FROM node_run n JOIN run r ON r.id = n.run_id WHERE n.id = ?1", [node_run_id], |row| Ok((row.get(0)?, row.get(1)?)))?;
+            super::chat_teams::kept::check_unlocated(tx, project, Some(worktree_path), Some(run))?;
+            let mut owners = tx.prepare(
+                "SELECT c.workspace_path FROM chat c WHERE c.active_node_id IS NOT NULL AND c.active_node_id != ?1
+                 AND NOT EXISTS(SELECT 1 FROM chat_team_run tr JOIN chat_team_node m ON m.run_id = tr.run_id
+                   JOIN node_run n ON n.id = m.node_id AND n.run_id = tr.run_id
+                   WHERE tr.chat_id = c.id AND tr.control_node_id = c.active_node_id AND m.node_id = ?1
+                     AND m.plan_access IN ('coordinator', 'planner') AND n.status IN ('queued', 'running')
+                     AND tr.phase IN ('grounding', 'planning', 'building') AND c.stop_requested = 0)
+                 UNION SELECT s.worktree_path FROM chat_build_slice s WHERE s.lease_state != 'released' AND s.worktree_path IS NOT NULL
+                 AND NOT EXISTS(SELECT 1 FROM node_run n JOIN chat_team_node m ON m.node_id = n.id
+                   JOIN chat_team_run tr ON tr.run_id = n.run_id JOIN chat c ON c.active_node_id = tr.control_node_id JOIN run r ON r.id = tr.run_id
+                   WHERE n.id = ?1 AND n.run_id = s.run_id AND n.slice_key = s.slice_key AND s.lease_state = 'leased'
+                   AND n.status IN ('queued','running') AND m.plan_access IN ('maker','reader') AND tr.phase = 'building' AND r.status = 'running' AND c.stop_requested = 0)"
+            )?;
+            let paths = owners.query_map([node_run_id], |row| row.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            if paths.iter().any(|path| crate::same_worktree(path, worktree_path)) {
+                return Err(Error::invalid("a chat turn owns this checkout; wait or select another worktree"));
+            }
+            drop(owners);
             let changed = tx.execute(
                 "UPDATE node_run SET worktree_path = ?2, branch = ?3, lease_id = ?4,
                                      rev = rev + 1, updated_at = ?5
@@ -1027,6 +1076,7 @@ impl Store {
     /// so two app windows cannot both push/create/merge the same branch.
     pub fn claim_delivery(&mut self, node_run_id: i64, action: DeliveryAction) -> Result<bool> {
         let node = self.node_run(node_run_id)?;
+        self.require_legacy_run(node.run_id)?;
         let already_done = match action {
             DeliveryAction::Push => node.pushed_at.is_some(),
             DeliveryAction::Pr => node.pr_url.is_some(),
@@ -1171,6 +1221,7 @@ impl Store {
     }
 
     pub fn claim_node_session_reset(&mut self, node_run_id: i64) -> Result<NodeRun> {
+        self.require_legacy_run(self.node_run(node_run_id)?.run_id)?;
         let at = now();
         let changed = self.db_mut().write(|tx| {
             Ok(tx.execute(
@@ -1266,6 +1317,25 @@ impl Store {
         self.node_run(node_run_id)
     }
 
+    pub(crate) fn attach_pi_process(&mut self, node_run_id: i64, pid: i64) -> Result<()> {
+        let identity = crate::chat::process_identity(pid);
+        self.db_mut().write(|tx| {
+            tx.execute(
+                "UPDATE node_run SET pi_pid = ?2 WHERE id = ?1",
+                params![node_run_id, pid],
+            )?;
+            tx.execute(
+                "UPDATE chat SET pi_identity = ?2 WHERE active_node_id = ?1",
+                params![node_run_id, identity],
+            )?;
+            tx.execute(
+                "UPDATE chat_team_node SET pi_identity = ?2 WHERE node_id = ?1",
+                params![node_run_id, identity],
+            )?;
+            Ok(())
+        })
+    }
+
     /// Claim supervision of one running node with a compare-and-swap on its previous
     /// owner. A restarted app passes the dead pid it observed; two windows cannot both
     /// turn that observation into a live continuation.
@@ -1276,6 +1346,7 @@ impl Store {
         previous_pid: Option<i64>,
     ) -> Result<NodeRun> {
         let node = self.node_run(node_run_id)?;
+        self.require_legacy_run(node.run_id)?;
         if node.supervisor_pid == Some(supervisor_pid) {
             return Ok(node);
         }
@@ -1552,7 +1623,7 @@ const NODE_SELECT: &str = "SELECT id, run_id, agent_id, role, provider, model, s
      tokens_in, tokens_out, tokens_cache_read, tokens_cache_write, turns, blocked_reason, \
      started_at, ended_at, rev, created_at, updated_at, context_tokens, session_retired_at, \
      session_resetting_at, pushed_at, pr_url, merge_requested_at, delivery_claim, \
-     delivery_claimed_at, delivery_error, supervisor_pid, task_key, push_replaces FROM node_run";
+     delivery_claimed_at, delivery_error, supervisor_pid, task_key, push_replaces, pi_pid FROM node_run";
 
 fn node_from_row(r: &Row<'_>) -> rusqlite::Result<NodeRun> {
     Ok(NodeRun {
@@ -1580,6 +1651,7 @@ fn node_from_row(r: &Row<'_>) -> rusqlite::Result<NodeRun> {
         session_resetting_at: non_empty(r.get(29)?),
         supervisor_pid: r.get(36)?,
         task_key: non_empty(r.get(37)?),
+        pi_pid: r.get(39)?,
         context_tokens: r.get(27)?,
         eve_port: r.get(13)?,
         eve_token: non_empty(r.get(14)?),

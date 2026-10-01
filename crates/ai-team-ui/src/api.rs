@@ -39,6 +39,8 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/runs/{id}", get(run))
         .route("/runs/{id}/events", get(run_events))
         .merge(node_routes())
+        .merge(crate::chats::routes())
+        .merge(crate::chat_plans::routes())
         .route("/events", get(stream))
         .route("/runs/{id}/approve-plan", axum::routing::post(approve_plan))
         .route("/runs/{id}/approvals", get(approvals))
@@ -164,7 +166,7 @@ struct TreeQuery {
 /// A path sent by the browser is never trusted merely because `/worktrees` returned it
 /// earlier. `Worktrees::resolve` asks git on every request, which accepts linked
 /// worktrees outside the main checkout while refusing an unrelated directory.
-async fn worktree_for(
+pub(crate) async fn worktree_for(
     state: &AppState,
     project: &str,
     node: Option<i64>,
@@ -1263,16 +1265,7 @@ async fn start_context_auth(
 ) -> Result<Json<serde_json::Value>> {
     let config = ai_team_core::write_context_oauth_config(request.source)?;
     let home = ai_team_core::home_dir()?;
-    let args = vec![
-        "--no-session".to_string(),
-        "--no-context-files".to_string(),
-        "--no-skills".to_string(),
-        "--no-builtin-tools".to_string(),
-        "--no-approve".to_string(),
-        "--mcp-config".to_string(),
-        config.to_string_lossy().into_owned(),
-    ];
-    let id = state.terminals().open_program(&home, "pi", &args)?;
+    let id = state.terminals().open_context_auth(&home, &config)?;
     // The pty queues this line even while Pi is still starting. It is delivered to Pi's
     // editor once it begins reading input, and because `mcp-auth` is an extension command
     // no model turn or model credential is involved.
@@ -2995,7 +2988,7 @@ async fn projects(State(state): State<AppState>) -> Result<Json<Vec<ProjectView>
     let mut out = Vec::new();
     for project in store.projects()? {
         let open_runs = store
-            .runs(Some(project.id), 100)?
+            .legacy_runs(Some(project.id), 100)?
             .into_iter()
             .filter(|run| {
                 !matches!(
@@ -3041,7 +3034,7 @@ async fn runs(
     let Some(requested) = query.workspace.as_deref() else {
         let store = state.store()?;
         let store = store.lock();
-        return Ok(Json(store.runs(query.project, query.limit)?));
+        return Ok(Json(store.legacy_runs(query.project, query.limit)?));
     };
     let project_id = query.project.ok_or_else(|| {
         crate::error::Error::Core(ai_team_core::Error::invalid(
@@ -3056,7 +3049,7 @@ async fn runs(
     let Some(worktree) = runtime_scope_for(&state, &slug, Some(requested)).await? else {
         let store = state.store()?;
         let store = store.lock();
-        return Ok(Json(store.runs(Some(project_id), query.limit)?));
+        return Ok(Json(store.legacy_runs(Some(project_id), query.limit)?));
     };
     let store = state.store()?;
     let store = store.lock();
@@ -3183,7 +3176,7 @@ fn default_event_limit() -> i64 {
 /// payloads can carry encrypted reasoning signatures and enormous tool results, neither of
 /// which belong in a browser rendering what the team is doing.
 #[derive(Debug, Serialize)]
-struct ActivityEvent {
+pub(crate) struct ActivityEvent {
     id: i64,
     node_run_id: Option<i64>,
     kind: ai_team_core::EventKind,
@@ -3648,6 +3641,8 @@ async fn read_notification(
 /// this endpoint knowing what every surface renders.
 #[derive(Debug, Serialize)]
 struct Tick {
+    chat_revision: i64,
+    planning_revision: i64,
     latest_event: i64,
     latest_notification: i64,
     open_runs: usize,
@@ -3662,6 +3657,8 @@ async fn stream(
             async move {
                 state.deliver_notifications().await;
                 let tick = state.tick().unwrap_or(Tick {
+                    chat_revision: -1,
+                    planning_revision: -1,
                     latest_event: -1,
                     latest_notification: -1,
                     open_runs: 0,
@@ -3716,7 +3713,7 @@ impl AppState {
     fn tick(&self) -> Result<Tick> {
         let store = self.store()?;
         let store = store.lock();
-        let runs = store.runs(None, 200)?;
+        let runs = store.legacy_runs(None, 200)?;
         let open_runs = runs
             .iter()
             .filter(|run| {
@@ -3733,6 +3730,10 @@ impl AppState {
         let latest_event = store.latest_event_id()?;
         let latest_notification = store.latest_notification_id()?;
         Ok(Tick {
+            chat_revision: store.chat_revision()?,
+            // A broken/foreign planner store must not freeze the conversation feed.
+            // The plan endpoint reports its real error; other cursors keep moving.
+            planning_revision: store.planning_revision().unwrap_or(-1),
             latest_event,
             latest_notification,
             open_runs,
@@ -3743,6 +3744,20 @@ impl AppState {
 #[cfg(test)]
 mod activity_event_tests {
     use super::*;
+
+    #[test]
+    fn a_broken_planner_does_not_freeze_chat_and_event_ticks() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ai_team_core::Store::init(&dir.path().join("team.db")).unwrap();
+        std::fs::write(store.planning_path().unwrap(), "not an owned planner").unwrap();
+        let state = AppState::new("test").with_store(store);
+        let tick = state
+            .tick()
+            .expect("planning faults must not stop other cursors");
+        assert_eq!(tick.planning_revision, -1);
+        assert_eq!(tick.chat_revision, 0);
+        assert_eq!(tick.latest_event, -1);
+    }
 
     fn event(kind: ai_team_core::EventKind, actor: &str, payload: serde_json::Value) -> Event {
         Event {

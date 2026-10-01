@@ -73,3 +73,5 @@ skip-tree = [
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
+# Reuse only the MIT-licensed engine, pinned to a reviewed full revision in Cargo.toml.
+allow-git = ["https://github.com/zottiben/ai-planner"]

@@ -214,7 +214,7 @@ mod tests {
         assert!(after.contains("claude = true"));
         assert!(after.contains("openai = false"), "{after}");
         assert!(after.contains("zai = false"), "{after}");
-        assert!(after.contains("local = true"), "{after}");
+        assert!(after.contains("local = false"), "{after}");
     }
 
     #[test]

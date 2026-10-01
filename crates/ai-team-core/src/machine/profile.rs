@@ -9,9 +9,8 @@ use crate::error::{Error, Result};
 use crate::model::Provider;
 use crate::paths::machine_profile_path;
 
-/// The profile written for a new machine. It is intentionally useful but conservative:
-/// local inference is free and loopback-only; every account-backed provider needs a
-/// deliberate opt-in on that machine.
+/// Fresh machines explicitly choose every provider, including local inference. A missing
+/// local model server is not a prerequisite for signing into an existing subscription.
 pub const DEFAULT_MACHINE_PROFILE: &str = r#"version = 1
 
 # When a seat's preferred provider is denied, the first allowed, implemented provider
@@ -22,7 +21,7 @@ fallback = ["claude", "openai", "zai", "local"]
 claude = false
 openai = false
 zai = false
-local = true
+local = false
 
 # Read-only context sources (D9). Both reach an account, so both are off until this
 # machine says otherwise - a work laptop can leave them off entirely.
@@ -148,16 +147,17 @@ impl MachineProfile {
         let path = machine_profile_path()?;
         if !path.exists() {
             return Err(Error::invalid(format!(
-                "no machine profile at {} - run `ait init` to create the local-only default",
+                "no machine profile at {} - run `ait init`, then choose a provider in Settings",
                 path.display()
             )));
         }
         Self::load(&path)
     }
 
-    /// The safe profile a new machine starts with.
+    /// An explicit local-only policy, used by offline fixtures and local-only callers.
     pub fn local_only() -> Self {
-        Self::parse(DEFAULT_MACHINE_PROFILE).expect("the compiled default profile is valid")
+        Self::parse(&DEFAULT_MACHINE_PROFILE.replace("local = false", "local = true"))
+            .expect("the compiled local-only profile is valid")
     }
 
     pub fn allowed(&self, provider: Provider) -> bool {
@@ -175,7 +175,7 @@ impl MachineProfile {
     }
 }
 
-/// Create the local-only profile if this machine has never had one. Existing policy is
+/// Create an opt-in profile if this machine has never had one. Existing policy is
 /// never rewritten by init.
 pub fn ensure_machine_profile() -> Result<(PathBuf, bool)> {
     ensure_machine_profile_at(&machine_profile_path()?)
@@ -203,4 +203,33 @@ pub(crate) fn ensure_machine_profile_at(path: &Path) -> Result<(PathBuf, bool)> 
         reason: e.to_string(),
     })?;
     Ok((path, true))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fresh_profiles_require_an_explicit_provider_choice_including_local() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("machine.toml");
+        assert!(ensure_machine_profile_at(&path).unwrap().1);
+        let profile = MachineProfile::load(&path).unwrap();
+        for &provider in Provider::ALL {
+            assert!(!profile.allowed(provider));
+        }
+        assert!(MachineProfile::local_only().allowed(Provider::Local));
+    }
+
+    #[test]
+    fn existing_profiles_and_model_setup_are_never_rewritten() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("machine.toml");
+        let existing = DEFAULT_MACHINE_PROFILE
+            .replace("claude = false", "claude = true")
+            .replace("local = false", "local = true");
+        std::fs::write(&path, &existing).unwrap();
+        assert!(!ensure_machine_profile_at(&path).unwrap().1);
+        assert_eq!(std::fs::read_to_string(path).unwrap(), existing);
+    }
 }

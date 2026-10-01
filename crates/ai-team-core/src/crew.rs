@@ -198,7 +198,7 @@ pub fn of_workspace(
     // seat matters here.
     let runs = match worktree {
         Some(worktree) => store.runs_in_workspace(project_id, worktree, 60)?,
-        None => store.runs(Some(project_id), 60)?,
+        None => store.legacy_runs(Some(project_id), 60)?,
     };
     let approval_run_id = approval_run_id(store, project_id, team_id, worktree)?;
     let latest = latest_by_role(store, &runs, worktree)?;

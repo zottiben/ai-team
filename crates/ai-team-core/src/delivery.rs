@@ -27,6 +27,7 @@ pub async fn delivery_status(db_path: &Path, node_run_id: i64) -> Result<RemoteD
     let (repo, pr_url) = {
         let store = Store::open(db_path)?;
         let node = store.node_run(node_run_id)?;
+        store.require_legacy_run(node.run_id)?;
         let run = store.run(node.run_id)?;
         let repo = store
             .project_repos(run.project_id)?
@@ -291,6 +292,7 @@ fn delivery_policy(
     action: DeliveryAction,
 ) -> Result<DeliveryPolicy> {
     let node = store.node_run(node_run_id)?;
+    store.require_legacy_run(node.run_id)?;
     let run = store.run(node.run_id)?;
     let project = store.project(run.project_id)?;
     let team_id = project

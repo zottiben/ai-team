@@ -28,7 +28,7 @@ use crate::error::{Error, Result};
 /// Not emitting them is not enough: the operator's own shell may already export them, and
 /// a child inherits the environment. D8 is about which account pays, so it has to be
 /// enforced where the process is created rather than where the model is chosen.
-const METERED_MODEL_ENV: &[&str] = &[
+pub(crate) const METERED_MODEL_ENV: &[&str] = &[
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_AUTH_TOKEN",
     "ANTHROPIC_BASE_URL",
@@ -39,6 +39,16 @@ const METERED_MODEL_ENV: &[&str] = &[
     "GOOGLE_API_KEY",
     "GEMINI_API_KEY",
 ];
+
+pub(crate) fn strip_metered_env(command: &mut Command) {
+    strip_metered_std_env(command.as_std_mut());
+}
+
+pub(crate) fn strip_metered_std_env(command: &mut std::process::Command) {
+    for key in METERED_MODEL_ENV {
+        command.env_remove(key);
+    }
+}
 
 /// How a seat is invoked.
 ///
@@ -159,7 +169,9 @@ impl PiTurn {
 #[derive(Debug)]
 pub struct PiProcess {
     child: Child,
+    receipt: Option<crate::chat::team::children::Receipt>,
     pid: i32,
+    owner: Option<std::sync::Arc<crate::chat::team::ownership::Ownership>>,
 }
 
 impl PiProcess {
@@ -180,9 +192,7 @@ impl PiProcess {
                 .as_deref()
                 .unwrap_or_else(|| std::path::Path::new("pi")),
         );
-        for key in METERED_MODEL_ENV {
-            command.env_remove(key);
-        }
+        strip_metered_env(&mut command);
         command
             .args(turn.args())
             .current_dir(&turn.worktree)
@@ -214,14 +224,20 @@ impl PiProcess {
         #[cfg(unix)]
         command.process_group(0);
 
-        let child = command.spawn().map_err(|e| {
-            Error::invalid(format!(
-                "starting `pi`: {e}. ai-team drives Pi as its runtime (D20) and does not \
+        let (child, receipt) =
+            crate::chat::team::children::spawn(&mut command, "pi").map_err(|e| {
+                Error::invalid(format!(
+                    "starting `pi`: {e}. ai-team drives Pi as its runtime (D20) and does not \
                  install it - `pi --version` should work in this shell."
-            ))
-        })?;
+                ))
+            })?;
         let pid = child.id().unwrap_or(0).cast_signed();
-        Ok(PiProcess { child, pid })
+        Ok(PiProcess {
+            child,
+            receipt,
+            pid,
+            owner: crate::chat::team::ownership::current(),
+        })
     }
 
     /// Read the turn to its end, handing every parsed event to `on_event`.
@@ -251,9 +267,17 @@ impl PiProcess {
         let mut stderr_tail = Vec::new();
         let mut out_open = true;
         let mut err_open = true;
+        let mut exited = None;
 
         while out_open || err_open {
             tokio::select! {
+                status = self.child.wait(), if exited.is_none() => {
+                    exited = Some(status.map_err(|e| Error::invalid(format!("waiting for pi: {e}")))?);
+                    // A descendant can inherit a pipe and prevent EOF after Pi exits.
+                    // Kill it now, then drain the already-buffered stream evidence.
+                    self.kill_group();
+                    self.pid = 0;
+                }
                 line = out.next_line(), if out_open => match line {
                     Ok(Some(line)) => {
                         let Some(event) = PiEvent::parse(&line) else { continue };
@@ -293,14 +317,24 @@ impl PiProcess {
             }
         }
 
-        let status = self
-            .child
-            .wait()
-            .await
-            .map_err(|e| Error::invalid(format!("waiting for pi: {e}")))?;
+        let status = match exited {
+            Some(status) => status,
+            None => self
+                .child
+                .wait()
+                .await
+                .map_err(|e| Error::invalid(format!("waiting for pi: {e}")))?,
+        };
+        // A settled/failed Pi process may leave tools or MCP servers behind. Reap the
+        // whole group before its caller can release the checkout, even on a clean exit.
+        self.kill_group();
+        self.pid = 0;
+        if let Some(receipt) = &mut self.receipt {
+            receipt.finish().await?;
+        }
         outcome.exit_code = status.code();
         outcome.stderr = stderr_tail.join("\n");
-        outcome.failed |= latest_provider_turn_failed;
+        outcome.failed |= latest_provider_turn_failed || !status.success();
 
         // A turn that never settled is not a turn that succeeded, whatever its exit code:
         // the stream is the record, and a truncated one means the child died mid-turn.
@@ -308,6 +342,38 @@ impl PiProcess {
             outcome.failed = true;
         }
         Ok(outcome)
+    }
+
+    pub(crate) fn pid(&self) -> i64 {
+        i64::from(self.pid)
+    }
+
+    /// Cancellation is complete only after the child is reaped. Escalate a stubborn
+    /// process group so a stopped chat cannot release its checkout while tools still write.
+    pub(crate) async fn terminate(&mut self) -> Result<()> {
+        self.stop();
+        let waited =
+            tokio::time::timeout(std::time::Duration::from_secs(2), self.child.wait()).await;
+        // A child can exit while a tool ignores TERM. Kill remaining group members too.
+        self.kill_group();
+        if let Ok(result) = waited {
+            result?;
+        } else {
+            self.child.start_kill()?;
+            self.child.wait().await?;
+        }
+        self.pid = 0;
+        if let Some(receipt) = &mut self.receipt {
+            receipt.finish().await?;
+        }
+        Ok(())
+    }
+
+    fn kill_group(&self) {
+        #[cfg(unix)]
+        if let Some(pid) = rustix::process::Pid::from_raw(self.pid) {
+            let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
+        }
     }
 
     /// Stop the turn and everything it started.
@@ -332,7 +398,14 @@ impl PiProcess {
 
 impl Drop for PiProcess {
     fn drop(&mut self) {
-        self.stop();
+        if self.pid != 0 {
+            if let Some(owner) = &self.owner {
+                owner.doubt();
+            }
+        }
+        // Normal cancellation uses terminate() and its grace period. Dropping means
+        // unwinding/aborting: TERM alone can leave tool descendants writing forever.
+        self.kill_group();
     }
 }
 

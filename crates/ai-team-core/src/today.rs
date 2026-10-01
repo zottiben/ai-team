@@ -204,7 +204,7 @@ pub fn from_store(store: &Store) -> Result<Vec<Item>> {
     for project in store.projects()? {
         let slug = project.slug.clone();
 
-        let runs = store.runs(Some(project.id), 50)?;
+        let runs = store.legacy_runs(Some(project.id), 50)?;
         let accepted = newest_accepted(store, &runs)?;
 
         for run in runs {

@@ -26,6 +26,9 @@ pub(crate) enum Command {
     Init(InitArgs),
     /// Open the ai-team window in a browser.
     Ui(UiArgs),
+    /// Embedded planning tools for an ai-team chat (independent of standalone aip).
+    #[command(subcommand)]
+    Plan(ai_team_ui::plan_mcp::PlanCommand),
     /// Inspect the database directly.
     #[command(subcommand)]
     Db(DbCommand),

@@ -154,8 +154,9 @@ pub struct PlanAccess<'a> {
 ///
 /// Returning `None` rather than an empty config matters: `--mcp-config` pointing at a
 /// file with no servers is a flag that looks deliberate and does nothing. Ordinary seats
-/// let Pi merge repository servers. Planning seats run exclusive and copy safe unrelated
-/// repository servers into this config so generated context definitions have precedence.
+/// let Pi merge repository servers. Planning seats and chats run exclusive and copy safe
+/// unrelated repository servers, so generated context/planning definitions take precedence.
+/// Chats intentionally do not discover global MCP servers (including standalone aip).
 pub(super) fn mcp_config(sources: &[ContextSource], plan: Option<PlanAccess<'_>>) -> Option<Value> {
     if sources.is_empty() && plan.is_none() {
         return None;
@@ -223,7 +224,8 @@ pub fn write_context_oauth_config(source: ContextSource) -> Result<PathBuf> {
     let path = dir.join(format!("{}.json", source.as_str()));
     let mut servers = Map::new();
     servers.insert(source.as_str().to_string(), context_server(source, false));
-    let config = json!({ "mcpServers": servers });
+    let mut config = json!({ "mcpServers": servers });
+    defer_scoped_mcp(&mut config)?;
     std::fs::write(&path, serde_json::to_string_pretty(&config)?).map_err(|error| {
         Error::UnusablePath {
             path: path.clone(),
@@ -266,7 +268,7 @@ pub(super) fn write_mcp_config(
         grant_handoff_tool(&mut config)?;
     }
     if is_planning_role(role) {
-        merge_safe_project_servers(worktree, &mut config)?;
+        merge_safe_project_servers(worktree, &mut config, true)?;
     }
     std::fs::create_dir_all(dir).map_err(|e| Error::UnusablePath {
         path: dir.to_path_buf(),
@@ -293,14 +295,12 @@ fn grant_handoff_tool(config: &mut Value) -> Result<()> {
 /// Planning runs in adapter-exclusive mode so a checkout cannot replace the generated
 /// ClickUp/Figma allow-lists or offer a browser when required context fails. Unrelated
 /// repository servers are copied into that exclusive config rather than discarded.
-fn merge_safe_project_servers(worktree: &Path, config: &mut Value) -> Result<()> {
-    const RESERVED: &[&str] = &[
-        "ai-planner",
-        "clickup",
-        "figma",
-        "playwright",
-        "chrome-devtools",
-    ];
+pub(super) fn merge_safe_project_servers(
+    worktree: &Path,
+    config: &mut Value,
+    exclude_browsers: bool,
+) -> Result<()> {
+    const RESERVED: &[&str] = &["ai-planner", "ai-team-planner", "clickup", "figma"];
     let target = config
         .get_mut("mcpServers")
         .and_then(Value::as_object_mut)
@@ -325,7 +325,18 @@ fn merge_safe_project_servers(worktree: &Path, config: &mut Value) -> Result<()>
             continue;
         };
         for (name, server) in servers {
-            if !RESERVED.contains(&name.as_str()) {
+            let standalone = server
+                .get("command")
+                .and_then(Value::as_str)
+                .and_then(|command| Path::new(command).file_name())
+                .and_then(|file| file.to_str())
+                .is_some_and(|command| {
+                    command.eq_ignore_ascii_case("aip")
+                        || command.eq_ignore_ascii_case("ai-planner")
+                });
+            let browser =
+                exclude_browsers && matches!(name.as_str(), "playwright" | "chrome-devtools");
+            if !RESERVED.contains(&name.as_str()) && !standalone && !browser {
                 target.insert(name.clone(), server.clone());
             }
         }
@@ -434,6 +445,74 @@ impl Seat<'_> {
         turn.instructions = Some(super::instructions::for_restack(self.agent, self.team));
         Ok(turn)
     }
+}
+
+/// Eager adapters may initialize before Pi binds extension CLI flags, reading global
+/// configuration even in exclusive mode. Connect only after the scoped session starts.
+pub(super) fn defer_scoped_mcp(config: &mut Value) -> Result<()> {
+    let servers = config
+        .get_mut("mcpServers")
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| Error::invalid("generated MCP config has no server map"))?;
+    for server in servers.values_mut().filter_map(Value::as_object_mut) {
+        server.insert("lifecycle".into(), json!("lazy-keep-alive"));
+    }
+    Ok(())
+}
+
+/// A solo chat uses the same provider mapping, guard and context configuration as seats,
+/// but is not instructed to work on a planner slice or inside a specialist's zone.
+pub(crate) fn conversation_turn(
+    chat: &crate::Chat,
+    node: &crate::NodeRun,
+    support: &Path,
+    sources: &[ContextSource],
+    prompt: String,
+    database: &Path,
+) -> Result<PiTurn> {
+    let worktree = Path::new(&chat.workspace_path);
+    let mut turn = PiTurn::new(worktree, prompt);
+    turn.provider = Some(provider_name(node.provider).into());
+    turn.model = Some(node.model.clone());
+    turn.thinking = Some(thinking(chat.reasoning).into());
+    turn.guard = Some(super::guard::install_at(support)?);
+    let mut config = mcp_config(sources, None).unwrap_or_else(|| json!({"mcpServers": {}}));
+    merge_safe_project_servers(worktree, &mut config, false)?;
+    config["mcpServers"]["ai-team-planner"] = json!({
+        "command": std::env::current_exe()?,
+        "args": ["plan", "serve", "--db", database.canonicalize()?.to_string_lossy(),
+                 "--chat", chat.id.to_string(), "--node", node.id.to_string()],
+        "transport": "stdio", "lifecycle": "eager", "directTools": true,
+        "includeTools": crate::planning::PlanAccess::Planner.tools(),
+    });
+    defer_scoped_mcp(&mut config)?;
+    let path = support.join("mcp-assistant.json");
+    std::fs::write(&path, serde_json::to_string_pretty(&config)?).map_err(|error| {
+        Error::UnusablePath {
+            path: path.clone(),
+            reason: error.to_string(),
+        }
+    })?;
+    turn.mcp_config = Some(path);
+    turn.environment = context_environment(sources);
+    turn.environment
+        .push(("AI_TEAM_PLAN".into(), "embedded".into()));
+    turn.environment
+        .push(("PI_MCP_CONFIG_MODE".into(), "exclusive".into()));
+    turn.instructions = Some(format!(
+        "You are the Pi coding agent in this ai-team conversation. Work only in the selected \
+         checkout. Answer questions directly; do not require a plan or team for ordinary work. \
+         When planning is useful or requested, use only the ai-team-planner MCP tools for this \
+         chat. {bootstrap} Do not invoke standalone aip or ai-planner, even if repository house rules \
+         mention them. Call get_plan first and preserve its revision on writes. Raise human \
+         decisions with open_question; the person answers in Overview. Never answer for them. \
+         When editing code, run the relevant project checks and report their actual results. \
+         Keep changes in the checkout for the person to inspect; do not commit, publish, \
+         create a pull request, or delete working files without their explicit direction.{}",
+        crate::house::section(&crate::house::read_for(worktree, &[])),
+        bootstrap = super::instructions::CHAT_MCP_BOOTSTRAP,
+    ));
+    Ok(turn)
 }
 
 #[cfg(test)]

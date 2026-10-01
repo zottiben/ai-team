@@ -1,7 +1,7 @@
 //! Provider reachability for `ait doctor`.
 
-use std::process::{Command, Output, Stdio};
-use std::time::{Duration, Instant};
+use std::process::Command;
+use std::time::Duration;
 
 use crate::model::Provider;
 
@@ -103,43 +103,73 @@ pub(super) fn probe(provider: Provider, ailocal: &AilocalSettings) -> ProviderSt
 fn probe_pi(provider: Provider) -> Option<std::result::Result<String, String>> {
     let name = crate::pi::provider_name(provider);
     let mut command = Command::new("pi");
-    command.args(["auth", "check", "--provider", name, "--json"]);
-    let output = output_with_timeout(command).ok()??;
-
-    let answer: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
-    match answer.get("status").and_then(serde_json::Value::as_str)? {
-        "ready" => Some(Ok(
-            match answer.get("authType").and_then(serde_json::Value::as_str) {
-                Some(kind) => format!("Pi has {name} ready ({kind})"),
-                None => format!("Pi has {name} ready"),
-            },
-        )),
-        // Pi does not know this provider, which says nothing about the account.
-        _ if answer.get("reason").and_then(serde_json::Value::as_str)
-            == Some("provider_not_found") =>
-        {
-            None
+    // This subcommand uses Pi's built-in auth runtime, not session extensions. Its
+    // separate parser does not accept the adapter's --mcp-config flag.
+    command.args([
+        "auth",
+        "check",
+        "--provider",
+        name,
+        "--json",
+        "--no-refresh",
+    ]);
+    let output = match output_with_timeout(command) {
+        Ok(output) => output,
+        Err(crate::Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+            return None
         }
-        _ => Some(Err(format!("Pi cannot authenticate {name}"))),
+        Err(_) => return Some(Err(format!("Pi authentication check failed for {name}"))),
+    };
+    let Ok(answer) = serde_json::from_slice::<serde_json::Value>(&output.stdout) else {
+        return Some(Err("Pi returned an unreadable auth status".into()));
+    };
+    if answer["provider"] != name {
+        return Some(Err(
+            "Pi returned auth status for a different provider".into()
+        ));
+    }
+    if answer["status"] == "not_ready" && answer["reason"] == "provider_not_found" {
+        return None;
+    }
+    let kind = answer["authType"].as_str();
+    let subscription = kind == Some("oauth")
+        // The Claude extension may wrap its CLI with an API-key-shaped credential.
+        // probe_claude still requires that CLI's first-party subscription evidence.
+        || (provider == Provider::Claude && kind == Some("api_key"));
+    if output.status.success() && answer["status"] == "ready" && subscription {
+        Some(Ok(format!(
+            "Pi has {name} subscription authentication ready"
+        )))
+    } else {
+        Some(Err(format!(
+            "Pi cannot confirm subscription authentication for {name}"
+        )))
     }
 }
 
 fn probe_claude() -> std::result::Result<String, String> {
     if let Some(answer) = probe_pi(Provider::Claude) {
-        return answer;
+        answer?;
     }
     let mut command = Command::new("claude");
     command.args(["auth", "status", "--json"]);
     let output = output_with_timeout(command)
-        .map_err(|_| "Claude Code CLI is not installed".to_string())?
-        .ok_or_else(|| "Claude Code auth status timed out".to_string())?;
-    if !output.status.success() {
-        return Err("Claude Code is not signed in".into());
-    }
+        .map_err(|_| "Could not check Claude Code authentication".to_string())?;
     let status: serde_json::Value = serde_json::from_slice(&output.stdout)
         .map_err(|_| "Claude Code returned an unreadable auth status".to_string())?;
-    if status.get("loggedIn").and_then(serde_json::Value::as_bool) != Some(true) {
+    if !output.status.success() || status["loggedIn"] != true {
         return Err("Claude Code is not signed in".into());
+    }
+    if status["apiProvider"] != "firstParty"
+        || !matches!(
+            status["authMethod"].as_str(),
+            Some("claude.ai" | "oauth_token")
+        )
+    {
+        return Err(
+            "Claude Code did not report a first-party subscription login; run `claude auth login`"
+                .into(),
+        );
     }
     Ok("Claude subscription authenticated through Claude Code".into())
 }
@@ -150,49 +180,28 @@ fn probe_chatgpt() -> std::result::Result<String, String> {
     }
     let mut codex = Command::new("codex");
     codex.args(["login", "status"]);
-    if success_with_timeout(codex) {
+    let output = output_with_timeout(codex)
+        .map_err(|_| "Could not check Codex authentication".to_string())?;
+    // Codex writes login status to stderr. Accept stdout too, but never expose an
+    // unexpected status body: an API-key login can print part of the credential.
+    let status = [output.stdout, output.stderr].concat();
+    if output.status.success()
+        && String::from_utf8_lossy(&status).trim() == "Logged in using ChatGPT"
+    {
         return Ok("ChatGPT subscription authenticated through Codex".into());
     }
-    // The wording this replaced named `eve dev`, which has not been the runtime since D20
-    // and told somebody to sign in to a program they do not have.
-    Err("not signed in - run `codex login` to use your ChatGPT subscription".into())
+    Err("Codex did not report a ChatGPT login; run `codex login` to use your subscription".into())
 }
 
-fn success_with_timeout(mut command: Command) -> bool {
-    command.stdout(Stdio::null()).stderr(Stdio::null());
-    let Ok(mut child) = command.spawn() else {
-        return false;
-    };
-    let deadline = Instant::now() + Duration::from_secs(3);
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => return status.success(),
-            Err(_) => return false,
-            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
-            Ok(None) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return false;
-            }
-        }
+fn output_with_timeout(mut command: Command) -> crate::Result<crate::command::Output> {
+    command.env("LC_ALL", "C");
+    let output = crate::command::run_blocking(command, Duration::from_secs(3), 64_000)?;
+    if output.truncated {
+        return Err(crate::Error::invalid(
+            "authentication status exceeded its capture limit",
+        ));
     }
-}
-
-fn output_with_timeout(mut command: Command) -> std::io::Result<Option<Output>> {
-    command.stdout(Stdio::piped()).stderr(Stdio::null());
-    let mut child = command.spawn()?;
-    let deadline = Instant::now() + Duration::from_secs(3);
-    loop {
-        match child.try_wait()? {
-            Some(_) => return child.wait_with_output().map(Some),
-            None if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
-            None => {
-                child.kill()?;
-                child.wait()?;
-                return Ok(None);
-            }
-        }
-    }
+    Ok(output)
 }
 
 #[cfg(test)]

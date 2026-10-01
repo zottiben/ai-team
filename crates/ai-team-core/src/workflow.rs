@@ -602,7 +602,7 @@ const NOTHING_DISPATCHED: &str = "no slices were dispatched";
 /// work closes - not one waiting for a person (interrupted, or on its plan's approval),
 /// not one with a turn still open, and not one that left work undispatched.
 pub(crate) fn close_runs_finished_later(store: &mut Store) -> Result<Vec<String>> {
-    let runs = store.runs(None, i64::MAX)?;
+    let runs = store.legacy_runs(None, i64::MAX)?;
     let waiting = [
         crate::store::INTERRUPTED_REASON,
         PLAN_APPROVAL_REASON,
@@ -1151,6 +1151,7 @@ fn claimable_approval_reason(store: &Store, run_id: i64) -> Result<(&'static str
 }
 
 pub fn claim_plan_approval(store: &mut Store, run_id: i64) -> Result<()> {
+    store.require_legacy_run(run_id)?;
     let (reason, cutoff) = claimable_approval_reason(store, run_id)?;
     refuse_busy_workspace(store, run_id)?;
     match store.begin_plan_approval(run_id, reason, cutoff.as_deref()) {
@@ -1170,6 +1171,7 @@ pub fn claim_plan_approval_with_direction(
     run_id: i64,
     direction: &str,
 ) -> Result<()> {
+    store.require_legacy_run(run_id)?;
     let coordinator = store
         .node_runs(run_id)?
         .into_iter()
@@ -1244,6 +1246,7 @@ async fn release_approved_slices(store: &mut Store, planner: &Planner, run_id: i
 
 pub async fn continue_approved_at(db: &Path, run_id: i64) -> Result<Orchestration> {
     let mut store = Store::open(db)?;
+    store.require_legacy_run(run_id)?;
     let run = store.run(run_id)?;
     if run.status != RunStatus::Running || run.blocked_reason.is_some() {
         return Err(Error::invalid(
@@ -1449,6 +1452,7 @@ pub(crate) async fn restack_at(
     restack: crate::restack::Restack,
 ) -> Result<Orchestration> {
     let mut store = Store::open(db)?;
+    store.require_legacy_run(run_id)?;
     let initialization = (|| {
         store.set_run_supervisor(run_id, i64::from(std::process::id()))?;
         let run = store.set_run_status(run_id, RunStatus::Running)?;
@@ -1511,6 +1515,7 @@ pub(crate) async fn restack_at(
 /// recovery can be tried again without losing its transcript or uncommitted checkout.
 pub async fn resume_interrupted_node_at(db: &Path, run_id: i64, node_id: i64) -> Result<Resumed> {
     let mut store = Store::open(db)?;
+    store.require_legacy_run(run_id)?;
     let run = store.run(run_id)?;
     // Interrupted is what a run whose process stopped mid-turn is settled as, and waiting
     // to be resumed is the whole of what that state means.
@@ -1681,6 +1686,7 @@ impl Resumed {
 /// Atomically reserve one idle session reset. Orchestrators must have a plan because the
 /// reset is forbidden until that plan has a durable ai-planner handoff.
 pub fn claim_session_reset(store: &mut Store, run_id: i64, node_id: i64) -> Result<()> {
+    store.require_legacy_run(run_id)?;
     let run = store.run(run_id)?;
     let node = store.node_run(node_id)?;
     if node.run_id != run.id {
@@ -1699,6 +1705,7 @@ pub fn claim_session_reset(store: &mut Store, run_id: i64, node_id: i64) -> Resu
 /// orchestrator resumes the exact Pi session and must successfully call write_handoff.
 pub async fn reset_claimed_session_at(db: &Path, run_id: i64, node_id: i64) -> Result<()> {
     let mut store = Store::open(db)?;
+    store.require_legacy_run(run_id)?;
     let node = store.node_run(node_id)?;
     if node.run_id != run_id || node.session_resetting_at.is_none() {
         return Err(Error::invalid("that session reset is not pending"));

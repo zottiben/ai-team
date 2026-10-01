@@ -18,5 +18,13 @@ anyhow.workspace = true
 clap.workspace = true
 tokio.workspace = true
 
+[[example]]
+name = "chat-transport"
+path = "tests/chat_transport/host.rs"
+
+[dev-dependencies]
+serde_json.workspace = true
+tempfile = "3"
+
 [lints]
 workspace = true

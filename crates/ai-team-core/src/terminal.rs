@@ -165,6 +165,26 @@ impl Terminals {
         self.open_builder(worktree, spawn, program)
     }
 
+    /// An explicit context-source login, not a coding turn or an ordinary user shell.
+    /// Keep Pi's auth storage/extensions, but only discover the supplied MCP definition.
+    pub fn open_context_auth(&self, home: &Path, config: &Path) -> Result<u64> {
+        let mut spawn = CommandBuilder::new("pi");
+        spawn.args([
+            "--no-session",
+            "--no-context-files",
+            "--no-skills",
+            "--no-builtin-tools",
+            "--no-approve",
+            "--mcp-config",
+        ]);
+        spawn.arg(config);
+        spawn.env("PI_MCP_CONFIG_MODE", "exclusive");
+        for key in crate::pi::METERED_MODEL_ENV {
+            spawn.env_remove(key);
+        }
+        self.open_builder(home, spawn, "Pi context authentication")
+    }
+
     fn open_builder(&self, worktree: &Path, mut spawn: CommandBuilder, label: &str) -> Result<u64> {
         let system = NativePtySystem::default();
         let pair = system

@@ -39,10 +39,24 @@ pub async fn run<F>(
     store: &mut Store,
     node_run_id: i64,
     turn: &PiTurn,
-    mut on_event: F,
+    on_event: F,
 ) -> Result<(String, TurnOutcome)>
 where
     F: FnMut(&PiEvent) + Send,
+{
+    run_until(store, node_run_id, turn, on_event, std::future::pending()).await
+}
+
+pub(crate) async fn run_until<F, S>(
+    store: &mut Store,
+    node_run_id: i64,
+    turn: &PiTurn,
+    mut on_event: F,
+    stop: S,
+) -> Result<(String, TurnOutcome)>
+where
+    F: FnMut(&PiEvent) + Send,
+    S: std::future::Future<Output = String> + Send + 'static,
 {
     // Resume when the node already has a session. A second session would give the model
     // the prompt with none of the conversation that produced the work being repaired.
@@ -62,30 +76,59 @@ where
     }
 
     let mut process = PiProcess::start(&turn)?;
+    if let Err(error) = store.attach_pi_process(node_run_id, process.pid()) {
+        // The process already exists, even though its identity could not be persisted.
+        // Do not let failure reconciliation release the checkout before it is reaped.
+        process.terminate().await.map_err(|cleanup| {
+            Error::invalid(format!(
+                "{error}; terminating unregistered Pi also failed: {cleanup}"
+            ))
+        })?;
+        return Err(error);
+    }
     let (tx, mut rx) = mpsc::unbounded_channel::<PiEvent>();
 
     // The child is driven here and ingested below. `drive` owns the pipes and the
     // callback cannot await, so the two halves have to be separate tasks.
+    let (ingest_failed, failed) = tokio::sync::oneshot::channel::<()>();
     let driver = tokio::spawn(async move {
-        let outcome = process
-            .drive(|event| {
-                // A closed receiver means the ingesting side gave up; the turn still has
-                // to be read to its end or the child blocks on a full pipe.
-                let _ = tx.send(event.clone());
-            })
-            .await;
-        outcome
+        let reason = tokio::select! {
+            outcome = process.drive(|event| { let _ = tx.send(event.clone()); }) => {
+                return (outcome, None);
+            }
+            reason = stop => reason,
+            _ = failed => "The event store stopped accepting this turn.".to_string(),
+        };
+        let stopped = process
+            .terminate()
+            .await
+            .map(|()| super::process::TurnOutcome::default());
+        (stopped, Some(reason))
     });
 
     // The same `TurnOutcome` an eve turn produced, on purpose: it describes a turn - what
     // it recorded, what it spent, how it ended - and none of that is a fact about which
     // runtime took it. Everything downstream of here stayed unchanged because of it.
-    let (mut session, mut summary) =
-        ingest_stream(store, node_run_id, resuming, &mut rx, &mut on_event).await?;
+    let ingested = ingest_stream(store, node_run_id, resuming, &mut rx, &mut on_event).await;
+    let (mut session, mut summary) = match ingested {
+        Ok(ingested) => ingested,
+        Err(error) => {
+            let _ = ingest_failed.send(());
+            // Do not release a checkout while an unrecorded tool process is still alive.
+            let _ = driver.await;
+            return Err(error);
+        }
+    };
 
-    let outcome = driver
+    let (outcome, stopped) = driver
         .await
-        .map_err(|e| Error::invalid(format!("the Pi turn panicked: {e}")))??;
+        .map_err(|e| Error::invalid(format!("the Pi turn panicked: {e}")))?;
+    let outcome = outcome?;
+    if let Some(reason) = stopped {
+        summary.terminal = Some(crate::TerminalState::Cancelled);
+        summary.provider_message = Some(reason);
+        return Ok((session, summary));
+    }
 
     if session.is_empty() {
         if let Some(id) = &outcome.session_id {
@@ -127,6 +170,7 @@ where
     let mut cursor = store.node_run(node_run_id)?.stream_cursor;
     let mut batch: Vec<PiEvent> = Vec::with_capacity(BATCH);
     let mut summary = TurnOutcome::default();
+    let mut live = super::live::LiveText::default();
 
     loop {
         let (event, flush_due) = if batch.is_empty() {
@@ -146,6 +190,7 @@ where
                 }
             }
             on_event(&event);
+            live.accept(&event);
             batch.push(event);
         }
 
@@ -157,6 +202,7 @@ where
                 batch.clear();
             } else {
                 let ingested = store.ingest_pi_events(node_run_id, &session, cursor, &batch)?;
+                store.update_chat_preview(node_run_id, &live.text())?;
                 cursor += i64::try_from(batch.len()).unwrap_or(0);
                 summary.recorded += ingested.recorded;
                 summary.duplicates += ingested.duplicates;

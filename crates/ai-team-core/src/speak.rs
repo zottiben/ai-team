@@ -105,7 +105,7 @@ pub fn target_in(store: &Store, agent_id: i64, worktree: Option<&Path>) -> Resul
     let mut live = None;
     let runs = match worktree {
         Some(worktree) => store.runs_in_workspace(project_id, worktree, 20)?,
-        None => store.runs(Some(project_id), 20)?,
+        None => store.legacy_runs(Some(project_id), 20)?,
     };
     let approval_run_id = if agent.role != crate::ROOT_ROLE {
         None

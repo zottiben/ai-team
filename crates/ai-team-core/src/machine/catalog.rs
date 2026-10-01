@@ -5,6 +5,7 @@
 //! while the runtime calls it `claude-opus-5`, so this reads Pi's own list instead.
 
 use std::collections::HashSet;
+use std::io::Write;
 use std::process::{Command, Stdio};
 
 use serde::Serialize;
@@ -180,10 +181,16 @@ impl ModelRegistry {
 
     /// Every exact model Pi reports available, narrowed by this machine's policy.
     pub fn models(&self) -> Result<Vec<ModelChoice>> {
-        let output = Command::new("pi")
-            // Listing a local catalogue does not need update checks, and a settings page
-            // must not wait on the network merely to open.
-            .args(["--offline", "--list-models"])
+        // Pi loads provider extensions for the catalogue. MCP extensions load too:
+        // --offline alone does not stop eager global/project servers from spawning.
+        let mut config = tempfile::NamedTempFile::new()?;
+        config.write_all(br#"{"mcpServers":{}}"#)?;
+        let mut command = Command::new("pi");
+        crate::pi::strip_metered_std_env(&mut command);
+        let output = command
+            .args(["--offline", "--list-models", "--mcp-config"])
+            .arg(config.path())
+            .env("PI_MCP_CONFIG_MODE", "exclusive")
             .stdin(Stdio::null())
             .output()
             .map_err(|error| Error::invalid(format!("could not ask Pi for its models: {error}")))?;

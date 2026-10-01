@@ -242,6 +242,7 @@ impl Orchestrator {
     where
         F: FnMut(&crate::PiEvent) + Send,
     {
+        store.require_legacy_run(self.run_id)?;
         let agents = store.agents(self.team_id)?;
         let orchestrator = agents
             .iter()
@@ -395,6 +396,7 @@ impl Orchestrator {
     /// board. Rust still decides what is dispatched; the model only acknowledges the
     /// transition and calls out any last coordination concern in the same session.
     pub async fn acknowledge_plan_approval(&self, store: &mut Store) -> Result<TurnOutcome> {
+        store.require_legacy_run(self.run_id)?;
         let coordinator = store
             .node_runs(self.run_id)?
             .into_iter()
@@ -428,6 +430,7 @@ impl Orchestrator {
         store: &mut Store,
         node_id: i64,
     ) -> Result<()> {
+        store.require_legacy_run(self.run_id)?;
         let node = store.node_run(node_id)?;
         if node.run_id != self.run_id || node.role != ROOT_ROLE {
             return Err(Error::invalid("that node is not this run's orchestrator"));
@@ -537,6 +540,7 @@ impl Orchestrator {
     where
         F: FnMut(&str) + Send,
     {
+        store.require_legacy_run(self.run_id)?;
         if let Some(plan) = self.planner.plan_slug() {
             crate::workspace::settle_stack(&self.planner, plan, crate::stack::Names::Keep).await?;
         }
@@ -807,23 +811,8 @@ impl Orchestrator {
         store: &mut Store,
         node_id: i64,
     ) -> Result<ResumedPr> {
-        let node = store.node_run(node_id)?;
-        if node.run_id != self.run_id || node.status != NodeStatus::Running {
-            return Err(Error::invalid(
-                "that node is no longer an interrupted running turn",
-            ));
-        }
-        if node.session_id.is_none() || node.session_retired_at.is_some() {
-            return Err(Error::invalid(
-                "that interrupted turn has no active Pi session",
-            ));
-        }
         let pid = i64::from(std::process::id());
-        if node.supervisor_pid != Some(pid) {
-            return Err(Error::invalid(
-                "this process has not claimed the interrupted turn",
-            ));
-        }
+        let node = claimed_resume_node(store, self.run_id, node_id, pid)?;
         let slice_key = node
             .slice_key
             .clone()
@@ -1204,6 +1193,27 @@ async fn pr_base(worktree: &Path, slice: &Slice) -> Result<String> {
 
 fn lease_holder(run_id: i64, slice_key: &str, role: &str) -> String {
     format!("ai-team run-{run_id} {slice_key} {role}")
+}
+
+fn claimed_resume_node(store: &Store, run: i64, node: i64, pid: i64) -> Result<crate::NodeRun> {
+    store.require_legacy_run(run)?;
+    let node = store.node_run(node)?;
+    if node.run_id != run || node.status != NodeStatus::Running {
+        return Err(Error::invalid(
+            "that node is no longer an interrupted running turn",
+        ));
+    }
+    if node.session_id.is_none() || node.session_retired_at.is_some() {
+        return Err(Error::invalid(
+            "that interrupted turn has no active Pi session",
+        ));
+    }
+    if node.supervisor_pid != Some(pid) {
+        return Err(Error::invalid(
+            "this process has not claimed the interrupted turn",
+        ));
+    }
+    Ok(node)
 }
 
 /// The run and slice a lease was taken for, when ai-team took it for a pull request.

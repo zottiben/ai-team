@@ -86,6 +86,14 @@ test("the planner, and a seat with no plan behind it, are not held to it", () =>
   assert.equal(judgePlan("aip slice set PR1 done", undefined).allowed, true);
 });
 
+test("embedded chat seats never call the standalone planner", () => {
+  for (const command of ["aip show", "aip log note", "aip slice set S1 done", "/usr/bin/aip status", "ai-planner serve", "command /usr/bin/ai-planner show"]) {
+    assert.match(refused(command, "embedded"), /ai-team-planner/);
+  }
+  allowed("npm test", "embedded");
+  allowed("echo aip show", "embedded");
+});
+
 test("a refusal says what the seat can do instead", () => {
   const reason = refused("aip slice set PR1 in_review");
   assert.match(reason, /aip log/);

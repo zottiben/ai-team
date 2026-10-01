@@ -14,7 +14,7 @@
 use rusqlite::{params, OptionalExtension};
 
 use crate::error::Result;
-use crate::model::{EventKind, NodeRun, NodeStatus, Run, RunStatus};
+use crate::model::{EventKind, NodeRun, NodeStatus, Run};
 use crate::store::Store;
 use crate::util::now;
 
@@ -51,18 +51,20 @@ impl Store {
     /// Each run is settled in one write that first checks it is still open, so two
     /// processes keeping the clock settle it once.
     pub fn settle_abandoned_runs(&mut self, alive: impl Fn(i64) -> bool) -> Result<Vec<Abandoned>> {
-        let open: Vec<Run> = self
-            .runs(None, i64::MAX)?
-            .into_iter()
-            .filter(|run| {
-                matches!(
-                    run.status,
-                    RunStatus::Queued | RunStatus::Planning | RunStatus::Running
-                )
-            })
-            .collect();
+        // Chats own their recovery protocol, exact process identities and retained work.
+        let open = {
+            let mut rows = self.db().conn().prepare(
+                "SELECT id FROM run WHERE status IN ('queued', 'planning', 'running')
+                 AND NOT EXISTS(SELECT 1 FROM chat_turn WHERE run_id = run.id) ORDER BY id DESC",
+            )?;
+            let ids = rows
+                .query_map([], |row| row.get::<_, i64>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            ids
+        };
         let mut settled = Vec::new();
-        for run in open {
+        for id in open {
+            let run = self.run(id)?;
             let turns: Vec<NodeRun> = self
                 .node_runs(run.id)?
                 .into_iter()
@@ -147,7 +149,8 @@ impl Store {
             let still_open: Option<i64> = tx
                 .query_row(
                     "SELECT id FROM run WHERE id = ?1
-                        AND status IN ('queued', 'planning', 'running')",
+                        AND status IN ('queued', 'planning', 'running')
+                        AND NOT EXISTS(SELECT 1 FROM chat_turn WHERE run_id = run.id)",
                     params![run.id],
                     |r| r.get(0),
                 )
@@ -264,7 +267,7 @@ impl Store {
 mod tests {
     use super::*;
     use crate::machine::ModelRegistry;
-    use crate::model::{NewProject, RunTrigger};
+    use crate::model::{NewProject, RunStatus, RunTrigger};
 
     const GONE: i64 = 4_000_001;
     const LIVE: i64 = 4_000_002;

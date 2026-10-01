@@ -14,7 +14,7 @@
 
 import { type Judgement, outsideQuotes } from "./irreversible.ts";
 
-/** How the seat may treat the plan: `read`, `shape`, or unset where there is no plan. */
+/** `read`/`shape` for legacy plans, `embedded` for chat-only MCP, or unset. */
 export const PLAN_ENV = "AI_TEAM_PLAN";
 
 /** The `aip` subcommands a seat that only reads the plan may run: its MCP read tools. */
@@ -54,7 +54,9 @@ function invocations(command: string): string[][] {
     let at = 0;
     while (at < words.length && (PREFIXES.has(words[at]) || /^\w+=/.test(words[at]))) at += 1;
     const program = words[at];
-    if (program === "aip" || program?.endsWith("/aip")) found.push(words.slice(at + 1));
+    if (["aip", "ai-planner"].some((name) => program === name || program?.endsWith(`/${name}`))) {
+      found.push(words.slice(at + 1));
+    }
   }
   return found;
 }
@@ -84,9 +86,12 @@ function subcommand(args: string[]): string | undefined {
  * model looking for another way to move the slice.
  */
 export function judgePlan(command: string, access: string | undefined): Judgement {
-  if (access !== "read") return { allowed: true };
+  if (access !== "read" && access !== "embedded") return { allowed: true };
   const normalised = outsideQuotes(command);
   for (const args of invocations(normalised)) {
+    if (access === "embedded") {
+      return { allowed: false, reason: "Refused: standalone planning is outside this chat. Use its scoped ai-team-planner MCP tools; do not invoke aip or ai-planner." };
+    }
     const sub = subcommand(args);
     if (sub === undefined || READS.has(sub)) continue;
     return {

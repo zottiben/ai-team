@@ -6,10 +6,13 @@
 //! inventing three slightly different ideas of what a run is.
 
 mod agents;
+mod chat_teams;
+mod chats;
 mod events;
 mod interrupted;
 pub use interrupted::{Abandoned, INTERRUPTED_REASON};
 mod notifications;
+mod planning;
 mod projects;
 mod reminders;
 mod restacks;
@@ -119,6 +122,7 @@ impl Store {
         body: &str,
     ) -> Result<usize> {
         let node = self.node_run(node_run_id)?;
+        self.require_legacy_run(node.run_id)?;
         if node.agent_id != Some(agent_id) {
             return Err(crate::error::Error::invalid(
                 "that agent does not own that node",
@@ -147,6 +151,7 @@ impl Store {
         body: &str,
     ) -> Result<usize> {
         let node = self.node_run(node_run_id)?;
+        self.require_legacy_run(node.run_id)?;
         if node.agent_id != Some(agent_id) {
             return Err(crate::error::Error::invalid(
                 "that agent does not own that node",

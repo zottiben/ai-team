@@ -1,0 +1,493 @@
+//! Separate OS-host crashes, not just aborted Rust futures. All children are offline.
+use super::*;
+
+#[test]
+#[ignore = "invoked only by the isolated parent test"]
+fn child_host() {
+    let Ok(db) = std::env::var("TEAM_CHILD_HOST_DB") else {
+        return;
+    };
+    let values: Vec<i64> =
+        serde_json::from_str(&std::env::var("TEAM_CHILD_HOST_START").unwrap()).unwrap();
+    let start = ChatBuildStart {
+        chat_id: values[0],
+        node_id: values[1],
+        run_id: values[2],
+        revision: values[3],
+    };
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    if let Ok(request) = std::env::var("TEAM_CHILD_HOST_CLOSE") {
+        close_chat_team_build(Path::new(&db), &serde_json::from_str(&request).unwrap()).unwrap();
+    } else if let Ok(revision) = std::env::var("TEAM_CHILD_HOST_SLICE_REV") {
+        runtime
+            .block_on(resume_chat_team_slice(
+                Path::new(&db),
+                &ChatBuildResume {
+                    target: ChatBuildRecovery {
+                        chat_id: start.chat_id,
+                        run_id: start.run_id,
+                        node_id: start.node_id,
+                        expect_revision: start.revision,
+                    },
+                    slice_key: "S1".into(),
+                    expect_slice_revision: revision.parse().unwrap(),
+                },
+            ))
+            .unwrap();
+    } else {
+        runtime
+            .block_on(drive_chat_team_build(Path::new(&db), start))
+            .unwrap();
+    }
+}
+
+fn target(f: &Fixture) -> ChatBuildRecovery {
+    ChatBuildRecovery {
+        chat_id: f.chat.id,
+        run_id: f.turn.run_id,
+        node_id: f.turn.node_id,
+        expect_revision: f.store.chat_team_run(f.turn.run_id).unwrap().unwrap().rev,
+    }
+}
+
+pub(super) async fn killed_hosts_drain_only_their_recorded_children() {
+    a_failed_identity_registration_keeps_the_known_pid().await;
+    for mode in ["slow-maker", "slow-gate", "settled-maker"] {
+        killed_host(mode).await;
+    }
+}
+
+async fn killed_host(mode: &str) {
+    let mut f = worker_fixture(mode);
+    let start = f.approve().await;
+    let mut host = spawn_host(&f, &start, None, None);
+    let _cleanup = HostCleanup {
+        db: f.store.path().to_owned(),
+        pid: host.id().unwrap(),
+        identity: identity(host.id().unwrap()).unwrap(),
+    };
+    let marker = if mode == "slow-gate" {
+        "gate-waiting"
+    } else {
+        "worker-waiting"
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        while !f.dir.path().join(marker).exists() {
+            assert!(
+                host.try_wait().unwrap().is_none(),
+                "host exited before {marker}"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    if mode == "settled-maker" {
+        // Fault injection: terminal node evidence and process cleanup are separate.
+        // Recovery must clear process references on terminal members too.
+        f.conn()
+            .execute(
+                "UPDATE node_run SET status = 'done' WHERE run_id = ?1 AND role = 'backend'",
+                [f.turn.run_id],
+            )
+            .unwrap();
+    }
+    assert!(f
+        .store
+        .chat_team_run(f.turn.run_id)
+        .unwrap()
+        .unwrap()
+        .supervisor_alive());
+    assert!(
+        recover_chat_team_processes(f.store.path(), &target(&f))
+            .await
+            .is_err(),
+        "cannot steal a live host"
+    );
+    let active = recover_abandoned_chat_teams(f.store.path()).await.unwrap();
+    assert_eq!(active[0].state, ChatRecoveryState::Active);
+    host.kill().await.unwrap();
+    host.wait().await.unwrap();
+    let before = calls(&f);
+    assert!(!f
+        .store
+        .chat_team_run(f.turn.run_id)
+        .unwrap()
+        .unwrap()
+        .supervisor_alive());
+    let stale = target(&f);
+    let report = recover_abandoned_chat_teams(f.store.path()).await.unwrap();
+    assert_eq!(report[0].state, ChatRecoveryState::Recovered);
+    let result = f.store.chat_team_run(f.turn.run_id).unwrap().unwrap();
+    assert!(result.quiescent);
+    assert_eq!(result.phase, ChatTeamPhase::Blocked);
+    assert!(f.store.chat(f.chat.id).unwrap().active_node_id.is_some());
+    assert!(recover_chat_team_processes(f.store.path(), &stale)
+        .await
+        .is_err());
+    assert_process_dead(&f.dir.path().join(if mode == "slow-gate" {
+        "gate-tool.pid"
+    } else {
+        "worker-tool.pid"
+    }))
+    .await;
+    assert_eq!(calls(&f), before, "recovery cannot restart a model");
+    let open: i64 = f
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM chat_child WHERE state != 'drained'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(open, 0);
+    let path = f.lease().worktree_path.unwrap();
+    assert_eq!(
+        std::fs::read_to_string(Path::new(&path).join("crates/S1.txt")).unwrap(),
+        "GOOD\n"
+    );
+    assert!(!std::fs::read_to_string(f.dir.path().join("pool-calls"))
+        .unwrap()
+        .contains("return"));
+    assert!(f
+        .store
+        .node_runs(f.turn.run_id)
+        .unwrap()
+        .iter()
+        .all(|node| node.pi_pid.is_none()));
+    if mode == "slow-maker" {
+        crash_a_continuation_then_finish(&mut f).await;
+    }
+}
+
+async fn crash_a_continuation_then_finish(f: &mut Fixture) {
+    let before = f.lease();
+    let session = f
+        .store
+        .node_run(before.maker_node_id.unwrap())
+        .unwrap()
+        .session_id
+        .unwrap();
+    std::fs::remove_file(f.dir.path().join("worker-waiting")).unwrap();
+    let reviewed = target(f);
+    let start = ChatBuildStart {
+        chat_id: reviewed.chat_id,
+        run_id: reviewed.run_id,
+        node_id: reviewed.node_id,
+        revision: reviewed.expect_revision,
+    };
+    let mut host = spawn_host(f, &start, Some(before.rev), None);
+    let _cleanup = HostCleanup {
+        db: f.store.path().to_owned(),
+        pid: host.id().unwrap(),
+        identity: identity(host.id().unwrap()).unwrap(),
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        loop {
+            assert!(
+                host.try_wait().unwrap().is_none(),
+                "continuation host exited early"
+            );
+            if f.dir.path().join("worker-waiting").exists()
+                && f.lease().maker_node_id != before.maker_node_id
+                && f.store
+                    .node_run(f.lease().maker_node_id.unwrap())
+                    .unwrap()
+                    .session_id
+                    .is_some()
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    host.kill().await.unwrap();
+    host.wait().await.unwrap();
+    recover_chat_team_processes(f.store.path(), &target(f))
+        .await
+        .unwrap();
+    std::fs::write(f.dir.path().join("worker-mode"), "success").unwrap();
+    resume_chat_team_slice(
+        f.store.path(),
+        &ChatBuildResume {
+            target: target(f),
+            slice_key: "S1".into(),
+            expect_slice_revision: f.lease().rev,
+        },
+    )
+    .await
+    .unwrap();
+    let row = f.lease();
+    let final_node = f.store.node_run(row.maker_node_id.unwrap()).unwrap();
+    assert_eq!(final_node.attempt, 3);
+    assert_eq!(final_node.session_id.as_deref(), Some(session.as_str()));
+    assert_eq!(row.lease_state, "released");
+    assert_eq!(row.worktree_path, before.worktree_path);
+    assert_eq!(row.branch, before.branch);
+    assert_eq!(
+        std::fs::read_to_string(f.dir.path().join("pool-calls"))
+            .unwrap()
+            .lines()
+            .filter(|s| s.starts_with("[\"get\","))
+            .count(),
+        1
+    );
+}
+
+fn spawn_host(
+    f: &Fixture,
+    start: &ChatBuildStart,
+    resume: Option<i64>,
+    close: Option<serde_json::Value>,
+) -> tokio::process::Child {
+    let mut command = tokio::process::Command::new(std::env::current_exe().unwrap());
+    if let Some(request) = close {
+        command.env("TEAM_CHILD_HOST_CLOSE", request.to_string());
+    } else {
+        command.env_remove("TEAM_CHILD_HOST_CLOSE");
+    }
+    if let Some(revision) = resume {
+        command.env("TEAM_CHILD_HOST_SLICE_REV", revision.to_string());
+    } else {
+        command.env_remove("TEAM_CHILD_HOST_SLICE_REV");
+    }
+    command
+        .args(["--ignored", "--exact", "children_tests::child_host"])
+        .env("TEAM_CHILD_HOST_DB", f.store.path())
+        .env(
+            "TEAM_CHILD_HOST_START",
+            serde_json::to_string(&[start.chat_id, start.node_id, start.run_id, start.revision])
+                .unwrap(),
+        )
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::inherit())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap()
+}
+
+pub(super) async fn killed_closure_withdrawal_is_not_reapproved_on_startup() {
+    let mut f = worker_fixture("exit-fail");
+    f.conn()
+        .execute(
+            "UPDATE run SET on_failure = 'escalate', max_repairs = 0",
+            [],
+        )
+        .unwrap();
+    let start = f.approve().await;
+    assert!(drive_chat_team_build(f.store.path(), start).await.is_err());
+    let before = f.lease();
+    let reviewed = target(&f);
+    let pending = ChatBuildStart {
+        chat_id: reviewed.chat_id,
+        node_id: reviewed.node_id,
+        run_id: reviewed.run_id,
+        revision: reviewed.expect_revision,
+    };
+    let request = serde_json::json!({"target": reviewed, "expect_plan_revision": f.plan().revision, "expect_slices": {"S1": before.rev}, "reason": "keep work after the interrupted close"});
+    let planner = rusqlite::Connection::open(f.store.planning_path().unwrap()).unwrap();
+    // WAL readers can see the plan, but release_slice must wait. This places the
+    // separate host deterministically after durable intent and before settlement.
+    planner.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let mut host = spawn_host(&f, &pending, None, Some(request.clone()));
+    let _cleanup = HostCleanup {
+        db: f.store.path().to_owned(),
+        pid: host.id().unwrap(),
+        identity: identity(host.id().unwrap()).unwrap(),
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while f.store.chat_build_closure(f.turn.run_id).unwrap().is_none() {
+            assert!(
+                host.try_wait().unwrap().is_none(),
+                "close host exited before withdrawal"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    host.kill().await.unwrap();
+    host.wait().await.unwrap();
+    planner.execute_batch("ROLLBACK").unwrap();
+    let calls_before = calls(&f);
+    let pool_before = std::fs::read(f.dir.path().join("pool-calls")).unwrap();
+    let report = recover_abandoned_chat_teams(f.store.path()).await.unwrap();
+    assert_eq!(report[0].state, ChatRecoveryState::Recovered);
+    assert!(f
+        .store
+        .chat_build_closure(f.turn.run_id)
+        .unwrap()
+        .unwrap()
+        .finished_at
+        .is_none());
+    assert_eq!(
+        serde_json::to_value(f.lease()).unwrap(),
+        serde_json::to_value(&before).unwrap()
+    );
+    assert!(
+        f.plan().bundle.unwrap().slices[0].claimed_by.is_some(),
+        "startup must not settle a claim"
+    );
+    let refreshed = target(&f);
+    assert!(reconcile_chat_team_build(f.store.path(), &refreshed)
+        .await
+        .is_err());
+    assert!(resume_chat_team_slice(
+        f.store.path(),
+        &ChatBuildResume {
+            target: refreshed.clone(),
+            slice_key: "S1".into(),
+            expect_slice_revision: before.rev
+        }
+    )
+    .await
+    .is_err());
+    assert_eq!(calls(&f), calls_before);
+    assert_eq!(
+        std::fs::read(f.dir.path().join("pool-calls")).unwrap(),
+        pool_before
+    );
+    let mut retry: ChatBuildClose = serde_json::from_value(request).unwrap();
+    retry.target = refreshed;
+    retry.expect_plan_revision = f.plan().revision;
+    close_chat_team_build(f.store.path(), &retry).unwrap();
+    assert!(f.store.chat(f.chat.id).unwrap().active_node_id.is_none());
+    assert_eq!(f.lease().worktree_path, before.worktree_path);
+}
+
+async fn a_failed_identity_registration_keeps_the_known_pid() {
+    let mut f = worker_fixture("success");
+    let start = f.approve().await;
+    f.conn().execute_batch("CREATE TRIGGER identity_failure BEFORE UPDATE OF identity ON chat_child WHEN NEW.kind = 'pi' BEGIN SELECT RAISE(ABORT, 'injected identity registration failure'); END;").unwrap();
+    assert!(drive_chat_team_build(f.store.path(), start).await.is_err());
+    let pid: Option<i64> = f
+        .conn()
+        .query_row("SELECT pid FROM chat_child WHERE kind = 'pi'", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert!(
+        pid.is_some(),
+        "a known spawned pid must survive failed identity registration"
+    );
+    let report = recover_chat_team_processes(f.store.path(), &target(&f))
+        .await
+        .unwrap();
+    assert!(report.quiescent);
+    assert!(f.store.chat(f.chat.id).unwrap().active_node_id.is_some());
+}
+
+pub(super) async fn unknown_spawns_and_reused_pids_are_not_guessed_dead() {
+    for case in ["intent", "identity", "reused", "old-boot"] {
+        let mut f = worker_fixture("success");
+        let start = f.approve().await;
+        let owner = f.store.claim_chat_build(&start).unwrap();
+        let mut unrelated = tokio::process::Command::new("sleep")
+            .arg("60")
+            .process_group(0)
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let saved_pid = (case != "intent").then(|| i64::from(unrelated.id().unwrap()));
+        let boot = if case == "old-boot" {
+            "a previous OS boot".into()
+        } else {
+            boot_identity()
+        };
+        let saved_identity = (saved_pid.is_some() && case != "identity")
+            .then_some("not this process's start identity");
+        f.conn().execute("INSERT INTO chat_child(run_id,epoch,kind,program,boot,pid,identity,state,created_at) SELECT run_id,child_epoch,'command','fixture',?2,?3,?4,?5,'fixture' FROM chat_team_run WHERE run_id=?1", rusqlite::params![f.turn.run_id,boot,saved_pid,saved_identity,if saved_identity.is_some() {"running"} else {"intent"}]).unwrap();
+        drop(owner);
+        let result = recover_chat_team_processes(f.store.path(), &target(&f)).await;
+        if case == "old-boot" {
+            assert!(result.unwrap().quiescent);
+        } else {
+            assert!(result.is_err());
+            assert!(
+                !f.store
+                    .chat_team_run(f.turn.run_id)
+                    .unwrap()
+                    .unwrap()
+                    .quiescent
+            );
+        }
+        assert!(
+            unrelated.try_wait().unwrap().is_none(),
+            "a reused/unrelated process was signalled"
+        );
+        assert!(calls(&f).is_empty());
+        assert!(!f.dir.path().join("pool-calls").exists());
+        unrelated.kill().await.unwrap();
+        unrelated.wait().await.unwrap();
+    }
+}
+
+struct HostCleanup {
+    db: std::path::PathBuf,
+    pid: u32,
+    identity: String,
+}
+impl Drop for HostCleanup {
+    fn drop(&mut self) {
+        if identity(self.pid).as_deref() == Some(&self.identity) {
+            let _ = rustix::process::kill_process(
+                rustix::process::Pid::from_raw(self.pid.cast_signed()).unwrap(),
+                rustix::process::Signal::KILL,
+            );
+        }
+        if let Ok(conn) = rusqlite::Connection::open(&self.db) {
+            let mut query = conn.prepare("SELECT pid,identity FROM chat_child WHERE pid IS NOT NULL AND state != 'drained'").unwrap();
+            for row in query
+                .query_map([], |row| {
+                    Ok((row.get::<_, u32>(0)?, row.get::<_, String>(1)?))
+                })
+                .unwrap()
+            {
+                let (pid, expected) = row.unwrap();
+                if identity(pid).as_deref() == Some(&expected) {
+                    let _ = rustix::process::kill_process_group(
+                        rustix::process::Pid::from_raw(pid.cast_signed()).unwrap(),
+                        rustix::process::Signal::KILL,
+                    );
+                }
+            }
+        }
+    }
+}
+fn identity(pid: u32) -> Option<String> {
+    let output = Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "lstart="])
+        .env("LC_ALL", "C")
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8(output.stdout).unwrap().trim().to_owned())
+}
+
+fn boot_identity() -> String {
+    #[cfg(target_os = "linux")]
+    {
+        std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
+            .unwrap()
+            .trim()
+            .into()
+    }
+    #[cfg(target_os = "macos")]
+    {
+        String::from_utf8(
+            Command::new("/usr/sbin/sysctl")
+                .args(["-n", "kern.bootsessionuuid"])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .into()
+    }
+}

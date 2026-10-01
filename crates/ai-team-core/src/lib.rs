@@ -10,6 +10,8 @@
 //! local copy of a slice's title is a second source of truth that drifts.
 
 mod analytics;
+mod chat;
+mod command;
 mod context;
 mod crew;
 mod daemon;
@@ -52,6 +54,16 @@ mod workflow;
 mod workspace;
 
 pub use analytics::{rollup, rollup_workspace, By, Row};
+pub use chat::{
+    close_chat_team_build, drive_chat, drive_chat_team_build, drive_chat_team_planning,
+    reconcile_chat_team_build, recover_abandoned_chat_team, recover_abandoned_chat_teams,
+    recover_chat_team_processes, resume_chat_team_slice, Chat, ChatBuildApproval, ChatBuildClose,
+    ChatBuildCloseReport, ChatBuildClosure, ChatBuildControl, ChatBuildRecovery,
+    ChatBuildRecoveryReport, ChatBuildResume, ChatBuildReview, ChatBuildSlice, ChatBuildStart,
+    ChatKeptPath, ChatRecoveryEntry, ChatRecoveryState, ChatRetainedBuild, ChatSubmission,
+    ChatTeamMember, ChatTeamRun, ChatTurn, NewChat,
+};
+pub mod planning;
 pub use context::{figma_links, parse_url, Source, CLICKUP_READ_TOOLS, FIGMA_READ_TOOLS};
 pub use crew::{of_project as crew_of, of_workspace as crew_of_workspace, Doing, Member};
 pub use daemon::{once as tick_once, serve as serve_schedule};
@@ -82,12 +94,13 @@ pub use machine::{
 };
 pub use map::{repo_map, MapEdge, MapNode, MapZone, Owner, RepoMap};
 pub use model::{
-    Agent, CommentStatus, DeliveryAction, DeliveryPolicy, DeliverySettings, DiffSide, Event,
-    EventKind, Guardrails, NewAgent, NewComment, NewEvent, NewNotification, NewProject,
-    NewReminder, NewRepo, NodeRun, NodeStatus, Notification, OnFailure, Project, ProjectKind,
-    ProjectRepo, ProjectSource, ProjectStatus, Provider, Reasoning, Recur, Reminder, ReminderKind,
-    ReminderStatus, RemoteDeliveryStatus, Review, ReviewComment, ReviewStatus, Run, RunOrigin,
-    RunStatus, RunTrigger, Team, ToolEffect, ToolPolicy, Usage,
+    Agent, ChatMode, ChatTeamPhase, CommentStatus, DeliveryAction, DeliveryPolicy,
+    DeliverySettings, DiffSide, Event, EventKind, Guardrails, NewAgent, NewComment, NewEvent,
+    NewNotification, NewProject, NewReminder, NewRepo, NodeRun, NodeStatus, Notification,
+    OnFailure, Project, ProjectKind, ProjectRepo, ProjectSource, ProjectStatus, Provider,
+    Reasoning, Recur, Reminder, ReminderKind, ReminderStatus, RemoteDeliveryStatus, Review,
+    ReviewComment, ReviewStatus, Run, RunOrigin, RunStatus, RunTrigger, Team, ToolEffect,
+    ToolPolicy, Usage,
 };
 pub use neighbours::{
     apply_patch_cached, branches, checkout, commit_staged, current_branch, file_sql_available,

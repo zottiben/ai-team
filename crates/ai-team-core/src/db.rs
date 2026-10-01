@@ -71,6 +71,37 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
         "context_from_evidence",
         include_str!("migrations/017_context_from_evidence.sql"),
     ),
+    (18, "chats", include_str!("migrations/018_chats.sql")),
+    (
+        19,
+        "chat_teams",
+        include_str!("migrations/019_chat_teams.sql"),
+    ),
+    (
+        20,
+        "chat_build_approval",
+        include_str!("migrations/020_chat_build_approval.sql"),
+    ),
+    (
+        21,
+        "chat_build_results",
+        include_str!("migrations/021_chat_build_results.sql"),
+    ),
+    (
+        22,
+        "chat controller lifetime",
+        include_str!("migrations/022_chat_controller_lifetime.sql"),
+    ),
+    (
+        23,
+        "chat child process journal",
+        include_str!("migrations/023_chat_children.sql"),
+    ),
+    (
+        24,
+        "chat build closure",
+        include_str!("migrations/024_chat_build_closure.sql"),
+    ),
 ];
 
 /// The number of `v_` views the schema ships. Asserted in tests, because a view silently
@@ -163,6 +194,15 @@ impl Db {
             )));
         }
 
+        let old_chats: bool = self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 14 AND name = 'chats')",
+            [],
+            |row| row.get(0),
+        )?;
+        if old_chats {
+            return Err(Error::invalid("this database uses the pre-release chat schema; keep it unchanged and choose a new isolated ai-team database for this build"));
+        }
+
         for (version, name, sql) in MIGRATIONS {
             if *version <= applied {
                 continue;
@@ -240,6 +280,76 @@ mod tests {
         let error = Db::open(&path).unwrap_err();
         assert!(error.to_string().contains("newer"), "{error}");
         assert!(error.to_string().contains(&format!("v{newer}")), "{error}");
+    }
+
+    #[test]
+    fn released_schema_upgrades_without_reusing_chat_development_numbers() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("released.db");
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch("CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL)").unwrap();
+        for (version, name, sql) in MIGRATIONS.iter().filter(|(v, _, _)| *v <= 17) {
+            conn.execute_batch(sql).unwrap();
+            conn.execute(
+                "INSERT INTO schema_migrations VALUES (?1, ?2, 'fixture')",
+                rusqlite::params![version, name],
+            )
+            .unwrap();
+        }
+        conn.execute("INSERT INTO project (slug, name, created_at, updated_at) VALUES ('keep', 'Keep', 'fixture', 'fixture')", []).unwrap();
+        drop(conn);
+        let db = Db::open(&path).unwrap();
+        assert_eq!(db.schema_version().unwrap(), 24);
+        assert_eq!(
+            db.conn()
+                .query_row("SELECT name FROM project WHERE slug='keep'", [], |r| r
+                    .get::<_, String>(
+                    0
+                ))
+                .unwrap(),
+            "Keep"
+        );
+        db.conn()
+            .prepare("SELECT on_default_branch, supervisor_pid FROM run")
+            .unwrap();
+        db.conn()
+            .prepare("SELECT task_key, push_replaces, pi_pid FROM node_run")
+            .unwrap();
+        db.conn().prepare("SELECT id FROM chat").unwrap();
+    }
+
+    #[test]
+    fn an_old_chat_development_database_is_refused_without_reinterpreting_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("development.db");
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch("CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL)").unwrap();
+        for (version, name, sql) in MIGRATIONS.iter().filter(|(v, _, _)| *v <= 13) {
+            conn.execute_batch(sql).unwrap();
+            conn.execute(
+                "INSERT INTO schema_migrations VALUES (?1, ?2, 'fixture')",
+                rusqlite::params![version, name],
+            )
+            .unwrap();
+        }
+        conn.execute_batch(include_str!("migrations/018_chats.sql"))
+            .unwrap();
+        conn.execute(
+            "INSERT INTO schema_migrations VALUES (14, 'chats', 'fixture')",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+        let error = Db::open(&path).unwrap_err().to_string();
+        assert!(error.contains("pre-release chat schema"), "{error}");
+        let conn = Connection::open(&path).unwrap();
+        assert_eq!(
+            conn.query_row("SELECT MAX(version) FROM schema_migrations", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            14
+        );
+        assert!(conn.prepare("SELECT task_key FROM node_run").is_err());
     }
 
     #[test]

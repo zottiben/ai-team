@@ -160,8 +160,15 @@ impl Worktrees {
     /// Lease a worktree. `--lease` prints only the path on stdout and puts its banners
     /// on stderr, which is the contract this depends on.
     pub async fn lease(&self, holder: &str) -> Result<Lease> {
+        self.lease_until(holder, std::future::pending()).await
+    }
+
+    pub(crate) async fn lease_until<S>(&self, holder: &str, stop: S) -> Result<Lease>
+    where
+        S: std::future::Future<Output = String> + Send,
+    {
         let path = self
-            .output(&["get", "--lease", "--lease-holder", holder])
+            .output_until(&["get", "--lease", "--lease-holder", holder], stop)
             .await?;
         let path = PathBuf::from(path.trim());
         if !path.is_dir() {
@@ -264,11 +271,19 @@ impl Worktrees {
     /// merge is what includes all three useful cases without copying any of them into
     /// ai-team: main, a human task worktree, and an orchestrator lease.
     pub async fn pool(&self) -> Result<Vec<PoolEntry>> {
-        let json = self.output(&["status", "--json"]).await?;
+        self.pool_until(std::future::pending).await
+    }
+
+    pub(crate) async fn pool_until<F, S>(&self, stop: F) -> Result<Vec<PoolEntry>>
+    where
+        F: Fn() -> S + Send,
+        S: std::future::Future<Output = String> + Send,
+    {
+        let json = self.output_until(&["status", "--json"], stop()).await?;
         let pool: Pool = serde_json::from_str(&json).map_err(|error| {
             Error::invalid(format!("could not read `awt status --json`: {error}"))
         })?;
-        let branches = self.branches().await?;
+        let branches = crate::neighbours::git::worktrees_until(&self.repo, stop()).await?;
         let main = self.repo.canonicalize().map_err(|error| {
             Error::invalid(format!(
                 "could not resolve checkout {}: {error}",
@@ -330,13 +345,20 @@ impl Worktrees {
     /// that lets a linked worktree live outside the main checkout without allowing an
     /// arbitrary directory on disk.
     pub async fn resolve(&self, requested: &Path) -> Result<PathBuf> {
+        self.resolve_until(requested, std::future::pending()).await
+    }
+
+    pub(crate) async fn resolve_until<S>(&self, requested: &Path, stop: S) -> Result<PathBuf>
+    where
+        S: std::future::Future<Output = String> + Send,
+    {
         let requested = requested.canonicalize().map_err(|error| {
             Error::invalid(format!(
                 "could not resolve workspace {}: {error}",
                 requested.display()
             ))
         })?;
-        let listed = self.branches().await?;
+        let listed = crate::neighbours::git::worktrees_until(&self.repo, stop).await?;
         if listed
             .iter()
             .any(|(path, _)| same_worktree(path, &requested.to_string_lossy()))
@@ -350,25 +372,31 @@ impl Worktrees {
         )))
     }
 
-    /// Path to branch, for every git worktree of this repository.
-    async fn branches(&self) -> Result<Vec<(String, Option<String>)>> {
-        crate::neighbours::git::worktrees(&self.repo).await
+    async fn output(&self, args: &[&str]) -> Result<String> {
+        self.output_until(args, std::future::pending()).await
     }
 
-    async fn output(&self, args: &[&str]) -> Result<String> {
-        let output = Command::new("awt")
-            .args(args)
-            .current_dir(&self.repo)
-            .stdin(Stdio::null())
-            .kill_on_drop(true)
-            .output()
-            .await
-            .map_err(|error| {
-                Error::invalid(format!(
-                    "could not run `awt`: {error}. ai-worktree is a separate tool; install \
-                     it from its own repo."
-                ))
-            })?;
+    async fn output_until<S>(&self, args: &[&str], stop: S) -> Result<String>
+    where
+        S: std::future::Future<Output = String> + Send,
+    {
+        let output = crate::command::run(
+            Command::new("awt").args(args).current_dir(&self.repo),
+            std::time::Duration::from_secs(600),
+            8 * 1024 * 1024,
+            stop,
+        )
+        .await
+        .map_err(|error| {
+            if matches!(&error, Error::Io(io) if io.kind() == std::io::ErrorKind::NotFound) {
+                Error::invalid(format!("could not run `awt`: {error}. ai-worktree is a separate tool; install it from its own repo."))
+            } else { error }
+        })?;
+        if output.truncated {
+            return Err(Error::invalid(
+                "awt output exceeded the capture limit; retain any uncertain acquisition",
+            ));
+        }
         if !output.status.success() {
             return Err(Error::invalid(format!(
                 "`awt {}` failed: {}",
@@ -460,6 +488,18 @@ mod tests {
         assert!(file.starts_with(name) && name.len() >= 12, "{named}");
         // One `ps` does not know keeps the name awt gave it.
         assert_eq!(second, format!("node ({gone})"));
+    }
+
+    #[test]
+    fn differently_cased_paths_only_share_ownership_on_a_case_insensitive_filesystem() {
+        let dir = tempfile::tempdir().unwrap();
+        let mixed = dir.path().join("ChatCheckout");
+        let folded = dir.path().join("chatcheckout");
+        std::fs::create_dir(&mixed).unwrap();
+        assert_eq!(
+            same_worktree(&mixed.to_string_lossy(), &folded.to_string_lossy()),
+            folded.exists()
+        );
     }
 
     #[test]
@@ -593,7 +633,9 @@ mod tests {
             dir.path().join("wt").to_str().unwrap(),
         ]);
 
-        let found = crate::neighbours::git::worktrees(&repo).await.unwrap();
+        let found = crate::neighbours::git::worktrees_until(&repo, std::future::pending())
+            .await
+            .unwrap();
         let branches: Vec<&str> = found
             .iter()
             .filter_map(|(_, branch)| branch.as_deref())
