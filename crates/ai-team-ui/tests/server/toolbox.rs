@@ -7,11 +7,24 @@ fn toolbox_http_scans_without_writes_and_applies_only_the_saved_project_preview(
     let (h, _db) = Harness::with_repo(repo.path());
     let root = repo.path().canonicalize().unwrap();
     assert_eq!(h.get_anonymous("/api/projects/1/toolbox").status, 401);
+    assert_eq!(h.get_anonymous("/api/toolbox/catalogue").status, 401);
+    let catalogue = h.get("/api/toolbox/catalogue");
+    assert_eq!(catalogue.status, 200, "{}", catalogue.body);
+    assert!(catalogue.json()["skills"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|i| i["key"] == "cli/gh"));
+    assert!(catalogue.json()["rules"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|i| i["key"] == "unity"));
     let scan = h.get("/api/projects/1/toolbox");
     assert_eq!(scan.status, 200, "{}", scan.body);
     assert!(scan.json()[0]["survey"].is_object());
     assert!(repo.path().read_dir().unwrap().next().is_none());
-    let body = json!({"root":root,"selection":{"operation":"install","harnesses":["pi"],"hooks":[],"mcp":[],"skills":["pre-pr"],"scaffold":true}}).to_string();
+    let body = json!({"root":root,"selection":{"operation":"install","harnesses":["pi"],"hooks":[],"mcp":[],"skills":["pre-pr"],"scaffold":true,"no_symlink":true,"with_dotenv":true}}).to_string();
     let proposed = h.post("/api/projects/1/toolbox/preview", &body);
     assert_eq!(proposed.status, 200, "{}", proposed.body);
     let id = proposed.json()["id"].as_i64().unwrap();

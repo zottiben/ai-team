@@ -12,6 +12,7 @@ use crate::{error::Result, state::AppState};
 
 pub(crate) fn routes() -> Router<AppState> {
     Router::new()
+        .route("/toolbox/catalogue", get(catalogue))
         .route("/projects/{project}/toolbox", get(scan))
         .route("/projects/{project}/toolbox/history", get(history))
         .route("/projects/{project}/toolbox/preview", post(preview))
@@ -20,6 +21,10 @@ pub(crate) fn routes() -> Router<AppState> {
             "/projects/{project}/toolbox/previews/{id}/apply",
             post(apply),
         )
+}
+
+async fn catalogue() -> Result<Json<toolbox::Catalogue>> {
+    Ok(Json(toolbox::catalogue()?))
 }
 
 async fn scan(State(state): State<AppState>, Path(project): Path<i64>) -> Result<Json<Vec<Scan>>> {

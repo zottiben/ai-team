@@ -4,18 +4,20 @@
 mod catalogue;
 mod effects;
 mod files;
+mod install;
+mod migrate;
 mod pi;
 mod survey;
 mod worktrees;
 
 use std::path::Path;
 
-use ai_toolbox_core::{install, Harness, Plan};
+use ai_toolbox_core::{Harness, Plan};
 use serde::{Deserialize, Serialize};
 
 use crate::{Error, Result, Store};
 
-pub use catalogue::{NOTICE, REVISION};
+pub use catalogue::{catalogue, Catalogue, Item, NOTICE, REVISION};
 pub use effects::{Effect, Outcome};
 pub use files::Node;
 pub use worktrees::Worktree;
@@ -39,8 +41,13 @@ pub enum Selection {
         mcp: Vec<String>,
         skills: Vec<String>,
         scaffold: bool,
+        #[serde(default)]
+        no_symlink: bool,
+        #[serde(default)]
+        with_dotenv: bool,
     },
     Repair,
+    Migrate,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -78,8 +85,16 @@ pub fn scan(root: &Path) -> Scan {
         let package = catalogue::Packaged::load()?;
         let snapshot = files::Snapshot::capture(root)?;
         let staged = snapshot.stage()?;
-        let mut survey = serde_json::to_value(survey::read(staged.path(), &package.catalogue)?)?;
-        pi::survey(staged.path(), &mut survey)?;
+        let mut survey = serde_json::to_value(project_error(
+            survey::read(staged.path(), &package.catalogue),
+            staged.path(),
+            &snapshot.root,
+        )?)?;
+        project_error(
+            pi::survey(staged.path(), &mut survey),
+            staged.path(),
+            &snapshot.root,
+        )?;
         remap_paths(&mut survey, staged.path(), &snapshot.root);
         snapshot.validate()?;
         Ok(survey)
@@ -112,50 +127,71 @@ pub fn preview(
     let package = catalogue::Packaged::load()?;
     let inputs = files::Snapshot::capture(&root)?;
     let stage = inputs.stage()?;
-    let mut plan = match selection {
-        Selection::Install {
-            harnesses,
-            hooks,
-            mcp,
-            skills,
-            scaffold,
-        } => {
-            if harnesses.is_empty() {
-                return Err(Error::invalid("select at least one harness"));
-            }
-            // The engine predates the current adapter filename. Never import obsolete
-            // overrides into a newly approved config simply because they are present.
-            let old = stage.path().join(".pi/mcp.json");
-            if old.is_file() {
-                std::fs::remove_file(old)?;
-            }
-            let mut plan = install::everything(
-                stage.path(),
-                &package.catalogue,
-                &harnesses,
-                &hooks,
-                &mcp,
-                &skills,
+    let planned = (|| -> Result<Plan> {
+        Ok(match selection {
+            Selection::Install {
+                harnesses,
+                hooks,
+                mcp,
+                skills,
                 scaffold,
-            )?;
-            pi::adapt(stage.path(), &mut plan)?;
-            plan
-        }
-        Selection::Repair => {
-            let survey = survey::read(stage.path(), &package.catalogue)?;
-            let mut plan = Plan::default();
-            ai_toolbox_core::doctor::repair(
-                &mut plan,
-                stage.path(),
-                &survey.inventory,
-                &survey.report,
-                &package.catalogue,
-                &survey.findings,
-            )?;
-            preserve_repaired_scripts(stage.path(), &mut plan)?;
-            plan
-        }
-    };
+                no_symlink,
+                with_dotenv,
+            } => {
+                if harnesses.is_empty() {
+                    return Err(Error::invalid("select at least one harness"));
+                }
+                // The engine predates the current adapter filename. Never import obsolete
+                // overrides into a newly approved config simply because they are present.
+                let old = stage.path().join(".pi/mcp.json");
+                if old.is_file() {
+                    std::fs::remove_file(old)?;
+                }
+                let mut plan = ai_toolbox_core::install::everything(
+                    stage.path(),
+                    &package.catalogue,
+                    &harnesses,
+                    &hooks,
+                    &mcp,
+                    &[],
+                    scaffold,
+                )?;
+                install::skills(
+                    &mut plan,
+                    stage.path(),
+                    &package.catalogue,
+                    &skills,
+                    &harnesses,
+                    no_symlink,
+                )?;
+                if with_dotenv {
+                    ai_toolbox_core::install::with_dotenv(
+                        &mut plan,
+                        stage.path(),
+                        &package.catalogue,
+                    )?;
+                }
+                pi::adapt(stage.path(), &mut plan)?;
+                plan
+            }
+            Selection::Migrate => migrate::plan(&inputs, stage.path())?,
+            Selection::Repair => {
+                let survey = survey::read(stage.path(), &package.catalogue)?;
+                let mut plan = Plan::default();
+                ai_toolbox_core::doctor::repair(
+                    &mut plan,
+                    stage.path(),
+                    &survey.inventory,
+                    &survey.report,
+                    &package.catalogue,
+                    &survey.findings,
+                )?;
+                preserve_repaired_scripts(stage.path(), &mut plan)?;
+                plan
+            }
+        })
+    })();
+    let mut plan = project_error(planned, stage.path(), &root)?;
     for secret in plan.secrets {
         plan.warnings.push(format!(
             "Manual credential setup: {}",
@@ -204,6 +240,15 @@ fn preserve_repaired_scripts(root: &Path, plan: &mut Plan) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn project_error<T>(result: Result<T>, staged: &Path, root: &Path) -> Result<T> {
+    result.map_err(|error| {
+        Error::invalid(error.to_string().replace(
+            staged.to_string_lossy().as_ref(),
+            root.to_string_lossy().as_ref(),
+        ))
+    })
 }
 
 fn remap_paths(value: &mut serde_json::Value, staged: &Path, root: &Path) {

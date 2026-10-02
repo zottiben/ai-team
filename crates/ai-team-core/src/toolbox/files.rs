@@ -45,8 +45,6 @@ const INPUTS: &[&str] = &[
     "codegen.ts",
     "buf.gen.yaml",
     "openapi.yaml",
-    ".github",
-    "supabase",
     "ProjectSettings/ProjectVersion.txt",
 ];
 
@@ -204,6 +202,9 @@ pub(super) fn identity(path: &Path) -> Result<Option<Identity>> {
 pub(crate) struct Snapshot {
     pub root: PathBuf,
     pub nodes: BTreeMap<String, Node>,
+    /// Stack detection only checks existence; never read or approve these trees.
+    #[serde(default)]
+    pub markers: BTreeMap<String, bool>,
     pub parents: BTreeMap<String, Option<Identity>>,
 }
 
@@ -213,8 +214,14 @@ impl Snapshot {
         let mut snapshot = Self {
             root,
             nodes: BTreeMap::new(),
+            markers: BTreeMap::new(),
             parents: BTreeMap::new(),
         };
+        for path in [".github", "supabase"] {
+            snapshot
+                .markers
+                .insert(path.into(), snapshot.root.join(path).exists());
+        }
         let mut budget = Budget::default();
         snapshot
             .parents
@@ -243,6 +250,11 @@ impl Snapshot {
 
     pub(super) fn validate(&self) -> Result<()> {
         self.validate_parents()?;
+        for (path, before) in &self.markers {
+            if self.root.join(path).exists() != *before {
+                return Err(stale(path));
+            }
+        }
         for (path, before) in &self.nodes {
             if Node::read(&self.root.join(path))? != *before {
                 return Err(stale(path));
@@ -262,6 +274,11 @@ impl Snapshot {
 
     pub(super) fn stage(&self) -> Result<tempfile::TempDir> {
         let directory = tempfile::tempdir()?;
+        for (path, exists) in &self.markers {
+            if *exists {
+                fs::create_dir(directory.path().join(path))?;
+            }
+        }
         for (relative, node) in &self.nodes {
             if *node == Node::Missing {
                 continue;

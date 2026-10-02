@@ -7,5 +7,5 @@
 .toolbox__options { display: flex; flex-wrap: wrap; gap: .5rem 1rem; margin-block: .5rem 1rem; }
 .toolbox label { display: inline-flex; align-items: baseline; gap: .4rem; }
 .toolbox__diff { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 1rem; }
-.toolbox__diff pre { overflow: auto; max-height: 28rem; padding: .75rem; background: var(--surface-panel-default); font-size: .8rem; white-space: pre-wrap; overflow-wrap: anywhere; }
+.toolbox__diff pre, .toolbox__catalogue pre { overflow: auto; max-height: 28rem; padding: .75rem; background: var(--surface-panel-default); font-size: .8rem; white-space: pre-wrap; overflow-wrap: anywhere; }
 @media (max-width: 800px) { .toolbox__diff { grid-template-columns: minmax(0, 1fr); } }

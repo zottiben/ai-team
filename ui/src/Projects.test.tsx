@@ -44,6 +44,9 @@ function stub(options: {
           }),
         });
       }
+      if (url === "/toolbox/catalogue") {
+        return Promise.resolve({ ok: true, json: async () => ({ revision: "fixture", hooks: [], mcp: [], skills: [], rules: [], templates: [], helpers: [], charter: { key: "base-charter", contents: "fixture", description: null }, notice: "fixture" }) });
+      }
       if (url.includes("/toolbox")) {
         return Promise.resolve({ ok: true, json: async () => [] });
       }

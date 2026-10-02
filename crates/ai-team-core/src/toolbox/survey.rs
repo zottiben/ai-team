@@ -43,6 +43,13 @@ pub(super) fn read(root: &Path, catalogue: &Catalogue) -> Result<Survey> {
     }
     let mut findings = ai_toolbox_core::diagnose(root, &inventory, &report, catalogue);
     for finding in &mut findings {
+        if matches!(
+            finding.code,
+            ai_toolbox_core::doctor::Code::LegacyLayout
+                | ai_toolbox_core::doctor::Code::SkillsOwnCopy
+        ) {
+            finding.advice = Some("Use Preview layout migration to review canonical .agents changes. Conflicting edits are preserved and require manual reconciliation.".into());
+        }
         if finding.code == ai_toolbox_core::doctor::Code::ItemModified {
             finding.what = format!(
                 "{} differs from the bundled catalogue; it may be a local edit or an older version",

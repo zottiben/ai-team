@@ -42,7 +42,7 @@ pub(super) fn survey(root: &Path, survey: &mut Value) -> Result<()> {
         .and_then(Value::as_object)
         .map(|s| s.keys().collect::<Vec<_>>())
         .unwrap_or_default());
-    survey["recommendation"]["notes"].as_array_mut().ok_or_else(|| Error::invalid("toolbox recommendation has no notes"))?.push(json!("Pi shell hooks are not wired by this catalogue. Shared MCP uses .mcp.json; adapter-specific overrides use .pi/mcp-adapter.json. Existing .pi/mcp.json is left unchanged. MCP clients and server prerequisites must already be installed; credentials are never installed by setup."));
+    survey["recommendation"]["notes"].as_array_mut().ok_or_else(|| Error::invalid("toolbox recommendation has no notes"))?.push(json!("Pi shell hooks are not wired by this catalogue. Shared MCP uses .mcp.json; adapter-specific overrides use .pi/mcp-adapter.json. Install/repair do not import .pi/mcp.json. Explicit layout migration only re-points its moved launcher references; obsolete transport/auth settings require manual review. MCP clients and server prerequisites must already be installed; credentials are never installed by setup."));
     Ok(())
 }
 

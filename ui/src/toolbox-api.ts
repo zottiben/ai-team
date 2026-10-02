@@ -23,9 +23,16 @@ export type SetupPreview = {
   warnings: string[]; state: "preview" | "applying" | "applied" | "refused" | "partial";
   outcome: { applied: string[]; problem: string | null; uncertain: boolean } | null;
 };
-export type SetupSelection = { operation: "repair" } | {
+export type SetupSelection = { operation: "repair" | "migrate" } | {
   operation: "install"; harnesses: string[]; hooks: string[]; mcp: string[]; skills: string[]; scaffold: boolean;
+  no_symlink?: boolean; with_dotenv?: boolean;
 };
+export type CatalogueItem = { key: string; description: string | null; contents: string };
+export type ToolboxCatalogue = {
+  revision: string; hooks: CatalogueItem[]; mcp: CatalogueItem[]; skills: CatalogueItem[];
+  rules: CatalogueItem[]; templates: CatalogueItem[]; helpers: CatalogueItem[]; charter: CatalogueItem; notice: string;
+};
+export const toolboxCatalogue = (): Promise<ToolboxCatalogue> => api("/toolbox/catalogue");
 export type SetupRecord = Pick<SetupPreview, "id" | "root" | "state" | "outcome">;
 export const setupHistory = (project: number): Promise<SetupRecord[]> => api(`/projects/${project}/toolbox/history`);
 export const savedSetup = (project: number, id: number): Promise<SetupPreview> => api(`/projects/${project}/toolbox/previews/${id}`);

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 
-import { approveSetup, previewSetup, scanToolbox, savedSetup, setupHistory, type SetupRecord, type SetupNode, type SetupPreview, type SetupSelection, type ToolboxScan } from "./toolbox-api";
+import { approveSetup, previewSetup, scanToolbox, savedSetup, setupHistory, toolboxCatalogue, type ToolboxCatalogue, type SetupRecord, type SetupNode, type SetupPreview, type SetupSelection, type ToolboxScan } from "./toolbox-api";
+import { CatalogueBrowser } from "./ToolboxCatalogue";
 import "./toolbox.css";
 
 export function Toolbox({ project, initial }: { project: number; initial?: ToolboxScan }) {
@@ -10,6 +11,14 @@ export function Toolbox({ project, initial }: { project: number; initial?: Toolb
   const [generation, setGeneration] = useState(0);
   const [busy, setBusy] = useState(false);
   const [history, setHistory] = useState<SetupRecord[]>([]);
+  const [catalogue, setCatalogue] = useState<ToolboxCatalogue | null>(null);
+  const [catalogueProblem, setCatalogueProblem] = useState<string | null>(null);
+  useEffect(() => {
+    let current = true;
+    void toolboxCatalogue().then((value) => { if (current) { setCatalogue(value); setCatalogueProblem(null); } })
+      .catch((e: unknown) => { if (current) setCatalogueProblem(String(e)); });
+    return () => { current = false; };
+  }, [generation]);
   useEffect(() => {
     if (busy) return;
     let current = true;
@@ -32,9 +41,11 @@ export function Toolbox({ project, initial }: { project: number; initial?: Toolb
     <div className="card__row"><h3>Project setup</h3><button className="button" disabled={busy} onClick={() => { setScans([]); setGeneration((n) => n + 1); }}>Scan again</button></div>
     <p className="faint">Scanning changes nothing. Review exact files before approving setup. No software, credentials or global configuration are installed.</p>
     {problem && <p role="alert" className="error">{problem}</p>}
+    {catalogueProblem && <p role="alert" className="error">Catalogue unavailable: {catalogueProblem}. Scan again to retry; recommended choices remain available.</p>}
+    {catalogue && <CatalogueBrowser catalogue={catalogue} />}
     {scans.length > 1 && <label>Checkout <select aria-label="Setup checkout" disabled={busy} value={selected} onChange={(e) => setSelected(e.target.value)}>{scans.map((s) => <option key={s.root}>{s.root}</option>)}</select></label>}
     {!scan && <p className="faint">No setup scan available. Register or attach a local directory, then scan again.</p>}
-    {scan && <Setup key={`${scan.root}:${generation}`} project={project} scan={scan} busy={busy} setBusy={setBusy} />}
+    {scan && <Setup key={`${project}:${scan.root}:${generation}`} project={project} scan={scan} catalogue={catalogue} busy={busy} setBusy={setBusy} />}
     {history.length > 0 && <details><summary>Saved setup outcomes</summary>{history.map((record) => <div key={record.id}>
       <p>Setup #{record.id} · {record.state} · {record.root}</p>
       {record.state === "applying" && <p className="error">Applying or interrupted: some files may already have changed. Further setup is blocked here; inspect the files. This is not certified success and will not be retried automatically.</p>}
@@ -43,13 +54,15 @@ export function Toolbox({ project, initial }: { project: number; initial?: Toolb
   </section>;
 }
 
-function Setup({ project, scan, busy, setBusy }: { project: number; scan: ToolboxScan; busy: boolean; setBusy: (busy: boolean) => void }) {
+function Setup({ project, scan, catalogue, busy, setBusy }: { project: number; scan: ToolboxScan; catalogue: ToolboxCatalogue | null; busy: boolean; setBusy: (busy: boolean) => void }) {
   const rec = scan.survey?.recommendation;
   const [harnesses, setHarnesses] = useState(scan.survey?.harnesses.length ? scan.survey.harnesses : ["pi"]);
   const [hooks, setHooks] = useState(rec?.hooks ?? []);
   const [mcp, setMcp] = useState(rec?.mcp ?? []);
   const [skills, setSkills] = useState(rec?.skills ?? []);
   const [scaffold, setScaffold] = useState(true);
+  const [noSymlink, setNoSymlink] = useState(false);
+  const [withDotenv, setWithDotenv] = useState(false);
   const [preview, setPreview] = useState<SetupPreview | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const [approved, setApproved] = useState(false);
@@ -81,17 +94,29 @@ function Setup({ project, scan, busy, setBusy }: { project: number; scan: Toolbo
       {scan.survey.findings.map((finding, i) => <p className="notice" key={i}>{finding.what} {finding.advice}</p>)}
       {rec?.notes.map((note, i) => <p className="faint" key={i}>{note}</p>)}
       <fieldset disabled={busy} className="toolbox__choices" onChange={() => { setPreview(null); setApproved(false); }}>
-        <legend>Choose recommended setup</legend>
+        <legend>Choose catalogue setup</legend>
+        <p className="faint">Recommendations start selected; any bundled item can be chosen. Explicit installation can replace a locally edited item—review its before/after. Repair preserves local scripts instead.</p>
+        <button className="button" onClick={() => { setHooks(rec?.hooks ?? []); setMcp(rec?.mcp ?? []); setSkills(rec?.skills ?? []); setPreview(null); setApproved(false); }}>Select recommended items</button>
         <Choices label="Harnesses" options={["pi", "claude", "codex"]} selected={harnesses} onChange={setHarnesses} />
-        <Choices label="Hooks" options={rec?.hooks ?? []} selected={hooks} onChange={setHooks} />
-        <Choices label="MCP presets" options={rec?.mcp ?? []} selected={mcp} onChange={setMcp} />
-        <Choices label="Skills" options={rec?.skills ?? []} selected={skills} onChange={setSkills} />
+        <Choices label="Hooks" options={catalogue?.hooks.map((i) => i.key) ?? rec?.hooks ?? []} selected={hooks} onChange={setHooks} />
+        <Choices label="MCP presets" options={catalogue?.mcp.map((i) => i.key) ?? rec?.mcp ?? []} selected={mcp} onChange={setMcp} />
+        <Choices label="Skills" options={catalogue?.skills.map((i) => i.key) ?? rec?.skills ?? []} selected={skills} onChange={setSkills} />
         <label><input type="checkbox" checked={scaffold} onChange={(e) => setScaffold(e.target.checked)} /> Scaffold missing knowledge files (never replace existing knowledge)</label>
+        <label><input type="checkbox" checked={noSymlink} onChange={(e) => setNoSymlink(e.target.checked)} /> Use independent Claude skill copies instead of a symlink</label>
+        <label><input type="checkbox" checked={withDotenv} onChange={(e) => setWithDotenv(e.target.checked)} /> Install the .env launcher (with-dotenv.sh) without adding a preset</label>
       </fieldset>
       <div className="card__row">
-        <button className="button" disabled={busy || !harnesses.length} onClick={() => void run({ operation: "install", harnesses, hooks, mcp, skills, scaffold })}>Preview selected setup</button>
+        <button className="button" disabled={busy || !harnesses.length} onClick={() => void run({ operation: "install", harnesses, hooks, mcp, skills, scaffold, no_symlink: noSymlink, with_dotenv: withDotenv })}>Preview selected setup</button>
         <button className="button" disabled={busy || !scan.survey.findings.some((f) => f.repairable)} onClick={() => void run({ operation: "repair" })}>Preview repairs</button>
+        <button className="button" disabled={busy} onClick={() => void run({ operation: "migrate" })}>Preview layout migration</button>
       </div>
+      <details><summary>External prerequisites and scope</summary>
+        <p>Presets configure servers but do not install runtimes, start servers or enter credentials. Preview warnings name required credentials and harness conversion limits. Pi cannot run these shell hooks as extensions.</p>
+        <p>Pi MCP support needs pi-mcp-adapter. Install or update that package in your own Pi environment if missing; project setup does not run Pi’s package installer or change global settings.</p>
+        <p>Bundled skills may refer to external CLIs or provider accounts; inspect their text before use. ai-team chats still enforce their own scoped planning and context policy, independently of project MCP configuration.</p>
+        <p>Layout migration folds legacy hooks/helpers and Claude skills into .agents, refusing conflicts rather than choosing between edits. It re-points current Pi helper paths but preserves obsolete .pi/mcp.json without importing its servers or normalising old transport/auth settings.</p>
+        <p>Worktree convergence, user-level setup and project discovery/pruning are not yet available in this build. The pinned engine has no general uninstall command; deselecting an item does not remove an existing installation.</p>
+      </details>
     </>}
     {busy && <p role="status">Working…</p>}
     {problem && <p className="error" role="alert">{problem}</p>}
