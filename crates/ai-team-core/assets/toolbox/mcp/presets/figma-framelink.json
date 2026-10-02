@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "figma-framelink": {
+      "command": ".agents/mcp/with-dotenv.sh",
+      "args": ["--need", "FIGMA_API_KEY", "--", "npx", "-y", "figma-developer-mcp", "--stdio"]
+    }
+  }
+}

@@ -44,6 +44,9 @@ function stub(options: {
           }),
         });
       }
+      if (url.includes("/toolbox")) {
+        return Promise.resolve({ ok: true, json: async () => [] });
+      }
       if (url === "/projects") {
         return Promise.resolve({ ok: true, json: async () => options.projects ?? [] });
       }

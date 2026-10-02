@@ -1,0 +1,29 @@
+# .github/workflows/claude.yml — drop-in Claude Code agent (PR review + @claude).
+# Requires an ANTHROPIC_API_KEY repo secret. Bounded with --max-turns.
+# VERIFY the action's input names + version against its README before use:
+#   https://github.com/anthropics/claude-code-action
+name: Claude
+on:
+  pull_request:
+    types: [opened, synchronize]
+  issue_comment:
+    types: [created]
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+jobs:
+  claude:
+    # Auto-review new PRs; respond to "@claude" mentions in comments.
+    if: github.event_name == 'pull_request' || contains(github.event.comment.body, '@claude')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          # Keep it bounded — never an unbounded loop in CI.
+          claude_args: "--max-turns 15"

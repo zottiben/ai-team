@@ -1,0 +1,11 @@
+.toolbox { margin-block: 1.25rem; padding: 1rem; border: 1px solid var(--border-subtle-default); border-radius: .6rem; }
+.toolbox h3, .toolbox h4 { margin-block: .5rem; }
+.toolbox p { overflow-wrap: anywhere; }
+.toolbox details { margin-block: .6rem; }
+.toolbox summary { cursor: pointer; overflow-wrap: anywhere; }
+.toolbox__choices { border: 1px solid var(--border-subtle-default); padding: 1rem; margin-block: 1rem; }
+.toolbox__options { display: flex; flex-wrap: wrap; gap: .5rem 1rem; margin-block: .5rem 1rem; }
+.toolbox label { display: inline-flex; align-items: baseline; gap: .4rem; }
+.toolbox__diff { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 1rem; }
+.toolbox__diff pre { overflow: auto; max-height: 28rem; padding: .75rem; background: var(--surface-panel-default); font-size: .8rem; white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 800px) { .toolbox__diff { grid-template-columns: minmax(0, 1fr); } }

@@ -14,6 +14,8 @@ use ai_team_ui::{ServeOptions, Server, TOKEN_HEADER, TOKEN_QUERY};
 mod chat_recovery;
 #[path = "server/chat_teams.rs"]
 mod chat_teams;
+#[path = "server/toolbox.rs"]
+mod toolbox;
 
 #[test]
 fn chats_are_a_first_class_project_collection_not_the_run_list() {

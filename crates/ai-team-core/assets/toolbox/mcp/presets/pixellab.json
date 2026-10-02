@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "pixellab": {
+      "type": "http",
+      "url": "https://api.pixellab.ai/mcp",
+      "headersHelper": ".agents/mcp/dotenv-header.sh PIXELLAB_API_TOKEN"
+    }
+  }
+}

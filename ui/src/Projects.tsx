@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 
 import { Browse } from "./Browse";
+import type { ToolboxScan } from "./toolbox-api";
 import {
   attachRepo,
   doctor,
@@ -9,6 +10,8 @@ import {
   type Check,
   type Project,
 } from "./api";
+
+const Toolbox = lazy(() => import("./Toolbox").then((m) => ({ default: m.Toolbox })));
 
 /**
  * The projects ai-team knows, and what each one is missing.
@@ -30,6 +33,7 @@ export function Projects({ onChanged }: { onChanged: () => void }) {
   const [browsing, setBrowsing] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
+  const [setup, setSetup] = useState<{ project: number; initial?: ToolboxScan } | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -60,6 +64,7 @@ export function Projects({ onChanged }: { onChanged: () => void }) {
           ? `Added ${done.project.name}${done.seeded_team ? " with a team of six" : ""}.`
           : `${done.project.name} was already registered.`,
       );
+      setSetup({ project: done.project.id, initial: done.toolbox_scan });
       setPath("");
       setName("");
       setProblem(null);
@@ -129,6 +134,8 @@ export function Projects({ onChanged }: { onChanged: () => void }) {
         <p className="empty">No projects yet. Add the repository you want to work on.</p>
       )}
 
+      {setup && <Suspense fallback={<p>Reading project setup…</p>}><Toolbox key={setup.project} {...setup} /></Suspense>}
+
       <div className="list">
         {list?.map((project) => {
           const health = healthOf(project.slug);
@@ -147,6 +154,7 @@ export function Projects({ onChanged }: { onChanged: () => void }) {
               {health !== undefined && health.severity !== "fine" && "what" in health.fix && (
                 <span className="faint">{health.fix.what}</span>
               )}
+              <button className="button" onClick={() => setSetup({ project: project.id })}>Inspect setup for {project.name}</button>
               <AttachRepo id={project.id} onDone={load} />
             </div>
           );

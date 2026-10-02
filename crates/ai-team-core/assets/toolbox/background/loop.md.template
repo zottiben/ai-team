@@ -1,0 +1,11 @@
+<!-- .claude/loop.md — customizes what a bare `/loop` (no prompt) does in this repo.
+     Keep it a short, safe maintenance checklist. -->
+
+Tend this branch's open PR:
+- Check CI status (`gh pr checks`); if red, collect the failing logs and triage —
+  fix clear failures at root cause, escalate anything ambiguous. Don't churn.
+- Surface new review comments that need a response.
+- Flag merge conflicts with the base branch.
+
+Never push tags, force-push, or take any release / billed action. If nothing
+needs doing, stop and say so.

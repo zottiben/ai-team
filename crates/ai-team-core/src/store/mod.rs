@@ -19,6 +19,9 @@ mod reminders;
 mod restacks;
 mod reviews;
 mod runs;
+mod toolbox;
+#[cfg(test)]
+mod toolbox_tests;
 
 pub(crate) use runs::workspace_busy;
 pub(crate) use runs::WorkspaceScope;

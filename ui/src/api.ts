@@ -884,6 +884,7 @@ export type Registered = {
   created: boolean;
   seeded_team: boolean;
   roster: [string, string, string][];
+  toolbox_scan?: import("./toolbox-api").ToolboxScan;
 };
 
 export function registerProject(body: {

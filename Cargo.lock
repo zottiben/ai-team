@@ -48,11 +48,13 @@ name = "ai-team-core"
 version = "0.7.4"
 dependencies = [
  "ai-planner-core",
+ "ai-toolbox-core",
  "portable-pty",
  "rusqlite",
  "rustix",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "thiserror 2.0.20",
  "time",
@@ -89,6 +91,23 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "tokio-stream",
+]
+
+[[package]]
+name = "ai-toolbox-core"
+version = "0.1.4"
+source = "git+https://github.com/zottiben/ai-toolbox?rev=90659e82f0d040315ff99cfbd765d8798eb3e085#90659e82f0d040315ff99cfbd765d8798eb3e085"
+dependencies = [
+ "anyhow",
+ "rusqlite",
+ "semver",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.20",
+ "time",
+ "toml 1.1.6+spec-1.1.0",
 ]
 
 [[package]]
@@ -3170,6 +3189,7 @@ version = "1.0.151"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c841b55ecdae098c80dcae9cf767f6f8a0c2cdb3416bbef72181df4d0fe73f14"
 dependencies = [
+ "indexmap 2.14.2",
  "itoa",
  "memchr",
  "serde",

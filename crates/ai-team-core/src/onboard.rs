@@ -118,6 +118,8 @@ pub struct Registered {
     pub seeded_team: bool,
     /// The seats, so a caller can show what it got without a second round trip.
     pub roster: Vec<(String, String, String)>,
+    /// Automatic inspection only. Setup requires its own exact preview and approval.
+    pub toolbox_scan: crate::toolbox::Scan,
 }
 
 /// Register a directory as a project.
@@ -246,6 +248,12 @@ pub fn register(
         })
         .collect();
 
+    let setup_root = repo_path
+        .as_ref()
+        .map_or(dir.as_path(), |path| Path::new(path));
+    store.register_toolbox_root(project.id, setup_root)?;
+    let toolbox_scan = crate::toolbox::scan(setup_root);
+
     // Re-read, because attaching a repo and seeding a team both change the row.
     Ok(Registered {
         project: store.project(project.id)?,
@@ -253,6 +261,7 @@ pub fn register(
         created,
         seeded_team,
         roster,
+        toolbox_scan,
     })
 }
 

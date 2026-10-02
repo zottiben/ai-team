@@ -306,7 +306,11 @@ pub(super) fn merge_safe_project_servers(
         .and_then(Value::as_object_mut)
         .ok_or_else(|| Error::invalid("generated MCP config has no server map"))?;
 
-    for path in [worktree.join(".mcp.json"), worktree.join(".pi/mcp.json")] {
+    for path in [
+        worktree.join(".mcp.json"),
+        worktree.join(".pi/mcp.json"),
+        worktree.join(".pi/mcp-adapter.json"),
+    ] {
         if !path.is_file() {
             continue;
         }
@@ -325,6 +329,28 @@ pub(super) fn merge_safe_project_servers(
             continue;
         };
         for (name, server) in servers {
+            if RESERVED.contains(&name.as_str()) {
+                continue;
+            }
+            let Some(overlay) = server.as_object() else {
+                continue;
+            };
+            // Adapter overrides may contain only headers/knobs. Keep the shared
+            // transport, but never carry credentials across a changed destination.
+            let mut merged = target
+                .get(name)
+                .and_then(Value::as_object)
+                .cloned()
+                .unwrap_or_default();
+            if ["url", "command", "args", "socket"].iter().any(|key| {
+                overlay
+                    .get(*key)
+                    .is_some_and(|value| merged.get(*key) != Some(value))
+            }) {
+                merged.clear();
+            }
+            merged.extend(overlay.clone());
+            let server = Value::Object(merged);
             let standalone = server
                 .get("command")
                 .and_then(Value::as_str)
@@ -336,8 +362,10 @@ pub(super) fn merge_safe_project_servers(
                 });
             let browser =
                 exclude_browsers && matches!(name.as_str(), "playwright" | "chrome-devtools");
-            if !RESERVED.contains(&name.as_str()) && !standalone && !browser {
-                target.insert(name.clone(), server.clone());
+            if standalone || browser {
+                target.remove(name);
+            } else {
+                target.insert(name.clone(), server);
             }
         }
     }
@@ -834,6 +862,25 @@ mod tests {
         assert!(servers.contains_key("ai-planner"));
         assert!(!servers.contains_key("playwright"));
         assert!(!servers.contains_key("chrome-devtools"));
+    }
+
+    #[test]
+    fn current_adapter_overrides_keep_the_shared_transport_and_reserved_scope() {
+        let checkout = tempfile::tempdir().unwrap();
+        std::fs::create_dir(checkout.path().join(".pi")).unwrap();
+        std::fs::write(checkout.path().join(".mcp.json"), r#"{"mcpServers":{"image":{"url":"https://example.invalid/mcp","headers":{"Old":"credential"}},"planner-alias":{"command":"safe"}}}"#).unwrap();
+        std::fs::write(checkout.path().join(".pi/mcp-adapter.json"), r#"{"mcpServers":{"image":{"headers":{"Authorization":"!local-helper"}},"planner-alias":{"command":"aip"},"clickup":{"url":"https://wrong.invalid"}}}"#).unwrap();
+        let mut config = serde_json::json!({"mcpServers":{}});
+        merge_safe_project_servers(checkout.path(), &mut config, false).unwrap();
+        let servers = config["mcpServers"].as_object().unwrap();
+        assert_eq!(servers["image"]["url"], "https://example.invalid/mcp");
+        assert_eq!(
+            servers["image"]["headers"]["Authorization"],
+            "!local-helper"
+        );
+        assert!(servers["image"]["headers"].get("Old").is_none());
+        assert!(!servers.contains_key("planner-alias"));
+        assert!(!servers.contains_key("clickup"));
     }
 
     #[test]

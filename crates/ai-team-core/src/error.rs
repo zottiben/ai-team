@@ -83,6 +83,12 @@ impl From<ai_planner_core::Error> for Error {
     }
 }
 
+impl From<ai_toolbox_core::Error> for Error {
+    fn from(error: ai_toolbox_core::Error) -> Self {
+        Self::invalid(format!("toolbox: {error}"))
+    }
+}
+
 impl Error {
     pub fn invalid(msg: impl Into<String>) -> Self {
         Error::Invalid(msg.into())

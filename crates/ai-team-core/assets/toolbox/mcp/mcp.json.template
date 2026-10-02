@@ -1,0 +1,31 @@
+{
+  "_note": "TEMPLATE ONLY. Fill each server's real command/args/url from a working machine. Put SECRETS in env vars (e.g. \"${FIGMA_TOKEN}\"), never literals. Safe to commit ONLY if it contains no real tokens.",
+  "mcpServers": {
+    "chrome-devtools": {
+      "command": "<fill from your machine>",
+      "args": []
+    },
+    "claude-in-chrome": {
+      "command": "<fill from your machine>",
+      "args": []
+    },
+    "figma": {
+      "command": "<fill from your machine>",
+      "args": [],
+      "env": { "FIGMA_TOKEN": "${FIGMA_TOKEN}" }
+    },
+    "clickup": {
+      "command": "<fill from your machine>",
+      "args": [],
+      "env": { "CLICKUP_TOKEN": "${CLICKUP_TOKEN}" }
+    },
+    "ios-simulator": {
+      "command": "<fill from your machine>",
+      "args": []
+    },
+    "unity": {
+      "command": "<fill from your machine>",
+      "args": []
+    }
+  }
+}

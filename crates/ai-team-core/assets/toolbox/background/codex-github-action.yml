@@ -1,0 +1,45 @@
+# .github/workflows/codex.yml — drop-in OpenAI Codex agent (PR review + @codex).
+# Requires an OPENAI_API_KEY repo secret. Bounded: read-only sandbox + drop-sudo
+# (Codex can't touch the repo or read its own key). The Anthropic-side equivalent is
+# background/claude-github-action.yml — install whichever matches your harness (or both).
+# VERIFY the action's input names + version against its README before use:
+#   https://github.com/openai/codex-action
+name: Codex
+on:
+  pull_request:
+    types: [opened, synchronize]
+  issue_comment:
+    types: [created]
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+jobs:
+  codex:
+    # Auto-review new PRs; respond to "@codex" mentions in comments.
+    if: github.event_name == 'pull_request' || contains(github.event.comment.body, '@codex')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Run Codex
+        id: codex
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          # Read-only sandbox + drop-sudo is the CI bound — never an unbounded write loop.
+          sandbox: read-only
+          safety-strategy: drop-sudo
+          output-file: codex-output.md
+          # Pin a model for determinism (e.g. model: gpt-5-codex); omit to use the action default.
+          prompt: |
+            Review this pull request's diff against the repository's AGENTS.md. Flag
+            only serious issues — bugs, security, and cost/irreversible actions. Be concise.
+      - name: Post review comment
+        if: always() && steps.codex.outputs.final-message != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BODY: ${{ steps.codex.outputs.final-message }}
+          PR: ${{ github.event.pull_request.number || github.event.issue.number }}
+        run: gh pr comment "$PR" --body "$BODY"

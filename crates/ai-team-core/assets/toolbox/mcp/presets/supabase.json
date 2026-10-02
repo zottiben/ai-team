@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "supabase": {
+      "command": ".agents/mcp/with-dotenv.sh",
+      "args": ["--need", "SUPABASE_ACCESS_TOKEN", "--need", "SUPABASE_PROJECT_REF", "--", "npx", "-y", "@supabase/mcp-server-supabase@latest", "--read-only", "--project-ref=${SUPABASE_PROJECT_REF}"]
+    }
+  }
+}

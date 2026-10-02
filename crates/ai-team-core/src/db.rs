@@ -107,6 +107,11 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
         "chat delivery",
         include_str!("migrations/025_chat_delivery.sql"),
     ),
+    (
+        26,
+        "toolbox previews",
+        include_str!("migrations/026_toolbox.sql"),
+    ),
 ];
 
 /// The number of `v_` views the schema ships. Asserted in tests, because a view silently
@@ -304,7 +309,7 @@ mod tests {
         conn.execute("INSERT INTO project (slug, name, created_at, updated_at) VALUES ('keep', 'Keep', 'fixture', 'fixture')", []).unwrap();
         drop(conn);
         let db = Db::open(&path).unwrap();
-        assert_eq!(db.schema_version().unwrap(), 25);
+        assert_eq!(db.schema_version().unwrap(), 26);
         assert_eq!(
             db.conn()
                 .query_row("SELECT name FROM project WHERE slug='keep'", [], |r| r
@@ -323,6 +328,12 @@ mod tests {
         db.conn().prepare("SELECT id FROM chat").unwrap();
         db.conn()
             .prepare("SELECT id, state, child_journal FROM chat_delivery")
+            .unwrap();
+        db.conn()
+            .prepare("SELECT project_id, path FROM toolbox_root")
+            .unwrap();
+        db.conn()
+            .prepare("SELECT id, snapshot_json, state, outcome_json FROM toolbox_preview")
             .unwrap();
     }
 

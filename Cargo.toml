@@ -48,6 +48,7 @@ rustix = { version = "1", features = ["process", "fs"] }
 # Match the pinned planner engine: Cargo permits only one libsqlite3-sys links owner.
 rusqlite = { version = "0.37", features = ["bundled"] }
 ai-planner-core = { git = "https://github.com/zottiben/ai-planner", rev = "de4902eddd0632692dd3678c4bfc556aabcb238e", default-features = false }
+ai-toolbox-core = { git = "https://github.com/zottiben/ai-toolbox", rev = "90659e82f0d040315ff99cfbd765d8798eb3e085" }
 time = { version = "0.3", features = ["formatting", "parsing", "macros"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "signal"] }
 

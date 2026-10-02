@@ -19,6 +19,7 @@ mod error;
 mod health;
 pub mod plan_mcp;
 mod state;
+mod toolbox;
 
 use std::net::{Ipv4Addr, SocketAddr};
 

@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "mobile": {
+      "command": "npx",
+      "args": ["-y", "@mobilenext/mobile-mcp@latest"],
+      "env": { "MOBILEMCP_DISABLE_TELEMETRY": "1" }
+    }
+  }
+}
