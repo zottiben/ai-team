@@ -20,6 +20,8 @@ mod restacks;
 mod reviews;
 mod runs;
 mod toolbox;
+mod toolbox_operations;
+mod toolbox_registry;
 #[cfg(test)]
 mod toolbox_tests;
 

@@ -5,9 +5,13 @@ mod catalogue;
 mod effects;
 mod files;
 mod install;
+mod legacy_pi;
 mod migrate;
+mod operations;
 mod pi;
+mod registry;
 mod survey;
+mod user;
 mod worktrees;
 
 use std::path::Path;
@@ -20,6 +24,15 @@ use crate::{Error, Result, Store};
 pub use catalogue::{catalogue, Catalogue, Item, NOTICE, REVISION};
 pub use effects::{Effect, Outcome};
 pub use files::Node;
+pub(crate) use operations::SavedOperation;
+pub use operations::{
+    apply_operation, preview_convergence, Authority, ChangeSet, Operation, OperationRecord,
+};
+pub use registry::{
+    discover, preview_registry, Change as RegistryChange, Discovery, RegistrySelection,
+    Root as RegistryRoot,
+};
+pub use user::{preview_user, user_authority, UserSelection};
 pub use worktrees::Worktree;
 
 #[derive(Debug, Clone, Serialize)]
@@ -48,6 +61,7 @@ pub enum Selection {
     },
     Repair,
     Migrate,
+    ImportPi,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -175,6 +189,7 @@ pub fn preview(
                 plan
             }
             Selection::Migrate => migrate::plan(&inputs, stage.path())?,
+            Selection::ImportPi => legacy_pi::plan(stage.path())?,
             Selection::Repair => {
                 let survey = survey::read(stage.path(), &package.catalogue)?;
                 let mut plan = Plan::default();

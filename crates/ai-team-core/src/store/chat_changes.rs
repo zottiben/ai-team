@@ -230,18 +230,27 @@ fn check_target(
 /// Shared by chat, leased maker and legacy admission. A process dying is not proof that
 /// its external command did nothing. Unknown outcomes continue to protect the checkout.
 pub(super) fn check_workspace(conn: &Connection, workspace: &str) -> Result<()> {
+    check_workspace_except_toolbox(conn, workspace, None)
+}
+pub(super) fn check_workspace_except_toolbox(
+    conn: &Connection,
+    workspace: &str,
+    approval: Option<i64>,
+) -> Result<()> {
     let mut query = conn.prepare(
-        "SELECT workspace_path FROM chat_delivery WHERE state IN ('running','inspection')",
+        "SELECT workspace_path FROM chat_delivery WHERE state IN ('running','inspection')
+         UNION SELECT json_extract(snapshot_json,'$.authority.target') FROM toolbox_operation
+         WHERE kind='converge' AND state='applying' AND id != COALESCE(?1,-1)",
     )?;
     let paths = query
-        .query_map([], |row| row.get::<_, String>(0))?
+        .query_map([approval], |row| row.get::<_, String>(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     if paths
         .iter()
         .any(|path| crate::same_worktree(path, workspace))
     {
         return Err(Error::invalid(
-            "a chat delivery is running or needs inspection in this checkout",
+            "a chat delivery or toolbox convergence is running or needs inspection in this checkout",
         ));
     }
     Ok(())

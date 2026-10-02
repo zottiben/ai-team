@@ -12,6 +12,7 @@ import {
 } from "./api";
 
 const Toolbox = lazy(() => import("./Toolbox").then((m) => ({ default: m.Toolbox })));
+const ToolboxManagement = lazy(() => import("./ToolboxManagement").then((m) => ({ default: m.ToolboxManagement })));
 
 /**
  * The projects ai-team knows, and what each one is missing.
@@ -33,6 +34,7 @@ export function Projects({ onChanged }: { onChanged: () => void }) {
   const [browsing, setBrowsing] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
+  const [management, setManagement] = useState<"user" | "registry" | null>(null);
   const [setup, setSetup] = useState<{ project: number; initial?: ToolboxScan } | null>(null);
 
   const load = useCallback(async () => {
@@ -134,6 +136,8 @@ export function Projects({ onChanged }: { onChanged: () => void }) {
         <p className="empty">No projects yet. Add the repository you want to work on.</p>
       )}
 
+      <div className="card__row"><button className="button" onClick={() => setManagement(management === "user" ? null : "user")}>User-level toolbox setup</button><button className="button" onClick={() => setManagement(management === "registry" ? null : "registry")}>Discover and manage registrations</button></div>
+      {management && <Suspense fallback={<p>Reading toolbox…</p>}><ToolboxManagement key={management} mode={management} onChanged={() => { void load(); onChanged(); }} onRegistered={(done) => setSetup({ project: done.project.id, initial: done.toolbox_scan })} /></Suspense>}
       {setup && <Suspense fallback={<p>Reading project setup…</p>}><Toolbox key={setup.project} {...setup} /></Suspense>}
 
       <div className="list">

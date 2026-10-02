@@ -23,7 +23,7 @@ export type SetupPreview = {
   warnings: string[]; state: "preview" | "applying" | "applied" | "refused" | "partial";
   outcome: { applied: string[]; problem: string | null; uncertain: boolean } | null;
 };
-export type SetupSelection = { operation: "repair" | "migrate" } | {
+export type SetupSelection = { operation: "repair" | "migrate" | "import_pi" } | {
   operation: "install"; harnesses: string[]; hooks: string[]; mcp: string[]; skills: string[]; scaffold: boolean;
   no_symlink?: boolean; with_dotenv?: boolean;
 };

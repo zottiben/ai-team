@@ -1,0 +1,18 @@
+import { api, post } from "./api";
+import type { SetupPreview } from "./toolbox-api";
+export type Authority = { kind: "user"; home: string; pi_agent: string; charter_targets: string[] } | { kind: "converge"; project: number; reference: string; target: string } | { kind: "registry" };
+export type Registration = { project: number; name: string; revision: number; status: string; next_status: string; restore_status: string | null; roots: { path: string; exists: boolean }[]; reason: string | null };
+export type Operation = { id: number; authority: Authority; changes: { root: string; effects: SetupPreview["effects"] }[]; registrations: Registration[]; scan_roots: string[] | null; warnings: string[]; state: SetupPreview["state"]; outcome: SetupPreview["outcome"] };
+export type OperationRecord = Pick<Operation, "id" | "authority" | "state" | "outcome">;
+export type UserSelection = { harnesses: string[]; skills: string[]; no_symlink: boolean; charter: boolean; charter_path: string | null };
+export type RegistrySelection = { operation: "forget" | "restore"; projects: number[] } | { operation: "prune" } | { operation: "scan_roots"; roots: string[] };
+export type Discovery = { roots: string[]; repositories: { path: string; project: number | null }[]; warnings: string[] };
+export const userAuthority = (): Promise<Authority> => api("/toolbox/user");
+export const previewUser = (selection: UserSelection): Promise<Operation> => post("/toolbox/user/preview", selection);
+export const previewConvergence = (project: number, root: string, target: string): Promise<Operation> => post(`/projects/${project}/toolbox/converge`, { root, target });
+export const operationHistory = (kind: Authority["kind"]): Promise<OperationRecord[]> => api(`/toolbox/operations/${kind}`);
+export const getOperation = (kind: Authority["kind"], id: number): Promise<Operation> => api(`/toolbox/operations/${kind}/${id}`);
+export const applyOperation = (kind: Authority["kind"], id: number): Promise<Operation> => post(`/toolbox/operations/${kind}/${id}/apply`, {});
+export const registrations = (): Promise<{ projects: Registration[]; roots: string[] }> => api("/toolbox/registry");
+export const previewRegistry = (selection: RegistrySelection): Promise<Operation> => post("/toolbox/registry/preview", selection);
+export const discoverProjects = (roots: string[]): Promise<Discovery> => post("/toolbox/discover", { roots });

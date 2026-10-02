@@ -210,6 +210,16 @@ pub(crate) struct Snapshot {
 
 impl Snapshot {
     pub(super) fn capture(root: &Path) -> Result<Self> {
+        let mut snapshot = Self::capture_only(root, INPUTS)?;
+        for path in [".github", "supabase"] {
+            snapshot
+                .markers
+                .insert(path.into(), snapshot.root.join(path).exists());
+        }
+        Ok(snapshot)
+    }
+
+    pub(super) fn capture_only(root: &Path, inputs: &[&str]) -> Result<Self> {
         let root = root.canonicalize()?;
         let mut snapshot = Self {
             root,
@@ -217,16 +227,19 @@ impl Snapshot {
             markers: BTreeMap::new(),
             parents: BTreeMap::new(),
         };
-        for path in [".github", "supabase"] {
-            snapshot
-                .markers
-                .insert(path.into(), snapshot.root.join(path).exists());
-        }
         let mut budget = Budget::default();
         snapshot
             .parents
             .insert(String::new(), identity(&snapshot.root)?);
-        for input in INPUTS {
+        for input in inputs {
+            relative(&snapshot.root, &snapshot.root.join(input))?;
+            if snapshot
+                .nodes
+                .keys()
+                .any(|p| Path::new(input).starts_with(p) || Path::new(p).starts_with(input))
+            {
+                return Err(Error::invalid("overlapping toolbox inputs"));
+            }
             snapshot.capture_parents(Path::new(input))?;
             let node = Node::read_with(&snapshot.root.join(input), &mut budget, 0)?;
             node.safe_links(Path::new(input))?;

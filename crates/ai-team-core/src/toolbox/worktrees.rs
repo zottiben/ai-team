@@ -6,6 +6,18 @@ use std::{path::Path, process::Command, time::Duration};
 use serde::Serialize;
 
 use super::{files::Snapshot, Node};
+
+pub(super) const MANAGED: &[&str] = &[
+    "AGENTS.md",
+    "CLAUDE.md",
+    ".mcp.json",
+    ".agents",
+    ".claude/settings.json",
+    ".claude/skills",
+    ".codex/config.toml",
+    ".pi/mcp.json",
+    ".pi/mcp-adapter.json",
+];
 use crate::{Error, Result};
 
 #[derive(Debug, Clone, Serialize)]
@@ -67,17 +79,7 @@ pub(super) fn inspect(root: &Path) -> Result<Vec<Worktree>> {
         let compared = (|| -> Result<Vec<String>> {
             let here = Snapshot::capture(Path::new(path))?;
             let mut different = Vec::new();
-            for name in [
-                "AGENTS.md",
-                "CLAUDE.md",
-                ".mcp.json",
-                ".agents",
-                ".claude/settings.json",
-                ".claude/skills",
-                ".codex/config.toml",
-                ".pi/mcp.json",
-                ".pi/mcp-adapter.json",
-            ] {
+            for &name in MANAGED {
                 let wanted = reference.nodes.get(name).unwrap_or(&Node::Missing);
                 if here.nodes.get(name).unwrap_or(&Node::Missing) != wanted {
                     different.push(name.into());
@@ -91,7 +93,9 @@ pub(super) fn inspect(root: &Path) -> Result<Vec<Worktree>> {
             Err(e) => (Vec::new(), Some(e.to_string())),
         };
         records.push(Worktree {
-            path: path.into(),
+            path: Path::new(path)
+                .canonicalize()
+                .map_or_else(|_| path.into(), |p| p.to_string_lossy().into_owned()),
             branch,
             different,
             problem,

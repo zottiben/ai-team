@@ -2990,6 +2990,9 @@ async fn projects(State(state): State<AppState>) -> Result<Json<Vec<ProjectView>
     let store = store.lock();
     let mut out = Vec::new();
     for project in store.projects()? {
+        if project.status == ai_team_core::ProjectStatus::Archived {
+            continue;
+        }
         let open_runs = store
             .legacy_runs(Some(project.id), 100)?
             .into_iter()

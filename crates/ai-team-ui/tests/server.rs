@@ -16,6 +16,8 @@ mod chat_recovery;
 mod chat_teams;
 #[path = "server/toolbox.rs"]
 mod toolbox;
+#[path = "server/toolbox_operations.rs"]
+mod toolbox_operations;
 
 #[test]
 fn chats_are_a_first_class_project_collection_not_the_run_list() {

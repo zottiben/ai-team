@@ -92,7 +92,10 @@ impl Frozen {
             }
             effects.push(Effect {
                 path,
-                summary: action.summary,
+                summary: action.summary.replace(
+                    staged.to_string_lossy().as_ref(),
+                    inputs.root.to_string_lossy().as_ref(),
+                ),
                 before,
                 after,
             });

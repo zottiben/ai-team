@@ -129,7 +129,7 @@ impl Store {
         let root = saved.frozen.inputs.root.to_string_lossy().into_owned();
         self.toolbox_root(project, &root)?;
         self.db_mut().write(|tx| {
-            let busy: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM toolbox_preview WHERE root=?1 AND state='applying')", [&root], |r| r.get(0))?;
+            let busy: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM toolbox_preview WHERE state='applying' UNION ALL SELECT 1 FROM toolbox_operation WHERE state='applying')", [], |r| r.get(0))?;
             if busy { return Err(Error::invalid("another setup is applying or was interrupted here; inspect it before making further changes")); }
             if tx.execute("UPDATE toolbox_preview SET state='applying' WHERE project_id=?1 AND id=?2 AND state='preview'", params![project,id])? != 1 {
                 return Err(Error::invalid("toolbox preview changed before approval"));

@@ -3,8 +3,8 @@
 Checked against `ai-toolbox` revision
 `90659e82f0d040315ff99cfbd765d8798eb3e085`, especially
 `crates/ai-toolbox/src/cli.rs`, `cmd/{install,rules}.rs` and the core planners.
-This is an implementation inventory, not a claim that R6 or desktop acceptance is
-complete. The delivery plan remains in ai-planner.
+This is the checked R6 implementation inventory, not desktop/live-account acceptance.
+The delivery plan and gate evidence remain in ai-planner.
 
 All implemented filesystem actions use the saved immutable preview, scoped root,
 complete input fingerprints and single-use approval from R5. Nothing calls the
@@ -17,20 +17,20 @@ standalone toolbox CLI, discovers its registry, or writes through its installati
 | `mcp <names>` | Every preset selectable, shared config and selected harness conversion, credential/conversion warnings | Implemented; all presets tested across three harnesses, never connected during setup |
 | `skill <names/groups>` | Full catalogue keys including grouped skills; project installation/update via exact preview | Implemented; unselected installations remain; explicit selection may replace local edits only after showing before/after |
 | `skill --no-symlink` | Independent Claude copies; existing canonical link replaced as one frozen directory effect including unselected canonical skills | Implemented; no write through a symlink, existing real directories retain unrelated skills; stale tests cover both |
-| `skill --user` | Separately scoped user approval, not the project root picker | **Remaining R6**; no HOME write authority in project previews |
+| `skill --user` | Projects → User-level toolbox setup; harness/skill selection and optional independent Claude copies | Implemented; separate immutable USER approval naming HOME/Pi agent directory, never authority inherited from a project |
 | `doctor --fix` | Findings and Preview repairs | Implemented; no-history classification conservatively calls differing content modified; repair preserves edited scripts |
 | `bootstrap`, `init` | Recommendations start checked; Select recommended items, harness choices, optional missing AGENTS/CLAUDE scaffold | Implemented; no noninteractive approval bypass or overwrite of knowledge files |
 | `rules <names>` | Searchable rule snippets, exact read-only text and Copy | Implemented; matches upstream print-only semantics, never appends unread rules |
 | Templates / starter agents / background recipes | Read-only catalogue text and Copy; AGENTS/CLAUDE scaffold remains separate | Implemented for bundled assets; engine has no general template-to-arbitrary-path command, so no new write product is invented |
 | `with-dotenv` | Explicit standalone .env launcher checkbox, also pulled in by relevant presets | Implemented; executable file preview, no .env read/write or secret entry |
 | `migrate` layout | Preview layout migration moves hooks/helpers and Claude skills into canonical .agents, re-points harness configs, keeps complete trees/modes | Implemented safe adapter; conflicting bytes/types/modes refuse the whole preview; no root-harness-directory pruning |
-| `migrate` Pi normalization/folding | Current adapter helper paths re-pointed; legacy .pi/mcp.json retained without importing servers, dropping fields or sharing dynamic headers | **Remaining R6** for explicitly chosen safe legacy import/normalization; current UI says this limitation, not full migration parity |
+| `migrate` Pi normalization/folding | Preview legacy Pi import, separately from layout migration; merges legacy adapter settings into .pi/mcp-adapter.json and normalizes known transport/auth forms | Implemented safe adapter; keeps source/shared files and custom fields, refuses conflicting destination/shared transports or values, unknown legacy auth/transport and native-only Pi settings rather than dropping them |
 | `worktrees` | Read-only bounded Git worktree inventory and configuration differences | Implemented |
-| `worktrees --sync` | Exact source/target convergence approval with both roots guarded | **Remaining R6**; scan is not consent to change linked worktrees |
-| `base-charter [path]` | Charter text is browsable/copyable; global append needs separate user scope | **Remaining R6** for approved global/custom-target append; no project approval reaches HOME |
+| `worktrees --sync` | Worktree setup consistency → Preview convergence to one linked target | Implemented; both roots/membership guarded; active/retained targets refused and applying convergence reserves the target against new chat writers. Replaces matching files only after exact approval; keeps target-only paths and divergent link/copy layouts (reported, not silently converted) |
+| `base-charter [path]` | User-level setup → Append base charter; optional explicit absolute custom destination | Implemented; resolved charter targets are named in USER authority, including a separately selected path outside HOME. Alias changes refuse apply; preserves existing text/markers and rejects non-text input |
 | `pi-init` | External prerequisite notice: Pi owns its MCP package installation | Manual prerequisite, not a filesystem plan. Upstream runs `pi install npm:pi-mcp-adapter` and changes global Pi state; ai-team does not silently execute it |
-| `projects`, `projects scan --root` | ai-team project list and explicit Add/Attach, automatic read-only onboarding scan | Registration implemented; **remaining R6** for bounded discovery of unregistered projects under selected scan roots |
-| `projects forget`, `projects prune` | ai-team-owned registration metadata only; never delete checkouts or standalone registry rows | **Remaining R6** for previewed pruning/forgetting and chat/history ownership checks |
+| `projects`, `projects scan --root` | Projects → Discover and manage registrations; explicit scan/add and separately previewed remembered roots | Implemented; at most 16 roots, depth 6, 200 repositories/4096 entries, visible truncation and no child symlink traversal. Scan never registers or changes a checkout |
+| `projects forget`, `projects prune` | Preview metadata-only archive, prune wholly missing projects, restore forgotten registrations | Implemented; revision/root/protected-work checks are transactional, and archived projects cannot admit new chat turns. Files, chats, runs, plans and receipts remain; Restore recovers the prior active/paused/done status, not a reopened replacement |
 | `update [--check]` | Catalogue is packaged/versioned with ai-team and its existing updater, shown with revision/licences | No separate toolbox clone updater; no updates executed during onboarding |
 | `ui` | Native ai-team project setup surface | Embedded replacement; no second server/window is launched |
 
@@ -52,8 +52,10 @@ standalone toolbox CLI, discovers its registry, or writes through its installati
   settings; copying current overrides into that planner is not compatibility.
   Launcher rewrites are restricted to server commands/arguments and dynamic header
   commands, leaving unrelated settings/strings intact. A separate explicit import
-  must preserve the current adapter's meaning and expose conflicts, not simply
-  rename a file and claim migration success.
+  preserves the current adapter's meaning and exposes conflicts, not simply
+  renaming a file and claiming migration success. JSON-with-comments or unsupported
+  native Pi shapes require manual reconciliation; the importer never guesses away
+  data. Shared transports/dynamic headers are not migrated across harnesses.
 - Engine skills and templates can mention external tools/accounts or standalone
   toolbox commands. Their original text remains visible, not silently rewritten.
   Project setup does not start a model, server, package installer, shell hook or
@@ -61,8 +63,15 @@ standalone toolbox CLI, discovers its registry, or writes through its installati
 
 ## Verification
 
-Core: `crates/ai-team-core/tests/toolbox.rs` and toolbox/store unit tests.
-HTTP: `crates/ai-team-ui/tests/server/toolbox.rs` (including authenticated catalogue
-and saved approvals). UI: `ui/src/Toolbox.test.tsx` and `Projects.test.tsx`.
-Browser and full non-live gates are recorded in the plan; live accounts, native
-macOS acceptance and complete R6 coverage must not be inferred from these tests.
+Core: `crates/ai-team-core/tests/{toolbox,toolbox_operations}.rs` and toolbox/store
+unit tests. HTTP: `crates/ai-team-ui/tests/server/{toolbox,toolbox_operations}.rs`
+(including auth, scope separation and reversible registration visibility).
+UI: `ui/src/{Toolbox,ToolboxManagement,Projects}.test.tsx`.
+
+Browser action-family walkthroughs, preserved filesystem/receipt evidence and the
+actual installed adapter's read-only parser check are recorded in the plan. Apply
+uses frozen bytes, not another catalogue read. Saved interrupted receipts are
+inspectable across restart and cannot replay; global setup serialization blocks
+further writes while a receipt remains `applying`. Reading an interrupted receipt
+does not authorize retrying or clearing it. These checks do not imply
+live server connectivity, OAuth, CI or native installed-app acceptance.

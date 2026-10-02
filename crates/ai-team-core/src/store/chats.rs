@@ -423,6 +423,16 @@ fn check_chat_admission(
 ) -> Result<()> {
     super::chat_changes::check_workspace(tx, workspace)?;
     let current = tx.query_row(&format!("{SELECT} WHERE id = ?1"), [expected.id], from_row)?;
+    let project_archived: bool = tx.query_row(
+        "SELECT status = 'archived' FROM project WHERE id=?1",
+        [current.project_id],
+        |r| r.get(0),
+    )?;
+    if project_archived {
+        return Err(Error::invalid(
+            "this project's registration is archived; restore it before starting more work",
+        ));
+    }
     if current.archived || current.active_node_id.is_some() {
         return Err(Error::invalid(
             "this chat is archived or still working; stop or wait before sending",

@@ -1,7 +1,10 @@
 import { useEffect, useState } from "react";
 
-import { approveSetup, previewSetup, scanToolbox, savedSetup, setupHistory, toolboxCatalogue, type ToolboxCatalogue, type SetupRecord, type SetupNode, type SetupPreview, type SetupSelection, type ToolboxScan } from "./toolbox-api";
+import { approveSetup, previewSetup, scanToolbox, savedSetup, setupHistory, toolboxCatalogue, type ToolboxCatalogue, type SetupRecord, type SetupPreview, type SetupSelection, type ToolboxScan } from "./toolbox-api";
 import { CatalogueBrowser } from "./ToolboxCatalogue";
+import { Contents } from "./SetupContents";
+import { OperationPreview, OperationHistory } from "./ToolboxOperation";
+import { previewConvergence, type Operation } from "./toolbox-operations-api";
 import "./toolbox.css";
 
 export function Toolbox({ project, initial }: { project: number; initial?: ToolboxScan }) {
@@ -64,11 +67,12 @@ function Setup({ project, scan, catalogue, busy, setBusy }: { project: number; s
   const [noSymlink, setNoSymlink] = useState(false);
   const [withDotenv, setWithDotenv] = useState(false);
   const [preview, setPreview] = useState<SetupPreview | null>(null);
+  const [convergence, setConvergence] = useState<Operation | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const [approved, setApproved] = useState(false);
 
   const run = async (selection: SetupSelection) => {
-    setBusy(true); setProblem(null); setPreview(null); setApproved(false);
+    setBusy(true); setProblem(null); setPreview(null); setConvergence(null); setApproved(false);
     try { setPreview(await previewSetup(project, scan.root, selection)); }
     catch (e: unknown) { setProblem(String(e)); }
     finally { setBusy(false); }
@@ -87,16 +91,16 @@ function Setup({ project, scan, catalogue, busy, setBusy }: { project: number; s
     <p className="faint">Bundled catalogue {scan.catalogue_revision.slice(0, 12)}</p>
     {scan.problem && <p role="alert" className="error">{scan.problem}</p>}
     {scan.worktree_problem && <p className="notice">Worktree inspection: {scan.worktree_problem}</p>}
-    {scan.worktrees.length > 0 && <details><summary>Worktree setup consistency</summary><p className="faint">Compared with {scan.root}. Inspection only; no worktree is changed.</p>{scan.worktrees.map((tree) => <p key={tree.path}>{tree.path} · {tree.branch ?? "detached"} · {tree.problem ?? (tree.different.length ? `Differs: ${tree.different.join(", ")}` : "In step")}</p>)}</details>}
+    {scan.worktrees.length > 0 && <details><summary>Worktree setup consistency</summary><p className="faint">Reference: {scan.root}. Scan changes nothing. Preview one linked target, then separately approve its exact files. Target-only entries are retained.</p>{scan.worktrees.map((tree) => <div key={tree.path}><p>{tree.path} · {tree.branch ?? "detached"} · {tree.problem ?? (tree.different.length ? `Differs: ${tree.different.join(", ")}` : "In step")}</p>{tree.path !== scan.root && <button className="button" disabled={busy || !!tree.problem} onClick={() => { setBusy(true); setProblem(null); setPreview(null); setConvergence(null); void previewConvergence(project, scan.root, tree.path).then(setConvergence).catch((e: unknown) => setProblem(String(e))).finally(() => setBusy(false)); }}>Preview convergence to {tree.path}</button>}</div>)}<OperationHistory kind="converge" refresh={convergence?.state === "preview" ? 0 : convergence?.id ?? 0} /></details>}
     {scan.survey && <>
       <p>Detected: {rec?.detected.join(", ") || "no recognised stack"}. Existing setup: {scan.survey.state}.</p>
       {scan.survey.items.length > 0 && <details><summary>Installed configuration ({scan.survey.items.length})</summary><ul>{scan.survey.items.map((item, i) => <li key={i}>{item.kind}: {item.name} · {item.origin.state}</li>)}</ul></details>}
       {scan.survey.findings.map((finding, i) => <p className="notice" key={i}>{finding.what} {finding.advice}</p>)}
       {rec?.notes.map((note, i) => <p className="faint" key={i}>{note}</p>)}
-      <fieldset disabled={busy} className="toolbox__choices" onChange={() => { setPreview(null); setApproved(false); }}>
+      <fieldset disabled={busy} className="toolbox__choices" onChange={() => { setPreview(null); setConvergence(null); setApproved(false); }}>
         <legend>Choose catalogue setup</legend>
         <p className="faint">Recommendations start selected; any bundled item can be chosen. Explicit installation can replace a locally edited item—review its before/after. Repair preserves local scripts instead.</p>
-        <button className="button" onClick={() => { setHooks(rec?.hooks ?? []); setMcp(rec?.mcp ?? []); setSkills(rec?.skills ?? []); setPreview(null); setApproved(false); }}>Select recommended items</button>
+        <button className="button" onClick={() => { setHooks(rec?.hooks ?? []); setMcp(rec?.mcp ?? []); setSkills(rec?.skills ?? []); setPreview(null); setConvergence(null); setApproved(false); }}>Select recommended items</button>
         <Choices label="Harnesses" options={["pi", "claude", "codex"]} selected={harnesses} onChange={setHarnesses} />
         <Choices label="Hooks" options={catalogue?.hooks.map((i) => i.key) ?? rec?.hooks ?? []} selected={hooks} onChange={setHooks} />
         <Choices label="MCP presets" options={catalogue?.mcp.map((i) => i.key) ?? rec?.mcp ?? []} selected={mcp} onChange={setMcp} />
@@ -109,17 +113,19 @@ function Setup({ project, scan, catalogue, busy, setBusy }: { project: number; s
         <button className="button" disabled={busy || !harnesses.length} onClick={() => void run({ operation: "install", harnesses, hooks, mcp, skills, scaffold, no_symlink: noSymlink, with_dotenv: withDotenv })}>Preview selected setup</button>
         <button className="button" disabled={busy || !scan.survey.findings.some((f) => f.repairable)} onClick={() => void run({ operation: "repair" })}>Preview repairs</button>
         <button className="button" disabled={busy} onClick={() => void run({ operation: "migrate" })}>Preview layout migration</button>
+        <button className="button" disabled={busy} onClick={() => void run({ operation: "import_pi" })}>Preview legacy Pi import</button>
       </div>
       <details><summary>External prerequisites and scope</summary>
         <p>Presets configure servers but do not install runtimes, start servers or enter credentials. Preview warnings name required credentials and harness conversion limits. Pi cannot run these shell hooks as extensions.</p>
         <p>Pi MCP support needs pi-mcp-adapter. Install or update that package in your own Pi environment if missing; project setup does not run Pi’s package installer or change global settings.</p>
         <p>Bundled skills may refer to external CLIs or provider accounts; inspect their text before use. ai-team chats still enforce their own scoped planning and context policy, independently of project MCP configuration.</p>
-        <p>Layout migration folds legacy hooks/helpers and Claude skills into .agents, refusing conflicts rather than choosing between edits. It re-points current Pi helper paths but preserves obsolete .pi/mcp.json without importing its servers or normalising old transport/auth settings.</p>
-        <p>Worktree convergence, user-level setup and project discovery/pruning are not yet available in this build. The pinned engine has no general uninstall command; deselecting an item does not remove an existing installation.</p>
+        <p>Layout migration folds legacy hooks/helpers and Claude skills into .agents, refusing conflicting edits. Legacy Pi import is a separate preview: normalize known transport/auth settings into mcp-adapter.json, preserve source/shared files, and refuse conflicting destinations.</p>
+        <p>User-level setup and registration discovery/pruning have separate controls on Projects. The pinned engine has no general uninstall command; deselecting an item does not remove an existing installation.</p>
       </details>
     </>}
     {busy && <p role="status">Working…</p>}
     {problem && <p className="error" role="alert">{problem}</p>}
+    {convergence && <OperationPreview preview={convergence} onUpdate={setConvergence} busy={busy} setBusy={setBusy} />}
     {preview && <section aria-label="Exact setup preview">
       <h4>{preview.effects.length} exact file/directory changes · {preview.state}</h4>
       <p className="faint">Before and after include removals, links and permissions. Content may contain your existing configuration secrets. Approval applies only this saved preview, never a recalculated recommendation.</p>
@@ -148,13 +154,4 @@ function Setup({ project, scan, catalogue, busy, setBusy }: { project: number; s
 
 function Choices({ label, options, selected, onChange }: { label: string; options: string[]; selected: string[]; onChange: (value: string[]) => void }) {
   return <div><strong>{label}</strong><div className="toolbox__options">{options.map((item) => <label key={item}><input type="checkbox" checked={selected.includes(item)} onChange={(e) => onChange(e.target.checked ? [...selected, item] : selected.filter((s) => s !== item))} />{item}</label>)}</div></div>;
-}
-
-function Contents({ node }: { node: SetupNode }) {
-  switch (node.kind) {
-    case "missing": return <p className="faint">Absent</p>;
-    case "symlink": return <p className="mono">Link → {node.target}</p>;
-    case "file": return <><p className="faint mono">Mode {node.mode.toString(8)} · {node.contents.length} bytes</p><pre>{new TextDecoder().decode(new Uint8Array(node.contents))}</pre></>;
-    case "directory": return <><p className="faint mono">Directory · mode {node.mode.toString(8)}</p>{Object.entries(node.entries).map(([name, child]) => <details key={name}><summary>{name}</summary><Contents node={child} /></details>)}</>;
-  }
 }

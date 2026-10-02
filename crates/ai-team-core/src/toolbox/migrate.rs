@@ -91,7 +91,7 @@ pub(super) fn plan(inputs: &Snapshot, staged: &Path) -> Result<Plan> {
         repoint_pi(&staged.join(relative))?;
     }
     if old != Node::Missing {
-        plan.warn("Legacy .pi/mcp.json is preserved, not imported or folded into shared MCP. Current Pi reads .pi/mcp-adapter.json. Review any obsolete transport/auth settings manually; layout migration only re-points moved helper paths.");
+        plan.warn("Layout migration preserves .pi/mcp.json and only re-points moved helper paths. Adapter overrides live in .pi/mcp-adapter.json; use the separate legacy Pi import preview to review supported transport/auth normalization. Native Pi configuration and unsupported settings need manual inspection; shared MCP is never folded here.");
     }
     // Collapse moves to disjoint inspected roots. Removing children followed by
     // their parent would otherwise compare the parent against already-changed bytes.

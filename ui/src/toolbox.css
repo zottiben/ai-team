@@ -1,5 +1,9 @@
 .toolbox { margin-block: 1.25rem; padding: 1rem; border: 1px solid var(--border-subtle-default); border-radius: .6rem; }
 .toolbox h3, .toolbox h4 { margin-block: .5rem; }
+.toolbox h5 { overflow-wrap: anywhere; }
+.toolbox label.toolbox__path { display: flex; flex-direction: column; align-items: stretch; margin-block: .75rem; }
+.toolbox__path input, .toolbox__path textarea { width: 100%; box-sizing: border-box; padding: .6rem; font: inherit; color: var(--text-primary-default); background: var(--surface-panel-default); border: 1px solid var(--border-subtle-default); border-radius: .3rem; }
+.toolbox__path textarea { min-height: 5rem; resize: vertical; }
 .toolbox p { overflow-wrap: anywhere; }
 .toolbox details { margin-block: .6rem; }
 .toolbox summary { cursor: pointer; overflow-wrap: anywhere; }

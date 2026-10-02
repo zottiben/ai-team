@@ -112,6 +112,11 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
         "toolbox previews",
         include_str!("migrations/026_toolbox.sql"),
     ),
+    (
+        27,
+        "scoped toolbox operations",
+        include_str!("migrations/027_toolbox_operations.sql"),
+    ),
 ];
 
 /// The number of `v_` views the schema ships. Asserted in tests, because a view silently
@@ -309,7 +314,7 @@ mod tests {
         conn.execute("INSERT INTO project (slug, name, created_at, updated_at) VALUES ('keep', 'Keep', 'fixture', 'fixture')", []).unwrap();
         drop(conn);
         let db = Db::open(&path).unwrap();
-        assert_eq!(db.schema_version().unwrap(), 26);
+        assert_eq!(db.schema_version().unwrap(), 27);
         assert_eq!(
             db.conn()
                 .query_row("SELECT name FROM project WHERE slug='keep'", [], |r| r
