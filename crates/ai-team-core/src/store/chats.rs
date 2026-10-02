@@ -421,6 +421,7 @@ fn check_chat_admission(
     expected: &Chat,
     workspace: &str,
 ) -> Result<()> {
+    super::chat_changes::check_workspace(tx, workspace)?;
     let current = tx.query_row(&format!("{SELECT} WHERE id = ?1"), [expected.id], from_row)?;
     if current.archived || current.active_node_id.is_some() {
         return Err(Error::invalid(

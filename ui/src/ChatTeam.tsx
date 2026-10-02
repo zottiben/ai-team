@@ -2,6 +2,8 @@ import { useState } from "react";
 import { BoardMarkdown } from "./BoardMarkdown";
 import type { ChatDetail } from "./chat-api";
 import { chatPlan } from "./plan-api";
+import { inspectRetained, keepRetained, retainedFile, type RetainedFile, type RetainedInspection } from "./changes-api";
+import { FileView } from "./Review";
 import {
   approveTeam, closeTeam, continueTeam, reviewTeam, teamCommand,
   type BuildReview, type TeamBuild,
@@ -24,6 +26,9 @@ export function ChatTeam({ detail, busy, command, events, now }: {
   const [review, setReview] = useState<BuildReview | null>(null);
   const [closing, setClosing] = useState<{ build: TeamBuild; revision: number } | null>(null);
   const [reason, setReason] = useState("");
+  const [retained, setRetained] = useState<RetainedInspection | null>(null);
+  const [keepReason, setKeepReason] = useState("");
+  const [keptFile, setKeptFile] = useState<RetainedFile | null>(null);
   const active = detail.team_builds.find((build) => build.execution.control_node_id === detail.active_node_id);
   const run = active?.execution;
   const recovery = detail.team_recovery;
@@ -106,7 +111,7 @@ export function ChatTeam({ detail, busy, command, events, now }: {
         <button type="button" className="button" disabled={busy} onClick={() => setClosing(null)}>Cancel</button>
       </form>}
       <h4>Drafts and retained work</h4>
-      <p className="faint">Verified drafts are not merged into your solo checkout. Recorded paths are protected responsibilities, not proof of current pool possession. Uncertain work needs inspection.</p>
+      <p className="faint">Team builds do not merge drafts automatically. Explicit integration and publication are recorded in delivery evidence below. Recorded paths are protected responsibilities, not proof of current pool possession; uncertain work needs inspection.</p>
       {detail.team_builds.every((build) => !build.slices.length) && <p className="faint">No build has acquired work yet.</p>}
       {detail.team_builds.filter((build) => build.slices.length).map((build) => <div key={build.execution.run_id}>
         <h4>Run #{build.execution.run_id}{build.closure ? " · approval withdrawn" : ""}</h4>
@@ -118,8 +123,25 @@ export function ChatTeam({ detail, busy, command, events, now }: {
           {slice.commit_sha && <p className="mono">Verified draft: {slice.commit_sha}</p>}
           {slice.reason && <p>{slice.reason}</p>}
           {slice.release_started && slice.lease_state !== "released" && <p className="notice">Return was attempted. It will not be repeated without conclusive ownership evidence.</p>}
+          {["retained", "leased"].includes(slice.lease_state) && <button className="button" disabled={busy || !build.execution.quiescent} onClick={() => void command(async () => {
+            setRetained(await inspectRetained(detail.id, { run_id: slice.run_id, slice_key: slice.slice_key, revision: slice.rev })); setKeepReason(""); setKeptFile(null);
+          })}>Inspect retained {slice.slice_key}</button>}
         </li>)}</ul>
       </div>)}
+      {retained?.chat_id === detail.id && <section aria-label="Retained files">
+        <h4>Retained {retained.target.slice_key} · not approved for delivery</h4>
+        <p className="mono">{retained.path} · {retained.branch} · {retained.head}</p>
+        <h4>Staged</h4>{retained.staged.map((file) => <FileView key={file.path} file={file} />)}
+        <h4>Unstaged</h4>{retained.unstaged.map((file) => <FileView key={file.path} file={file} />)}
+        <h4>Untracked</h4><ul>{retained.untracked.map((path) => <li key={path}><span className="mono">{path}</span> <button className="button" disabled={busy} onClick={() => void command(async () => { setKeptFile(await retainedFile(detail.id, retained.target, path)); })}>Read {path}</button></li>)}</ul>
+        {keptFile && <div aria-label="Unverified retained file"><p className="mono">{keptFile.path} · working bytes, not a verified draft</p>{keptFile.reason ? <p>{keptFile.reason}</p> : <pre className="chat-commit-content">{keptFile.text}</pre>}</div>}
+        <form onSubmit={(event) => { event.preventDefault(); void command(async () => { await keepRetained(detail.id, retained.target, keepReason); setRetained(null); setKeepReason(""); }); }}>
+          <p>Keep this responsibility protected. This records your decision; it does not close a live build, discard files, return the lease, restart a model or approve publication.</p>
+          <label>Reason to keep retained work<input required maxLength={4000} value={keepReason} onChange={(event) => setKeepReason(event.target.value)} /></label>
+          <button className="button" disabled={busy || !keepReason.trim()}>Record keep protected</button>
+          <button type="button" className="button" disabled={busy} onClick={() => setRetained(null)}>Close inspection</button>
+        </form>
+      </section>}
     </section>
   );
 }

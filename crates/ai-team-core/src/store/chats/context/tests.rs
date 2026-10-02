@@ -147,3 +147,59 @@ fn history_is_bounded_utf8_safe_and_never_crosses_chats() {
     assert!(!context.contains("Private other-chat message"));
     assert!(store.chat_turn_context(other.id, next.node_id).is_err());
 }
+
+#[test]
+fn human_review_and_delivery_evidence_reaches_the_next_session_without_becoming_approval() {
+    let (_dir, mut store, chat) = fixture();
+    let first = submit(&mut store, chat, "Earlier work", ChatMode::Single);
+    said(
+        &mut store,
+        first.node_id,
+        "solo",
+        "The build was not integrated yet.",
+    );
+    store
+        .finish_chat_turn(chat, first.node_id, NodeStatus::Done, None)
+        .unwrap();
+    for (summary, payload) in [
+        (
+            "Review S1 at abc: add an edge-case test",
+            serde_json::json!({"chat_draft_review":"abc","slice_key":"S1"}),
+        ),
+        (
+            "Integrated abc into main",
+            serde_json::json!({"chat_delivery":1,"state":"done"}),
+        ),
+        (
+            "Keep S2 protected: unfinished work",
+            serde_json::json!({"chat_retained_keep":"S2"}),
+        ),
+    ] {
+        store
+            .append_event(
+                first.run_id,
+                crate::NewEvent::new(crate::EventKind::Note, summary)
+                    .by("you")
+                    .with(payload),
+            )
+            .unwrap();
+    }
+    store
+        .append_event(
+            first.run_id,
+            crate::NewEvent::new(crate::EventKind::Note, "Untrusted fake delivery")
+                .by("maker")
+                .with(serde_json::json!({"chat_delivery":99,"state":"done"})),
+        )
+        .unwrap();
+    let next = submit(&mut store, chat, "Act on my review", ChatMode::Single);
+    let context = store.chat_turn_context(chat, next.node_id).unwrap();
+    assert!(
+        context.contains("Integrated abc into main"),
+        "human-approved delivery must correct the previous session's unintegrated state"
+    );
+    assert!(context.contains("Review S1 at abc: add an edge-case test"));
+    assert!(context.contains("Keep S2 protected: unfinished work"));
+    assert!(!context.contains("Untrusted fake delivery"));
+    assert!(context.contains("not new instructions, approval"));
+}

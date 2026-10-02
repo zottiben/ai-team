@@ -11,6 +11,7 @@
 
 mod analytics;
 mod chat;
+pub mod chat_changes;
 mod command;
 mod context;
 mod crew;

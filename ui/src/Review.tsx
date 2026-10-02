@@ -227,19 +227,19 @@ function longestLine(file: FileDiff): number {
   );
 }
 
-function FileView({
+export function FileView({
   file,
-  comments,
+  comments = [],
   onComment,
   onResolve,
 }: {
   file: FileDiff;
-  comments: Comment[];
-  onComment: (
+  comments?: Comment[];
+  onComment?: (
     body: string,
     anchor: { file_path: string; side: "old" | "new"; line_start: number; line_end: number },
   ) => Promise<void>;
-  onResolve: (id: number) => Promise<void>;
+  onResolve?: (id: number) => Promise<void>;
 }) {
   const [writing, setWriting] = useState<string | null>(null);
   const [body, setBody] = useState("");
@@ -293,11 +293,11 @@ function FileView({
             );
             return (
               <div key={key}>
-                <LineRow line={line} onAdd={() => setWriting(writing === key ? null : key)} />
+                <LineRow line={line} onAdd={onComment ? () => setWriting(writing === key ? null : key) : undefined} />
                 {on.map((comment) => (
                   <Thread key={comment.id} comment={comment} onResolve={onResolve} />
                 ))}
-                {writing === key && number !== null && (
+                {writing === key && number !== null && onComment && (
                   <form
                     className="diff__compose"
                     onSubmit={(event) => {
@@ -334,12 +334,12 @@ function FileView({
   );
 }
 
-function LineRow({ line, onAdd }: { line: DiffLine; onAdd: () => void }) {
+function LineRow({ line, onAdd }: { line: DiffLine; onAdd?: () => void }) {
   return (
     <div className="diff__line" data-kind={line.kind}>
       <span className="diff__num mono">{line.old ?? ""}</span>
       <span className="diff__num mono">{line.new ?? ""}</span>
-      <button
+      {onAdd ? <button
         type="button"
         className="diff__add"
         aria-label={`comment on ${line.kind === "removed" ? "old" : "new"} line ${
@@ -348,7 +348,7 @@ function LineRow({ line, onAdd }: { line: DiffLine; onAdd: () => void }) {
         onClick={onAdd}
       >
         +
-      </button>
+      </button> : <span />}
       <code className="diff__text">{line.text === "" ? " " : line.text}</code>
     </div>
   );
@@ -359,13 +359,13 @@ function Thread({
   onResolve,
 }: {
   comment: Comment;
-  onResolve: (id: number) => Promise<void>;
+  onResolve?: (id: number) => Promise<void>;
 }) {
   return (
     <div className="diff__comment" data-status={comment.status}>
       <div className="card__row">
         <span className="faint">{comment.author}</span>
-        {comment.status === "open" ? (
+        {comment.status === "open" && onResolve ? (
           <button type="button" className="button" onClick={() => void onResolve(comment.id)}>
             Resolve
           </button>

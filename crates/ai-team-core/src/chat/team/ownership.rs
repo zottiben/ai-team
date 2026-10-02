@@ -17,11 +17,18 @@ pub(crate) struct Ownership {
     file: File,
     pub(crate) db: PathBuf,
     pub(crate) run: i64,
+    pub(crate) delivery: Option<i64>,
     epoch: AtomicI64,
     uncertain: AtomicBool,
 }
 impl Ownership {
     pub(crate) fn acquire(db: &Path, run: i64) -> Result<Arc<Self>> {
+        Self::acquire_scoped(db, run, None)
+    }
+    pub(crate) fn acquire_delivery(db: &Path, run: i64, delivery: i64) -> Result<Arc<Self>> {
+        Self::acquire_scoped(db, run, Some(delivery))
+    }
+    fn acquire_scoped(db: &Path, run: i64, delivery: Option<i64>) -> Result<Arc<Self>> {
         let path = lock_path(db, run)?;
         std::fs::create_dir_all(
             path.parent()
@@ -45,7 +52,7 @@ impl Ownership {
             // receipts require local, independent file-description semantics.
             let probe = OpenOptions::new().read(true).write(true).open(&path)?;
             match probe.try_lock() {
-                    Err(TryLockError::WouldBlock) => Ok(Arc::new(Self { file, db: db.canonicalize()?, run, epoch: AtomicI64::new(0), uncertain: AtomicBool::new(false) })),
+                    Err(TryLockError::WouldBlock) => Ok(Arc::new(Self { file, db: db.canonicalize()?, run, delivery, epoch: AtomicI64::new(0), uncertain: AtomicBool::new(false) })),
                     Err(TryLockError::Error(error)) => Err(error.into()),
                     Ok(()) => Err(Error::invalid("controller storage does not provide independent file locks; use a local data directory")),
                 }

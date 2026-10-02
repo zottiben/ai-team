@@ -4,9 +4,10 @@ import { ChatTeam } from "./ChatTeam";
 import type { ChatDetail } from "./chat-api";
 import type { BuildReview, TeamBuild } from "./team-api";
 
-const service = vi.hoisted(() => ({ reviewTeam: vi.fn(), approveTeam: vi.fn(), teamCommand: vi.fn(), continueTeam: vi.fn(), closeTeam: vi.fn(), chatPlan: vi.fn() }));
+const service = vi.hoisted(() => ({ reviewTeam: vi.fn(), approveTeam: vi.fn(), teamCommand: vi.fn(), continueTeam: vi.fn(), closeTeam: vi.fn(), chatPlan: vi.fn(), inspectRetained: vi.fn(), keepRetained: vi.fn(), retainedFile: vi.fn() }));
 vi.mock("./team-api", () => service);
 vi.mock("./plan-api", () => ({ chatPlan: service.chatPlan }));
+vi.mock("./changes-api", () => ({ inspectRetained: service.inspectRetained, keepRetained: service.keepRetained, retainedFile: service.retainedFile }));
 const build = (): TeamBuild => ({
   execution: { chat_id: 4, run_id: 12, control_node_id: 23, phase: "awaiting_approval", rev: 8, quiescent: true, approved_revision: null, base_sha: null, reason: null },
   slices: [], closure: null,
@@ -85,6 +86,25 @@ it("offers reconciliation, not model continuation, for a verified candidate", ()
   expect(screen.getByRole("button", { name: "Reconcile recorded work" })).toBeTruthy();
 });
 
+it("inspects a retained path and records keep without returning or restarting it", async () => {
+  const b = build(); b.execution = { ...b.execution, phase: "finished" };
+  b.slices = [{ run_id: 12, slice_key: "S1", worktree_path: "/kept/work", branch: "draft", lease_state: "retained", build_status: "failed", commit_sha: null, candidate_sha: null, release_started: false, reason: "failed gate", rev: 19 }];
+  const target = { run_id: 12, slice_key: "S1", revision: 19 };
+  service.inspectRetained.mockResolvedValue({ chat_id: 4, target, path: "/kept/work", branch: "draft", head: "kept-sha", staged: [], unstaged: [], untracked: ["unfinished.rs"] });
+  service.keepRetained.mockResolvedValue({ kept_protected: true });
+  service.retainedFile.mockResolvedValue({ path: "unfinished.rs", text: "unfinished working bytes", reason: null });
+  render(<ChatTeam {...props({ ...detail(b), mode: "single", active_node_id: null })} />);
+  fireEvent.click(screen.getByRole("button", { name: "Inspect retained S1" }));
+  await screen.findByText("unfinished.rs");
+  expect(service.inspectRetained).toHaveBeenCalledWith(4, target);
+  fireEvent.click(screen.getByRole("button", { name: "Read unfinished.rs" }));
+  await screen.findByText("unfinished working bytes");
+  expect(service.retainedFile).toHaveBeenCalledWith(4, target, "unfinished.rs");
+  fireEvent.change(screen.getByRole("textbox", { name: "Reason to keep retained work" }), { target: { value: "Inspect further later" } });
+  fireEvent.click(screen.getByRole("button", { name: "Record keep protected" }));
+  await waitFor(() => expect(service.keepRetained).toHaveBeenCalledWith(4, target, "Inspect further later"));
+  expect(service.continueTeam).not.toHaveBeenCalled(); expect(service.closeTeam).not.toHaveBeenCalled();
+});
 it("shows historical retained work after solo return without giving it live commands", () => {
   const b = build();
   b.slices = [{ run_id: 12, slice_key: "S1", worktree_path: "/kept/work", branch: "draft", lease_state: "retained", build_status: "failed", commit_sha: null, candidate_sha: null, release_started: true, reason: "uncertain return", rev: 19 }];

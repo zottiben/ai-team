@@ -1,4 +1,6 @@
 import {
+  lazy,
+  Suspense,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -22,6 +24,8 @@ import {
   stopChat,
   type ChatDetail,
 } from "./chat-api";
+
+const ChatChanges = lazy(() => import("./ChatChanges").then((module) => ({ default: module.ChatChanges })));
 
 const LABELS = {
   empty: "Ready",
@@ -437,6 +441,7 @@ export function ChatView({
             </div>
             {detail && (detail.mode === "team" || detail.team_builds.length > 0) && <ChatTeam detail={detail} busy={busy} command={command} events={events} now={clock} />}
             {detail && <ChatPlanning key={detail.id} chatId={detail.id} tick={tick} archived={detail.archived} frozen={activeTeam?.approved_revision != null} onChanged={onChanged} />}
+            {detail && <Suspense fallback={<p className="faint">Loading changes…</p>}><ChatChanges key={`changes-${detail.id}`} chatId={detail.id} tick={tick} disabled={detail.archived || detail.active_node_id !== null} onChanged={onChanged} /></Suspense>}
             <section className="chat-overview-card">
               <h3>Turns</h3>
               {!detail?.turns.length ? (

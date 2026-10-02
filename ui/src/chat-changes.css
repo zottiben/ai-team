@@ -1,0 +1,16 @@
+.chat-changes { min-width: 0; }
+.chat-changes-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.chat-changes h4 { margin: 18px 0 10px; }
+.chat-changes details { margin: 12px 0; }
+.chat-changes summary { cursor: pointer; }
+.chat-draft { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 12px; padding: 12px 0; border-bottom: 1px solid var(--border-subtle-default); }
+.chat-draft .mono, .chat-draft .faint { grid-column: 1; overflow-wrap: anywhere; }
+.chat-draft button { grid-column: 2; grid-row: 1 / 4; align-self: center; }
+.chat-changes .mono, .chat-changes dd { overflow-wrap: anywhere; }
+.chat-changes label { display: grid; gap: 6px; margin: 12px 0; }
+.chat-changes textarea { width: 100%; box-sizing: border-box; }
+.chat-changes dd { margin: 0 0 10px; }
+.chat-changes dt { font-weight: 600; }
+.chat-changes .diff { margin: 10px 0; }
+.chat-commit-content { max-height: 420px; overflow: auto; padding: 12px; background: var(--surface-canvas-default); }
+.chat-changes select { width: 100%; min-width: 0; }

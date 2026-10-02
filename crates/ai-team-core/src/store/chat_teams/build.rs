@@ -94,6 +94,7 @@ impl Store {
     ) -> Result<()> {
         self.db_mut().write(|tx| {
             check(tx, control, false)?;
+            super::super::chat_changes::check_workspace(tx, path)?;
             // Check all physical owners, including parked leases and legacy nodes.
             let mut stmt = tx.prepare("SELECT workspace_path FROM chat WHERE active_node_id IS NOT NULL
                 UNION SELECT worktree_path FROM node_run WHERE worktree_path IS NOT NULL AND status NOT IN ('done','failed','cancelled')

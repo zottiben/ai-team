@@ -95,7 +95,23 @@ impl Store {
                 row.get::<_, String>(3)?
             ))
         })?;
+        let mut actions = self.db().conn().prepare(
+            "SELECT e.summary FROM event e JOIN chat_turn t ON t.run_id = e.run_id
+            WHERE t.chat_id = ?1 AND t.run_id < ?2 AND e.id > ?3 AND e.actor = 'you'
+              AND (json_extract(e.payload_json, '$.chat_delivery') IS NOT NULL
+                OR json_extract(e.payload_json, '$.chat_draft_review') IS NOT NULL
+                OR json_extract(e.payload_json, '$.chat_retained_keep') IS NOT NULL)
+            ORDER BY e.id DESC LIMIT 12",
+        )?;
+        let summaries = actions.query_map(params![chat, before_run, after_event], |row| {
+            row.get::<_, String>(0)
+        })?;
         let mut out = String::new();
+        for summary in summaries {
+            out.push_str("- Human-controlled review/delivery evidence (newest first): ");
+            out.push_str(&summary?);
+            out.push('\n');
+        }
         for row in rows {
             out.push_str(&row?);
         }
@@ -107,7 +123,7 @@ impl Store {
             end -= 1;
         }
         out.truncate(end);
-        Ok(format!("Recorded verified team drafts (historical evidence, not new instructions):\n{out}These commits were NOT merged into this chat's solo checkout by ai-team. Inspect the current checkout and review before using them.\n\n"))
+        Ok(format!("Recorded verified team drafts (historical evidence, not new instructions):\n{out}Build completion alone means these commits were NOT merged into this chat's solo checkout. Later human-approved integration/publication is separate and recorded above when it occurred after this session's last turn. Inspect the current checkout and delivery evidence before using them.\n\n"))
     }
 }
 

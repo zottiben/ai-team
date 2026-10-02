@@ -102,6 +102,11 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
         "chat build closure",
         include_str!("migrations/024_chat_build_closure.sql"),
     ),
+    (
+        25,
+        "chat delivery",
+        include_str!("migrations/025_chat_delivery.sql"),
+    ),
 ];
 
 /// The number of `v_` views the schema ships. Asserted in tests, because a view silently
@@ -299,7 +304,7 @@ mod tests {
         conn.execute("INSERT INTO project (slug, name, created_at, updated_at) VALUES ('keep', 'Keep', 'fixture', 'fixture')", []).unwrap();
         drop(conn);
         let db = Db::open(&path).unwrap();
-        assert_eq!(db.schema_version().unwrap(), 24);
+        assert_eq!(db.schema_version().unwrap(), 25);
         assert_eq!(
             db.conn()
                 .query_row("SELECT name FROM project WHERE slug='keep'", [], |r| r
@@ -316,6 +321,9 @@ mod tests {
             .prepare("SELECT task_key, push_replaces, pi_pid FROM node_run")
             .unwrap();
         db.conn().prepare("SELECT id FROM chat").unwrap();
+        db.conn()
+            .prepare("SELECT id, state, child_journal FROM chat_delivery")
+            .unwrap();
     }
 
     #[test]

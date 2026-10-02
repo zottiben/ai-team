@@ -745,6 +745,7 @@ impl Store {
             .canonicalize()
             .unwrap_or_else(|_| workspace.to_path_buf());
         let path = workspace.to_string_lossy();
+        super::chat_changes::check_workspace(self.db().conn(), &path)?;
         let mut stmt = self.db().conn().prepare(&format!(
             "{RUN_SELECT} WHERE project_id = ?1 AND workspace_path = ?2
                AND status IN ('queued', 'planning', 'running')
@@ -776,6 +777,7 @@ impl Store {
                 .optional()?
                 .ok_or_else(|| Error::NoSuchRun(id.to_string()))?;
             if let Some(workspace) = workspace {
+                super::chat_changes::check_workspace(tx, &workspace)?;
                 let mut stmt = tx.prepare(
                     "SELECT id, status, supervisor_pid FROM run
                       WHERE project_id = ?1 AND workspace_path = ?2 AND id != ?3
@@ -1039,6 +1041,7 @@ impl Store {
         let at = now();
         self.db_mut().write(|tx| {
             let (run, project): (i64, i64) = tx.query_row("SELECT n.run_id, r.project_id FROM node_run n JOIN run r ON r.id = n.run_id WHERE n.id = ?1", [node_run_id], |row| Ok((row.get(0)?, row.get(1)?)))?;
+            super::chat_changes::check_workspace(tx, worktree_path)?;
             super::chat_teams::kept::check_unlocated(tx, project, Some(worktree_path), Some(run))?;
             let mut owners = tx.prepare(
                 "SELECT c.workspace_path FROM chat c WHERE c.active_node_id IS NOT NULL AND c.active_node_id != ?1

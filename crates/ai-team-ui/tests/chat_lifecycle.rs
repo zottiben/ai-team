@@ -303,7 +303,7 @@ fn authenticated_solo_team_stop_continue_close_and_concurrent_chats() {
     f.send(chat, "solo followup");
     f.wait(chat, |d| d["active_node_id"].is_null());
     let solo_session = f.calls().last().unwrap()["session"].clone();
-    build_and_return(&f, chat);
+    build_and_return(&f, chat, other);
     assert_eq!(f.calls().last().unwrap()["session"], solo_session);
     failed_build_returns_to_actual_solo(&f, chat, &solo_session);
     assert_eq!(f.detail(other)["turns"].as_array().unwrap().len(), 1);
@@ -317,7 +317,7 @@ fn authenticated_solo_team_stop_continue_close_and_concurrent_chats() {
     drop(f.runtime);
 }
 
-fn build_and_return(f: &Fixture, chat: i64) {
+fn build_and_return(f: &Fixture, chat: i64, other: i64) {
     let base = git(&f.repo, &["rev-parse", "HEAD"]);
     f.plan(chat, json!({"action":"create_plan","title":"HTTP plan"}));
     f.add_slice(chat, "S1");
@@ -384,9 +384,88 @@ fn build_and_return(f: &Fixture, chat: i64) {
         "Built S1"
     );
     assert_eq!(git(&f.repo, &["rev-parse", "HEAD"]), base);
+    review_and_integrate(f, chat, other, commit);
     f.switch(chat, "single");
     f.send(chat, "solo after verified draft");
     f.wait(chat, |d| d["active_node_id"].is_null());
+}
+
+fn review_and_integrate(f: &Fixture, chat: i64, other: i64, commit: &str) {
+    let calls = f.calls().len();
+    let (status, changes) = f.request("GET", &format!("/chats/{chat}/changes"), Value::Null);
+    assert_eq!(status, 200, "{changes}");
+    let target = &changes["drafts"][0]["target"];
+    let tree = f.post(&format!("/chats/{chat}/draft/tree"), target.clone());
+    assert!(tree
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|entry| entry["path"] == "crates/S1.txt"));
+    let file = f.post(
+        &format!("/chats/{chat}/draft/file"),
+        json!({"target":target,"path":"crates/S1.txt"}),
+    );
+    assert_eq!(file["commit_sha"], commit);
+    assert_eq!(file["text"].as_str().unwrap().trim(), "Built S1");
+    let reviewed = f.post(&format!("/chats/{chat}/draft/review"), target.clone());
+    assert_eq!(reviewed["draft"]["commit_sha"], commit);
+    assert!(reviewed["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|file| file["path"] == "crates/S1.txt"));
+    assert_eq!(
+        f.request(
+            "POST",
+            &format!("/chats/{other}/draft/review"),
+            target.clone()
+        )
+        .0,
+        400
+    );
+    f.post(
+        &format!("/chats/{chat}/draft/findings"),
+        json!({"target":target,"body":"Reviewed the exact draft"}),
+    );
+    let preview = f.post(
+        &format!("/chats/{chat}/delivery/preview"),
+        json!({"target":target,"action":"integrate"}),
+    );
+    let approval = json!({"delivery_id":preview["id"],"expect_revision":preview["rev"]});
+    assert_eq!(
+        f.request(
+            "POST",
+            &format!("/chats/{other}/delivery/approve"),
+            approval.clone()
+        )
+        .0,
+        400
+    );
+    std::fs::write(f.repo.join("solo-dirt.txt"), "preserve").unwrap();
+    let refused = f.post(&format!("/chats/{chat}/delivery/approve"), approval);
+    assert_eq!(refused["state"], "refused");
+    assert_eq!(
+        std::fs::read_to_string(f.repo.join("solo-dirt.txt")).unwrap(),
+        "preserve"
+    );
+    std::fs::remove_file(f.repo.join("solo-dirt.txt")).unwrap();
+    let preview = f.post(
+        &format!("/chats/{chat}/delivery/preview"),
+        json!({"target":target,"action":"integrate"}),
+    );
+    let approval = json!({"delivery_id":preview["id"],"expect_revision":preview["rev"]});
+    let done = f.post(&format!("/chats/{chat}/delivery/approve"), approval.clone());
+    assert_eq!(done["state"], "done", "{done}");
+    assert_eq!(git(&f.repo, &["rev-parse", "HEAD"]), commit);
+    assert_eq!(
+        f.post(&format!("/chats/{chat}/delivery/approve"), approval)["state"],
+        "done"
+    );
+    assert_eq!(
+        f.calls().len(),
+        calls,
+        "review and delivery must never run a model"
+    );
 }
 
 fn refuses_candidate_restart(f: &Fixture, chat: i64, stopped: &Value) {
@@ -424,6 +503,55 @@ fn failed_build_returns_to_actual_solo(f: &Fixture, chat: i64, solo_session: &Va
     let slice = &build["slices"][0];
     let kept = PathBuf::from(slice["worktree_path"].as_str().unwrap()).join("crates/S2.txt");
     let original = std::fs::read(&kept).unwrap();
+    let inspect_target = json!({"run_id":slice["run_id"],"slice_key":"S2","revision":slice["rev"]});
+    let inspected = f.post(
+        &format!("/chats/{chat}/retained/inspect"),
+        inspect_target.clone(),
+    );
+    assert_eq!(inspected["path"], slice["worktree_path"]);
+    let file = f.post(
+        &format!("/chats/{chat}/retained/file"),
+        json!({"target":inspect_target,"path":"crates/S2.txt"}),
+    );
+    assert_eq!(file["text"].as_str().unwrap().trim(), "Built S2");
+    assert_eq!(
+        f.request(
+            "POST",
+            &format!("/chats/{chat}/retained/file"),
+            json!({"target":inspect_target,"path":"../../not-owned"})
+        )
+        .0,
+        400
+    );
+    assert!(
+        inspected["untracked"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|path| path == "crates/S2.txt")
+            || !inspected["staged"].as_array().unwrap().is_empty()
+    );
+    let outside = f.root.path().join("outside-retained.txt");
+    std::fs::write(&outside, "must not be read").unwrap();
+    let escape = kept.parent().unwrap().join("escape");
+    std::os::unix::fs::symlink(&outside, &escape).unwrap();
+    assert_eq!(
+        f.request(
+            "POST",
+            &format!("/chats/{chat}/retained/file"),
+            json!({"target":inspect_target,"path":"crates/escape"})
+        )
+        .0,
+        400
+    );
+    std::fs::remove_file(escape).unwrap();
+    let calls_before_keep = f.calls().len();
+    f.post(
+        &format!("/chats/{chat}/retained/keep"),
+        json!({"target":inspect_target,"reason":"Keep inspected failure"}),
+    );
+    assert_eq!(f.calls().len(), calls_before_keep);
+    assert_eq!(std::fs::read(&kept).unwrap(), original);
     let (_, plan) = f.request("GET", &format!("/chats/{chat}/plan"), Value::Null);
     f.team(chat, "close", json!({"target":target(&failed),"expect_plan_revision":plan["revision"],"expect_slices":{"S2":slice["rev"]},"reason":"Keep failed work for inspection"}));
     f.switch(chat, "single");

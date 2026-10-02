@@ -906,7 +906,7 @@ pub async fn push(worktree: &Path) -> Result<String> {
     git(worktree, &["push", "--set-upstream", "origin", &branch]).await
 }
 
-async fn git(worktree: &Path, args: &[&str]) -> Result<String> {
+pub(crate) async fn git(worktree: &Path, args: &[&str]) -> Result<String> {
     git_until(worktree, args, std::future::pending()).await
 }
 
@@ -915,7 +915,10 @@ where
     S: std::future::Future<Output = String> + Send,
 {
     let output = crate::command::run(
-        Command::new("git").args(args).current_dir(worktree),
+        Command::new("git")
+            .args(args)
+            .current_dir(worktree)
+            .env("GIT_OPTIONAL_LOCKS", "0"),
         std::time::Duration::from_secs(120),
         8 * 1024 * 1024,
         stop,

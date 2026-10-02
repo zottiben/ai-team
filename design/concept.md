@@ -66,6 +66,20 @@ An agent does not become the process supervisor by spawning its own sibling seat
 Retain trustworthy event streaming, interrupted-turn recovery, budget snapshots,
 verification evidence and human-controlled publishing while changing the UX.
 
+### Review and explicit delivery
+
+A verified team draft is not a merged or published result. Review its recorded commit
+and tree in the originating chat, then separately preview and approve local integration,
+push and draft-PR creation against exact destinations. Local integration is clean-checkout
+fast-forward only; divergent or dirty work is preserved rather than stashed or reset.
+Manual policy remains a veto, and no delivery action implicitly performs the next one.
+
+Retained work stays protected when ownership is uncertain. Inspection and findings do not
+restart models or grant delivery approval. An interrupted delivery is inspected only after
+its command groups drain; a missing remote result may still be delayed. An explicit,
+reasoned acknowledgement can keep the inspected state without certifying success, changing
+files/refs, returning leases or retrying publication.
+
 ### Project onboarding and tooling
 
 Adding a project uses the built-in toolbox to scan its stack, harness setup,

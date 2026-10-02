@@ -502,6 +502,26 @@ fn the_api_is_closed_without_the_token() {
     let anonymous = app.get_anonymous("/api/health");
     assert_eq!(anonymous.status, 401);
     assert_eq!(anonymous.json()["error"], "unauthorized");
+    for path in [
+        "changes",
+        "draft/review",
+        "draft/tree",
+        "draft/file",
+        "draft/findings",
+        "delivery/preview",
+        "delivery/approve",
+        "delivery/inspect",
+        "delivery/acknowledge",
+        "retained/inspect",
+        "retained/file",
+        "retained/keep",
+    ] {
+        assert_eq!(
+            app.get_anonymous(&format!("/api/chats/1/{path}")).status,
+            401,
+            "{path}"
+        );
+    }
 
     let wrong = app.request("/api/health", Some("0".repeat(64).as_str()));
     assert_eq!(wrong.status, 401);

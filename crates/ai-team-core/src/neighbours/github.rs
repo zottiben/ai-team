@@ -5,7 +5,6 @@
 //! and repository resolution.
 
 use std::path::Path;
-use std::process::Stdio;
 
 use tokio::process::Command;
 
@@ -235,15 +234,18 @@ fn no_checks_reported(message: &str) -> bool {
     message.contains("no checks reported")
 }
 
-async fn gh(repo: &Path, args: &[&str]) -> Result<String> {
-    let output = Command::new("gh")
-        .args(args)
-        .current_dir(repo)
-        .stdin(Stdio::null())
-        .kill_on_drop(true)
-        .output()
-        .await
-        .map_err(|error| Error::invalid(format!("could not run gh: {error}")))?;
+pub(crate) async fn gh(repo: &Path, args: &[&str]) -> Result<String> {
+    let output = crate::command::run(
+        Command::new("gh").args(args).current_dir(repo),
+        std::time::Duration::from_secs(120),
+        8 * 1024 * 1024,
+        std::future::pending(),
+    )
+    .await
+    .map_err(|error| Error::invalid(format!("could not run gh: {error}")))?;
+    if output.truncated {
+        return Err(Error::invalid("GitHub output exceeded its capture limit"));
+    }
     if !output.status.success() {
         return Err(Error::invalid(format!(
             "`gh {}` failed in {}: {}",

@@ -75,6 +75,9 @@ impl Store {
 }
 
 pub(super) fn check(conn: &Connection, owner: &Ownership) -> Result<()> {
+    if let Some(delivery) = owner.delivery {
+        return super::super::chat_changes::check_child_owner(conn, owner, delivery);
+    }
     let current: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM chat_team_run t JOIN chat c ON c.id = t.chat_id WHERE t.run_id = ?1 AND t.child_epoch = ?2 AND t.child_journal = 1 AND t.supervisor_pid = ?3 AND t.phase != 'finished' AND c.active_node_id = t.control_node_id AND c.archived = 0)", params![owner.run, owner.epoch(), i64::from(std::process::id())], |row| row.get(0))?;
     if !current || owner.epoch() == 0 {
         return Err(Error::invalid(
