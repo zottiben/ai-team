@@ -26,6 +26,8 @@ import {
 } from "./chat-api";
 
 const ChatChanges = lazy(() => import("./ChatChanges").then((module) => ({ default: module.ChatChanges })));
+const Editor = lazy(() => import("./Editor").then((module) => ({ default: module.Editor })));
+const Terminal = lazy(() => import("./Terminal").then((module) => ({ default: module.TerminalPane })));
 
 const LABELS = {
   empty: "Ready",
@@ -60,6 +62,8 @@ export function ChatView({
   const [detail, setDetail] = useState<ChatDetail | null>(null);
   const [events, setEvents] = useState<RunEvent[]>([]);
   const [view, setView] = useState<"chat" | "overview">("chat");
+  const [tool, setTool] = useState<"editor" | "terminal" | null>(null);
+  const [openedTools, setOpenedTools] = useState({ editor: false, terminal: false });
   const [catalogue, setCatalogue] = useState<ModelChoice[]>([]);
   const [modelKey, setModelKey] = useState("");
   const [newMode, setNewMode] = useState<"single" | "team">("single");
@@ -311,6 +315,10 @@ export function ChatView({
         </div>
         {detail && (
           <div className="chat-header-actions">
+            {(["editor", "terminal"] as const).map((name) => <button key={name} className="button" aria-pressed={tool === name} aria-controls={`chat-tool-${name}`} onClick={() => {
+              setTool(tool === name ? null : name);
+              setOpenedTools((opened) => ({ ...opened, [name]: true }));
+            }}>{name === "editor" ? "Editor" : "Terminal"}</button>)}
             <button
               className="button"
               onClick={() => {
@@ -348,10 +356,11 @@ export function ChatView({
               if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
                 const next = tab === "chat" ? "overview" : "chat";
                 setView(next);
+                setTool(null);
                 document.getElementById(`chat-tab-${next}`)?.focus();
               }
             }}
-            onClick={() => setView(tab)}
+            onClick={() => { setView(tab); setTool(null); }}
           >
             {tab === "chat" ? "Chat" : "Overview"}
           </button>
@@ -387,7 +396,7 @@ export function ChatView({
       )}
       {activeTeam && view === "chat" && <div className="chat-notice notice">
         <strong>{TEAM_PHASES[activeTeam.phase]}.</strong> {activeTeam.reason}
-        <button className="button" onClick={() => setView("overview")}>Open team controls</button>
+        <button className="button" onClick={() => { setView("overview"); setTool(null); }}>Open team controls</button>
       </div>}
       {latest?.node.blocked_reason && !active && (
         <p className="chat-notice notice">{latest.node.blocked_reason}</p>
@@ -397,6 +406,7 @@ export function ChatView({
         role="tabpanel"
         aria-labelledby={`chat-tab-${view}`}
         className="chat-panel"
+        hidden={tool !== null}
       >
         {view === "overview" ? (
           <div className="chat-overview">
@@ -517,7 +527,17 @@ export function ChatView({
           </div>
         )}
       </div>
-      {!following && view === "chat" && (
+      {detail && <section className="chat-tools-panel" hidden={tool === null} aria-label="Chat checkout tools">
+        <div className="card__row"><strong className="mono">{detail.workspace_path}</strong><button className="button" onClick={() => setTool(null)}>Close tools</button></div>
+        <p className="faint">These are operator tools, not covered by the agent's checkout guard. This is the persistent chat checkout, not a team draft. Save edits before leaving this chat.</p>
+        <div id="chat-tool-editor" className="chat-tool-pane" hidden={tool !== "editor"}>
+          {openedTools.editor && <Suspense fallback={<p>Loading editor…</p>}><Editor project={project.slug} workspace={detail.workspace_path} node={null} visible={tool === "editor"} /></Suspense>}
+        </div>
+        <div id="chat-tool-terminal" className="chat-tool-pane" hidden={tool !== "terminal"}>
+          {openedTools.terminal && <Suspense fallback={<p>Loading terminal…</p>}><Terminal project={project.slug} workspace={detail.workspace_path} node={null} /></Suspense>}
+        </div>
+      </section>}
+      {!following && view === "chat" && tool === null && (
         <button
           className="button chat-follow"
           onClick={() => setFollowing(true)}

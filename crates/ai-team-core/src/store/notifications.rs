@@ -141,8 +141,35 @@ impl Store {
     }
 }
 
+/// Called in the same transaction as the authoritative chat transition and its event.
+/// The event supplies the body and scope; attention never grants execution authority.
+pub(super) fn notify_chat_event(
+    tx: &rusqlite::Transaction<'_>,
+    event: i64,
+    kind: &str,
+) -> Result<()> {
+    let label = match kind {
+        "completed" => "turn complete",
+        "plan_ready" => "plan ready to review",
+        "failed" => "needs attention",
+        _ => "work stopped",
+    };
+    tx.execute(
+        "INSERT OR IGNORE INTO notification
+         (dedupe_key, project_id, workspace_path, run_id, node_run_id, kind, title, body, created_at)
+         SELECT 'chat-event:' || e.id, c.project_id, c.workspace_path, e.run_id,
+                COALESCE(e.node_run_id, t.node_id), ?2, c.title || ' · ' || ?3, e.summary, e.at
+         FROM event e JOIN chat_turn t ON t.run_id = e.run_id JOIN chat c ON c.id = t.chat_id
+         WHERE e.id = ?1",
+        params![event, kind, label],
+    )?;
+    Ok(())
+}
+
 const NOTIFICATION_SELECT: &str = "SELECT id, project_id, workspace_path, run_id,
-     node_run_id, kind, title, body, action_path, read_at, delivered_at, created_at
+     node_run_id, kind, title, body, action_path, read_at, delivered_at, created_at,
+     (SELECT t.chat_id FROM chat_turn t JOIN chat c ON c.id = t.chat_id
+      WHERE t.run_id = notification.run_id AND c.project_id = notification.project_id)
      FROM notification";
 
 fn notification_from_row(row: &Row<'_>) -> rusqlite::Result<Notification> {
@@ -159,6 +186,7 @@ fn notification_from_row(row: &Row<'_>) -> rusqlite::Result<Notification> {
         read_at: non_empty(row.get(9)?),
         delivered_at: non_empty(row.get(10)?),
         created_at: row.get(11)?,
+        chat_id: row.get(12)?,
     })
 }
 

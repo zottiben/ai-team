@@ -3,8 +3,8 @@
 //! `ait doctor` already answered this in sentences. Sentences are the right output for a
 //! terminal and useless to a window that has to decide what to show, what to block, and
 //! what button to offer - so the answer is a report, and `ait doctor` prints it. Two
-//! surfaces reading one report cannot disagree about whether a machine is set up, which
-//! is exactly what they did when each looked for itself.
+//! surfaces share the checks, but name their workflow: desktop chats use built-in
+//! planning/toolbox; legacy `ait run` still uses standalone neighbours.
 //!
 //! Every check answers four questions, and the fourth is the one that matters:
 //!
@@ -124,7 +124,7 @@ pub struct Report {
     /// machine with no file-sql is degraded and perfectly able to work.
     pub can_run: bool,
     /// True when this looks like a machine nobody has set up yet, which is what decides
-    /// whether the window opens on setup or on Today.
+    /// whether the window opens on setup or on Chats.
     pub needs_setup: bool,
 }
 
@@ -252,6 +252,30 @@ pub async fn report_at_with_credentials(
     known: Option<&Known>,
     credentials: &crate::secrets::CredentialStore,
 ) -> Report {
+    report_for(paths, known, credentials, Purpose::LegacyRun).await
+}
+
+/// Desktop chat readiness never probes standalone planning/toolbox installations.
+/// Optional team requirements must not prevent starting a single-agent chat.
+pub async fn chat_report_with_credentials(
+    known: Option<&Known>,
+    credentials: &crate::secrets::CredentialStore,
+) -> Report {
+    report_for(&Paths::resolve(), known, credentials, Purpose::Chat).await
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Purpose {
+    Chat,
+    LegacyRun,
+}
+
+async fn report_for(
+    paths: &Paths,
+    known: Option<&Known>,
+    credentials: &crate::secrets::CredentialStore,
+    purpose: Purpose,
+) -> Report {
     let mut checks = vec![data_directory(paths), machine_profile(paths)];
     checks.push(database(paths, known));
     // Probed once: the providers' checks and the projects' seat checks read the same
@@ -263,7 +287,7 @@ pub async fn report_at_with_credentials(
         .unwrap_or_default();
     checks.extend(providers(registry.as_ref(), &statuses));
     checks.extend(context_sources(paths, credentials));
-    checks.extend(neighbours().await);
+    checks.extend(neighbours(purpose).await);
     checks.push(frontend());
     if let Some(known) = known {
         checks.extend(projects(known));
@@ -288,7 +312,13 @@ pub async fn report_at_with_credentials(
         if let Some((registry, survey)) = &survey {
             checks.extend(known.projects.iter().filter_map(|(slug, name, _)| {
                 let seats = known.seats.get(slug)?;
-                seats_check(slug, name, seats, registry, survey)
+                seats_check(slug, name, seats, registry, survey).map(|mut check| {
+                    if purpose == Purpose::Chat {
+                        check.severity = Severity::Degraded;
+                        check.detail = format!("Optional team: {}", check.detail);
+                    }
+                    check
+                })
             }));
         }
     }
@@ -306,13 +336,13 @@ pub async fn report_at_with_credentials(
             .iter()
             .any(|check| check.id == id && check.severity == Severity::Blocking)
     };
-    let can_run = !blocking("database") && !blocking("providers");
+    let can_run = !blocking("database")
+        && !blocking("providers")
+        && (purpose == Purpose::LegacyRun || (!blocking("pi") && !blocking("data_dir")));
 
     // A machine nobody has set up, rather than one that is merely misconfigured: no
     // database at all, or a database with no projects in it.
-    let needs_setup = blocking("database")
-        || blocking("providers")
-        || known.is_none_or(|known| known.projects.is_empty());
+    let needs_setup = !can_run || known.is_none_or(|known| known.projects.is_empty());
 
     Report {
         version: crate::VERSION,
@@ -401,7 +431,7 @@ fn database(paths: &Paths, known: Option<&Known>) -> Check {
             detail: format!("{} has not been created yet", path.display()),
             fix: Fix::Itself {
                 action: Action::CreateDatabase,
-                describe: "Create the database and seed a team of six".into(),
+                describe: "Create ai-team's database".into(),
             },
         };
     };
@@ -600,18 +630,40 @@ fn context_sources(paths: &Paths, credentials: &crate::secrets::CredentialStore)
         .collect()
 }
 
-/// The neighbours ai-team borrows rather than absorbs (D4).
+/// The external requirements of the selected workflow.
 ///
 /// Every one of these is somebody else's software, so every fix here is a command and
 /// never a button that runs it (D17).
-async fn neighbours() -> Vec<Check> {
+async fn neighbours(purpose: Purpose) -> Vec<Check> {
     let mut checks = Vec::new();
+    if purpose == Purpose::Chat {
+        checks.extend([
+            Check::fine("planning", "Built-in planning", "Each chat's plan is owned by ai-team; standalone ai-planner is not required"),
+            Check::fine("toolbox", "Built-in toolbox", "Project scans, skills and approved setup ship with ai-team; no standalone toolbox install is required"),
+        ]);
+        checks.push(match which("pi") {
+            Some(path) => Check::fine("pi", "Pi runtime", path.display().to_string()),
+            None => Check {
+                id: "pi".into(),
+                label: "Pi runtime".into(),
+                severity: Severity::Blocking,
+                detail: "Pi is not on PATH; chats cannot start an agent".into(),
+                fix: Fix::Human { what: "Install Pi and make it available on PATH to ai-team, then choose a subscription provider in Settings".into() },
+            },
+        });
+    }
 
+    // Branch before probing: filtering the resulting checks would still call aip.
+    let planner = if purpose == Purpose::LegacyRun {
+        crate::Planner::at(".").check().await.ok()
+    } else {
+        None
+    };
     for (id, label, version, blocks, install) in [
         (
             "aip",
             "ai-planner",
-            crate::Planner::at(".").check().await.ok(),
+            planner,
             "planning and dispatch - a run cannot write or read a plan",
             "curl -fsSL https://zottiben.github.io/ai-planner/install.sh | sh",
         ),
@@ -623,15 +675,20 @@ async fn neighbours() -> Vec<Check> {
             "curl -fsSL https://zottiben.github.io/ai-worktree/install.sh | sh",
         ),
     ] {
+        if id == "aip" && purpose == Purpose::Chat {
+            continue;
+        }
         checks.push(match version {
             Some(version) => Check::fine(id, label, version),
             None => Check {
                 id: id.into(),
                 label: label.into(),
-                // Blocking: `ait run` needs both. A single agent driven by hand does not,
-                // which is why this says what it blocks rather than just "missing".
-                severity: Severity::Blocking,
-                detail: format!("not installed - {blocks}"),
+                severity: if purpose == Purpose::Chat { Severity::Degraded } else { Severity::Blocking },
+                detail: if purpose == Purpose::Chat {
+                    "unavailable - optional team builds need ai-worktree to lease isolated checkouts; single-agent chats do not".into()
+                } else {
+                    format!("not installed - {blocks}")
+                },
                 fix: Fix::Command {
                     run: install.into(),
                     why: format!("{label} is its own tool; ai-team uses it over its CLI"),
@@ -656,6 +713,15 @@ async fn neighbours() -> Vec<Check> {
         }
     });
 
+    if purpose == Purpose::LegacyRun {
+        checks.extend(legacy_toolbox());
+    }
+    checks
+}
+
+/// Only legacy planning dispatch reads an externally installed planning skill.
+fn legacy_toolbox() -> Vec<Check> {
+    let mut checks = Vec::new();
     checks.push(if which("ai-toolbox").is_some() {
         Check::fine("ai_toolbox", "ai-toolbox", "installed")
     } else {
@@ -1103,7 +1169,7 @@ mod tests {
     async fn a_missing_neighbour_is_a_command_never_a_button_that_runs_it() {
         // D17. A GUI that runs `curl | sh` has taken a decision that is not its to take,
         // so no neighbour may ever be `Fix::Itself` - installed or not.
-        for check in neighbours().await {
+        for check in neighbours(Purpose::LegacyRun).await {
             assert!(
                 !matches!(check.fix, Fix::Itself { .. }),
                 "{} must not be something ai-team installs: {:?}",

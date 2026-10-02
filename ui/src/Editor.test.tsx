@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, it, vi } from "vitest";
 
@@ -177,6 +177,21 @@ it("saving sends what is in the buffer and clears the dirty mark", async () => {
   expect(write?.url).toBe("/file");
   expect((write?.body as { text: string }).text).toContain("and more");
   await waitFor(() => expect(container.querySelector(".editor__dirty")).toBeNull());
+});
+
+it("keeps hidden buffers but does not intercept another pane's Save shortcut", async () => {
+  const user = userEvent.setup();
+  const calls = stub({ "a.md": "first" });
+  const view = render(<Editor project="widget" workspace="/widget/task" node={null} />);
+  await user.click(await screen.findByText("a.md"));
+  await shown(view.container);
+  view.rerender(<Editor project="widget" workspace="/widget/task" node={null} visible={false} />);
+  fireEvent.keyDown(window, { key: "s", metaKey: true });
+  expect(calls.filter((call) => call.method === "POST")).toHaveLength(0);
+  view.rerender(<Editor project="widget" workspace="/widget/task" node={null} visible />);
+  fireEvent.keyDown(window, { key: "s", metaKey: true });
+  await waitFor(() => expect(calls.filter((call) => call.method === "POST")).toHaveLength(1));
+  expect(calls.find((call) => call.method === "POST")?.body).toMatchObject({ workspace: "/widget/task", path: "a.md", text: "first" });
 });
 
 it("refuses to open a file that is not text", async () => {

@@ -22,6 +22,8 @@ const service = vi.hoisted(() => ({
   archiveChat: vi.fn(),
   setChatMode: vi.fn(),
 }));
+vi.mock("./Editor", () => ({ Editor: ({ project, workspace, visible }: { project: string; workspace: string; visible: boolean }) => <div><p>Editor {project}: {workspace} ({String(visible)})</p><input aria-label="Unsaved fixture file" defaultValue="kept" /></div> }));
+vi.mock("./Terminal", () => ({ TerminalPane: ({ project, workspace }: { project: string; workspace: string }) => <p>Terminal {project}: {workspace}</p> }));
 vi.mock("./chat-api", () => service);
 vi.mock("./team-api", async (original) => ({
   ...(await original<typeof import("./team-api")>()),
@@ -110,6 +112,32 @@ beforeEach(() => {
 });
 
 describe("persistent conversation", () => {
+  it("opens tools only on request in this chat's checkout, keeping drafts and buffers across toggles", async () => {
+    service.chat.mockResolvedValue({ ...detail(), workspace_path: "/repo/linked-chat" });
+    render(<ChatView {...props()} />);
+    await screen.findByRole("heading", { name: "Chat 1" });
+    expect(screen.queryByText(/Terminal demo:/)).toBeNull();
+    fireEvent.change(screen.getByRole("textbox", { name: "Message" }), { target: { value: "Unsent message" } });
+    fireEvent.click(screen.getByRole("button", { name: "Editor" }));
+    await screen.findByText("Editor demo: /repo/linked-chat (true)");
+    fireEvent.change(screen.getByRole("textbox", { name: "Unsaved fixture file" }), { target: { value: "Uncommitted edit" } });
+    fireEvent.click(screen.getByRole("button", { name: "Terminal" }));
+    await screen.findByText("Terminal demo: /repo/linked-chat");
+    expect(screen.getByText("Editor demo: /repo/linked-chat (false)")).not.toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Editor" }));
+    expect((screen.getByRole("textbox", { name: "Unsaved fixture file" }) as HTMLInputElement).value).toBe("Uncommitted edit");
+    expect((screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement).value).toBe("Unsent message");
+    expect(service.sendChat).not.toHaveBeenCalled();
+    expect(screen.getByText(/not covered by the agent's checkout guard/)).not.toBeNull();
+  });
+
+  it("does not guess a checkout for tools before the chat exists", async () => {
+    render(<ChatView {...props()} id={null} />);
+    await screen.findByRole("option", { name: "gpt-5 · openai" });
+    expect(screen.queryByRole("button", { name: "Editor" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Terminal" })).toBeNull();
+  });
+
   it("shows an attachment recovery failure without offering an automatic restart", async () => {
     service.chat.mockResolvedValue({ ...detail(), recovery_error: "Could not inspect child_epoch" });
     render(<ChatView {...props()} />);

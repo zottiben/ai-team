@@ -1,4 +1,6 @@
-import { useCallback, useEffect, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useState } from "react";
+
+import type { ToolboxScan } from "./toolbox-api";
 
 import { Browse } from "./Browse";
 import { SignIn } from "./SignIn";
@@ -13,6 +15,8 @@ import {
   type ProviderSetting,
 } from "./api";
 
+const Toolbox = lazy(() => import("./Toolbox").then((m) => ({ default: m.Toolbox })));
+
 /**
  * Taking a fresh install to a working one.
  *
@@ -22,10 +26,10 @@ import {
  * step with reality the first time somebody fixes something in a terminal, and then it is
  * lying about a machine it can see.
  *
- * Which also means there is no "finish". The page is done when there is nothing left on
- * it, and closing it early is fine because it is not holding anything.
+ * Readiness never navigates away on its own: somebody opening Setup to inspect tools,
+ * or reviewing the first project's scan, must be able to keep reading it.
  */
-export function Setup({ onReady }: { onReady: () => void }) {
+export function Setup({ onReady, onProjects }: { onReady: () => void; onProjects?: () => void }) {
   const [report, setReport] = useState<DoctorReport | null>(null);
   const [providers, setProviders] = useState<ProviderSetting[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
@@ -33,6 +37,7 @@ export function Setup({ onReady }: { onReady: () => void }) {
   const [path, setPath] = useState("");
   const [browsing, setBrowsing] = useState(false);
   const [copied, setCopied] = useState<string | null>(null);
+  const [projectSetup, setProjectSetup] = useState<{ project: number; initial?: ToolboxScan } | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -42,11 +47,9 @@ export function Setup({ onReady }: { onReady: () => void }) {
       // with everything denied.
       setProviders((await fetchSettings().catch(() => null))?.providers ?? []);
       setProblem(null);
-      if (!found.needs_setup) onReady();
     } catch (error: unknown) {
       setProblem(error instanceof Error ? error.message : String(error));
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -58,7 +61,6 @@ export function Setup({ onReady }: { onReady: () => void }) {
     try {
       await what();
       await load();
-      setProblem(null);
     } catch (error: unknown) {
       setProblem(error instanceof Error ? error.message : String(error));
     } finally {
@@ -84,15 +86,38 @@ export function Setup({ onReady }: { onReady: () => void }) {
   const commands = report.checks.filter(
     (entry) => entry.severity !== "fine" && entry.fix.by === "command",
   );
-  const usable = providers.filter((provider) => provider.reachable);
+  const human = report.checks.filter(
+    (entry) => entry.severity !== "fine" && entry.fix.by === "human" && !["providers", "projects"].includes(entry.id),
+  );
+  const builtIn = report.checks.filter((entry) => ["planning", "toolbox"].includes(entry.id));
+  const usable = providers.filter((provider) => provider.allowed && provider.reachable);
 
   return (
     <div className="setup">
       <div className="main__header">
         <h2>Let's get you set up</h2>
         <span className="faint">ai-team {report.version}</span>
+        <button type="button" className="button" disabled={busy !== null} onClick={() => { setBusy("recheck"); void load().finally(() => setBusy(null)); }}>
+          {busy === "recheck" ? "Checking…" : "Check again"}
+        </button>
       </div>
       {problem !== null && <p className="error">{problem}</p>}
+
+      {builtIn.length > 0 && (
+        <section className="settings__group">
+          <h3>Included with ai-team</h3>
+          {builtIn.map((entry) => <div key={entry.id} className="settings__row"><strong>{entry.label}</strong><span className="faint settings__detail">{entry.detail}</span></div>)}
+          <p className="faint">Plan in a chat's Overview. Inspect project setup, skills and MCP choices in Projects; file changes need your approval.</p>
+          {onProjects && <button className="button" onClick={onProjects}>Project setup and skills</button>}
+        </section>
+      )}
+
+      {human.length > 0 && (
+        <section className="settings__group">
+          <h3>Needs attention</h3>
+          {human.map((entry) => <div key={entry.id} className="settings__source"><strong>{entry.label}</strong><p>{entry.detail}</p><p className="faint">{entry.fix.by === "human" && entry.fix.what}</p></div>)}
+        </section>
+      )}
 
       {ours.length > 0 && (
         <section className="settings__group">
@@ -173,15 +198,19 @@ export function Setup({ onReady }: { onReady: () => void }) {
         <section className="settings__group">
           <h3>What are we working on?</h3>
           <p className="faint">
-            The path to a repository, or find it by browsing. ai-team reads its shape and
-            gives each seat the part it owns.
+            Choose a repository to start a single-agent chat. ai-team scans its setup;
+            review recommendations before approving any file changes. Teams are optional.
           </p>
           <form
             className="projects__add"
             onSubmit={(event) => {
               event.preventDefault();
               if (path.trim() === "") return;
-              void act(() => registerProject({ path: path.trim() }), "project");
+              void act(async () => {
+                const done = await registerProject({ path: path.trim() });
+                setProjectSetup({ project: done.project.id, initial: done.toolbox_scan });
+                setPath("");
+              }, "project");
             }}
           >
             <input
@@ -214,6 +243,8 @@ export function Setup({ onReady }: { onReady: () => void }) {
           )}
         </section>
       )}
+
+      {projectSetup && <Suspense fallback={<p>Reading project setup…</p>}><Toolbox key={projectSetup.project} {...projectSetup} /></Suspense>}
 
       {commands.length > 0 && (
         <section className="settings__group">
@@ -264,7 +295,7 @@ export function Setup({ onReady }: { onReady: () => void }) {
             {usable.length === 1
               ? `${usable[0]?.label} is ready.`
               : `${usable.map((provider) => provider.label).join(" and ")} are ready.`}{" "}
-            Give the team something to build.
+            Start a chat with one agent; bring in a team when you need it.
           </p>
           <button type="button" className="button button--primary" onClick={onReady}>
             Open ai-team

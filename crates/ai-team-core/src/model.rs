@@ -699,6 +699,8 @@ impl NewEvent {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Notification {
     pub id: i64,
+    /// Derived from the authoritative run/chat link, never guessed from a checkout.
+    pub chat_id: Option<i64>,
     pub project_id: i64,
     pub workspace_path: Option<String>,
     pub run_id: Option<i64>,

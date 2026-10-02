@@ -193,6 +193,11 @@ impl Store {
             tx.execute("UPDATE run SET status = ?2, blocked_reason = ?3, ended_at = ?4, updated_at = ?5, rev = rev + 1 WHERE id = ?1", params![control.receipt.run_id, status, (status != "done").then_some(message), (!blocked).then_some(&at), at])?;
             tx.execute("UPDATE chat SET active_node_id = CASE WHEN ?2 THEN active_node_id ELSE NULL END, stop_requested = 0, live_text = '', supervisor_identity = NULL, pi_identity = NULL, rev = rev + 1, updated_at = ?3 WHERE id = ?1", params![control.receipt.chat_id, blocked, at])?;
             tx.execute("INSERT INTO event (run_id, at, kind, actor, summary) VALUES (?1, ?2, 'note', 'ai-team', ?3)", params![control.receipt.run_id, at, message])?;
+            crate::store::notifications::notify_chat_event(tx, tx.last_insert_rowid(), match status {
+                "done" => "completed",
+                "cancelled" => "follow_up",
+                _ => "failed",
+            })?;
             Ok(())
         })?;
         control.receipt.revision += 1;

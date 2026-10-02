@@ -102,9 +102,12 @@ function readTheme(): Record<string, string> {
  */
 export function Session({ id }: { id: number }) {
   const host = useRef<HTMLDivElement | null>(null);
+  const [inputProblem, setInputProblem] = useState<string | null>(null);
+  const [inputAttempt, setInputAttempt] = useState(0);
 
   useEffect(() => {
     if (host.current === null) return undefined;
+    setInputProblem(null);
 
     const term = new XTerm({
       convertEol: true,
@@ -129,12 +132,27 @@ export function Session({ id }: { id: number }) {
     const observer = new ResizeObserver(tell);
     observer.observe(host.current);
 
-    term.onData((text) => void writeTerminal(id, text).catch(() => {}));
+    let stopped = false;
+    let inputFailed = false;
+    let writes = Promise.resolve();
+    term.onData((text) => {
+      // Independent HTTP requests can arrive out of order, including Enter before the
+      // command. A failed acknowledgement is uncertain delivery, not permission to retry
+      // or send the remaining suffix of a now possibly different command.
+      writes = writes.then(async () => {
+        if (stopped || inputFailed) return;
+        try {
+          await writeTerminal(id, text);
+        } catch (error: unknown) {
+          inputFailed = true;
+          if (!stopped) setInputProblem(`Input delivery failed: ${error instanceof Error ? error.message : String(error)}. Queued input was stopped and not retried. Inspect the terminal before enabling input again; no previous text will be resent.`);
+        }
+      });
+    });
 
     // Polled from an absolute cursor, the same way Pi's stream is ingested: a reconnect
     // asks from a number it already has rather than replaying everything.
     let cursor = 0;
-    let stopped = false;
     const poll = async () => {
       while (!stopped) {
         try {
@@ -160,7 +178,7 @@ export function Session({ id }: { id: number }) {
       observer.disconnect();
       term.dispose();
     };
-  }, [id]);
+  }, [id, inputAttempt]);
 
-  return <div className="terminal__host" ref={host} />;
+  return <>{inputProblem && <div role="alert"><p className="error">{inputProblem}</p><button className="button" onClick={() => setInputAttempt((attempt) => attempt + 1)}>Enable input after inspection</button></div>}<div className="terminal__host" ref={host} /></>;
 }

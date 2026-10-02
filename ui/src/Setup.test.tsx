@@ -5,6 +5,8 @@ import { afterEach, expect, it, vi } from "vitest";
 import { HealthBanner, Setup } from "./Setup";
 import type { Check, ProviderSetting } from "./api";
 
+vi.mock("./Toolbox", () => ({ Toolbox: ({ project, initial }: { project: number; initial?: { root: string } }) => <section aria-label="Project setup">Scan for project {project}: {initial?.root}</section> }));
+
 afterEach(() => {
   vi.unstubAllGlobals();
 });
@@ -79,6 +81,9 @@ function stub(options: {
         });
       }
       fixed = true;
+      if (url === "/projects" && method === "POST") {
+        return Promise.resolve({ ok: true, json: async () => ({ project: { id: 7, name: "Widget" }, toolbox_scan: { root: "/Users/me/Developer/widget" } }) });
+      }
       return Promise.resolve({ ok: true, json: async () => ({ done: "ok" }) });
     }),
   );
@@ -112,8 +117,8 @@ it("never offers to run an install, only to copy it", async () => {
   stub({
     checks: [
       check({
-        id: "aip",
-        label: "ai-planner",
+        id: "pi",
+        label: "Pi",
         detail: "not installed",
         fix: { by: "command", run: "curl -fsSL https://example/install.sh | sh", why: "it plans" },
       }),
@@ -128,14 +133,14 @@ it("never offers to run an install, only to copy it", async () => {
 });
 
 it("marks whether a missing tool is needed or optional", async () => {
-  // A blocking ai-planner and an optional file-sql are different problems, and treating
+  // A required runtime and an optional file-sql are different problems, and treating
   // them the same makes the list one somebody skims.
   stub({
     checks: [
       check({
-        id: "aip",
-        label: "ai-planner",
-        fix: { by: "command", run: "a", why: "needed for planning" },
+        id: "pi",
+        label: "Pi",
+        fix: { by: "command", run: "a", why: "needed to start an agent" },
       }),
       check({
         id: "file_sql",
@@ -244,6 +249,7 @@ it("asks for a repository once a provider is ready", async () => {
   expect(calls.find((c) => c.url === "/projects" && c.method === "POST")?.body).toMatchObject({
     path: "/Users/me/Developer/widget",
   });
+  expect((await screen.findByRole("region", { name: "Project setup" })).textContent).toContain("Scan for project 7: /Users/me/Developer/widget");
 });
 
 it("only congratulates a machine that can actually run something", async () => {
@@ -271,8 +277,34 @@ it("says it is done when there is nothing left", async () => {
 
   expect(await screen.findByText(/That's it/)).toBeDefined();
   expect(screen.getByText(/claude is ready/)).toBeDefined();
+  expect(opened).toHaveLength(0);
   await user.click(screen.getByText("Open ai-team"));
-  expect(opened.length).toBeGreaterThan(0);
+  expect(opened).toHaveLength(1);
+});
+
+it("shows built-in capabilities and routes setup to the shipped toolbox", async () => {
+  const user = userEvent.setup();
+  const projects = vi.fn();
+  stub({ checks: [
+    check({ id: "planning", label: "Built-in planning", severity: "fine", detail: "Scoped to each chat" }),
+    check({ id: "toolbox", label: "Built-in toolbox", severity: "fine", detail: "Shipped catalogue" }),
+  ] });
+  render(<Setup onReady={() => {}} onProjects={projects} />);
+  expect(await screen.findByText("Built-in planning")).toBeDefined();
+  expect(screen.getByText("Built-in toolbox")).toBeDefined();
+  await user.click(screen.getByRole("button", { name: "Project setup and skills" }));
+  expect(projects).toHaveBeenCalledOnce();
+  expect(screen.queryByRole("button", { name: "Copy" })).toBeNull();
+});
+
+it("shows human-only blocking advice and lets the operator recheck without a write", async () => {
+  const user = userEvent.setup();
+  const calls = stub({ checks: [check({ id: "pi", label: "Pi runtime", detail: "Pi is missing", fix: { by: "human", what: "Make Pi available on PATH" } })] });
+  render(<Setup onReady={() => {}} />);
+  expect(await screen.findByText("Make Pi available on PATH")).toBeDefined();
+  await user.click(screen.getByRole("button", { name: "Check again" }));
+  await waitFor(() => expect(calls.filter((c) => c.url === "/doctor")).toHaveLength(2));
+  expect(calls.every((c) => c.method === "GET")).toBe(true);
 });
 
 it("the health banner shows only what is blocking", async () => {

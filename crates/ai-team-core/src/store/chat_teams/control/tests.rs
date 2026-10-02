@@ -80,6 +80,35 @@ fn stop_wins_the_race_with_a_successful_planning_pause() {
 }
 
 #[test]
+fn planning_attention_names_the_exact_chat_and_does_not_approve_it() {
+    let (_dir, mut store, mut control, _owner) = setup();
+    store
+        .park_chat_team_planning(
+            &mut control,
+            ChatTeamPhase::AwaitingApproval,
+            "Review this plan before building.",
+        )
+        .unwrap();
+    let notice = store
+        .notifications(10)
+        .unwrap()
+        .pop()
+        .expect("approval needs attention");
+    assert_eq!(notice.kind, "plan_ready");
+    assert_eq!(notice.run_id, Some(control.run_id));
+    assert_eq!(
+        serde_json::to_value(&notice).unwrap()["chat_id"],
+        control.chat_id
+    );
+    assert!(store
+        .chat_team_run(control.run_id)
+        .unwrap()
+        .unwrap()
+        .approved_revision
+        .is_none());
+}
+
+#[test]
 fn planning_cleanup_never_releases_build_bookkeeping() {
     let (_dir, mut store, mut control, _owner) = setup();
     store.db_mut().write(|tx| {

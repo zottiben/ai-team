@@ -276,6 +276,31 @@
   flex: 1;
   min-height: 0;
 }
+.chat-tools-panel {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-height: 0;
+  padding: 1rem 1.5rem;
+  overflow: auto;
+}
+.chat-tools-panel .card__row strong {
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+.chat-tool-pane {
+  flex: 1;
+  min-height: 12rem;
+}
+.chat-tools-panel .terminal__host {
+  min-height: 8rem;
+}
+.chat-panel[hidden],
+.chat-tools-panel[hidden],
+.chat-tool-pane[hidden] {
+  display: none;
+}
 .chat-transcript {
   width: 100%;
   min-height: 0;

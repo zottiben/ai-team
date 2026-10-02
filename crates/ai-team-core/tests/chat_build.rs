@@ -1013,6 +1013,13 @@ async fn parallel_workers_commit_and_return_without_touching_solo() {
     assert!(drive_chat_team_build(f.store.path(), start).await.is_err());
     let run = f.store.run(f.turn.run_id).unwrap();
     assert_eq!(run.status, RunStatus::Done);
+    let notification = f.store.notifications(1).unwrap().pop().unwrap();
+    assert_eq!(notification.chat_id, Some(f.chat.id));
+    assert_eq!(notification.run_id, Some(run.id));
+    assert_eq!(notification.kind, "completed");
+    assert!(notification
+        .body
+        .contains("nothing was merged or published"));
     assert!(f.store.chat(f.chat.id).unwrap().active_node_id.is_none());
     assert_eq!(git(&f.repo, &["rev-parse", "HEAD"]), base);
     assert_eq!(git(&f.repo, &["symbolic-ref", "HEAD"]), source_branch);

@@ -73,6 +73,12 @@ impl Fixture {
             std::fs::set_permissions(bin.join(name), std::fs::Permissions::from_mode(0o755))
                 .unwrap();
         }
+        // Chat completion now emits attention; an SSE reader must never notify the host.
+        for name in ["osascript", "notify-send"] {
+            std::fs::write(bin.join(name), "#!/bin/sh\nexit 0\n").unwrap();
+            std::fs::set_permissions(bin.join(name), std::fs::Permissions::from_mode(0o755))
+                .unwrap();
+        }
         std::fs::write(path.join("worker-mode"), "normal").unwrap();
         Self::with_runtime(root, path)
     }

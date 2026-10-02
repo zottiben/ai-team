@@ -25,10 +25,13 @@ export function Editor({
   project,
   workspace = null,
   node,
+  visible = true,
 }: {
   project: string | null;
   workspace?: string | null;
   node: number | null;
+  /** Keep buffers mounted while hidden, without intercepting another pane's Save. */
+  visible?: boolean;
 }) {
   const [open, setOpen] = useState<Buffer[]>([]);
   const [active, setActive] = useState<string | null>(null);
@@ -77,6 +80,7 @@ export function Editor({
   // Ctrl/Cmd-S, because that is the muscle memory and the browser's own Save is useless
   // here.
   useEffect(() => {
+    if (!visible) return;
     const onKey = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key === "s") {
         event.preventDefault();
@@ -85,7 +89,7 @@ export function Editor({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [save]);
+  }, [save, visible]);
 
   if (project === null) {
     return <p className="empty">Pick a project to open its files.</p>;

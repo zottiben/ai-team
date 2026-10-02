@@ -317,8 +317,17 @@ impl Store {
                 "INSERT INTO event (run_id, node_run_id, at, kind, actor, summary)
                  SELECT run_id, ?1, ?2, ?3, 'ai-team', ?4 FROM chat_turn WHERE node_id = ?1",
                 params![node_id, at, if status == NodeStatus::Failed { "failed" } else { "note" },
-                    reason.unwrap_or("Ready for your next message. Changes remain in the checkout.")],
+                    reason.unwrap_or(match status {
+                        NodeStatus::Done => "Ready for your next message. Changes remain in the checkout; completion is not a verification verdict.",
+                        NodeStatus::Failed => "This turn failed. History and working files are kept.",
+                        _ => "Stopped by you. History and working files are kept.",
+                    })],
             )?;
+            super::notifications::notify_chat_event(tx, tx.last_insert_rowid(), match status {
+                NodeStatus::Done => "completed",
+                NodeStatus::Failed => "failed",
+                _ => "follow_up",
+            })?;
             Ok(())
         })
     }
@@ -532,6 +541,51 @@ mod tests {
             store.node_run(first.node_id).unwrap().status,
             NodeStatus::Done
         );
+    }
+
+    #[test]
+    fn settled_chat_attention_keeps_its_origin_and_does_not_claim_verification() {
+        let (mut store, _dir, chat) = seed();
+        for (key, status, kind) in [
+            ("done", NodeStatus::Done, "completed"),
+            ("failed", NodeStatus::Failed, "failed"),
+            ("stop", NodeStatus::Cancelled, "follow_up"),
+        ] {
+            let turn = store
+                .begin_chat_turn(chat.id, key, key, &ModelRegistry::local_only())
+                .unwrap();
+            store
+                .finish_chat_turn(chat.id, turn.node_id, status, None)
+                .unwrap();
+            let notice = store
+                .notifications(1)
+                .unwrap()
+                .pop()
+                .expect("chat settlement needs attention");
+            assert_eq!(notice.kind, kind);
+            assert_eq!(notice.run_id, Some(turn.run_id));
+            assert_eq!(notice.node_run_id, Some(turn.node_id));
+            assert_eq!(
+                notice.workspace_path.as_deref(),
+                Some(chat.workspace_path.as_str())
+            );
+            assert_eq!(serde_json::to_value(&notice).unwrap()["chat_id"], chat.id);
+            assert!(!notice.body.contains("verified"));
+            assert!(store
+                .finish_chat_turn(chat.id, turn.node_id, status, None)
+                .is_err());
+        }
+        assert_eq!(store.notifications(10).unwrap().len(), 3);
+        store.archive_chat(chat.id, true).unwrap();
+        let notices = store.claim_notification_delivery(10).unwrap();
+        assert_eq!(notices.len(), 3);
+        for notice in notices {
+            assert_eq!(
+                serde_json::to_value(store.read_notification(notice.id).unwrap()).unwrap()
+                    ["chat_id"],
+                chat.id
+            );
+        }
     }
 
     #[test]

@@ -124,7 +124,8 @@ pub use pi::{
     PiOutcome, PiPlanAccess, PiProcess, PiSeat, PiTurn,
 };
 pub use readiness::{
-    apply as apply_fix, apply_at as apply_fix_at, report as readiness_report,
+    apply as apply_fix, apply_at as apply_fix_at,
+    chat_report_with_credentials as chat_readiness_report_with, report as readiness_report,
     report_at as readiness_report_at, report_at_with_credentials as readiness_report_at_with,
     report_with_credentials as readiness_report_with, Action, Check, Fix, Known, Paths, Report,
     Severity,

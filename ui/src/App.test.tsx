@@ -18,6 +18,7 @@ const state = vi.hoisted(() => ({
   chats: [] as Chat[],
   run: Promise.resolve({ workspace_path: "/demo-task" }),
   slice: "PR2",
+  notification: { project_id: 1, workspace_path: "/demo-task", run_id: 10, chat_id: null as number | null },
 }));
 vi.mock("./api", async (original) => ({
   ...(await original<typeof import("./api")>()),
@@ -90,7 +91,7 @@ vi.mock("./Chat", () => ({
     </section>
   ),
 }));
-vi.mock("./Notifications", () => ({ Notifications: () => null }));
+vi.mock("./Notifications", () => ({ Notifications: ({ onOpen }: { onOpen: (notice: typeof state.notification) => void }) => <button onClick={() => onOpen(state.notification)}>Open notification</button> }));
 vi.mock("./Projects", () => ({ Projects: () => <h1>Register projects</h1> }));
 vi.mock("./Setup", () => ({ Setup: () => <h1>Welcome setup</h1> }));
 vi.mock("./Settings", () => ({
@@ -167,6 +168,7 @@ beforeEach(() => {
   state.fail = false;
   state.run = Promise.resolve({ workspace_path: "/demo-task" });
   state.slice = "PR2";
+  state.notification = { project_id: 1, workspace_path: "/demo-task", run_id: 10, chat_id: null };
   state.chats = [
     conversation(1, "First conversation"),
     conversation(2, "Second conversation"),
@@ -293,6 +295,23 @@ it("does not let a late legacy review lookup replace a newly selected chat", asy
   expect(
     screen.getByRole("heading", { name: "Other project / New chat" }),
   ).not.toBeNull();
+});
+
+it("opens chat notifications in their originating conversation, not legacy work", async () => {
+  render(<App />);
+  await screen.findByRole("button", { name: "First conversation" });
+  fireEvent.click(screen.getByRole("button", { name: "Other project" }));
+  state.notification.chat_id = 2;
+  fireEvent.click(screen.getByRole("button", { name: "Open notification" }));
+  await screen.findByRole("heading", { name: "Demo project / 2" });
+  expect(screen.queryByRole("combobox", { name: "Project checkout" })).toBeNull();
+});
+
+it("still opens legacy notifications in their recorded checkout", async () => {
+  render(<App />);
+  await screen.findByRole("button", { name: "First conversation" });
+  fireEvent.click(screen.getByRole("button", { name: "Open notification" }));
+  await screen.findByRole("heading", { name: "/demo-task / work" });
 });
 
 it("keeps nested PR checkout labels current on database ticks", async () => {

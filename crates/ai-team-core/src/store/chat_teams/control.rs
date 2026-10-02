@@ -156,6 +156,13 @@ impl Store {
                 rev = rev + 1, updated_at = ?3 WHERE id = ?1", params![control.chat_id, cancelled, at])?;
             tx.execute("INSERT INTO event (run_id, node_run_id, at, kind, actor, summary)
                 VALUES (?1, ?2, ?3, 'note', 'ai-team', ?4)", params![control.run_id, control.node_id, at, message])?;
+            crate::store::notifications::notify_chat_event(tx, tx.last_insert_rowid(), if cancelled {
+                "follow_up"
+            } else if actual == ChatTeamPhase::AwaitingApproval {
+                "plan_ready"
+            } else {
+                "failed"
+            })?;
             Ok(actual)
         })?;
         control.revision += 1;

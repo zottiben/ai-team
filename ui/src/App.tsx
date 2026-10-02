@@ -283,7 +283,14 @@ export default function App() {
               const owner = projects.find(
                 (candidate) => candidate.id === notification.project_id,
               );
-              if (!owner) return;
+              if (!owner) {
+                setProblem("This notification's project is not available. Restore its registration in Projects to inspect it.");
+                return;
+              }
+              if (notification.chat_id != null) {
+                navigate(owner.slug, notification.chat_id);
+                return;
+              }
               setProjectSlug(owner.slug);
               setWorkspace(notification.workspace_path);
               setOpenRun(notification.run_id);
@@ -426,6 +433,7 @@ export default function App() {
         {setup ? (
           <main className="main">
             <Setup
+              onProjects={() => { setSetup(false); setPage("projects"); changed(); }}
               onReady={() => {
                 setSetup(false);
                 changed();

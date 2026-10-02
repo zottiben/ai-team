@@ -143,6 +143,7 @@ export function projects(): Promise<Project[]> {
 
 export type Notification = {
   id: number;
+  chat_id: number | null;
   project_id: number;
   workspace_path: string | null;
   run_id: number | null;

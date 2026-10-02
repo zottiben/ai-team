@@ -1334,7 +1334,7 @@ async fn doctor(State(state): State<AppState>) -> Json<ai_team_core::Report> {
         .store()
         .ok()
         .map(|store| ai_team_core::Known::of(&store.lock()));
-    Json(ai_team_core::readiness_report_with(known.as_ref(), state.credentials()).await)
+    Json(ai_team_core::chat_readiness_report_with(known.as_ref(), state.credentials()).await)
 }
 
 #[derive(Debug, Deserialize)]
