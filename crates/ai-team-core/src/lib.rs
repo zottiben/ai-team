@@ -58,10 +58,10 @@ pub use chat::{
     close_chat_team_build, drive_chat, drive_chat_team_build, drive_chat_team_planning,
     reconcile_chat_team_build, recover_abandoned_chat_team, recover_abandoned_chat_teams,
     recover_chat_team_processes, resume_chat_team_slice, Chat, ChatBuildApproval, ChatBuildClose,
-    ChatBuildCloseReport, ChatBuildClosure, ChatBuildControl, ChatBuildRecovery,
-    ChatBuildRecoveryReport, ChatBuildResume, ChatBuildReview, ChatBuildSlice, ChatBuildStart,
-    ChatKeptPath, ChatRecoveryEntry, ChatRecoveryState, ChatRetainedBuild, ChatSubmission,
-    ChatTeamMember, ChatTeamRun, ChatTurn, NewChat,
+    ChatBuildCloseReport, ChatBuildClosure, ChatBuildContinuation, ChatBuildControl,
+    ChatBuildRecovery, ChatBuildRecoveryReport, ChatBuildResume, ChatBuildReview, ChatBuildSlice,
+    ChatBuildStart, ChatKeptPath, ChatRecoveryEntry, ChatRecoveryState, ChatRetainedBuild,
+    ChatSubmission, ChatTeamMember, ChatTeamRun, ChatTurn, NewChat,
 };
 pub mod planning;
 pub use context::{figma_links, parse_url, Source, CLICKUP_READ_TOOLS, FIGMA_READ_TOOLS};

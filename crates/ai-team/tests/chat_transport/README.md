@@ -76,4 +76,7 @@ scenario adds one coordinator. Auth metadata and discovery controls are counted 
 This does **not** certify installed-awt hooks/pool/network semantics, subscriptions/OAuth,
 native windows, Team HTTP/UI, external-source grounding or nested script-call error
 attribution, concurrent chat execution, retained-work physical cleanup, or the complete
-failed/close/recovery lifecycle. Team controls remain hidden.
+failed/close/recovery lifecycle. The separate `ai-team-ui` `chat_lifecycle` integration
+covers authenticated HTTP, concurrent chats and failed/closed-build-to-solo using fake
+Pi plus real Git; Chat/Overview component and browser checks cover the Team controls.
+Those checks do not turn this transport fixture into native/live-account acceptance.

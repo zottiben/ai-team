@@ -17,7 +17,7 @@ pub use closure::{
     close_chat_team_build, ChatBuildClose, ChatBuildCloseReport, ChatBuildClosure, ChatKeptPath,
     ChatRetainedBuild,
 };
-pub use continuation::{resume_chat_team_slice, ChatBuildResume};
+pub use continuation::{resume_chat_team_slice, ChatBuildContinuation, ChatBuildResume};
 pub use execution::drive_chat_team_build;
 pub use interrupted::recover_chat_team_processes;
 pub use planning::drive_chat_team_planning;

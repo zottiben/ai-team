@@ -90,7 +90,7 @@ impl Store {
         })
     }
 
-    async fn validate_build_checkout(&self, chat: &crate::Chat) -> Result<()> {
+    async fn validate_build_checkout(&mut self, chat: &crate::Chat) -> Result<()> {
         let repo = self
             .project_repos(chat.project_id)?
             .into_iter()

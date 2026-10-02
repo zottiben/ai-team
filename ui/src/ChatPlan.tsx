@@ -20,11 +20,13 @@ export function ChatPlanning({
   chatId,
   tick,
   archived,
+  frozen = false,
   onChanged,
 }: {
   chatId: number;
   tick: number;
   archived: boolean;
+  frozen?: boolean;
   onChanged: () => void;
 }) {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
@@ -148,6 +150,7 @@ export function ChatPlanning({
                 <label>
                   Plan status
                   <select
+                    disabled={frozen}
                     value={bundle.plan.status}
                     onChange={(event) =>
                       void save({
@@ -183,6 +186,8 @@ export function ChatPlanning({
                 </small>
               </div>
               <PlanQuestions questions={bundle.questions} save={save} />
+              {frozen && <p className="notice">Approved work is frozen until this build releases the chat. Questions remain available; answers do not approve more work.</p>}
+              <fieldset disabled={frozen} className="plan-controls">
               <div className="plan-heading">
                 <h4>Scope & notes</h4>
                 <button
@@ -274,6 +279,7 @@ export function ChatPlanning({
                   close={() => setEditor(null)}
                 />
               )}
+              </fieldset>
               {bundle.decisions.length > 0 && (
                 <details>
                   <summary>Decisions ({bundle.decisions.length})</summary>

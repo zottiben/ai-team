@@ -53,6 +53,8 @@ struct Create {
     provider: Provider,
     model: String,
     reasoning: Reasoning,
+    #[serde(default)]
+    mode: ai_team_core::ChatMode,
 }
 
 async fn create(State(state): State<AppState>, Json(input): Json<Create>) -> Result<Json<Chat>> {
@@ -61,13 +63,16 @@ async fn create(State(state): State<AppState>, Json(input): Json<Create>) -> Res
     let store = state.store()?;
     let mut store = store.lock();
     let project = store.find_project(&input.project)?;
-    Ok(Json(store.create_chat(NewChat {
-        project_id: project.id,
-        workspace,
-        provider: input.provider,
-        model: input.model,
-        reasoning: input.reasoning,
-    })?))
+    Ok(Json(store.create_chat_in_mode(
+        NewChat {
+            project_id: project.id,
+            workspace,
+            provider: input.provider,
+            model: input.model,
+            reasoning: input.reasoning,
+        },
+        input.mode,
+    )?))
 }
 
 #[derive(Serialize)]
@@ -75,6 +80,7 @@ struct Detail {
     #[serde(flatten)]
     chat: Chat,
     turns: Vec<ChatTurn>,
+    team_builds: Vec<crate::chat_teams::Build>,
     state: &'static str,
     can_resume: bool,
     orphan_running: bool,
@@ -98,20 +104,59 @@ async fn detail(State(state): State<AppState>, Path(id): Path<i64>) -> Result<Js
         .as_ref()
         .is_some_and(|node| chat.supervisor_alive(node));
     let orphan_running = !supervised && active.as_ref().is_some_and(|node| chat.pi_alive(node));
-    let status = match active {
-        Some(_) if !supervised => "interrupted",
-        Some(_) if chat.stop_requested => "stopping",
-        Some(_) => "running",
-        None => match turns.last().map(|turn| turn.node.status) {
-            None => "empty",
-            Some(NodeStatus::Failed) => "failed",
-            Some(NodeStatus::Cancelled) => "stopped",
-            _ => "idle",
-        },
+    let team = turns
+        .iter()
+        .filter_map(|turn| turn.team.as_ref())
+        .find(|team| Some(team.control_node_id) == chat.active_node_id);
+    let team_builds = turns
+        .iter()
+        .filter_map(|turn| turn.team.clone())
+        .map(|execution| {
+            Ok(crate::chat_teams::Build {
+                slices: store.chat_build_slices(execution.run_id)?,
+                closure: store.chat_build_closure(execution.run_id)?,
+                execution,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let status = if let Some(team) = team {
+        use ai_team_core::{ChatRecoveryState, ChatTeamPhase};
+        if chat.stop_requested && team.supervisor_alive() {
+            "stopping"
+        } else if team_recovery.as_ref().is_some_and(|entry| {
+            matches!(
+                entry.state,
+                ChatRecoveryState::Recoverable | ChatRecoveryState::NeedsInspection
+            )
+        }) {
+            "team_interrupted"
+        } else {
+            match team.phase {
+                ChatTeamPhase::AwaitingApproval => "awaiting_approval",
+                ChatTeamPhase::Blocked => "team_blocked",
+                ChatTeamPhase::Grounding | ChatTeamPhase::Planning | ChatTeamPhase::Building => {
+                    "running"
+                }
+                ChatTeamPhase::Finished => "idle",
+            }
+        }
+    } else {
+        match active {
+            Some(_) if !supervised => "interrupted",
+            Some(_) if chat.stop_requested => "stopping",
+            Some(_) => "running",
+            None => match turns.last().map(|turn| turn.node.status) {
+                None => "empty",
+                Some(NodeStatus::Failed) => "failed",
+                Some(NodeStatus::Cancelled) => "stopped",
+                _ => "idle",
+            },
+        }
     };
     Ok(Json(Detail {
         chat,
         turns,
+        team_builds,
         state: status,
         can_resume: team_recovery.is_none() && status == "interrupted" && !orphan_running,
         orphan_running,
@@ -181,9 +226,6 @@ async fn send(
 ) -> Result<Json<ai_team_core::ChatSubmission>> {
     let db = state.database_path()?;
     ai_team_core::recover_abandoned_chat_team(&db, id).await?;
-    if state.store()?.lock().chat(id)?.mode == ai_team_core::ChatMode::Team {
-        return Err(Error::Core(ai_team_core::Error::invalid("Team execution controls are not available on this surface yet. No message was sent. Any interrupted-process recovery is recorded in the chat; refresh its state.")));
-    }
     let registry = ModelRegistry::load()?;
     let receipt =
         state
@@ -191,7 +233,19 @@ async fn send(
             .lock()
             .begin_chat_turn(id, &input.message, &input.request_id, &registry)?;
     if receipt.started {
-        spawn(state.clone(), db, id, receipt.node_id, false);
+        if state
+            .store()?
+            .lock()
+            .chat_team_run(receipt.run_id)?
+            .is_some()
+        {
+            let node = receipt.node_id;
+            crate::chat_teams::watch(db.clone(), id, receipt.run_id, async move {
+                ai_team_core::drive_chat_team_planning(&db, id, node).await
+            });
+        } else {
+            spawn(state.clone(), db, id, receipt.node_id, false);
+        }
     }
     Ok(Json(receipt))
 }
@@ -242,6 +296,11 @@ async fn stop(
         )));
     }
     let node = store.node_run(target.node_id)?;
+    if store.chat_team_run(node.run_id)?.is_some() {
+        return Err(Error::Core(ai_team_core::Error::invalid(
+            "use this team's exact controller controls, not solo Stop",
+        )));
+    }
     if chat.supervisor_alive(&node) {
         store.request_chat_stop(id, target.node_id)?;
     } else {

@@ -1182,7 +1182,7 @@ async fn failed_work_is_retained_and_does_not_poison_siblings() {
             drive_chat_team_build(f.store.path(), start),
         )
         .await
-        .unwrap();
+        .unwrap_or_else(|_| panic!("build fixture {mode} exceeded its 20s deadline"));
         if matches!(mode, "rename" | "orphan-gate" | "tracked-output") {
             outcome.unwrap();
             if mode == "rename" {

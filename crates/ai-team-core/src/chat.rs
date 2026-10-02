@@ -5,10 +5,10 @@ pub use team::{
     close_chat_team_build, drive_chat_team_build, drive_chat_team_planning,
     reconcile_chat_team_build, recover_abandoned_chat_team, recover_abandoned_chat_teams,
     recover_chat_team_processes, resume_chat_team_slice, ChatBuildApproval, ChatBuildClose,
-    ChatBuildCloseReport, ChatBuildClosure, ChatBuildControl, ChatBuildRecovery,
-    ChatBuildRecoveryReport, ChatBuildResume, ChatBuildReview, ChatBuildSlice, ChatBuildStart,
-    ChatKeptPath, ChatRecoveryEntry, ChatRecoveryState, ChatRetainedBuild, ChatTeamMember,
-    ChatTeamRun,
+    ChatBuildCloseReport, ChatBuildClosure, ChatBuildContinuation, ChatBuildControl,
+    ChatBuildRecovery, ChatBuildRecoveryReport, ChatBuildResume, ChatBuildReview, ChatBuildSlice,
+    ChatBuildStart, ChatKeptPath, ChatRecoveryEntry, ChatRecoveryState, ChatRetainedBuild,
+    ChatTeamMember, ChatTeamRun,
 };
 
 use std::path::{Path, PathBuf};

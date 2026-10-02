@@ -12,6 +12,7 @@ mod api;
 mod assets;
 mod auth;
 mod chat_plans;
+mod chat_teams;
 mod chats;
 mod error;
 mod health;

@@ -20,8 +20,13 @@ const service = vi.hoisted(() => ({
   resumeChat: vi.fn(),
   renameChat: vi.fn(),
   archiveChat: vi.fn(),
+  setChatMode: vi.fn(),
 }));
 vi.mock("./chat-api", () => service);
+vi.mock("./team-api", async (original) => ({
+  ...(await original<typeof import("./team-api")>()),
+  setChatMode: service.setChatMode,
+}));
 vi.mock("./plan-api", async (original) => ({
   ...(await original<typeof import("./plan-api")>()),
   chatPlan: (id: number) => Promise.resolve({ chat_id: id, project_id: 1, revision: 0, bundle: null }),
@@ -56,6 +61,8 @@ const project: Project = {
 };
 const detail = (id = 1): ChatDetail => ({
   id,
+  mode: "single",
+  team_builds: [],
   project_id: 1,
   title: `Chat ${id}`,
   workspace_path: "/repo/demo",
@@ -152,6 +159,24 @@ describe("persistent conversation", () => {
       expect.any(String),
     );
     expect(screen.queryByRole("button", { name: /Start team/ })).toBeNull();
+  });
+
+  it("selects Team before the first message without changing the saved solo model", async () => {
+    render(<ChatView {...props()} id={null} />);
+    await screen.findByRole("option", { name: "gpt-5 · openai" });
+    fireEvent.change(screen.getByRole("combobox", { name: "Execution mode" }), { target: { value: "team" } });
+    fireEvent.change(screen.getByRole("textbox", { name: "Message" }), { target: { value: "Plan this with the team" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() => expect(service.createChat).toHaveBeenCalledWith({ project: "demo", provider: "openai", model: "gpt-5", reasoning: "high", mode: "team" }));
+  });
+
+  it("switches the existing idle chat with its exact revision, not a new chat", async () => {
+    render(<ChatView {...props()} />);
+    await screen.findByRole("heading", { name: "Chat 1" });
+    fireEvent.change(screen.getByRole("combobox", { name: "Execution mode" }), { target: { value: "team" } });
+    await waitFor(() => expect(service.setChatMode).toHaveBeenCalledWith(1, "team", 0));
+    expect(service.createChat).not.toHaveBeenCalled();
+    expect(service.sendChat).not.toHaveBeenCalled();
   });
 
   it("retains the draft and request identity when a response is lost", async () => {

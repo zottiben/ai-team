@@ -8,7 +8,10 @@ import {
   type Usage,
 } from "./api";
 
+import type { TeamBuild, TeamMember, TeamRecovery, TeamRun } from "./team-api";
+
 export type Chat = {
+  mode: "single" | "team";
   id: number;
   project_id: number;
   title: string;
@@ -26,11 +29,15 @@ export type Chat = {
 };
 
 export type ChatTurn = {
+  team: TeamRun | null;
+  members: TeamMember[];
   run: Run;
   node: NodeRun & { usage: Usage; started_at: string | null };
 };
 export type ChatDetail = Chat & {
   turns: ChatTurn[];
+  team_builds: TeamBuild[];
+  team_recovery?: TeamRecovery;
   state:
     | "empty"
     | "idle"
@@ -38,7 +45,10 @@ export type ChatDetail = Chat & {
     | "stopping"
     | "interrupted"
     | "failed"
-    | "stopped";
+    | "stopped"
+    | "awaiting_approval"
+    | "team_blocked"
+    | "team_interrupted";
   can_resume: boolean;
   orphan_running: boolean;
   recovery_error?: string;
@@ -58,6 +68,7 @@ export function createChat(input: {
   provider: string;
   model: string;
   reasoning: Chat["reasoning"];
+  mode?: Chat["mode"];
 }): Promise<Chat> {
   return post("/chats", input);
 }

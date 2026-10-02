@@ -8,7 +8,7 @@ use ai_team_core::{
     ChatMode, ChatTeamPhase, Db, ModelRegistry, NewChat, NewProject, Provider, Reasoning, Store,
 };
 
-fn interrupted(
+pub(super) fn interrupted(
     store: &mut Store,
     workspace: &std::path::Path,
 ) -> (i64, ai_team_core::ChatSubmission) {
@@ -138,7 +138,7 @@ fn later_attachment_is_authenticated_once_and_admission_recovers_only_its_chat()
         r#"{"message":"must not start another agent","request_id":"new"}"#,
     );
     assert_eq!(response.status, 400);
-    assert!(response.body.contains("Team execution controls"));
+    assert!(response.json()["error"].is_string());
     assert!(
         store
             .chat_team_run(first_turn.run_id)

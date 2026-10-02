@@ -1,0 +1,10 @@
+.chat-team { display: grid; gap: 12px; min-width: 0; }
+.chat-team p { margin: 0; overflow-wrap: anywhere; }
+.chat-team pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+.chat-team ul { padding-left: 20px; margin: 0; }
+.chat-team li + li { margin-top: 12px; }
+.chat-team .notice { display: grid; gap: 12px; }
+.chat-team label { display: grid; gap: 6px; }
+.chat-team input { width: 100%; }
+.chat-team-members { list-style: none; padding: 0 !important; }
+.chat-team-members > li { border-bottom: 1px solid var(--border-subtle-default); padding: 10px 0; }

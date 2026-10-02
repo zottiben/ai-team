@@ -261,11 +261,14 @@
   font-size: var(--text-xs);
   color: var(--text-primary-muted);
 }
-.chat-state[data-state="running"] {
+.chat-state[data-state="running"],
+.chat-state[data-state="awaiting_approval"] {
   color: var(--status-running-default);
 }
 .chat-state[data-state="failed"],
-.chat-state[data-state="interrupted"] {
+.chat-state[data-state="interrupted"],
+.chat-state[data-state="team_blocked"],
+.chat-state[data-state="team_interrupted"] {
   color: var(--status-blocked-default);
 }
 .chat-panel {

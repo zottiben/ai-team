@@ -163,6 +163,23 @@ impl Store {
         Ok(actual)
     }
 
+    /// Stop the exact displayed controller, not a later phase or another chat.
+    pub fn request_chat_team_stop(&mut self, target: &crate::ChatBuildRecovery) -> Result<()> {
+        self.db_mut().write(|tx| {
+            let changed = tx.execute(
+                "UPDATE chat SET stop_requested = 1, rev = rev + 1, updated_at = ?5
+                 WHERE id = ?1 AND active_node_id = ?3 AND archived = 0
+                 AND EXISTS(SELECT 1 FROM chat_team_run t WHERE t.chat_id = ?1
+                   AND t.run_id = ?2 AND t.control_node_id = ?3 AND t.rev = ?4 AND t.phase != 'finished')",
+                params![target.chat_id, target.run_id, target.node_id, target.expect_revision, crate::now()],
+            )?;
+            if changed != 1 {
+                return Err(Error::invalid("this team execution changed; refresh before stopping"));
+            }
+            Ok(())
+        })
+    }
+
     /// Stop an idle approval/failed-planning pause. Active workers must observe the
     /// stop flag and reap their own children first. This never returns a build lease.
     pub fn stop_chat_team_planning(

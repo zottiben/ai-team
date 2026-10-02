@@ -145,6 +145,7 @@ vi.mock("./Workspace", () => ({
 function conversation(id: number, title: string): Chat {
   return {
     id,
+    mode: "single",
     title,
     project_id: 1,
     workspace_path: "/demo",

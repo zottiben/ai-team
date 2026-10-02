@@ -89,6 +89,16 @@ describe("chat-owned planning", () => {
     ).toBe("0");
   });
 
+  it("freezes approved work while leaving human questions available", async () => {
+    service.chatPlan.mockResolvedValue(plan());
+    render(<ChatPlanning {...props} frozen />);
+    await screen.findByText("Improve search");
+    expect((screen.getByRole("combobox", { name: "Plan status" }) as HTMLSelectElement).disabled).toBe(true);
+    expect(screen.getByRole("button", { name: "Add slice" }).closest("fieldset")?.disabled).toBe(true);
+    expect((screen.getByRole("textbox", { name: "Your answer" }) as HTMLTextAreaElement).disabled).toBe(false);
+    expect((screen.getByRole("button", { name: "Ask a question" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
   it("does not fill Overview with the engine's empty outline placeholders", async () => {
     const initial = plan();
     initial.bundle!.sections = [

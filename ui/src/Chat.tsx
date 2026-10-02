@@ -8,6 +8,8 @@ import {
 
 import { BoardMarkdown } from "./BoardMarkdown";
 import { ChatPlanning } from "./ChatPlan";
+import { ChatTeam, TEAM_PHASES } from "./ChatTeam";
+import { setChatMode } from "./team-api";
 import { models, type ModelChoice, type Project, type RunEvent } from "./api";
 import {
   archiveChat,
@@ -29,6 +31,9 @@ const LABELS = {
   interrupted: "Interrupted",
   failed: "Needs attention",
   stopped: "Stopped",
+  awaiting_approval: "Awaiting approval",
+  team_blocked: "Team needs attention",
+  team_interrupted: "Team needs recovery",
 };
 
 export function ChatView({
@@ -53,6 +58,7 @@ export function ChatView({
   const [view, setView] = useState<"chat" | "overview">("chat");
   const [catalogue, setCatalogue] = useState<ModelChoice[]>([]);
   const [modelKey, setModelKey] = useState("");
+  const [newMode, setNewMode] = useState<"single" | "team">("single");
   const [modelError, setModelError] = useState<string | null>(null);
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
@@ -139,6 +145,8 @@ export function ChatView({
   const active = detail?.active_node_id != null;
   const running = detail?.state === "running" || detail?.state === "stopping";
   const latest = detail?.turns.at(-1);
+  const activeTeam = detail?.turns.find((turn) => turn.team?.control_node_id === detail.active_node_id)?.team;
+  const mode = detail?.mode ?? newMode;
   const currentEvents = events.filter(
     (event) =>
       event.node_run_id === (detail?.active_node_id ?? latest?.node.id),
@@ -187,6 +195,7 @@ export function ChatView({
           provider: chosen.provider,
           model: chosen.model,
           reasoning: "high",
+          ...(newMode === "team" ? { mode: newMode } : {}),
         });
         target = draft.id;
         created.current = target;
@@ -216,17 +225,20 @@ export function ChatView({
       await act();
       if (!alive.current) return;
       onChanged();
-      await load();
     } catch (error: unknown) {
       if (alive.current)
         setProblem(error instanceof Error ? error.message : String(error));
     } finally {
-      if (alive.current) setBusy(false);
+      // A failed close/recovery may still have recorded irreversible intent.
+      if (alive.current) {
+        await load();
+        setBusy(false);
+      }
     }
   };
 
   const controls =
-    detail?.active_node_id == null ? null : (
+    detail?.active_node_id == null || activeTeam ? null : (
       <div className="chat-controls">
         {detail.can_resume && (
           <button
@@ -369,6 +381,10 @@ export function ChatView({
           {controls}
         </div>
       )}
+      {activeTeam && view === "chat" && <div className="chat-notice notice">
+        <strong>{TEAM_PHASES[activeTeam.phase]}.</strong> {activeTeam.reason}
+        <button className="button" onClick={() => setView("overview")}>Open team controls</button>
+      </div>}
       {latest?.node.blocked_reason && !active && (
         <p className="chat-notice notice">{latest.node.blocked_reason}</p>
       )}
@@ -385,7 +401,7 @@ export function ChatView({
               <section className="chat-overview-card">
                 <h3>Execution</h3>
                 <strong>{LABELS[detail?.state ?? "empty"]}</strong>
-                <p>Single Pi agent · local checkout</p>
+                <p>{activeTeam ? "Pi team · chat-owned draft worktrees" : "Single Pi agent · local checkout"}</p>
                 {running && (
                   <>
                     <div
@@ -413,12 +429,14 @@ export function ChatView({
                     : "Choose a model below"}
                 </p>
                 <p className="faint">
-                  Changes stay in this checkout. Completion is not an automatic
-                  commit or verification verdict.
+                  {activeTeam
+                    ? "This is the persistent solo checkout. Team builds use separate draft worktrees and never merge here automatically."
+                    : "Changes stay in this checkout. Completion is not an automatic commit or verification verdict."}
                 </p>
               </section>
             </div>
-            {detail && <ChatPlanning key={detail.id} chatId={detail.id} tick={tick} archived={detail.archived} onChanged={onChanged} />}
+            {detail && (detail.mode === "team" || detail.team_builds.length > 0) && <ChatTeam detail={detail} busy={busy} command={command} events={events} now={clock} />}
+            {detail && <ChatPlanning key={detail.id} chatId={detail.id} tick={tick} archived={detail.archived} frozen={activeTeam?.approved_revision != null} onChanged={onChanged} />}
             <section className="chat-overview-card">
               <h3>Turns</h3>
               {!detail?.turns.length ? (
@@ -428,8 +446,8 @@ export function ChatView({
                   {detail.turns.map((turn) => (
                     <li key={turn.run.id}>
                       <span>{turn.run.prompt}</span>
-                      <span className="status" data-status={turn.node.status}>
-                        {turn.node.status}
+                      <span className="status" data-status={turn.team ? turn.run.status : turn.node.status}>
+                        {turn.team ? TEAM_PHASES[turn.team.phase] : turn.node.status}
                       </span>
                       <span className="faint">
                         run #{turn.run.id} · {turn.node.model}
@@ -512,9 +530,15 @@ export function ChatView({
         <div className="chat-composer-context">
           <span>{project.name}</span>
           <span>Local</span>
-          <span title="Team execution will be added in the next implementation slices">
-            Single agent · Pi
-          </span>
+          <select aria-label="Execution mode" value={mode} disabled={busy || active || detail?.archived || (id !== null && !detail) || (id === null && created.current !== null)}
+            onChange={(event) => {
+              const next = event.target.value === "team" ? "team" : "single";
+              if (detail) void command(() => setChatMode(detail.id, next, detail.rev));
+              else setNewMode(next);
+            }}>
+            <option value="single">Single agent · Pi</option>
+            <option value="team">Team · Pi</option>
+          </select>
         </div>
         <textarea
           aria-label="Message"
@@ -573,6 +597,7 @@ export function ChatView({
             disabled={
               busy ||
               active ||
+              detail?.archived ||
               !message.trim() ||
               (id === null ? !modelKey : detail === null)
             }
@@ -580,6 +605,7 @@ export function ChatView({
             {busy ? "…" : "↑"}
           </button>
         </div>
+        {mode === "team" && !active && <small className="faint">The configured project team plans first. Review and explicitly approve before building. Your solo model and history are kept.</small>}
         {active && (
           <small className="faint">
             Wait for this turn to finish, or stop it before sending a new
