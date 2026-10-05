@@ -157,11 +157,15 @@ impl PiTurn {
         // `--` ends option parsing, so a prompt that happens to begin with a dash is a
         // prompt rather than an unknown flag.
         args.push("--".into());
-        args.push(match &self.instructions {
+        args.push(self.full_prompt());
+        args
+    }
+
+    pub(crate) fn full_prompt(&self) -> String {
+        match &self.instructions {
             Some(instructions) => format!("{instructions}\n\n---\n\n{}", self.prompt),
             None => self.prompt.clone(),
-        });
-        args
+        }
     }
 }
 

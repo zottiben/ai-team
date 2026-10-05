@@ -27,6 +27,9 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/chats/{id}", get(detail).patch(edit))
         .route("/chats/{id}/events", get(events))
         .route("/chats/{id}/messages", post(send))
+        .route("/chats/{id}/followups", post(queue_followup))
+        .route("/chats/{id}/followups/cancel", post(cancel_followup))
+        .route("/chats/{id}/followups/send", post(send_followup))
         .route("/chats/{id}/stop", post(stop))
         .route("/chats/{id}/resume", post(resume))
 }
@@ -80,6 +83,7 @@ struct Detail {
     #[serde(flatten)]
     chat: Chat,
     turns: Vec<ChatTurn>,
+    followups: Vec<ai_team_core::ChatFollowup>,
     team_builds: Vec<crate::chat_teams::Build>,
     state: &'static str,
     can_resume: bool,
@@ -154,6 +158,7 @@ async fn detail(State(state): State<AppState>, Path(id): Path<i64>) -> Result<Js
         }
     };
     Ok(Json(Detail {
+        followups: store.chat_followups(id)?,
         chat,
         turns,
         team_builds,
@@ -250,31 +255,124 @@ async fn send(
     Ok(Json(receipt))
 }
 
-fn spawn(state: AppState, db: std::path::PathBuf, chat_id: i64, node_id: i64, recovering: bool) {
+fn spawn(
+    state: AppState,
+    db: std::path::PathBuf,
+    chat_id: i64,
+    mut node_id: i64,
+    mut recovering: bool,
+) {
     tokio::spawn(async move {
-        // Retain a watcher even if the driver fails before opening its connection, or panics.
-        let worker = tokio::spawn(async move {
-            ai_team_core::drive_chat(&db, chat_id, node_id, recovering).await
-        });
-        let failure = match worker.await {
-            Ok(Ok(())) => None,
-            Ok(Err(error)) => Some(error.to_string()),
-            Err(error) => Some(format!("The chat worker stopped unexpectedly: {error}")),
-        };
-        if let Some(error) = failure {
-            eprintln!("chat {chat_id} turn {node_id}: {error}");
-            let recorded = (|| -> Result<()> {
-                state
+        loop {
+            // Keep a watcher for each exact attempt, including automatically queued ones.
+            let worker_db = db.clone();
+            let worker = tokio::spawn(async move {
+                ai_team_core::drive_chat(&worker_db, chat_id, node_id, recovering).await
+            });
+            let failure = match worker.await {
+                Ok(Ok(())) => None,
+                Ok(Err(error)) => Some(error.to_string()),
+                Err(error) => Some(format!("The chat worker stopped unexpectedly: {error}")),
+            };
+            if let Some(error) = failure {
+                eprintln!("chat {chat_id} turn {node_id}: {error}");
+                let recorded = (|| -> Result<()> {
+                    state
+                        .store()?
+                        .lock()
+                        .fail_chat_worker(chat_id, node_id, &error)?;
+                    Ok(())
+                })();
+                if let Err(recording) = recorded {
+                    eprintln!("chat {chat_id} turn {node_id}: could not reconcile worker failure: {recording}");
+                }
+                break;
+            }
+            let next = (|| -> Result<Option<ai_team_core::ChatSubmission>> {
+                let registry = ModelRegistry::load()?;
+                Ok(state
                     .store()?
                     .lock()
-                    .fail_chat_worker(chat_id, node_id, &error)?;
-                Ok(())
+                    .advance_chat_followup(chat_id, node_id, &registry)?)
             })();
-            if let Err(recording) = recorded {
-                eprintln!("chat {chat_id} turn {node_id}: could not reconcile worker failure: {recording}");
+            match next {
+                Ok(Some(receipt)) if receipt.started => {
+                    node_id = receipt.node_id;
+                    recovering = false;
+                }
+                Ok(_) => break,
+                Err(error) => {
+                    eprintln!("chat {chat_id}: could not advance follow-up: {error}");
+                    let recorded = (|| -> Result<()> {
+                        state.store()?.lock().record_chat_followup_problem(
+                            chat_id,
+                            node_id,
+                            &error.to_string(),
+                        )?;
+                        Ok(())
+                    })();
+                    if let Err(recording) = recorded {
+                        eprintln!("chat {chat_id}: could not record held follow-up: {recording}");
+                    }
+                    break;
+                }
             }
         }
     });
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Followup {
+    node_id: i64,
+    message: String,
+    request_id: String,
+    kind: ai_team_core::FollowupKind,
+}
+async fn queue_followup(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Json(input): Json<Followup>,
+) -> Result<Json<ai_team_core::ChatFollowup>> {
+    Ok(Json(state.store()?.lock().queue_chat_followup(
+        id,
+        input.node_id,
+        &input.message,
+        &input.request_id,
+        input.kind,
+    )?))
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct QueuedTarget {
+    followup_id: i64,
+}
+async fn cancel_followup(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Json(input): Json<QueuedTarget>,
+) -> Result<Json<serde_json::Value>> {
+    state
+        .store()?
+        .lock()
+        .cancel_chat_followup(id, input.followup_id)?;
+    Ok(Json(serde_json::json!({"cancelled":true})))
+}
+async fn send_followup(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Json(input): Json<QueuedTarget>,
+) -> Result<Json<ai_team_core::ChatSubmission>> {
+    let registry = ModelRegistry::load()?;
+    let db = state.database_path()?;
+    let receipt = state
+        .store()?
+        .lock()
+        .send_chat_followup(id, input.followup_id, &registry)?;
+    if receipt.started {
+        spawn(state, db, id, receipt.node_id, false);
+    }
+    Ok(Json(receipt))
 }
 
 #[derive(Deserialize)]
@@ -309,6 +407,7 @@ async fn stop(
                 "the orphaned Pi process is still running; its checkout cannot be released safely yet",
             )));
         }
+        store.request_chat_stop(id, node.id)?;
         store.claim_chat_resume(id, node.id)?;
         store.finish_chat_turn(
             id,

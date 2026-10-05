@@ -79,6 +79,7 @@ impl Store {
             )?;
 
             for (offset, event) in events.iter().enumerate() {
+                crate::store::acknowledge_chat_followup(tx, node_run_id, event)?;
                 let Disposition::Record(kind, summary) = event.classify() else {
                     out.ignored += 1;
                     continue;

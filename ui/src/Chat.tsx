@@ -22,7 +22,11 @@ import {
   resumeChat,
   sendChat,
   stopChat,
+  queueChatFollowup,
+  cancelChatFollowup,
+  sendChatFollowup,
   type ChatDetail,
+  type ChatFollowup,
 } from "./chat-api";
 
 const ChatChanges = lazy(() => import("./ChatChanges").then((module) => ({ default: module.ChatChanges })));
@@ -81,6 +85,7 @@ export function ChatView({
   const cursor = useRef(0);
   const created = useRef<number | null>(null);
   const submission = useRef<{ body: string; key: string } | null>(null);
+  const queuedSubmission = useRef<{ body: string; key: string; node: number; kind: ChatFollowup["kind"] } | null>(null);
   const feed = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -155,6 +160,8 @@ export function ChatView({
   const latest = detail?.turns.at(-1);
   const activeTeam = detail?.turns.find((turn) => turn.team?.control_node_id === detail.active_node_id)?.team;
   const mode = detail?.mode ?? newMode;
+  const queued = detail?.followups?.find((item) => item.state === "queued");
+  const canQueue = detail?.state === "running" && !activeTeam && mode === "single" && !detail.stop_requested && !queued;
   const currentEvents = events.filter(
     (event) =>
       event.node_run_id === (detail?.active_node_id ?? latest?.node.id),
@@ -184,7 +191,7 @@ export function ChatView({
   }, [following, events.length, detail?.live_text, view]);
 
   const send = async () => {
-    if (busy || active || !message.trim() || (id !== null && detail === null))
+    if (busy || active || queued || !message.trim() || (id !== null && detail === null))
       return;
     const chosen = catalogue.find(
       (choice) => `${choice.provider}/${choice.model}` === modelKey,
@@ -225,6 +232,28 @@ export function ChatView({
     }
   };
 
+  const queue = async (kind: ChatFollowup["kind"]) => {
+    if (busy || !canQueue || detail?.active_node_id == null || !message.trim()) return;
+    const body = message.trim();
+    if (queuedSubmission.current?.body !== body || queuedSubmission.current.kind !== kind)
+      queuedSubmission.current = { body, key: crypto.randomUUID(), node: detail.active_node_id, kind };
+    const request = queuedSubmission.current;
+    setBusy(true);
+    setProblem(null);
+    try {
+      await queueChatFollowup(detail.id, request.node, request.body, request.key, request.kind);
+      if (!alive.current) return;
+      setMessage("");
+      queuedSubmission.current = null;
+      onChanged();
+      await load();
+    } catch (error: unknown) {
+      if (alive.current) setProblem(error instanceof Error ? error.message : String(error));
+    } finally {
+      if (alive.current) setBusy(false);
+    }
+  };
+
   const command = async (act: () => Promise<unknown>) => {
     if (busy) return;
     setBusy(true);
@@ -256,17 +285,17 @@ export function ChatView({
               void command(() => resumeChat(detail.id, detail.active_node_id!))
             }
           >
-            Resume turn
+            {detail.stop_requested && queued?.kind === "steer" ? "Finish stop and send steering" : "Resume turn"}
           </button>
         )}
         <button
           className="button"
-          disabled={busy || detail.stop_requested || detail.orphan_running}
+          disabled={busy || (detail.stop_requested && detail.state !== "interrupted") || detail.orphan_running}
           onClick={() =>
             void command(() => stopChat(detail.id, detail.active_node_id!))
           }
         >
-          {detail.stop_requested ? "Stopping…" : "Stop turn"}
+          {detail.stop_requested && detail.state !== "interrupted" ? "Stopping…" : "Stop turn"}
         </button>
       </div>
     );
@@ -330,7 +359,7 @@ export function ChatView({
             </button>
             <button
               className="button"
-              disabled={busy || active}
+              disabled={busy || active || !!queued}
               onClick={() =>
                 void command(async () => {
                   await archiveChat(detail.id);
@@ -390,7 +419,7 @@ export function ChatView({
           files are kept.
           {detail.orphan_running
             ? " The original Pi process is still running. It must exit before another turn can use this checkout."
-            : " Resume it, or stop it and send a new instruction."}
+            : detail.stop_requested && queued?.kind === "steer" ? " Finish the pending stop before sending the queued steering. Stop turn instead cancels that instruction." : " Resume it, or stop it and send a new instruction."}
           {controls}
         </div>
       )}
@@ -545,17 +574,29 @@ export function ChatView({
           Jump to latest
         </button>
       )}
+      {!!detail?.followups?.length && <section className="chat-followups chat-notice" aria-label="Queued instruction receipts">
+        {detail.followups.slice(-10).map((item) => <div key={item.id} className="chat-followup">
+          <p>{item.body}</p>
+          <small className="faint">{item.state === "queued" ? "Queued · not delivered" : item.state === "starting" ? "Delivery unconfirmed · inspect the turn; not automatically retried" : item.state === "delivered" ? "Delivered to Pi · prompt acknowledged, not a completion verdict" : "Cancelled · not delivered"} · after turn #{item.after_node_id}{item.node_id !== null ? ` · follow-up #${item.node_id}` : ""}</small>
+          {item.state === "queued" && <div className="chat-controls">
+            {!active && <button className="button" disabled={busy || detail.archived} onClick={() => void command(() => sendChatFollowup(detail.id, item.id))}>Send queued message</button>}
+            <button className="button" disabled={busy} onClick={() => void command(() => cancelChatFollowup(detail.id, item.id))}>Cancel queued message</button>
+          </div>}
+        </div>)}
+        {queued && !active && <p className="faint">This instruction is held. Send it explicitly or cancel it; restarting the app does not send it.</p>}
+      </section>}
       <form
         className="chat-composer"
         onSubmit={(event) => {
           event.preventDefault();
-          void send();
+          if (canQueue) void queue("follow_up");
+          else void send();
         }}
       >
         <div className="chat-composer-context">
           <span>{project.name}</span>
           <span>Local</span>
-          <select aria-label="Execution mode" value={mode} disabled={busy || active || detail?.archived || (id !== null && !detail) || (id === null && created.current !== null)}
+          <select aria-label="Execution mode" value={mode} disabled={busy || active || !!queued || detail?.archived || (id !== null && !detail) || (id === null && created.current !== null)}
             onChange={(event) => {
               const next = event.target.value === "team" ? "team" : "single";
               if (detail) void command(() => setChatMode(detail.id, next, detail.rev));
@@ -582,7 +623,8 @@ export function ChatView({
               !event.nativeEvent.isComposing
             ) {
               event.preventDefault();
-              void send();
+              if (canQueue) void queue("follow_up");
+              else void send();
             }
           }}
         />
@@ -615,13 +657,15 @@ export function ChatView({
           ) : (
             <span className="faint">{detail?.model}</span>
           )}
+          {active && mode === "single" && !activeTeam && <button type="button" className="button" disabled={busy || !canQueue || !message.trim()} onClick={() => void queue("steer")}>Stop and steer</button>}
           <button
             type="submit"
             className="chat-send"
-            aria-label="Send message"
+            aria-label={active && mode === "single" && !activeTeam ? "Queue follow-up" : "Send message"}
             disabled={
               busy ||
-              active ||
+              (active && !canQueue) ||
+              !!queued ||
               detail?.archived ||
               !message.trim() ||
               (id === null ? !modelKey : detail === null)
@@ -630,11 +674,14 @@ export function ChatView({
             {busy ? "…" : "↑"}
           </button>
         </div>
+        {queuedSubmission.current && problem && <small className="faint">
+          This draft still targets turn #{queuedSubmission.current.node}. Clearing it does not cancel an instruction already accepted by the server; inspect its receipt above.
+          <button className="button" type="button" disabled={busy} onClick={() => { queuedSubmission.current = null; setMessage(""); setProblem(null); }}>Clear this draft</button>
+        </small>}
         {mode === "team" && !active && <small className="faint">The configured project team plans first. Review and explicitly approve before building. Your solo model and history are kept.</small>}
         {active && (
           <small className="faint">
-            Wait for this turn to finish, or stop it before sending a new
-            instruction.
+            {activeTeam || mode === "team" ? "Use Overview's exact team controls. A message cannot bypass build approval." : "Queue one follow-up after successful completion, or Stop and steer to drain this turn and start a new one. No instruction is injected into a running tool. Stop turn cancels the queued instruction."}
           </small>
         )}
         {id === null && (!catalogue.length || modelError) && (

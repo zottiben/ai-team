@@ -14,7 +14,7 @@ const build = (): TeamBuild => ({
 });
 const detail = (b: TeamBuild): ChatDetail => ({
   id: 4, project_id: 1, title: "Work", workspace_path: "/repo", provider: "local", model: "fixture", reasoning: "high", mode: "team",
-  active_node_id: 23, live_text: "", stop_requested: false, archived: false, rev: 5, created_at: "", updated_at: "", turns: [], state: "awaiting_approval", can_resume: false, orphan_running: false,
+  active_node_id: 23, live_text: "", stop_requested: false, archived: false, rev: 5, created_at: "", updated_at: "", turns: [], followups: [], state: "awaiting_approval", can_resume: false, orphan_running: false,
   team_builds: [b], team_recovery: { target: { chat_id: 4, run_id: 12, node_id: 23, expect_revision: 8 }, state: "quiescent", reason: null },
 });
 const review = (b: TeamBuild): BuildReview => ({ execution: b.execution, plan: { chat_id: 4, project_id: 1, revision: 44, bundle: null }, roster: [], roster_revision: "roster-A", head: "base-A", dirty: "" });

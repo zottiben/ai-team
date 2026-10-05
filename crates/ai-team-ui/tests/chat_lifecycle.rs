@@ -309,6 +309,7 @@ fn authenticated_solo_team_stop_continue_close_and_concurrent_chats() {
     f.send(chat, "solo followup");
     f.wait(chat, |d| d["active_node_id"].is_null());
     let solo_session = f.calls().last().unwrap()["session"].clone();
+    queued_instructions(&f, chat, other);
     build_and_return(&f, chat, other);
     assert_eq!(f.calls().last().unwrap()["session"], solo_session);
     failed_build_returns_to_actual_solo(&f, chat, &solo_session);
@@ -321,6 +322,169 @@ fn authenticated_solo_team_stop_continue_close_and_concurrent_chats() {
         .unwrap()
         .is_empty());
     drop(f.runtime);
+}
+
+fn queued_instructions(f: &Fixture, chat: i64, other: i64) {
+    for kind in ["follow_up", "steer"] {
+        f.mode("hold-solo");
+        let first = f.send(chat, &format!("predecessor {kind}"));
+        f.wait(chat, |d| d["live_text"] == "Active assistant");
+        let request = json!({"node_id":first["node_id"],"message":format!("queued {kind}"),"request_id":kind,"kind":kind});
+        assert_eq!(
+            f.request(
+                "POST",
+                &format!("/chats/{other}/followups"),
+                request.clone()
+            )
+            .0,
+            400
+        );
+        // New processes may finish normally, while this predecessor remains held.
+        f.mode("normal");
+        let queued = f.post(&format!("/chats/{chat}/followups"), request.clone());
+        assert_eq!(queued["state"], "queued");
+        assert_eq!(
+            f.post(&format!("/chats/{chat}/followups"), request)["id"],
+            queued["id"]
+        );
+        if kind == "follow_up" {
+            assert_eq!(f.detail(chat)["active_node_id"], first["node_id"]);
+            assert!(!f.calls().iter().any(|call| call["prompt"]
+                .as_str()
+                .unwrap()
+                .ends_with("queued follow_up")));
+            std::fs::write(
+                f.root.path().join(format!("release-{}", first["node_id"])),
+                "go",
+            )
+            .unwrap();
+        }
+        let done = f.wait(chat, |d| {
+            d["active_node_id"].is_null()
+                && d["followups"].as_array().unwrap().last().unwrap()["state"] == "delivered"
+        });
+        let receipt = done["followups"].as_array().unwrap().last().unwrap();
+        assert_ne!(receipt["node_id"], first["node_id"]);
+        let calls = f.calls().len();
+        let replay = f.post(
+            &format!("/chats/{chat}/followups/send"),
+            json!({"followup_id":queued["id"]}),
+        );
+        assert_eq!(replay["started"], false);
+        assert_eq!(f.calls().len(), calls);
+        assert_eq!(
+            f.request(
+                "POST",
+                &format!("/chats/{chat}/followups/cancel"),
+                json!({"followup_id":queued["id"]})
+            )
+            .0,
+            400
+        );
+    }
+    unconfirmed_and_cancelled_instructions(f, chat);
+    interrupted_steering(f, chat);
+}
+
+fn interrupted_steering(f: &Fixture, chat: i64) {
+    let mut store = Store::open(&f.db).unwrap();
+    let turn = store
+        .begin_chat_turn(
+            chat,
+            "interrupted predecessor",
+            "interrupted",
+            &ai_team_core::ModelRegistry::local_only(),
+        )
+        .unwrap();
+    store
+        .queue_chat_followup(
+            chat,
+            turn.node_id,
+            "steer after interruption",
+            "interrupted-steer",
+            ai_team_core::FollowupKind::Steer,
+        )
+        .unwrap();
+    // Crash before Pi starts: there is no process to drain, only persisted stop intent.
+    ai_team_core::Db::open(&f.db)
+        .unwrap()
+        .conn()
+        .execute(
+            "UPDATE node_run SET supervisor_pid=NULL WHERE id=?1",
+            [turn.node_id],
+        )
+        .unwrap();
+    let detail = f.detail(chat);
+    assert_eq!(detail["state"], "interrupted");
+    assert_eq!(detail["stop_requested"], true);
+    f.post(
+        &format!("/chats/{chat}/resume"),
+        json!({"node_id":turn.node_id}),
+    );
+    f.wait(chat, |d| {
+        d["active_node_id"].is_null()
+            && d["followups"].as_array().unwrap().last().unwrap()["state"] == "delivered"
+    });
+    assert_eq!(
+        store.node_run(turn.node_id).unwrap().status,
+        ai_team_core::NodeStatus::Cancelled
+    );
+    let predecessor = turn.node_id.to_string();
+    assert!(f
+        .calls()
+        .iter()
+        .all(|c| c["node"].as_str() != Some(predecessor.as_str())));
+}
+
+fn unconfirmed_and_cancelled_instructions(f: &Fixture, chat: i64) {
+    // A process that does not echo the prompt cannot certify delivery, even on success.
+    f.mode("hold-solo");
+    let first = f.send(chat, "unconfirmed predecessor");
+    f.wait(chat, |d| d["live_text"] == "Active assistant");
+    f.mode("no-echo");
+    let queued = f.post(&format!("/chats/{chat}/followups"),json!({"node_id":first["node_id"],"message":"unconfirmed instruction","request_id":"unconfirmed","kind":"steer"}));
+    f.wait(chat, |d| {
+        d["active_node_id"].is_null()
+            && d["turns"].as_array().unwrap().last().unwrap()["run"]["prompt"]
+                == "unconfirmed instruction"
+    });
+    let fresh = Store::open(&f.db)
+        .unwrap()
+        .chat_followup(chat, queued["id"].as_i64().unwrap())
+        .unwrap();
+    assert_eq!(fresh.state, "starting");
+    assert!(fresh.delivered_at.is_none());
+    assert_eq!(
+        f.post(
+            &format!("/chats/{chat}/followups/send"),
+            json!({"followup_id":queued["id"]})
+        )["started"],
+        false
+    );
+
+    f.mode("hold-solo");
+    let first = f.send(chat, "cancel predecessor");
+    f.wait(chat, |d| d["live_text"] == "Active assistant");
+    let queued = f.post(&format!("/chats/{chat}/followups"),json!({"node_id":first["node_id"],"message":"must not run","request_id":"cancel","kind":"follow_up"}));
+    f.post(
+        &format!("/chats/{chat}/stop"),
+        json!({"node_id":first["node_id"]}),
+    );
+    let stopped = f.wait(chat, |d| d["active_node_id"].is_null());
+    assert_eq!(
+        stopped["followups"].as_array().unwrap().last().unwrap()["state"],
+        "cancelled"
+    );
+    assert_eq!(
+        f.request(
+            "POST",
+            &format!("/chats/{chat}/followups/send"),
+            json!({"followup_id":queued["id"]})
+        )
+        .0,
+        400
+    );
+    f.mode("normal");
 }
 
 fn build_and_return(f: &Fixture, chat: i64, other: i64) {

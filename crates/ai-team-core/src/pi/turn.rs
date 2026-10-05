@@ -75,6 +75,7 @@ where
         turn.session_id = None;
     }
 
+    store.prepare_chat_followup_prompt(node_run_id, &turn.full_prompt())?;
     let mut process = PiProcess::start(&turn)?;
     if let Err(error) = store.attach_pi_process(node_run_id, process.pid()) {
         // The process already exists, even though its identity could not be persisted.

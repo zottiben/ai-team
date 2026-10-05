@@ -61,8 +61,9 @@ pub use chat::{
     recover_chat_team_processes, resume_chat_team_slice, Chat, ChatBuildApproval, ChatBuildClose,
     ChatBuildCloseReport, ChatBuildClosure, ChatBuildContinuation, ChatBuildControl,
     ChatBuildRecovery, ChatBuildRecoveryReport, ChatBuildResume, ChatBuildReview, ChatBuildSlice,
-    ChatBuildStart, ChatKeptPath, ChatRecoveryEntry, ChatRecoveryState, ChatRetainedBuild,
-    ChatSubmission, ChatTeamMember, ChatTeamRun, ChatTurn, NewChat,
+    ChatBuildStart, ChatFollowup, ChatKeptPath, ChatRecoveryEntry, ChatRecoveryState,
+    ChatRetainedBuild, ChatSubmission, ChatTeamMember, ChatTeamRun, ChatTurn, FollowupKind,
+    NewChat,
 };
 pub mod planning;
 pub mod toolbox;

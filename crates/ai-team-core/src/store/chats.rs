@@ -1,6 +1,7 @@
 //! One transaction accepts a prompt, reserves the checkout and creates its evidence.
 
 mod context;
+pub(crate) mod followups;
 
 use rusqlite::{params, OptionalExtension, Row};
 
@@ -105,11 +106,14 @@ impl Store {
         self.db_mut().write(|tx| {
             let changed = tx.execute(
                 "UPDATE chat SET archived = ?2, rev = rev + 1, updated_at = ?3
-                 WHERE id = ?1 AND active_node_id IS NULL",
+                 WHERE id = ?1 AND active_node_id IS NULL
+                   AND NOT EXISTS(SELECT 1 FROM chat_followup WHERE chat_id=?1 AND state='queued')",
                 params![id, archived, crate::now()],
             )?;
             if changed != 1 {
-                return Err(Error::invalid("stop this chat before archiving it"));
+                return Err(Error::invalid(
+                    "stop this chat and cancel its queued instruction before archiving it",
+                ));
             }
             Ok(())
         })?;
@@ -122,11 +126,12 @@ impl Store {
         self.db_mut().write(|tx| {
             let changed = tx.execute(
                 "UPDATE chat SET mode = ?2, rev = rev + 1, updated_at = ?3
-                 WHERE id = ?1 AND rev = ?4 AND active_node_id IS NULL AND archived = 0",
+                 WHERE id = ?1 AND rev = ?4 AND active_node_id IS NULL AND archived = 0
+                   AND NOT EXISTS(SELECT 1 FROM chat_followup WHERE chat_id=?1 AND state='queued')",
                 params![id, mode, crate::now(), expect_revision],
             )?;
             if changed != 1 {
-                return Err(Error::invalid("stop the current execution and refresh this chat before changing mode; archived chats are read-only"));
+                return Err(Error::invalid("stop the current execution, cancel queued instructions and refresh before changing mode; archived chats are read-only"));
             }
             Ok(())
         })?;
@@ -176,15 +181,24 @@ impl Store {
         request_id: &str,
         registry: &ModelRegistry,
     ) -> Result<ChatSubmission> {
-        let message = message.trim();
-        if message.is_empty() || message.len() > 100_000 {
-            return Err(Error::invalid("a message must contain 1–100000 bytes"));
-        }
-        if request_id.is_empty() || request_id.len() > 128 {
+        if request_id.starts_with("followup/") {
             return Err(Error::invalid(
-                "a message needs a stable request id (up to 128 bytes)",
+                "followup request ids are reserved for queued instructions",
             ));
         }
+        self.begin_chat_turn_inner(id, message, request_id, registry, None)
+    }
+
+    fn begin_chat_turn_inner(
+        &mut self,
+        id: i64,
+        message: &str,
+        request_id: &str,
+        registry: &ModelRegistry,
+        followup: Option<i64>,
+    ) -> Result<ChatSubmission> {
+        let message = message.trim();
+        validate_message(message, request_id)?;
         let identity = crate::chat::process_identity(i64::from(std::process::id()))
             .ok_or_else(|| Error::invalid("could not identify the chat supervisor process"))?;
         let chat = self.chat(id)?;
@@ -219,6 +233,7 @@ impl Store {
                 return Ok(ChatSubmission { run_id, node_id, started: false });
             }
             check_chat_admission(tx, &chat, &workspace)?;
+            followups::check_admission(tx, id, message, followup)?;
             let previous: Option<(Option<String>, i64)> = tx.query_row(
                 "SELECT CASE WHEN n.session_retired_at IS NULL THEN n.session_id END, n.stream_cursor
                  FROM chat_turn t JOIN node_run n ON n.id = t.node_id
@@ -247,6 +262,9 @@ impl Store {
                     agent.role, (chat.mode == ChatMode::Team).then_some(agent.id)],
             )?;
             let node_id = tx.last_insert_rowid();
+            if let Some(followup) = followup {
+                tx.execute("UPDATE chat_followup SET state='starting',node_id=?2 WHERE id=?1 AND state='queued'", params![followup,node_id])?;
+            }
             tx.execute("INSERT INTO chat_turn (chat_id, run_id, node_id, request_id) VALUES (?1, ?2, ?3, ?4)",
                 params![id, run_id, node_id, request_id])?;
             tx.execute(
@@ -387,6 +405,8 @@ impl Store {
             if changed != 1 {
                 return Err(Error::invalid("this chat has no active turn to stop"));
             }
+            // Stop withdraws automatic follow-up authority too, including a prior steer.
+            followups::cancel_on_stop(tx, id, node_id)?;
             Ok(())
         })
     }
@@ -416,12 +436,29 @@ impl Store {
                 params![node_id, i64::from(std::process::id()), node.supervisor_pid, crate::now(), id, chat.rev],
             )?;
             if changed != 1 { return Err(Error::invalid("another process resumed this chat")); }
+            // Explicit Resume may withdraw an old ordinary stop, but must not rerun
+            // the old prompt before an already queued steer that supersedes it.
             tx.execute("UPDATE chat SET supervisor_identity = ?2, pi_identity = NULL,
-                        stop_requested = 0, rev = rev + 1 WHERE id = ?1", params![id, identity])?;
+                        stop_requested = CASE WHEN EXISTS(SELECT 1 FROM chat_followup
+                            WHERE chat_id=?1 AND after_node_id=chat.active_node_id AND state='queued' AND kind='steer')
+                            THEN stop_requested ELSE 0 END,
+                        rev = rev + 1 WHERE id = ?1", params![id, identity])?;
             Ok(())
         })?;
         Ok(node_id)
     }
+}
+
+fn validate_message(message: &str, request_id: &str) -> Result<()> {
+    if message.is_empty() || message.len() > 100_000 {
+        return Err(Error::invalid("a message must contain 1–100000 bytes"));
+    }
+    if request_id.is_empty() || request_id.len() > 128 {
+        return Err(Error::invalid(
+            "a message needs a stable request id (up to 128 bytes)",
+        ));
+    }
+    Ok(())
 }
 
 /// Admission checks share the same writer transaction as the reservation and evidence.
@@ -481,7 +518,7 @@ mod tests {
     use super::*;
     use crate::{NewProject, Provider, Reasoning};
 
-    fn seed() -> (Store, tempfile::TempDir, Chat) {
+    pub(super) fn seed() -> (Store, tempfile::TempDir, Chat) {
         let dir = tempfile::tempdir().unwrap();
         let mut store = Store::init(&dir.path().join("test.db")).unwrap();
         let project = store

@@ -34,8 +34,20 @@ export type ChatTurn = {
   run: Run;
   node: NodeRun & { usage: Usage; started_at: string | null };
 };
+export type ChatFollowup = {
+  id: number;
+  chat_id: number;
+  after_node_id: number;
+  body: string;
+  kind: "follow_up" | "steer";
+  state: "queued" | "starting" | "delivered" | "cancelled";
+  node_id: number | null;
+  created_at: string;
+  delivered_at: string | null;
+};
 export type ChatDetail = Chat & {
   turns: ChatTurn[];
+  followups: ChatFollowup[];
   team_builds: TeamBuild[];
   team_recovery?: TeamRecovery;
   state:
@@ -83,6 +95,16 @@ export function sendChat(
   requestId: string,
 ): Promise<{ run_id: number; node_id: number; started: boolean }> {
   return post(`/chats/${id}/messages`, { message, request_id: requestId });
+}
+
+export function queueChatFollowup(id: number, nodeId: number, message: string, requestId: string, kind: ChatFollowup["kind"]): Promise<ChatFollowup> {
+  return post(`/chats/${id}/followups`, { node_id: nodeId, message, request_id: requestId, kind });
+}
+export function cancelChatFollowup(id: number, followupId: number): Promise<unknown> {
+  return post(`/chats/${id}/followups/cancel`, { followup_id: followupId });
+}
+export function sendChatFollowup(id: number, followupId: number): Promise<unknown> {
+  return post(`/chats/${id}/followups/send`, { followup_id: followupId });
 }
 
 export function stopChat(id: number, nodeId: number): Promise<unknown> {

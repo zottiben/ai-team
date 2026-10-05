@@ -9,6 +9,7 @@ mod agents;
 mod chat_changes;
 mod chat_teams;
 mod chats;
+pub(crate) use chats::followups::acknowledge as acknowledge_chat_followup;
 mod events;
 mod interrupted;
 pub use interrupted::{Abandoned, INTERRUPTED_REASON};

@@ -21,6 +21,9 @@ const service = vi.hoisted(() => ({
   renameChat: vi.fn(),
   archiveChat: vi.fn(),
   setChatMode: vi.fn(),
+  queueChatFollowup: vi.fn(),
+  cancelChatFollowup: vi.fn(),
+  sendChatFollowup: vi.fn(),
 }));
 vi.mock("./Editor", () => ({ Editor: ({ project, workspace, visible }: { project: string; workspace: string; visible: boolean }) => <div><p>Editor {project}: {workspace} ({String(visible)})</p><input aria-label="Unsaved fixture file" defaultValue="kept" /></div> }));
 vi.mock("./Terminal", () => ({ TerminalPane: ({ project, workspace }: { project: string; workspace: string }) => <p>Terminal {project}: {workspace}</p> }));
@@ -79,6 +82,7 @@ const detail = (id = 1): ChatDetail => ({
   created_at: "2026-01-01",
   updated_at: "2026-01-01",
   turns: [],
+  followups: [],
   state: "idle",
   can_resume: false,
   orphan_running: false,
@@ -112,6 +116,82 @@ beforeEach(() => {
 });
 
 describe("persistent conversation", () => {
+  it("queues against the exact solo turn rather than pretending to send into a running process", async () => {
+    service.chat.mockResolvedValue({ ...detail(), state: "running", active_node_id: 41 });
+    render(<ChatView {...props()} />);
+    await screen.findByRole("heading", { name: "Chat 1" });
+    fireEvent.change(screen.getByRole("textbox", { name: "Message" }), { target: { value: "Check the error path too" } });
+    fireEvent.click(screen.getByRole("button", { name: "Queue follow-up" }));
+    await waitFor(() => expect(service.queueChatFollowup).toHaveBeenCalledWith(1, 41, "Check the error path too", expect.any(String), "follow_up"));
+    expect(service.sendChat).not.toHaveBeenCalled();
+    expect(service.stopChat).not.toHaveBeenCalled();
+  });
+
+  it("makes stop-and-steer one exact request and preserves its identity after a lost response", async () => {
+    service.chat.mockResolvedValue({ ...detail(), state: "running", active_node_id: 41 });
+    service.queueChatFollowup.mockRejectedValueOnce(new Error("Connection lost"));
+    render(<ChatView {...props()} />);
+    await screen.findByRole("heading", { name: "Chat 1" });
+    fireEvent.change(screen.getByRole("textbox", { name: "Message" }), { target: { value: "Use the other implementation" } });
+    fireEvent.click(screen.getByRole("button", { name: "Stop and steer" }));
+    await screen.findByRole("alert");
+    const request = service.queueChatFollowup.mock.calls[0];
+    expect(request).toEqual([1, 41, "Use the other implementation", expect.any(String), "steer"]);
+    fireEvent.click(screen.getByRole("button", { name: "Stop and steer" }));
+    await waitFor(() => expect(service.queueChatFollowup).toHaveBeenCalledTimes(2));
+    expect(service.queueChatFollowup.mock.calls[1]).toEqual(request);
+    expect(service.stopChat).not.toHaveBeenCalled();
+  });
+
+  it("never retargets a lost queue response to the next active turn", async () => {
+    service.chat.mockResolvedValue({ ...detail(), state: "running", active_node_id: 41 });
+    service.queueChatFollowup.mockRejectedValueOnce(new Error("Connection lost"));
+    const input = props();
+    const view = render(<ChatView {...input} />);
+    await screen.findByRole("heading", { name: "Chat 1" });
+    fireEvent.change(screen.getByRole("textbox", { name: "Message" }), { target: { value: "Exact instruction" } });
+    fireEvent.click(screen.getByRole("button", { name: "Queue follow-up" }));
+    await screen.findByRole("alert");
+    const request = service.queueChatFollowup.mock.calls[0];
+    service.chat.mockResolvedValue({ ...detail(), state: "running", active_node_id: 42 });
+    view.rerender(<ChatView {...input} tick={1} />);
+    await waitFor(() => expect(service.chat).toHaveBeenCalledTimes(2));
+    fireEvent.click(screen.getByRole("button", { name: "Queue follow-up" }));
+    await waitFor(() => expect(service.queueChatFollowup).toHaveBeenCalledTimes(2));
+    expect(service.queueChatFollowup.mock.calls[1]).toEqual(request);
+  });
+
+  it("offers finishing the stop, not resuming the old prompt, after an interrupted steer", async () => {
+    service.chat.mockResolvedValue({ ...detail(), state: "interrupted", active_node_id: 41, can_resume: true, stop_requested: true, followups: [{ id: 8, chat_id: 1, after_node_id: 41, body: "Do this instead", kind: "steer", state: "queued", node_id: null, created_at: "2026-01-01", delivered_at: null }] });
+    render(<ChatView {...props()} />);
+    await screen.findByRole("button", { name: "Finish stop and send steering" });
+    const stop = screen.getByRole("button", { name: "Stop turn" });
+    expect((stop as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(stop);
+    await waitFor(() => expect(service.stopChat).toHaveBeenCalledWith(1, 41));
+    expect(service.resumeChat).not.toHaveBeenCalled();
+  });
+
+  it("does not offer retry for a claimed instruction without a delivery acknowledgement", async () => {
+    service.chat.mockResolvedValue({ ...detail(), followups: [{ id: 8, chat_id: 1, after_node_id: 41, body: "Uncertain instruction", kind: "follow_up", state: "starting", node_id: 42, created_at: "2026-01-01", delivered_at: null }] });
+    render(<ChatView {...props()} />);
+    await screen.findByText(/Delivery unconfirmed/);
+    expect(screen.queryByRole("button", { name: "Send queued message" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Cancel queued message" })).toBeNull();
+    expect(service.sendChatFollowup).not.toHaveBeenCalled();
+  });
+
+  it("shows a held queue after restart without sending it, and cancels its exact receipt", async () => {
+    service.chat.mockResolvedValue({ ...detail(), followups: [{ id: 8, chat_id: 1, after_node_id: 41, body: "Check the error path too", kind: "follow_up", state: "queued", node_id: null, created_at: "2026-01-01", delivered_at: null }] });
+    render(<ChatView {...props()} />);
+    await screen.findByText("Check the error path too");
+    expect(screen.getByText(/Queued · not delivered/)).not.toBeNull();
+    expect(service.sendChatFollowup).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel queued message" }));
+    await waitFor(() => expect(service.cancelChatFollowup).toHaveBeenCalledWith(1, 8));
+    expect(service.sendChat).not.toHaveBeenCalled();
+  });
+
   it("opens tools only on request in this chat's checkout, keeping drafts and buffers across toggles", async () => {
     service.chat.mockResolvedValue({ ...detail(), workspace_path: "/repo/linked-chat" });
     render(<ChatView {...props()} />);
@@ -294,7 +374,7 @@ describe("persistent conversation", () => {
     expect(
       (
         screen.getByRole("button", {
-          name: "Send message",
+          name: "Queue follow-up",
         }) as HTMLButtonElement
       ).disabled,
     ).toBe(true);

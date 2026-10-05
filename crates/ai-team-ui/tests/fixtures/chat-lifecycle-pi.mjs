@@ -18,6 +18,7 @@ const mode = fs.readFileSync(path.join(root, 'worker-mode'), 'utf8').trim();
 fs.appendFileSync(path.join(root, 'pi-calls'), JSON.stringify({ chat, node, role, key, session, cwd:process.cwd(), prompt }) + '\n');
 const emit = event => console.log(JSON.stringify(event));
 emit({type:'session',id:session,cwd:process.cwd()});
+if (mode !== 'no-echo') emit({type:'message_end',message:{role:'user',content:[{type:'text',text:prompt}]}});
 if (key && role !== 'verifier') {
   fs.mkdirSync('crates', {recursive:true});
   fs.writeFileSync(`crates/${key}.txt`, `Built ${key}\n`);
@@ -28,5 +29,5 @@ if ((role === 'assistant' && mode === 'hold-solo') || (key && role !== 'verifier
   while (!fs.existsSync(path.join(root, `release-${node}`))) await new Promise(r => setTimeout(r, 20));
 }
 emit({type:'message_end',message:{role:'assistant',content:[{type:'text',text:role === 'verifier' ? (mode === 'reject' ? 'VERDICT: reject' : 'VERDICT: pass') : `Finished ${role}.`} ]}});
-emit({type:'turn_end',message:{role:'assistant',stopReason:'stop',usage:{input:20,output:10}}});
+emit({type:'turn_end',message:{role:'assistant',stopReason:mode === 'fail-solo' ? 'error' : 'stop',usage:{input:20,output:10}}});
 emit({type:'agent_settled'});

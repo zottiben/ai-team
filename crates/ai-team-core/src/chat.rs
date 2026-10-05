@@ -68,6 +68,26 @@ pub struct ChatSubmission {
     pub started: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FollowupKind {
+    FollowUp,
+    Steer,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ChatFollowup {
+    pub id: i64,
+    pub chat_id: i64,
+    pub after_node_id: i64,
+    pub body: String,
+    pub kind: FollowupKind,
+    pub state: String,
+    pub node_id: Option<i64>,
+    pub created_at: String,
+    pub delivered_at: Option<String>,
+}
+
 /// A PID alone is not identity after a restart or reboot. Keep the OS-reported start
 /// instant too; if the OS cannot answer, fail closed rather than guessing a writer died.
 pub(crate) fn process_identity(pid: i64) -> Option<String> {
