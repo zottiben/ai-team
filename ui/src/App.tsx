@@ -438,17 +438,6 @@ export default function App() {
         </Popover>}
         <div className="chat-sidebar-footer">
           <span>Powered by Pi</span>
-          {project && (
-            <button
-              className="button"
-              onClick={() => {
-                setPage("tools");
-                setSetup(false);
-              }}
-            >
-              Project tools
-            </button>
-          )}
         </div>
       </aside>
       <div className="chat-main">

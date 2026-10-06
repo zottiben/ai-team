@@ -218,9 +218,19 @@ it("shows the AI Team name and the existing logo", async () => {
   expect(screen.getByRole("img", { name: "AI Team logo" }).getAttribute("src")).toBe(logo);
 });
 
+it("keeps Project tools only in More tools, not duplicated in the sidebar footer", async () => {
+  render(<App />);
+  await screen.findByRole("heading", { name: "Demo project / New chat" });
+  expect(screen.getByText("Powered by Pi")).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Project tools" })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "More tools" }));
+  expect(screen.getAllByRole("button", { name: "Project tools" })).toHaveLength(1);
+});
+
 it("offers only source and team tools at project level", async () => {
   render(<App />);
-  fireEvent.click(await screen.findByRole("button", { name: "Project tools" }));
+  fireEvent.click(await screen.findByRole("button", { name: "More tools" }));
+  fireEvent.click(within(screen.getByRole("navigation", { name: "More tools" })).getByRole("button", { name: "Project tools" }));
   await screen.findByRole("heading", { name: "/demo / source" });
   const navigation = screen.getByRole("navigation", { name: "Project tools" });
   expect(within(navigation).getAllByRole("button").map(button => button.textContent)).toEqual(["Source", "Team"]);
@@ -297,7 +307,8 @@ it("preserves onboarding, project registration, and Settings entry points", asyn
 
 it("keeps only Source and Team in project tools, with explicit checkout ownership", async () => {
   render(<App />);
-  fireEvent.click(await screen.findByRole("button", { name: "Project tools" }));
+  fireEvent.click(await screen.findByRole("button", { name: "More tools" }));
+  fireEvent.click(within(screen.getByRole("navigation", { name: "More tools" })).getByRole("button", { name: "Project tools" }));
   await screen.findByRole("heading", { name: "/demo / source" });
   const tools = screen.getByRole("navigation", { name: "Project tools" });
   expect(within(tools).getAllByRole("button").map(button => button.textContent)).toEqual(["Source", "Team"]);
@@ -378,7 +389,8 @@ it("still opens legacy notifications in their recorded checkout", async () => {
 
 it("keeps nested PR checkout labels current on database ticks", async () => {
   render(<App />);
-  fireEvent.click(await screen.findByRole("button", { name: "Project tools" }));
+  fireEvent.click(await screen.findByRole("button", { name: "More tools" }));
+  fireEvent.click(within(screen.getByRole("navigation", { name: "More tools" })).getByRole("button", { name: "Project tools" }));
   await screen.findByRole("option", { name: "— PR2" });
   state.slice = "PR3";
   await act(async () => state.subscribe?.());
