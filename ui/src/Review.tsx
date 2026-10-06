@@ -238,11 +238,13 @@ export function FileView({
   onComment?: (
     body: string,
     anchor: { file_path: string; side: "old" | "new"; line_start: number; line_end: number },
-  ) => Promise<void>;
+  ) => Promise<void | boolean>;
   onResolve?: (id: number) => Promise<void>;
 }) {
   const [writing, setWriting] = useState<string | null>(null);
   const [body, setBody] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
 
   const mine = comments.filter((comment) => comment.file_path === file.path);
   // A minified file starts collapsed: a committed bundle is one line tens of thousands of
@@ -293,7 +295,7 @@ export function FileView({
             );
             return (
               <div key={key}>
-                <LineRow line={line} onAdd={onComment ? () => setWriting(writing === key ? null : key) : undefined} />
+                <LineRow line={line} onAdd={onComment ? () => { if (!saving) setWriting(writing === key ? null : key); } : undefined} />
                 {on.map((comment) => (
                   <Thread key={comment.id} comment={comment} onResolve={onResolve} />
                 ))}
@@ -302,16 +304,18 @@ export function FileView({
                     className="diff__compose"
                     onSubmit={(event) => {
                       event.preventDefault();
-                      if (body.trim() === "") return;
+                      if (saving || body.trim() === "") return;
+                      setSaving(true); setProblem(null);
                       void onComment(body, {
                         file_path: file.path,
                         side,
                         line_start: number,
                         line_end: number,
-                      }).then(() => {
+                      }).then((saved) => {
+                        if (saved === false) return;
                         setBody("");
                         setWriting(null);
-                      });
+                      }).catch((error: unknown) => setProblem(String(error))).finally(() => setSaving(false));
                     }}
                   >
                     <textarea
@@ -320,7 +324,8 @@ export function FileView({
                       onChange={(event) => setBody(event.target.value)}
                       rows={2}
                     />
-                    <button type="submit" className="button button--primary">
+                    {problem && <p className="error" role="alert">{problem}</p>}
+                    <button type="submit" className="button button--primary" disabled={saving}>
                       Comment
                     </button>
                   </form>

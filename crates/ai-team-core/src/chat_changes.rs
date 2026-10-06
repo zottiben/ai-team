@@ -1,5 +1,6 @@
 //! Chat-owned review and human delivery. A verified draft is a commit, not a lease path.
 
+pub mod checkout;
 mod delivery;
 mod files;
 mod recovery;

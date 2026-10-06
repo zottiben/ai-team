@@ -1,0 +1,12 @@
+import { api, post, type FileDiff } from "./api";
+export type CheckoutAction = {kind:"stage"|"unstage";path:string}|{kind:"commit";message:string}|{kind:"push"|"pull_request"};
+export type CheckoutFinding={id:number;fingerprint:string;head:string|null;area:"staged"|"unstaged";path:string;side:"old"|"new";line:number;body:string;created_at:string};
+export type CheckoutOperation={id:number;chat_id:number;rev:number;state:string;result:string|null;snapshot:{workspace:string;head:string|null;branch:string|null;fingerprint:string;action:CheckoutAction;remote:{url:string;branch:string;repository:string|null;base:string|null;base_sha:string|null}|null}};
+export type CheckoutState={workspace:string;head:string|null;branch:string|null;fingerprint:string;staged:FileDiff[];unstaged:FileDiff[];untracked:string[];findings:CheckoutFinding[];operations:CheckoutOperation[]};
+export type CheckoutInspection={operation:CheckoutOperation;checkout:CheckoutState};
+export const checkoutState=(chat:number)=>api<CheckoutState>(`/chats/${chat}/checkout`);
+export const checkoutPreview=(chat:number,fingerprint:string,action:CheckoutAction)=>post<CheckoutOperation>(`/chats/${chat}/checkout/preview`,{fingerprint,action});
+export const checkoutFinding=(chat:number,finding:CheckoutFinding)=>post(`/chats/${chat}/checkout/finding`,finding);
+export const checkoutApprove=(chat:number,op:CheckoutOperation)=>post<CheckoutOperation>(`/chats/${chat}/checkout/command`,{action:"approve",id:op.id,revision:op.rev});
+export const checkoutInspect=(chat:number,op:CheckoutOperation)=>post<CheckoutInspection>(`/chats/${chat}/checkout/command`,{action:"inspect",id:op.id,revision:op.rev});
+export const checkoutAcknowledge=(chat:number,i:CheckoutInspection,reason:string)=>post<CheckoutOperation>(`/chats/${chat}/checkout/command`,{action:"acknowledge",id:i.operation.id,revision:i.operation.rev,fingerprint:i.checkout.fingerprint,reason});

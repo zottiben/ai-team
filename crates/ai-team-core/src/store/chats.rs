@@ -186,7 +186,54 @@ impl Store {
                 "followup request ids are reserved for queued instructions",
             ));
         }
-        self.begin_chat_turn_inner(id, message, request_id, registry, None)
+        if request_id.starts_with("schedule/") {
+            return Err(Error::invalid(
+                "schedule request ids are reserved for claimed schedule occurrences",
+            ));
+        }
+        self.begin_chat_turn_inner(id, message, request_id, registry, None, None)
+    }
+
+    /// Start the turn one claimed schedule occurrence owns.
+    ///
+    /// `settings` are the schedule's own, put through policy by the caller: the person
+    /// agreed to this prompt on this model, and a chat switched to something else since
+    /// is not what they scheduled. `None` means the chat's own, which is what a team
+    /// coordinator uses because its seat comes from the team rather than the chat.
+    pub fn begin_scheduled_chat_turn(
+        &mut self,
+        id: i64,
+        message: &str,
+        request_id: &str,
+        registry: &ModelRegistry,
+        settings: Option<(crate::Provider, String, crate::Reasoning)>,
+    ) -> Result<ChatSubmission> {
+        if !request_id.starts_with("schedule/") {
+            return Err(Error::invalid(
+                "a scheduled turn carries its occurrence's request id",
+            ));
+        }
+        self.begin_chat_turn_inner(id, message, request_id, registry, None, settings)
+    }
+
+    /// Who takes this turn. A team's coordinator comes from the team, so only a solo
+    /// seat can be overridden - which is what a schedule's own model settings are.
+    fn turn_seat(
+        &self,
+        chat: &Chat,
+        team_id: Option<i64>,
+        settings: Option<(crate::Provider, String, crate::Reasoning)>,
+    ) -> Result<crate::Agent> {
+        if chat.mode == ChatMode::Team {
+            return self.chat_team_coordinator(team_id);
+        }
+        let mut agent = chat.agent();
+        if let Some((provider, model, reasoning)) = settings {
+            agent.provider = provider;
+            agent.model = model;
+            agent.reasoning = reasoning;
+        }
+        Ok(agent)
     }
 
     fn begin_chat_turn_inner(
@@ -196,6 +243,7 @@ impl Store {
         request_id: &str,
         registry: &ModelRegistry,
         followup: Option<i64>,
+        settings: Option<(crate::Provider, String, crate::Reasoning)>,
     ) -> Result<ChatSubmission> {
         let message = message.trim();
         validate_message(message, request_id)?;
@@ -203,11 +251,13 @@ impl Store {
             .ok_or_else(|| Error::invalid("could not identify the chat supervisor process"))?;
         let chat = self.chat(id)?;
         let project = self.project(chat.project_id)?;
-        let agent = match chat.mode {
-            ChatMode::Single => chat.agent(),
-            ChatMode::Team => self.chat_team_coordinator(project.team_id)?,
-        };
+        let agent = self.turn_seat(&chat, project.team_id, settings)?;
         let resolution = registry.resolve(&agent)?;
+        if request_id.starts_with("schedule/")
+            && (resolution.provider != agent.provider || resolution.model != agent.model)
+        {
+            return Err(Error::invalid("this schedule's model is no longer allowed; it will not silently use another provider or model"));
+        }
         let guard = match project.team_id {
             Some(team) => self.team(team)?.guardrails,
             None => Guardrails::default(),
@@ -233,6 +283,7 @@ impl Store {
                 return Ok(ChatSubmission { run_id, node_id, started: false });
             }
             check_chat_admission(tx, &chat, &workspace)?;
+            super::chat_schedules::check_admission(tx, &chat, message, request_id, &agent)?;
             followups::check_admission(tx, id, message, followup)?;
             let previous: Option<(Option<String>, i64)> = tx.query_row(
                 "SELECT CASE WHEN n.session_retired_at IS NULL THEN n.session_id END, n.stream_cursor

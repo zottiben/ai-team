@@ -15,6 +15,10 @@ use crate::{error::Result, state::AppState};
 pub(crate) fn routes() -> Router<AppState> {
     Router::new()
         .route("/chats/{id}/changes", get(changes))
+        .route("/chats/{id}/checkout", get(checkout))
+        .route("/chats/{id}/checkout/preview", post(checkout_preview))
+        .route("/chats/{id}/checkout/finding", post(checkout_finding))
+        .route("/chats/{id}/checkout/command", post(checkout_command))
         .route("/chats/{id}/draft/review", post(review))
         .route("/chats/{id}/draft/findings", post(finding))
         .route("/chats/{id}/draft/tree", post(tree))
@@ -26,6 +30,90 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/chats/{id}/delivery/approve", post(approve))
         .route("/chats/{id}/delivery/inspect", post(inspect))
         .route("/chats/{id}/delivery/acknowledge", post(acknowledge))
+}
+async fn checkout(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> Result<Json<chat_changes::checkout::State>> {
+    let mut store = Store::open(&state.database_path()?)?;
+    Ok(Json(chat_changes::checkout::state(&mut store, id).await?))
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CheckoutPreview {
+    fingerprint: String,
+    action: chat_changes::checkout::Action,
+}
+async fn checkout_preview(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Json(input): Json<CheckoutPreview>,
+) -> Result<Json<chat_changes::checkout::Operation>> {
+    let mut store = Store::open(&state.database_path()?)?;
+    Ok(Json(
+        chat_changes::checkout::preview(&mut store, id, &input.fingerprint, input.action).await?,
+    ))
+}
+async fn checkout_finding(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Json(input): Json<chat_changes::checkout::Finding>,
+) -> Result<Json<serde_json::Value>> {
+    let mut store = Store::open(&state.database_path()?)?;
+    chat_changes::checkout::finding(&mut store, id, &input).await?;
+    Ok(Json(serde_json::json!({"recorded":true})))
+}
+#[derive(Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
+enum CheckoutCommand {
+    Approve {
+        id: i64,
+        revision: i64,
+    },
+    Inspect {
+        id: i64,
+        revision: i64,
+    },
+    Acknowledge {
+        id: i64,
+        revision: i64,
+        fingerprint: String,
+        reason: String,
+    },
+}
+async fn checkout_command(
+    State(state): State<AppState>,
+    Path(chat): Path<i64>,
+    Json(input): Json<CheckoutCommand>,
+) -> Result<Json<serde_json::Value>> {
+    let db = state.database_path()?;
+    let result = tokio::spawn(async move {
+        use chat_changes::checkout as c;
+        let mut store = Store::open(&db)?;
+        Ok::<_, ai_team_core::Error>(match input {
+            CheckoutCommand::Approve { id, revision } => {
+                serde_json::to_value(c::approve(&mut store, chat, id, revision).await?)?
+            }
+            CheckoutCommand::Inspect { id, revision } => {
+                serde_json::to_value(c::inspect(&mut store, chat, id, revision).await?)?
+            }
+            CheckoutCommand::Acknowledge {
+                id,
+                revision,
+                fingerprint,
+                reason,
+            } => serde_json::to_value(
+                c::acknowledge(&mut store, chat, id, revision, &fingerprint, &reason).await?,
+            )?,
+        })
+    })
+    .await
+    .map_err(|e| {
+        ai_team_core::Error::invalid(format!(
+            "checkout command interrupted; inspect its receipt: {e}"
+        ))
+    })??;
+    Ok(Json(result))
 }
 async fn changes(
     State(state): State<AppState>,

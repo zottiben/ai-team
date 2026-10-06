@@ -18,18 +18,30 @@ pub(crate) struct Ownership {
     pub(crate) db: PathBuf,
     pub(crate) run: i64,
     pub(crate) delivery: Option<i64>,
+    pub(crate) checkout: Option<i64>,
     epoch: AtomicI64,
     uncertain: AtomicBool,
 }
 impl Ownership {
     pub(crate) fn acquire(db: &Path, run: i64) -> Result<Arc<Self>> {
-        Self::acquire_scoped(db, run, None)
+        Self::acquire_scoped(db, run, None, None)
     }
     pub(crate) fn acquire_delivery(db: &Path, run: i64, delivery: i64) -> Result<Arc<Self>> {
-        Self::acquire_scoped(db, run, Some(delivery))
+        Self::acquire_scoped(db, run, Some(delivery), None)
     }
-    fn acquire_scoped(db: &Path, run: i64, delivery: Option<i64>) -> Result<Arc<Self>> {
-        let path = lock_path(db, run)?;
+    pub(crate) fn acquire_checkout(db: &Path, id: i64) -> Result<Arc<Self>> {
+        Self::acquire_scoped(db, 0, None, Some(id))
+    }
+    fn acquire_scoped(
+        db: &Path,
+        run: i64,
+        delivery: Option<i64>,
+        checkout: Option<i64>,
+    ) -> Result<Arc<Self>> {
+        let path = match checkout {
+            Some(id) => lock_path(db, 0)?.with_file_name(format!("checkout-{id}.lock")),
+            None => lock_path(db, run)?,
+        };
         std::fs::create_dir_all(
             path.parent()
                 .ok_or_else(|| Error::invalid("the controller lock has no directory"))?,
@@ -52,7 +64,7 @@ impl Ownership {
             // receipts require local, independent file-description semantics.
             let probe = OpenOptions::new().read(true).write(true).open(&path)?;
             match probe.try_lock() {
-                    Err(TryLockError::WouldBlock) => Ok(Arc::new(Self { file, db: db.canonicalize()?, run, delivery, epoch: AtomicI64::new(0), uncertain: AtomicBool::new(false) })),
+                    Err(TryLockError::WouldBlock) => Ok(Arc::new(Self { file, db: db.canonicalize()?, run, delivery, checkout, epoch: AtomicI64::new(0), uncertain: AtomicBool::new(false) })),
                     Err(TryLockError::Error(error)) => Err(error.into()),
                     Ok(()) => Err(Error::invalid("controller storage does not provide independent file locks; use a local data directory")),
                 }
@@ -63,8 +75,11 @@ impl Ownership {
         }
     }
     pub(crate) fn bind(&self, store: &crate::Store) -> Result<()> {
-        self.epoch
-            .store(store.chat_child_epoch(self.run)?, Ordering::SeqCst);
+        let epoch = match self.checkout {
+            Some(id) => store.checkout_child_epoch(id)?,
+            None => store.chat_child_epoch(self.run)?,
+        };
+        self.epoch.store(epoch, Ordering::SeqCst);
         Ok(())
     }
     pub(crate) fn epoch(&self) -> i64 {

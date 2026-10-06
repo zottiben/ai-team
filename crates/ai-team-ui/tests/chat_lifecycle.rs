@@ -321,7 +321,69 @@ fn authenticated_solo_team_stop_continue_close_and_concurrent_chats() {
         .chat_team_recovery_scan(None)
         .unwrap()
         .is_empty());
+    working_checkout(&f, chat, other);
     drop(f.runtime);
+}
+
+fn working_checkout(f: &Fixture, chat: i64, other: i64) {
+    let root = format!("/chats/{chat}/checkout");
+    std::fs::write(f.repo.join("README.md"), "operator change\n").unwrap();
+    let (status, state) = f.request("GET", &root, Value::Null);
+    assert_eq!(status, 200);
+    f.post(&format!("{root}/finding"), json!({"fingerprint":state["fingerprint"],"head":state["head"],"area":"unstaged","path":"README.md","side":"new","line":1,"body":"check errors"}));
+    let preview = f.post(
+        &format!("{root}/preview"),
+        json!({"fingerprint":state["fingerprint"],"action":{"kind":"stage","path":"README.md"}}),
+    );
+    assert_eq!(
+        f.request(
+            "POST",
+            &format!("/chats/{other}/checkout/command"),
+            json!({"action":"approve","id":preview["id"],"revision":preview["rev"]})
+        )
+        .0,
+        400
+    );
+    std::fs::write(f.repo.join("README.md"), "changed since approval\n").unwrap();
+    let refused = f.post(
+        &format!("{root}/command"),
+        json!({"action":"approve","id":preview["id"],"revision":preview["rev"]}),
+    );
+    assert_eq!(refused["state"], "refused");
+    assert!(git(&f.repo, &["diff", "--cached", "--name-only"]).is_empty());
+    for action in [
+        json!({"kind":"stage","path":"README.md"}),
+        json!({"kind":"unstage","path":"README.md"}),
+        json!({"kind":"stage","path":"README.md"}),
+    ] {
+        let (_, current) = f.request("GET", &root, Value::Null);
+        let preview = f.post(
+            &format!("{root}/preview"),
+            json!({"fingerprint":current["fingerprint"],"action":action}),
+        );
+        let result = f.post(
+            &format!("{root}/command"),
+            json!({"action":"approve","id":preview["id"],"revision":preview["rev"]}),
+        );
+        assert_eq!(result["state"], "done", "{result}");
+    }
+    git(&f.repo, &["config", "user.name", "Fixture"]);
+    git(
+        &f.repo,
+        &["config", "user.email", "fixture@example.invalid"],
+    );
+    let (_, current) = f.request("GET", &root, Value::Null);
+    let preview = f.post(&format!("{root}/preview"), json!({"fingerprint":current["fingerprint"],"action":{"kind":"commit","message":"operator checkout"}}));
+    let result = f.post(
+        &format!("{root}/command"),
+        json!({"action":"approve","id":preview["id"],"revision":preview["rev"]}),
+    );
+    assert_eq!(result["state"], "done", "{result}");
+    assert_eq!(
+        git(&f.repo, &["log", "-1", "--format=%s"]),
+        "operator checkout"
+    );
+    assert!(git(&f.repo, &["status", "--porcelain"]).is_empty());
 }
 
 fn queued_instructions(f: &Fixture, chat: i64, other: i64) {

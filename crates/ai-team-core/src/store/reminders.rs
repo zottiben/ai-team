@@ -62,7 +62,7 @@ impl Store {
         self.db()
             .conn()
             .query_row(
-                &format!("{REMINDER_SELECT} WHERE id = ?1"),
+                &format!("{REMINDER_SELECT} WHERE r.id = ?1"),
                 params![id],
                 reminder_from_row,
             )
@@ -76,8 +76,8 @@ impl Store {
     /// a day fires what it missed in the order it was meant to happen.
     pub fn due_reminders(&self, at: &str) -> Result<Vec<Reminder>> {
         let mut stmt = self.db().conn().prepare(&format!(
-            "{REMINDER_SELECT} WHERE status = 'pending' AND due_at IS NOT NULL AND due_at <= ?1
-              ORDER BY due_at, id"
+            "{REMINDER_SELECT} WHERE r.status = 'pending' AND r.due_at IS NOT NULL
+               AND r.due_at <= ?1 ORDER BY r.due_at, r.id"
         ))?;
         let rows = stmt
             .query_map(params![at], reminder_from_row)?
@@ -93,11 +93,11 @@ impl Store {
         let mut clauses = Vec::new();
         let mut args: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
         if let Some(id) = project_id {
-            clauses.push("project_id = ?");
+            clauses.push("r.project_id = ?");
             args.push(Box::new(id));
         }
         if let Some(k) = kind {
-            clauses.push("kind = ?");
+            clauses.push("r.kind = ?");
             args.push(Box::new(k));
         }
         let where_sql = if clauses.is_empty() {
@@ -107,7 +107,7 @@ impl Store {
         };
 
         let mut stmt = self.db().conn().prepare(&format!(
-            "{REMINDER_SELECT}{where_sql} ORDER BY COALESCE(due_at, '9999'), id"
+            "{REMINDER_SELECT}{where_sql} ORDER BY COALESCE(r.due_at, '9999'), r.id"
         ))?;
         let rows = stmt
             .query_map(rusqlite::params_from_iter(args.iter()), reminder_from_row)?
@@ -169,8 +169,13 @@ impl Store {
         }
     }
 
+    /// Advance a reminder by hand, without the guard the clock claims through.
+    ///
+    /// Not for a chat schedule: every one of its occurrences has a row saying what became
+    /// of it, and an unguarded advance here would consume one silently.
     pub fn fire_reminder(&mut self, id: i64) -> Result<Reminder> {
         let reminder = self.reminder(id)?;
+        crate::chat_schedule::never_legacy(&reminder)?;
         let at = now();
         let next = reminder
             .recur
@@ -219,7 +224,22 @@ impl Store {
     }
 }
 
-/// The next occurrence after `due` that has not already passed, in the same ISO-8601 shape.
+fn next_occurrence(due: &str, recur: Recur, not_before: &str) -> Result<String> {
+    Ok(advance(due, recur, not_before)?.0)
+}
+
+/// Check a due time is one the clock can actually step from.
+///
+/// Worth doing while somebody is looking rather than at two in the morning, where an
+/// unparseable timestamp is a schedule that silently never fires.
+pub(super) fn check_due_time(due: &str) -> Result<()> {
+    time::OffsetDateTime::parse(due, &time::format_description::well_known::Rfc3339)
+        .map_err(|e| Error::invalid(format!("{due:?} is not a usable due time: {e}")))?;
+    Ok(())
+}
+
+/// The next occurrence after `due` that has not already passed, in the same ISO-8601
+/// shape, and how many occurrences were stepped over to reach it.
 ///
 /// Time-of-day is preserved deliberately: a 09:00 reminder stays a 09:00 reminder, which
 /// is the whole point of "daily".
@@ -229,8 +249,10 @@ impl Store {
 /// interval leaves a missed reminder still due, so the next tick fires it again twenty
 /// seconds later, and again, until the arithmetic catches up with the calendar - a
 /// notification and an unattended agent per day away. A person who missed six nightly
-/// runs wants tonight's run, not six of them at once.
-fn next_occurrence(due: &str, recur: Recur, not_before: &str) -> Result<String> {
+/// runs wants tonight's run, not six of them at once. The count of what was stepped over
+/// is returned rather than discarded, because "it slept through four of these" is the
+/// one thing a person cannot tell from the occurrence that did fire.
+pub(super) fn advance(due: &str, recur: Recur, not_before: &str) -> Result<(String, i64)> {
     use time::format_description::well_known::Rfc3339;
     use time::{Duration, OffsetDateTime, Weekday};
 
@@ -257,16 +279,23 @@ fn next_occurrence(due: &str, recur: Recur, not_before: &str) -> Result<String> 
 
     // Always step at least once: the occurrence being fired is behind us by definition.
     let mut next = step(start);
+    let mut skipped = 0;
     while next <= floor {
         next = step(next);
+        skipped += 1;
     }
 
-    next.format(&Rfc3339)
-        .map_err(|e| Error::invalid(format!("could not format the next occurrence: {e}")))
+    let next = next
+        .format(&Rfc3339)
+        .map_err(|e| Error::invalid(format!("could not format the next occurrence: {e}")))?;
+    Ok((next, skipped))
 }
 
-const REMINDER_SELECT: &str = "SELECT id, project_id, team_id, kind, title, body, prompt, due_at, \
-     recur, status, last_fired_at, rev, created_at, updated_at FROM reminder";
+/// Joined rather than stored on the reminder: the schedule owns where its work goes, and
+/// one writable copy of that is the difference between a dispatch target and a hint.
+const REMINDER_SELECT: &str = "SELECT r.id, r.project_id, r.team_id, r.kind, r.title, r.body, \
+     r.prompt, r.due_at, r.recur, r.status, r.last_fired_at, s.chat_id, r.rev, r.created_at, \
+     r.updated_at FROM reminder r LEFT JOIN chat_schedule s ON s.reminder_id = r.id";
 
 fn reminder_from_row(r: &Row<'_>) -> rusqlite::Result<Reminder> {
     Ok(Reminder {
@@ -281,9 +310,10 @@ fn reminder_from_row(r: &Row<'_>) -> rusqlite::Result<Reminder> {
         recur: r.get(8)?,
         status: r.get(9)?,
         last_fired_at: non_empty(r.get(10)?),
-        rev: r.get(11)?,
-        created_at: r.get(12)?,
-        updated_at: r.get(13)?,
+        chat_id: r.get(11)?,
+        rev: r.get(12)?,
+        created_at: r.get(13)?,
+        updated_at: r.get(14)?,
     })
 }
 

@@ -286,6 +286,23 @@ sql_enum! {
 }
 
 sql_enum! {
+    /// What one claimed occurrence of a chat schedule became. Written once, kept forever:
+    /// a schedule that did nothing is a fact the person needs to see, not a silence.
+    ScheduleOutcome {
+        /// Claimed, not yet resolved. Only a live scheduler may leave one here.
+        Claimed => "claimed",
+        Started => "started",
+        /// The chat was working when its time came. Skipped, never queued behind the turn.
+        Busy => "busy",
+        /// The context it was made with no longer holds, so nothing was dispatched.
+        Refused => "refused",
+        Failed => "failed",
+        /// The scheduler died between claiming and dispatching, and no turn was found.
+        Interrupted => "interrupted",
+    }
+}
+
+sql_enum! {
     ReminderStatus {
         Pending => "pending",
         Fired => "fired",
@@ -784,6 +801,9 @@ pub struct Reminder {
     pub recur: Option<Recur>,
     pub status: ReminderStatus,
     pub last_fired_at: Option<String>,
+    /// The chat this fires into, when it has one. Derived from the schedule that owns it,
+    /// never set by hand: a reminder that merely names a chat must not dispatch into it.
+    pub chat_id: Option<i64>,
     pub rev: i64,
     pub created_at: String,
     pub updated_at: String,

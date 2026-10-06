@@ -237,20 +237,36 @@ pub(super) fn check_workspace_except_toolbox(
     workspace: &str,
     approval: Option<i64>,
 ) -> Result<()> {
+    check_workspace_except(conn, workspace, approval, None)
+}
+pub(super) fn check_workspace_except_checkout(
+    conn: &Connection,
+    workspace: &str,
+    operation: i64,
+) -> Result<()> {
+    check_workspace_except(conn, workspace, None, Some(operation))
+}
+fn check_workspace_except(
+    conn: &Connection,
+    workspace: &str,
+    approval: Option<i64>,
+    operation: Option<i64>,
+) -> Result<()> {
     let mut query = conn.prepare(
         "SELECT workspace_path FROM chat_delivery WHERE state IN ('running','inspection')
          UNION SELECT json_extract(snapshot_json,'$.authority.target') FROM toolbox_operation
-         WHERE kind='converge' AND state='applying' AND id != COALESCE(?1,-1)",
+         WHERE kind='converge' AND state='applying' AND id != COALESCE(?1,-1)
+         UNION SELECT workspace_path FROM chat_checkout_operation WHERE state IN ('running','inspection') AND id != COALESCE(?2,-1)",
     )?;
     let paths = query
-        .query_map([approval], |row| row.get::<_, String>(0))?
+        .query_map(params![approval, operation], |row| row.get::<_, String>(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     if paths
         .iter()
         .any(|path| crate::same_worktree(path, workspace))
     {
         return Err(Error::invalid(
-            "a chat delivery or toolbox convergence is running or needs inspection in this checkout",
+            "a chat delivery, checkout action or toolbox convergence is running or needs inspection in this checkout",
         ));
     }
     Ok(())

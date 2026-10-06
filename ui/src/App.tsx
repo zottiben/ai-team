@@ -1,11 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 
 import { Analytics } from "./Analytics";
 import { ChatView } from "./Chat";
 import { Notifications } from "./Notifications";
 import { Projects } from "./Projects";
 import { Roster } from "./Roster";
-import { Schedule } from "./Schedule";
+const Schedule = lazy(() => import("./Schedule").then(m => ({ default: m.Schedule })));
 import { Settings } from "./Settings";
 import { Setup } from "./Setup";
 import { Today } from "./Today";
@@ -77,6 +77,7 @@ export default function App() {
   const [tick, setTick] = useState(0);
   const [theme, setTheme] = useState<Theme>(stored);
   const [setup, setSetup] = useState(false);
+  const interacted = useRef(false);
   const [problem, setProblem] = useState<string | null>(null);
   const [more, setMore] = useState(false);
   const [filter, setFilter] = useState("");
@@ -129,7 +130,7 @@ export default function App() {
     let current = true;
     void doctor()
       .then((report) => {
-        if (current) setSetup(report.needs_setup);
+        if (current && !interacted.current) setSetup(report.needs_setup);
       })
       .catch((error: unknown) => {
         if (current)
@@ -219,7 +220,7 @@ export default function App() {
   };
 
   return (
-    <div className="chat-shell">
+    <div className="chat-shell" onClickCapture={() => { interacted.current = true; }} onKeyDownCapture={() => { interacted.current = true; }}>
       <nav className="app-rail" aria-label="Application">
         {(
           [
@@ -524,7 +525,14 @@ export default function App() {
             {page === "settings" && (
               <Settings theme={theme} onTheme={setTheme} onChanged={changed} />
             )}
-            {page === "schedule" && <Schedule tick={tick} />}
+            {page === "schedule" && (
+              <Suspense fallback={<p>Loading schedules…</p>}><Schedule
+                tick={tick}
+                // Scheduled work happens in one exact chat, so its result opens there
+                // rather than in whichever run the project last had.
+                onOpenChat={(slug, id) => navigate(slug, id)}
+              /></Suspense>
+            )}
             {page === "team" && <Roster onChanged={changed} />}
             {page === "analytics" && <Analytics tick={tick} />}
             {page === "today" && (

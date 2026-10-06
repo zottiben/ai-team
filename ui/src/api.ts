@@ -538,6 +538,8 @@ export function analytics(
 export type Reminder = {
   id: number;
   project_id: number | null;
+  /** The exact chat this fires into, for scheduled work that has one. */
+  chat_id: number | null;
   kind: "reminder" | "idea" | "scheduled_run";
   title: string;
   body: string;
@@ -548,6 +550,45 @@ export type Reminder = {
   last_fired_at: string | null;
 };
 
+export type ScheduleOccurrence = {
+  id: number;
+  occurrence_at: string;
+  claimed_at: string;
+  /** Occurrences the clock slept through before this one. */
+  skipped: number;
+  outcome:
+    | "claimed"
+    | "started"
+    | "busy"
+    | "refused"
+    | "failed"
+    | "interrupted";
+  detail: string | null;
+  run_id: number | null;
+  node_id: number | null;
+  settled_at: string | null;
+};
+
+export type ChatSchedule = {
+  id: number;
+  reminder_id: number;
+  chat_id: number;
+  project_id: number;
+  workspace_path: string;
+  prompt: string;
+  provider: string;
+  model: string;
+  mode: "single" | "team";
+  reminder: Reminder;
+  chat_title: string;
+  project_slug: string;
+  occurrences: ScheduleOccurrence[];
+};
+
+export function chatSchedules(): Promise<ChatSchedule[]> {
+  return api<ChatSchedule[]>("/chat-schedules");
+}
+
 export function reminders(project: string | null): Promise<Reminder[]> {
   const scope = project === null ? "" : `?project=${encodeURIComponent(project)}`;
   return api<Reminder[]>(`/reminders${scope}`);
@@ -557,6 +598,7 @@ export function addReminder(body: {
   title: string;
   kind?: Reminder["kind"];
   project?: string;
+  chat?: number;
   due_at?: string;
   recur?: string;
   prompt?: string;

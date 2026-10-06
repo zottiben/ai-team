@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
+const ChatCheckout = lazy(() => import("./ChatCheckout").then(m => ({ default: m.ChatCheckout })));
 import { FileView } from "./Review";
 import {
   acknowledgeDelivery, approveDelivery, chatChanges, committedFile, committedTree, inspectDelivery, previewDelivery, recordFinding, reviewDraft,
@@ -9,8 +10,8 @@ import "./chat-changes.css";
 const ACTIONS: Record<DeliveryAction, string> = {
   integrate: "Integrate locally", push: "Push draft", pull_request: "Open draft PR",
 };
-export function ChatChanges({ chatId, tick, disabled, onChanged }: {
-  chatId: number; tick: number; disabled: boolean; onChanged: () => void;
+export function ChatChanges({ chatId, tick, disabled, onChanged, onFeedback }: {
+  chatId: number; tick: number; disabled: boolean; onChanged: () => void; onFeedback?: (text: string) => void;
 }) {
   const [changes, setChanges] = useState<Changes | null>(null);
   const [review, setReview] = useState<DraftReview | null>(null);
@@ -50,11 +51,7 @@ export function ChatChanges({ chatId, tick, disabled, onChanged }: {
       {changes.issues.length > 0 && <div className="notice"><strong>Checkout or draft inspection is incomplete</strong><ul>{changes.issues.map((issue, n) => <li key={n}>{issue}</li>)}</ul></div>}
       <details>
         <summary>Working checkout · {changes.branch ?? "detached"} · {changes.staged.length} staged · {changes.unstaged.length} unstaged · {changes.untracked.length} untracked</summary>
-        <p className="faint">This checkout may be shared by other chats. These files are not attributed to this conversation. Reviewing or publishing a team draft does not stage, commit, stash or discard them.</p>
-        <p className="mono">{changes.workspace_path} · {changes.head ?? "no readable HEAD"}</p>
-        <h4>Staged</h4>{changes.staged.map((file) => <FileView key={file.path} file={file} />)}
-        <h4>Unstaged</h4>{changes.unstaged.map((file) => <FileView key={file.path} file={file} />)}
-        <h4>Untracked</h4><ul>{changes.untracked.map((path) => <li key={path} className="mono">{path}</li>)}</ul>
+        <Suspense fallback={<p>Loading checkout actions…</p>}><ChatCheckout chatId={chatId} tick={tick+refresh} disabled={disabled||!!pending} onChanged={onChanged} onFeedback={onFeedback}/></Suspense>
       </details>
       <h4>Verified drafts from this chat</h4>
       <p className="faint">Verification is not integration or publication. Each action needs its own exact approval. Draft review reads commit objects, not a returned worktree.</p>

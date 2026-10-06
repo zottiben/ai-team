@@ -14,8 +14,10 @@
 //! the same `run_workflow` the terminal and the window call, because a third way to start
 //! a run is a third thing to keep in step.
 
+use std::path::Path;
 use std::time::Duration;
 
+use crate::chat_schedule::{ClaimedOccurrence, DispatchedOccurrence};
 use crate::error::Result;
 use crate::model::{Reminder, ReminderKind};
 use crate::store::Store;
@@ -37,6 +39,19 @@ pub struct Fired {
     pub run_id: Option<i64>,
     /// Why nothing started, when it was a scheduled run that did not.
     pub problem: Option<String>,
+    /// What a chat schedule's occurrence became, already recorded. The caller supervises
+    /// a started turn; it does not decide whether one happened.
+    pub chat: Option<DispatchedOccurrence>,
+}
+
+/// One reminder this clock won, with its destination when it has one.
+///
+/// A chat schedule's claim carries the occurrence it took, because the claim is what
+/// makes it dispatchable: without it, deciding again later is deciding twice.
+#[derive(Debug, Clone)]
+pub struct Claimed {
+    pub reminder: Reminder,
+    pub chat: Option<ClaimedOccurrence>,
 }
 
 /// Claim everything that is due, and say what was claimed.
@@ -44,14 +59,26 @@ pub struct Fired {
 /// Claiming is separate from acting on it: this returns quickly and holds no lock while
 /// a workflow runs, which matters because a scheduled run takes minutes and the next tick
 /// is twenty seconds away.
-pub fn claim_due(store: &mut Store, at: &str) -> Result<Vec<Reminder>> {
+pub fn claim_due(store: &mut Store, at: &str) -> Result<Vec<Claimed>> {
     let due = store.due_reminders(at)?;
     let mut claimed = Vec::new();
     for reminder in due {
         // A loser here is the ordinary outcome when both the window and the daemon are
         // up, not an error worth reporting.
-        if let Some(taken) = store.claim_reminder(&reminder)? {
-            claimed.push(taken);
+        if reminder.chat_id.is_some() {
+            // One write advances the reminder and records the occurrence, so a clock that
+            // dies next leaves a claim that can be resolved rather than one to redo.
+            if let Some(taken) = store.claim_chat_schedule_occurrence(&reminder)? {
+                claimed.push(Claimed {
+                    reminder: taken.reminder.clone(),
+                    chat: Some(taken),
+                });
+            }
+        } else if let Some(taken) = store.claim_reminder(&reminder)? {
+            claimed.push(Claimed {
+                reminder: taken,
+                chat: None,
+            });
         }
     }
     Ok(claimed)
@@ -116,6 +143,9 @@ pub fn runnable(reminder: &Reminder) -> std::result::Result<(i64, String), Strin
     if reminder.kind != ReminderKind::ScheduledRun {
         return Err("not a scheduled run".into());
     }
+    // A chat schedule has a conversation and a checkout of its own. Planning and building
+    // a project around it would be a different piece of work in a different place.
+    crate::chat_schedule::never_legacy(reminder).map_err(|error| error.to_string())?;
     let project = reminder
         .project_id
         .ok_or("a scheduled run needs a project to run in")?;
@@ -138,17 +168,46 @@ pub fn runnable(reminder: &Reminder) -> std::result::Result<(i64, String), Strin
 /// spawned task in both processes that run it. The caller claims synchronously, drops
 /// its lock, and awaits this.
 ///
-/// `start` is passed in because core must not decide how a run is supervised.
-pub async fn act<F, Fut>(claimed: Vec<Reminder>, start: F) -> Vec<Fired>
+/// `start` is passed in because core must not decide how a legacy run is supervised. A
+/// chat schedule needs no such callback: its destination was recorded when it was made,
+/// and dispatching it is one short write against the chat that owns it.
+///
+/// Nothing here takes a model turn. What a started turn still needs is a supervisor, and
+/// that is the caller's to spawn - the clock must not be held for the minutes an agent
+/// takes while the next occurrence waits behind it.
+pub async fn act<F, Fut>(db: &Path, claimed: Vec<Claimed>, start: F) -> Vec<Fired>
 where
     F: Fn(i64, String) -> Fut,
     Fut: std::future::Future<Output = Result<Option<i64>>>,
 {
     let mut fired = Vec::new();
 
-    for reminder in claimed {
+    for Claimed { reminder, chat } in claimed {
         let (title, body) = announcement(&reminder);
         let _ = notify(&title, &body).await;
+
+        if let Some(claim) = chat {
+            let dispatched = crate::chat_schedule::dispatch(db, &claim).await;
+            fired.push(match dispatched {
+                Ok(done) => Fired {
+                    reminder,
+                    started: done.started(),
+                    run_id: done.run_id,
+                    problem: (!done.started()).then(|| done.detail.clone()),
+                    chat: Some(done),
+                },
+                // The claim stands unsettled and is resolved by the next sweep, which
+                // looks the turn up rather than assuming either way.
+                Err(error) => Fired {
+                    reminder,
+                    started: false,
+                    run_id: None,
+                    problem: Some(error.to_string()),
+                    chat: None,
+                },
+            });
+            continue;
+        }
 
         let (started, run_id, problem) = match runnable(&reminder) {
             Err(_) if reminder.kind != ReminderKind::ScheduledRun => (false, None, None),
@@ -167,6 +226,7 @@ where
             started,
             run_id,
             problem,
+            chat: None,
         });
     }
     fired
@@ -178,8 +238,9 @@ where
     F: Fn(i64, String) -> Fut,
     Fut: std::future::Future<Output = Result<Option<i64>>>,
 {
+    let db = store.path().to_path_buf();
     let claimed = claim_due(store, &now())?;
-    Ok(act(claimed, start).await)
+    Ok(act(&db, claimed, start).await)
 }
 
 #[cfg(test)]
@@ -303,7 +364,7 @@ mod tests {
 
         let claimed = claim_due(&mut store, &now()).unwrap();
         assert_eq!(claimed.len(), 1);
-        assert_eq!(claimed[0].title, "nightly sweep");
+        assert_eq!(claimed[0].reminder.title, "nightly sweep");
     }
 
     #[test]

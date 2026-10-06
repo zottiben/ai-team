@@ -13,6 +13,7 @@ import type { Chat } from "./chat-api";
 
 const state = vi.hoisted(() => ({
   setup: false,
+  readiness: null as Promise<{needs_setup:boolean}> | null,
   fail: false,
   subscribe: null as (() => void) | null,
   chats: [] as Chat[],
@@ -41,7 +42,7 @@ vi.mock("./api", async (original) => ({
             team_id: null,
           },
         ]),
-  doctor: () => Promise.resolve({ needs_setup: state.setup }),
+  doctor: () => state.readiness ?? Promise.resolve({ needs_setup: state.setup }),
   subscribe: (callback: () => void) => {
     state.subscribe = callback;
     return () => {
@@ -165,6 +166,7 @@ function conversation(id: number, title: string): Chat {
 
 beforeEach(() => {
   state.setup = false;
+  state.readiness = null;
   state.fail = false;
   state.run = Promise.resolve({ workspace_path: "/demo-task" });
   state.slice = "PR2";
@@ -187,6 +189,17 @@ it("opens chat-first with real chats beneath their project, not a run list", asy
     within(sidebar).getByRole("button", { name: "First conversation" }),
   ).not.toBeNull();
   expect(screen.queryByRole("heading", { name: "Today content" })).toBeNull();
+});
+
+it("does not steal a chosen chat when slow initial readiness finishes", async () => {
+  let finish!: (report: {needs_setup:boolean}) => void;
+  state.readiness = new Promise(resolve => { finish = resolve; });
+  render(<App />);
+  fireEvent.click(await screen.findByRole("button", {name:"Second conversation"}));
+  await screen.findByRole("heading", {name:"Demo project / 2"});
+  await act(async () => finish({needs_setup:true}));
+  expect(screen.queryByRole("heading", {name:"Welcome setup"})).toBeNull();
+  expect(screen.getByRole("heading", {name:"Demo project / 2"})).not.toBeNull();
 });
 
 it("selects a persisted chat and restores it after reload", async () => {

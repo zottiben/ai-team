@@ -120,6 +120,7 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/analytics", get(analytics))
         .route("/reminders", get(reminders).post(add_reminder))
         .route("/reminders/{id}", axum::routing::delete(drop_reminder))
+        .route("/chat-schedules", get(chat_schedules))
         .route("/reviews", get(reviews))
         .route("/reviews/{id}", get(review))
         .route("/reviews/{id}/comments", axum::routing::post(add_comment))
@@ -1872,6 +1873,46 @@ async fn reminders(
     Ok(Json(store.reminders(project, query.kind)?))
 }
 
+/// One schedule, with the chat it belongs to and what it has actually done.
+///
+/// The chat is named rather than left to be looked up from the project: a schedule whose
+/// result cannot be opened where it happened is a result nobody reads.
+#[derive(Debug, Serialize)]
+struct ChatScheduleView {
+    #[serde(flatten)]
+    schedule: ai_team_core::ChatSchedule,
+    reminder: ai_team_core::Reminder,
+    chat_title: String,
+    project_slug: String,
+    occurrences: Vec<ai_team_core::ChatScheduleOccurrence>,
+}
+
+async fn chat_schedules(
+    State(state): State<AppState>,
+    Query(query): Query<RemindersQuery>,
+) -> Result<Json<Vec<ChatScheduleView>>> {
+    let store = state.store()?;
+    let store = store.lock();
+    let project = match &query.project {
+        Some(slug) => Some(store.find_project(slug)?.id),
+        None => None,
+    };
+    store
+        .chat_schedules(project)?
+        .into_iter()
+        .map(|schedule| {
+            Ok(ChatScheduleView {
+                reminder: store.reminder(schedule.reminder_id)?,
+                chat_title: store.chat(schedule.chat_id)?.title,
+                project_slug: store.project(schedule.project_id)?.slug,
+                occurrences: store.chat_schedule_occurrences(schedule.id, 20)?,
+                schedule,
+            })
+        })
+        .collect::<Result<Vec<_>>>()
+        .map(Json)
+}
+
 #[derive(Debug, Deserialize)]
 struct NewReminderRequest {
     title: String,
@@ -1879,6 +1920,10 @@ struct NewReminderRequest {
     kind: Option<ai_team_core::ReminderKind>,
     #[serde(default)]
     project: Option<String>,
+    /// The exact chat this fires into. With it, nothing about the destination is
+    /// inferred later - not the checkout, not the model, not which run it joins.
+    #[serde(default)]
+    chat: Option<i64>,
     #[serde(default)]
     due_at: Option<String>,
     #[serde(default)]
@@ -1895,6 +1940,26 @@ async fn add_reminder(
 ) -> Result<Json<ai_team_core::Reminder>> {
     let store = state.store()?;
     let mut store = store.lock();
+    if let Some(chat) = request.chat {
+        if request.kind != Some(ai_team_core::ReminderKind::ScheduledRun) {
+            return Err(ai_team_core::Error::invalid(
+                "only scheduled work runs in a chat; a reminder or an idea belongs to whoever \
+                 reads it",
+            )
+            .into());
+        }
+        let due_at = request.due_at.clone().ok_or_else(|| {
+            ai_team_core::Error::invalid("a schedule needs a time, or it never fires")
+        })?;
+        let schedule = store.add_chat_schedule(ai_team_core::NewChatSchedule {
+            chat_id: chat,
+            title: request.title,
+            prompt: request.prompt.unwrap_or_default(),
+            due_at,
+            recur: request.recur,
+        })?;
+        return Ok(Json(store.reminder(schedule.reminder_id)?));
+    }
     let project = match &request.project {
         Some(slug) => Some(store.find_project(slug)?.id),
         None => None,

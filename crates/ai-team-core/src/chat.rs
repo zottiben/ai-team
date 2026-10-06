@@ -169,7 +169,10 @@ pub async fn drive_chat(db: &Path, chat_id: i64, node_id: i64, recovering: bool)
 }
 
 async fn drive(store: &mut Store, chat_id: i64, node_id: i64, recovering: bool) -> Result<()> {
-    let chat = store.chat(chat_id)?;
+    let mut chat = store.chat(chat_id)?;
+    if let Some(reasoning) = store.scheduled_reasoning(node_id)? {
+        chat.reasoning = reasoning;
+    }
     if chat.active_node_id != Some(node_id) {
         return Err(Error::invalid("that turn no longer owns this chat"));
     }

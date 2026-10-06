@@ -453,7 +453,7 @@ async fn clean(repo: &Path) -> Result<()> {
     }
     Ok(())
 }
-async fn origin(repo: &Path) -> Result<String> {
+pub(super) async fn origin(repo: &Path) -> Result<String> {
     let text = git(repo, &["remote", "get-url", "--push", "--all", "origin"]).await?;
     let urls: Vec<_> = text.lines().filter(|s| !s.is_empty()).collect();
     if urls.len() != 1
@@ -478,7 +478,7 @@ async fn origin(repo: &Path) -> Result<String> {
     }
     Ok(urls[0].to_owned())
 }
-async fn remote_head(repo: &Path, url: &str, branch: &str) -> Result<Option<String>> {
+pub(super) async fn remote_head(repo: &Path, url: &str, branch: &str) -> Result<Option<String>> {
     let text = git(
         repo,
         &["ls-remote", "--heads", url, &format!("refs/heads/{branch}")],
@@ -498,7 +498,7 @@ async fn remote_head(repo: &Path, url: &str, branch: &str) -> Result<Option<Stri
     }
     Ok(head)
 }
-fn string(value: &serde_json::Value, field: &str) -> Result<String> {
+pub(super) fn string(value: &serde_json::Value, field: &str) -> Result<String> {
     value
         .get(field)
         .and_then(serde_json::Value::as_str)

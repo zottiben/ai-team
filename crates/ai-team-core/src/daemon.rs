@@ -75,8 +75,15 @@ async fn settle_abandoned() -> Result<Vec<String>> {
 
 /// One tick: claim in a synchronous window, then act with no database open.
 pub async fn once() -> Result<Vec<Fired>> {
+    let db = crate::default_db_path()?;
     let (claimed, projects, notifications) = {
         let mut store = Store::open_default()?;
+        // Before claiming anything: a chat schedule's claim is committed before its turn
+        // is dispatched, so a scheduler killed in between leaves one to resolve. It is
+        // resolved by looking the turn up, and never by running the occurrence again.
+        if let Err(error) = store.sweep_chat_schedule_claims() {
+            eprintln!("scheduler: could not settle an interrupted claim: {error}");
+        }
         let claimed = schedule::claim_due(&mut store, &now())?;
         // Claimed in the same short synchronous window as reminders. `ait ui` and
         // `ait daemon` may both be alive, so native delivery must have one winner.
@@ -97,7 +104,7 @@ pub async fn once() -> Result<Vec<Fired>> {
         }
     }
 
-    Ok(schedule::act(claimed, move |project_id, prompt| {
+    let fired = schedule::act(&db, claimed, move |project_id, prompt| {
         let slug = projects
             .iter()
             .find(|(id, _)| *id == project_id)
@@ -133,5 +140,21 @@ pub async fn once() -> Result<Vec<Fired>> {
             Ok(None)
         }
     })
-    .await)
+    .await;
+
+    // Supervision is spawned after the occurrence's result is durable, and detached: a
+    // chat turn takes minutes, and the next tick is twenty seconds away.
+    for entry in &fired {
+        let Some(dispatched) = entry.chat.as_ref().filter(|chat| chat.started()) else {
+            continue;
+        };
+        let Some(node_id) = dispatched.node_id else {
+            continue;
+        };
+        let (db, chat_id, mode) = (db.clone(), dispatched.chat_id, dispatched.mode);
+        tokio::spawn(async move {
+            crate::chat_schedule::drive_scheduled(&db, chat_id, node_id, mode).await;
+        });
+    }
+    Ok(fired)
 }

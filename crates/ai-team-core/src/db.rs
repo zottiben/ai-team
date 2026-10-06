@@ -122,6 +122,16 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
         "chat follow-ups",
         include_str!("migrations/028_chat_followups.sql"),
     ),
+    (
+        30,
+        "chat schedules",
+        include_str!("migrations/030_chat_schedule.sql"),
+    ),
+    (
+        31,
+        "chat checkout actions",
+        include_str!("migrations/031_chat_checkout.sql"),
+    ),
 ];
 
 /// The number of `v_` views the schema ships. Asserted in tests, because a view silently

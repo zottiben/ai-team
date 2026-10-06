@@ -2575,6 +2575,27 @@ button.card:hover {
   padding: var(--space-2);
 }
 
+/* What the clock has actually done with this schedule. Dense on purpose: a fortnight of
+   nightly occurrences has to stay readable beside the thing that was scheduled. */
+.schedule__history {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  border-top: 1px solid var(--border-subtle-default);
+  padding-top: var(--space-2);
+}
+
+.schedule__history li {
+  display: flex;
+  gap: var(--space-2);
+  align-items: baseline;
+  color: var(--text-primary-muted);
+  font-size: var(--text-sm);
+}
+
 /* --- editor ------------------------------------------------------------------- */
 
 .editor {

@@ -168,8 +168,9 @@ pub(super) fn notify_chat_event(
 
 const NOTIFICATION_SELECT: &str = "SELECT id, project_id, workspace_path, run_id,
      node_run_id, kind, title, body, action_path, read_at, delivered_at, created_at,
-     (SELECT t.chat_id FROM chat_turn t JOIN chat c ON c.id = t.chat_id
-      WHERE t.run_id = notification.run_id AND c.project_id = notification.project_id)
+     COALESCE(notification.chat_id,
+      (SELECT t.chat_id FROM chat_turn t JOIN chat c ON c.id = t.chat_id
+       WHERE t.run_id = notification.run_id AND c.project_id = notification.project_id))
      FROM notification";
 
 fn notification_from_row(row: &Row<'_>) -> rusqlite::Result<Notification> {

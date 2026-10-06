@@ -12,6 +12,7 @@
 mod analytics;
 mod chat;
 pub mod chat_changes;
+mod chat_schedule;
 mod command;
 mod context;
 mod crew;
@@ -79,6 +80,10 @@ pub use gates::{all_passed, discover_gates, evidence, run_gates, Gate, GateKind,
 pub use guardrails::{node_may_continue, run_may_continue, Exceeded, Fallout};
 pub use model::TerminalState;
 // The Pi runtime (D20): the only runtime there is.
+pub use chat_schedule::{
+    dispatch as dispatch_chat_schedule, drive_scheduled as drive_scheduled_chat, ChatSchedule,
+    ChatScheduleOccurrence, ClaimedOccurrence, DispatchedOccurrence, NewChatSchedule,
+};
 pub use house::{
     read as read_house_rules, read_for as read_house_rules_for, section as house_section, Rules,
 };
@@ -102,8 +107,8 @@ pub use model::{
     NewNotification, NewProject, NewReminder, NewRepo, NodeRun, NodeStatus, Notification,
     OnFailure, Project, ProjectKind, ProjectRepo, ProjectSource, ProjectStatus, Provider,
     Reasoning, Recur, Reminder, ReminderKind, ReminderStatus, RemoteDeliveryStatus, Review,
-    ReviewComment, ReviewStatus, Run, RunOrigin, RunStatus, RunTrigger, Team, ToolEffect,
-    ToolPolicy, Usage,
+    ReviewComment, ReviewStatus, Run, RunOrigin, RunStatus, RunTrigger, ScheduleOutcome, Team,
+    ToolEffect, ToolPolicy, Usage,
 };
 pub use neighbours::{
     apply_patch_cached, branches, checkout, commit_staged, current_branch, file_sql_available,
@@ -139,7 +144,7 @@ pub use review::{
 pub use roles::{
     preset, RolePreset, DEFAULT_LOCAL_MODEL, DEFAULT_ROSTER, ROOT_ROLE, VERIFIER_ROLE,
 };
-pub use schedule::{act, announcement, claim_due, notify, runnable, tick, Fired, TICK};
+pub use schedule::{act, announcement, claim_due, notify, runnable, tick, Claimed, Fired, TICK};
 pub use seats::{describe as describe_stranded, reseat_stranded, Moved, Reseated, Survey};
 pub use secrets::{
     clear_token, forget_oauth, has_oauth, has_token, held as token_held, set_token,

@@ -99,6 +99,7 @@ impl Store {
             &format!("followup/{id}"),
             registry,
             Some(id),
+            None,
         )
     }
 

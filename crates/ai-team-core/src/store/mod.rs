@@ -7,6 +7,8 @@
 
 mod agents;
 mod chat_changes;
+mod chat_checkout;
+mod chat_schedules;
 mod chat_teams;
 mod chats;
 pub(crate) use chats::followups::acknowledge as acknowledge_chat_followup;
