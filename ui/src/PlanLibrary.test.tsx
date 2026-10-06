@@ -350,9 +350,9 @@ it("says what went wrong reading a database instead of silently showing nothing"
   expect(screen.queryByRole("button", { name: /^Preview/ })).toBeNull();
 });
 
-it("creates an empty destination chat with a model the operator picked, and no turn", async () => {
+it("can create an empty destination even when another exists, without starting a turn", async () => {
   const calls = stub({
-    board: board({ destinations: [] }),
+    board: board(),
     survey: survey(),
     preview: preview(),
   });
@@ -363,8 +363,8 @@ it("creates an empty destination chat with a model the operator picked, and no t
   await user.click(screen.getByRole("button", { name: "Read database" }));
   await user.click(await screen.findByRole("button", { name: "Preview ship-the-widget" }));
 
-  // With nowhere to import into, the page offers to make somewhere rather than
-  // choosing a chat for you.
+  // An existing empty chat must not force the operator to use that project/context.
+  // The operator can always create the destination they actually intend.
   await screen.findByLabelText("Import into");
   expect(
     screen.getByRole("button", { name: "Import into this chat" }).hasAttribute("disabled"),

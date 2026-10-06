@@ -432,7 +432,7 @@ function Import({
  *
  * Only idle, empty chats with no plan of their own are offered, because those are the
  * only ones the store will accept - a picker that listed more would be offering a
- * refusal. When there is none, a chat is created here with a model the operator picks;
+ * refusal. The operator can also create a chat with their chosen project and model;
  * creating one never starts a turn.
  */
 function Destination({
@@ -468,8 +468,8 @@ function Destination({
         An imported plan becomes that chat&rsquo;s own plan, so it has to be a chat that
         is idle, has run nothing, and has no plan yet.
       </p>
-      {destinations.length === 0 && !creating && (
-        <button className="button" onClick={() => setCreating(true)}>
+      {!creating && (
+        <button className="button" disabled={busy} onClick={() => setCreating(true)}>
           Create an empty chat
         </button>
       )}
