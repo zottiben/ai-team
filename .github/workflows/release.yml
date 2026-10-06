@@ -3,8 +3,8 @@ name: Release
 # Cut a release by pushing a version tag that matches the workspace version:
 #   git tag v0.1.0 && git push origin v0.1.0
 #
-# Builds the `ait` CLI (macOS universal, Linux x86_64/aarch64 and Windows x86_64) and
-# the desktop app (.app/.dmg, .AppImage/.deb and .msi/.exe), publishes a GitHub Release
+# Builds the `ait` CLI (macOS universal and Linux x86_64/aarch64) and
+# the desktop app (.app/.dmg and .AppImage/.deb), publishes a GitHub Release
 # and uploads checksums.txt. Asset names match what install/install.sh expects.
 #
 # macOS is ad-hoc signed by default, and that is enough for the curl install path: a
@@ -21,7 +21,7 @@ name: Release
 #   APPLE_API_KEY_ID        the API key's Key ID                            [notarise]
 #   APPLE_API_ISSUER        the API key's Issuer ID                         [notarise]
 #
-# Windows remains unsigned for personal use, so its installer may show SmartScreen.
+# Supported release platforms are macOS and Linux; Windows is not built.
 
 on:
   push:
@@ -246,71 +246,30 @@ jobs:
             ai-team-v*-linux-*.AppImage
             ai-team-v*-linux-*.deb
 
-  windows:
-    name: Windows x86_64
-    needs: verify
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.98.1
-        with:
-          targets: x86_64-pc-windows-msvc
-      - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: ui/package-lock.json
-
-      - name: Build the frontend
-        run: npm ci && npm run build
-        working-directory: ui
-
-      - name: Build the CLI
-        shell: pwsh
-        run: |
-          $Version = $env:GITHUB_REF_NAME.TrimStart('v')
-          cargo build --release -p ai-team --target x86_64-pc-windows-msvc
-          New-Item -ItemType Directory -Force stage | Out-Null
-          Copy-Item target/x86_64-pc-windows-msvc/release/ait.exe stage/ait.exe
-          Compress-Archive -Path stage/ait.exe -DestinationPath "ai-team-v$Version-windows-x86_64.zip"
-
-      # Personal-use build: deliberately unsigned, so SmartScreen can warn on first
-      # launch. Signing it without a certificate would only provide false assurance.
-      - name: Bundle the desktop app
-        run: npx @tauri-apps/cli@2 build --target x86_64-pc-windows-msvc
-        working-directory: crates/ai-team-desktop
-
-      - name: Normalise asset names
-        shell: pwsh
-        run: |
-          $Version = $env:GITHUB_REF_NAME.TrimStart('v')
-          $Bundle = "target/x86_64-pc-windows-msvc/release/bundle"
-          $Msi = Get-ChildItem "$Bundle/msi/*.msi" | Select-Object -First 1
-          $Exe = Get-ChildItem "$Bundle/nsis/*.exe" | Select-Object -First 1
-          Copy-Item $Msi.FullName "ai-team-v$Version-windows-x86_64.msi"
-          Copy-Item $Exe.FullName "ai-team-v$Version-windows-x86_64-setup.exe"
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: windows-x86_64
-          if-no-files-found: error
-          path: |
-            ai-team-v*-windows-x86_64.zip
-            ai-team-v*-windows-x86_64.msi
-            ai-team-v*-windows-x86_64-setup.exe
-
   release:
     name: publish
-    needs: [macos, linux, windows]
+    needs: [macos, linux]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
         with:
           merge-multiple: true
 
-      - name: Generate checksums
-        run: sha256sum ai-team-v* > checksums.txt
+      - name: Verify the complete asset set and generate checksums
+        run: |
+          set -eu
+          VERSION="${GITHUB_REF_NAME#v}"
+          for suffix in tar.gz dmg; do
+            test -s "ai-team-v${VERSION}-macos-universal.${suffix}"
+          done
+          for arch in x86_64 aarch64; do
+            for suffix in tar.gz AppImage deb; do
+              test -s "ai-team-v${VERSION}-linux-${arch}.${suffix}"
+            done
+          done
+          set -- ai-team-v*
+          test "$#" -eq 8
+          sha256sum "$@" > checksums.txt
 
       - name: Publish
         env:

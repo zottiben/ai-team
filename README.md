@@ -2,17 +2,18 @@
 
 A local Pi-powered coding workspace with persistent chats, built-in planning and a
 command Overview for each conversation. For one engineer, on their own machine.
-Optional team execution is being brought into the same chat-first workflow.
+Optional team execution shares the same chat-first workflow, with explicit build approval.
 
 It runs entirely on the subscriptions you already pay for - no metered API keys, and a
 per-machine profile so the work machine can deny a provider the personal machine allows.
 
-> **Development refactor.** Solo chats and chat-owned planning are implemented in this
-> checkout. The legacy team CLI below remains separate until team execution is integrated.
-> Test with isolated state; building this checkout does not replace the installed app.
+> **Chat-first release.** Solo/team chats, built-in planning, checkout tools and approved
+> worktree setup are available. Legacy run history remains separate; it is not converted
+> into chats. Operator acceptance testing continues independently of publication.
 
 Built for **macOS**, and developed on Linux — both are supported and both are gated in
-CI on every push.
+CI on every push. Releases include macOS universal and Linux x86_64/aarch64 builds.
+Windows is not a supported release platform.
 
 ## Install
 
@@ -24,8 +25,8 @@ On macOS this installs the `ait` CLI and, when the release archive carries one,
 `ai-team.app` into `/Applications`. The `.tar.gz` route carries no quarantine attribute,
 so it launches without a Gatekeeper prompt; a `.dmg` downloaded in a browser does not.
 
-Until the first release is tagged there is nothing to download, so the script falls back
-to building from source and needs a Rust toolchain ([rustup.rs](https://rustup.rs)).
+If a matching release archive is unavailable, the script can build from source with a
+Rust toolchain ([rustup.rs](https://rustup.rs)).
 
 ```sh
 ait init      # register this checkout; choose a provider in Settings (local is optional)
@@ -33,25 +34,33 @@ ait doctor    # paths, provider policy/reachability, and the embedded frontend
 ait ui        # open the window in a browser
 ```
 
-### Chats and built-in planning (development refactor)
+### Chats and built-in planning
 
-The development UI starts with persistent solo Pi chats. Each has **Chat | Overview**
-tabs. Overview can create an optional plan, edit scope and work slices, track reported
-progress, and answer human questions. Ordinary conversations need no plan; status and
-answers do not automatically execute work, verify changes, or approve tools.
+The UI starts with persistent Pi chats and chat-local **Overview, Review, Board and Work**
+panels. Ordinary conversations need no plan. Optional team work requires explicit approval
+of the exact ready slices; planning status and answers do not execute work or prove verification.
+
+**Plans** groups plans by project with editable Board/Plan views. Archived-chat plans are
+hidden by default and can be shown read-only. **Today** shows chat-owned activity and exact
+chat links, not legacy runs. Editor and Terminal stay bound to the chat's checkout.
+
+Existing checkout selection never resets files. Explicit new-worktree setup uses external
+AWT's normal pool reuse/reset and hooks, then refreshes detected locked dependencies before
+readiness. Failure retains the checkout and lease; inspection never replays acquisition.
 
 Planning uses a pinned planner engine, not the installed `aip`. Its data is beside the
 explicit team database as `<database>.planning.sqlite`; keep both together when backing
 up state. Chat-scoped MCP is served by the running ai-team binary itself. It accepts
 only the active chat/attempt and its allowed operations. Standalone planner data,
-configuration and global registrations are not changed or imported.
+configuration and global registrations are not changed. Import is an explicit, reviewed
+snapshot into AI Team-owned storage, never automatic or synchronized.
 
 Chat MCP uses generated planning/context definitions and unrelated checkout servers;
 it intentionally does not inherit global MCP discovery. Provider/OAuth settings and
-operator Pi extensions are preserved. The legacy team CLI below is still separate from
-chat planning; promoting an existing chat to a team is a later refactor slice.
+operator Pi extensions are preserved. The legacy team CLI below remains separate from
+chat execution. Commit, build verification, push, PR and merge are distinct authorities.
 
-### The team
+### Legacy team CLI
 
 `ait init` seeds six seats - an orchestrator, a planner, two makers and two checkers.
 The team is rows in the database - a seat is a set of flags on a Pi invocation, so
