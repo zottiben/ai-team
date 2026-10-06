@@ -150,8 +150,10 @@ ai-team. New planning commands use an ai-team namespace, not `aip`.
 
 The global **Plans** workspace groups plans by project and opens editable **Board / Plan**
 views in place: status lanes, slice details, the plan document, questions and history.
-Keep unsaved edits when changing views or plans. A separate Open chat action targets the
-exact owner; archived/frozen scope remains enforced by the owned planning service.
+Keep unsaved edits when changing views or plans. Hide archived-chat plans by default,
+with an explicit Show archived chat plans option; showing one never restores its chat.
+A separate Open chat action targets the exact owner; archived/frozen scope remains
+enforced by the owned planning service.
 An explicit standalone snapshot import supports retiring `aip` without
 sharing its storage: survey a named database, preview a plan, then approve its import
 into an idle, empty, plan-free chat. Preserve source content, history and provenance;

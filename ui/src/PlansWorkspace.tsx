@@ -29,14 +29,16 @@ export function PlansWorkspace({
         board.entries.map((entry) => [entry.chat_id, entry]),
       ),
     }));
-    const first = board.entries[0];
-    if (selected === null && first) {
-      setSelected(first.chat_id);
-      setOpened((previous) =>
-        previous.includes(first.chat_id)
-          ? previous
-          : [...previous, first.chat_id],
-      );
+    if (!board.entries.some((entry) => entry.chat_id === selected)) {
+      const first = board.entries[0];
+      setSelected(first?.chat_id ?? null);
+      if (first) {
+        setOpened((previous) =>
+          previous.includes(first.chat_id)
+            ? previous
+            : [...previous, first.chat_id],
+        );
+      }
     }
   }, [board.entries, selected]);
   const choose = (id: number) => {
@@ -50,7 +52,9 @@ export function PlansWorkspace({
       .toLowerCase()
       .includes(search.toLowerCase()),
   );
-  const current = selected === null ? null : known[selected];
+  // A removed/archived selection must disappear too, not linger in the editor.
+  // Its mounted draft is retained for an explicit later selection.
+  const current = board.entries.find((entry) => entry.chat_id === selected);
   return (
     <div className="plans-workspace">
       <nav className="plans-navigation" aria-label="Plans by project">
@@ -68,7 +72,7 @@ export function PlansWorkspace({
           <p className="faint">
             {board.projects.length
               ? "No plans match these filters."
-              : "No plans here yet. Plan inside a chat, or import a standalone plan below."}
+              : "No visible plans. Plan inside a chat, show archived chat plans, or import a standalone plan below."}
           </p>
         )}
         {board.projects.map((project) => {
@@ -132,7 +136,7 @@ export function PlansWorkspace({
           return (
             <section
               key={id}
-              hidden={selected !== id}
+              hidden={current?.chat_id !== id}
               className="plan-workspace-view"
               aria-label={`${entry.title} workspace`}
             >

@@ -43,6 +43,9 @@ struct BoardQuery {
     /// spells the same way. Absent is every status.
     #[serde(default)]
     status: Option<String>,
+    /// Archived chat plans are readable, but only on explicit opt-in.
+    #[serde(default)]
+    include_archived: bool,
 }
 
 async fn library(
@@ -66,6 +69,7 @@ async fn library(
     let filter = PlanLibraryFilter {
         project: query.project,
         status,
+        include_archived: query.include_archived,
     };
     Ok(Json(state.store()?.lock().plan_library(&filter)?))
 }

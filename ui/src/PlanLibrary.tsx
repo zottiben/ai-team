@@ -43,6 +43,7 @@ export function PlanLibrary({
   const [problem, setProblem] = useState<string | null>(null);
   const [project, setProject] = useState("");
   const [status, setStatus] = useState<"" | PlanStatus>("");
+  const [includeArchived, setIncludeArchived] = useState(false);
   const [reload, setReload] = useState(0);
   const importArea = useRef<HTMLDivElement>(null);
 
@@ -51,10 +52,14 @@ export function PlanLibrary({
     void planLibrary({
       project: project || null,
       status: status === "" ? [] : [status],
+      includeArchived,
     })
       .then((next) => {
         if (cancelled) return;
         setBoard(next);
+        setProject((current) =>
+          next.projects.some((entry) => entry.slug === current) ? current : "",
+        );
         setProblem(null);
       })
       .catch((error: unknown) => {
@@ -64,7 +69,7 @@ export function PlanLibrary({
     return () => {
       cancelled = true;
     };
-  }, [project, status, tick, reload]);
+  }, [project, status, includeArchived, tick, reload]);
 
   const refresh = () => setReload((value) => value + 1);
   return (
@@ -141,6 +146,14 @@ export function PlanLibrary({
                     </option>
                   ))}
                 </select>
+              </label>
+              <label className="plan-library-archived">
+                <input
+                  type="checkbox"
+                  checked={includeArchived}
+                  onChange={(event) => setIncludeArchived(event.target.checked)}
+                />
+                Show archived chat plans
               </label>
             </div>
           }

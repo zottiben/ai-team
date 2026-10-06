@@ -31,6 +31,14 @@
   font-size: var(--text-sm);
   color: var(--text-primary-muted);
 }
+.plan-library-filters .plan-library-archived {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.plan-library-archived input {
+  flex: 0 0 auto;
+}
 .plan-library-filters select,
 .plan-library-destination select,
 .plan-library-form select,

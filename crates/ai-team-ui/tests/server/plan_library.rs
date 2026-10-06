@@ -200,6 +200,70 @@ fn the_board_filters_by_project_and_status_and_needs_the_token() {
 }
 
 #[test]
+fn archived_chat_plans_are_hidden_by_default_and_readable_on_request() {
+    let (h, dir) = Harness::with_store();
+    let db = dir.path().join("team.db");
+    let active = chat(&db, dir.path());
+    let archived = chat(&db, dir.path());
+    for id in [active, archived] {
+        let created = h.post(
+            &format!("/api/chats/{id}/plan"),
+            &serde_json::json!({
+                "action": "create_plan", "expect_revision": 0, "title": format!("Plan {id}")
+            })
+            .to_string(),
+        );
+        assert_eq!(created.status, 200, "{}", created.body);
+    }
+    let mut store = Store::open(&db).unwrap();
+    store.archive_chat(archived, true).unwrap();
+    for url in [
+        "/api/plan-library",
+        "/api/plan-library?include_archived=false",
+    ] {
+        let board = h.get(url).json();
+        assert_eq!(board["entries"].as_array().unwrap().len(), 1);
+        assert_eq!(board["entries"][0]["chat_id"], active);
+        assert_eq!(board["projects"][0]["plans"], 1);
+    }
+    let all = h.get("/api/plan-library?project=widget&status=draft&include_archived=true");
+    assert_eq!(all.status, 200, "{}", all.body);
+    let all = all.json();
+    assert_eq!(all["entries"].as_array().unwrap().len(), 2);
+    assert_eq!(all["projects"][0]["plans"], 2);
+    assert!(all["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|entry| entry["chat_id"] == archived && entry["chat_archived"] == true));
+    let plan = h.get(&format!("/api/chats/{archived}/plan")).json();
+    assert_eq!(plan["archived"], true);
+    assert_eq!(plan["bundle"]["plan"]["title"], format!("Plan {archived}"));
+    assert_eq!(
+        h.get_anonymous("/api/plan-library?include_archived=true")
+            .status,
+        401
+    );
+    assert_eq!(
+        h.get("/api/plan-library?include_archived=maybe").status,
+        400
+    );
+
+    store.archive_chat(active, true).unwrap();
+    let empty = h.get("/api/plan-library").json();
+    assert_eq!(empty["entries"], serde_json::json!([]));
+    assert_eq!(empty["projects"], serde_json::json!([]));
+    assert!(
+        store.chat(archived).unwrap().archived,
+        "showing a plan must not restore its chat"
+    );
+    store.archive_chat(archived, false).unwrap();
+    let restored = h.get("/api/plan-library").json();
+    assert_eq!(restored["entries"].as_array().unwrap().len(), 1);
+    assert_eq!(restored["entries"][0]["chat_id"], archived);
+}
+
+#[test]
 fn a_request_carrying_anything_but_the_approval_is_refused() {
     let (h, dir) = Harness::with_store();
     let planner_db = dir.path().join("standalone.db");

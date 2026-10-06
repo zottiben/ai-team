@@ -78,6 +78,9 @@ impl Store {
                 );
                 continue;
             }
+            if chat.archived && !filter.include_archived {
+                continue;
+            }
             *counted.entry(project_id).or_default() += 1;
             if wanted.is_some_and(|id| id != project_id) {
                 continue;

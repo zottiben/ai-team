@@ -255,9 +255,33 @@ function stub(routes: {
         });
       }
       if (path.startsWith("/plan-library")) {
+        const source = routes.board ?? board();
+        const query = new URLSearchParams(path.split("?")[1]);
+        const entries = source.entries.filter(
+          (entry) =>
+            !entry.chat_archived || query.get("include_archived") === "true",
+        );
+        const projects = source.projects
+          .map((project) => ({
+            ...project,
+            plans: entries.filter((entry) => entry.project_id === project.id)
+              .length,
+          }))
+          .filter((project) => project.plans > 0);
         return Promise.resolve({
           ok: true,
-          json: () => Promise.resolve(routes.board ?? board()),
+          json: () =>
+            Promise.resolve({
+              ...source,
+              projects,
+              entries: entries.filter(
+                (entry) =>
+                  (!query.has("project") ||
+                    query.get("project") === entry.project_slug) &&
+                  (!query.has("status") ||
+                    query.get("status") === entry.status),
+              ),
+            }),
         });
       }
       const planPath = /^\/chats\/(\d+)\/plan$/.exec(path);
@@ -415,6 +439,113 @@ it("keeps section drafts across Board/Plan and project switches without writing 
   expect(open).not.toHaveBeenCalled();
   expect(calls.every((call) => call.method === "GET")).toBe(true);
 });
+it("hides archived-chat plans by default and offers a read-only opt-in even when every chat is archived", async () => {
+  const data = board();
+  data.entries = data.entries
+    .slice(1)
+    .map((entry) => ({ ...entry, chat_archived: true }));
+  const calls = stub({ board: data });
+  const open = vi.fn();
+  render(<PlanLibrary tick={0} onOpenChat={open} />);
+  const toggle = await screen.findByRole("checkbox", {
+    name: "Show archived chat plans",
+  });
+  expect((toggle as HTMLInputElement).checked).toBe(false);
+  expect(
+    screen.queryByRole("button", { name: "Open plan Retire the gadget" }),
+  ).toBeNull();
+  expect(calls.some((call) => call.url === "/chats/9/plan")).toBe(false);
+  const user = userEvent.setup();
+  await user.click(toggle);
+  await user.click(
+    await screen.findByRole("button", { name: "Open plan Retire the gadget" }),
+  );
+  expect(await screen.findByText(/This chat is archived/)).toBeTruthy();
+  expect(
+    screen.getByRole("button", { name: "Add slice" }).matches(":disabled"),
+  ).toBe(true);
+  await user.click(screen.getByRole("button", { name: "Open Gadget cleanup" }));
+  expect(open).toHaveBeenCalledWith("gadget", 9);
+  await user.click(toggle);
+  await waitFor(() =>
+    expect(
+      screen.queryByRole("region", { name: "Retire the gadget workspace" }),
+    ).toBeNull(),
+  );
+  expect(
+    screen.queryByRole("button", { name: "Open plan Retire the gadget" }),
+  ).toBeNull();
+  expect(
+    calls.some((call) => call.url === "/plan-library?include_archived=true"),
+  ).toBe(true);
+  expect(calls.every((call) => call.method === "GET")).toBe(true);
+});
+
+it("hides an opened archived plan without losing another plan's unsaved draft", async () => {
+  const data = board();
+  data.entries[1]!.chat_archived = true;
+  const calls = stub({ board: data });
+  render(<PlanLibrary tick={0} onOpenChat={vi.fn()} />);
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole("button", { name: "Plan" }));
+  await user.click(screen.getByRole("button", { name: "Edit Grounding" }));
+  await user.type(
+    screen.getByRole("textbox", { name: "Content" }),
+    " — keep this draft",
+  );
+  const toggle = screen.getByRole("checkbox", {
+    name: "Show archived chat plans",
+  });
+  await user.click(toggle);
+  await user.click(
+    await screen.findByRole("button", { name: "Open plan Retire the gadget" }),
+  );
+  await screen.findByText(/This chat is archived/);
+  await user.selectOptions(screen.getByLabelText("Project"), "gadget");
+  await waitFor(() =>
+    expect(
+      calls.some(
+        (call) =>
+          call.url === "/plan-library?project=gadget&include_archived=true",
+      ),
+    ).toBe(true),
+  );
+  await user.click(toggle);
+  await waitFor(() =>
+    expect(
+      screen.queryByRole("region", { name: "Retire the gadget workspace" }),
+    ).toBeNull(),
+  );
+  expect(
+    (
+      (await screen.findByRole("textbox", {
+        name: "Content",
+      })) as HTMLTextAreaElement
+    ).value,
+  ).toBe("Widget scope — keep this draft");
+  expect((screen.getByLabelText("Project") as HTMLSelectElement).value).toBe(
+    "",
+  );
+  expect(calls.every((call) => call.method === "GET")).toBe(true);
+});
+
+it("hides a selected plan if its chat is archived during refresh", async () => {
+  const data = board();
+  stub({ board: data });
+  const { rerender } = render(<PlanLibrary tick={0} onOpenChat={vi.fn()} />);
+  await screen.findByRole("region", { name: "Ship the widget workspace" });
+  data.entries[0]!.chat_archived = true;
+  rerender(<PlanLibrary tick={1} onOpenChat={vi.fn()} />);
+  await waitFor(() =>
+    expect(
+      screen.queryByRole("region", { name: "Ship the widget workspace" }),
+    ).toBeNull(),
+  );
+  expect(
+    await screen.findByRole("region", { name: "Retire the gadget workspace" }),
+  ).toBeTruthy();
+});
+
 it("changes a board slice through the exact owning chat and reviewed revision", async () => {
   const calls = stub({});
   render(<PlanLibrary tick={0} onOpenChat={vi.fn()} />);
@@ -473,7 +604,9 @@ it.each([
     ).toBe(true);
     await user.click(screen.getByRole("button", { name: "Plan" }));
     expect(
-      screen.getByRole("button", { name: "Edit Grounding" }).matches(":disabled"),
+      screen
+        .getByRole("button", { name: "Edit Grounding" })
+        .matches(":disabled"),
     ).toBe(true);
     expect(
       screen

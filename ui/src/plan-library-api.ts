@@ -149,10 +149,12 @@ export type PlanImported = {
 export function planLibrary(filter: {
   project?: string | null;
   status?: PlanStatus[];
+  includeArchived?: boolean;
 }): Promise<PlanLibrary> {
   const query = new URLSearchParams();
   if (filter.project) query.set("project", filter.project);
   if (filter.status?.length) query.set("status", filter.status.join(","));
+  if (filter.includeArchived) query.set("include_archived", "true");
   const search = query.toString();
   return api<PlanLibrary>(`/plan-library${search ? `?${search}` : ""}`);
 }

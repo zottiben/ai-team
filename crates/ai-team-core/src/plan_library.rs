@@ -18,20 +18,22 @@ use serde::{Deserialize, Serialize};
 
 use crate::planning::PlanStatus;
 
-/// Which plans the board should show. Empty means everything ai-team owns.
+/// Which plans the board should show. Archived chats are hidden by default.
 #[derive(Debug, Clone, Default)]
 pub struct PlanLibraryFilter {
     /// A project slug. `None` is every project.
     pub project: Option<String>,
     /// Statuses to keep. Empty is every status.
     pub status: Vec<PlanStatus>,
+    /// Include readable plans belonging to archived chats; never restore their owners.
+    pub include_archived: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct PlanLibrary {
     pub entries: Vec<PlanLibraryEntry>,
-    /// Every project that owns a plan, filtered or not, so the picker keeps its options
-    /// after a filter hides the rows they came from.
+    /// Every project with a plan in the chosen archive scope, regardless of project or
+    /// status filters, so those filters do not remove the picker's other options.
     pub projects: Vec<PlanLibraryProject>,
     /// Chats an import may be approved into, right now.
     pub destinations: Vec<PlanImportTarget>,
