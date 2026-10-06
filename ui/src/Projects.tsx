@@ -124,7 +124,7 @@ export function Projects({ onChanged }: { onChanged: () => void }) {
           - the server expands it, because a window has no shell in front of it. */}
       <p className="faint">
         The path to a repository, starting with <code className="mono">/</code> or{" "}
-        <code className="mono">~</code>. Point at anywhere inside it and ai-team registers the
+        <code className="mono">~</code>. Point at anywhere inside it and AI Team registers the
         repository root.
       </p>
 

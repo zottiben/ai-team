@@ -2,6 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react"
 
 import { Analytics } from "./Analytics";
 import { ChatView } from "./Chat";
+import logo from "../../crates/ai-team-desktop/icons/mark.svg";
 import { Notifications } from "./Notifications";
 import { Projects } from "./Projects";
 import { Roster } from "./Roster";
@@ -37,7 +38,8 @@ type Page =
   | "today"
   | "analytics"
   | "team"
-  | "tools";
+  | "tools"
+  | "legacy";
 const LAST_CHAT = "ai-team.last-chat";
 
 function restored(): { project: string | null; chat: number | null } {
@@ -84,6 +86,7 @@ export default function App() {
   const [trees, setTrees] = useState<Worktree[]>([]);
   const [workspace, setWorkspace] = useState<string | null>(null);
   const [tool, setTool] = useState<WorkspaceView>("editor");
+  const [legacyView, setLegacyView] = useState<WorkspaceView>("work");
   const [openRun, setOpenRun] = useState<number | null>(null);
   const [openReview, setOpenReview] = useState<number | null>(null);
   const toolNavigation = useRef(0);
@@ -163,7 +166,7 @@ export default function App() {
       setChatId(null);
   }, [conversations, projectSlug, chatId]);
   useEffect(() => {
-    if (page !== "tools" || !projectSlug) return;
+    if ((page !== "tools" && page !== "legacy") || !projectSlug) return;
     let current = true;
     void worktrees(projectSlug)
       .then((found) => {
@@ -211,8 +214,8 @@ export default function App() {
       setWorkspace(detail?.workspace_path ?? null);
       setOpenRun(review === null ? run : null);
       setOpenReview(review);
-      setTool(review === null ? "work" : "review");
-      setPage("tools");
+      setLegacyView(review === null ? "work" : "review");
+      setPage("legacy");
     } catch (error) {
       if (request === toolNavigation.current)
         setProblem(error instanceof Error ? error.message : String(error));
@@ -277,7 +280,8 @@ export default function App() {
       </nav>
       <aside className="chat-sidebar">
         <div className="chat-brand">
-          <strong>ai-team</strong>
+          <img src={logo} width="28" height="28" alt="AI Team logo" />
+          <strong>AI Team</strong>
           <Notifications
             tick={tick}
             onOpen={(notification) => {
@@ -295,8 +299,8 @@ export default function App() {
               setProjectSlug(owner.slug);
               setWorkspace(notification.workspace_path);
               setOpenRun(notification.run_id);
-              setTool("work");
-              setPage("tools");
+              setLegacyView("work");
+              setPage("legacy");
               setSetup(false);
             }}
           />
@@ -471,10 +475,13 @@ export default function App() {
               </button>
             </main>
           )
-        ) : page === "tools" ? (
+        ) : page === "tools" || page === "legacy" ? (
           project ? (
             <>
-              <nav className="project-tool-tabs" aria-label="Project tools">
+              {page === "legacy" ? <nav className="project-tool-tabs" aria-label="Legacy execution">
+                <button className="button" onClick={() => setPage("today")}>Back to Today</button>
+                <span className="faint">Legacy execution · {project.name} · {workspaceViewName(legacyView)}</span>
+              </nav> : <nav className="project-tool-tabs" aria-label="Project tools">
                 <select
                   aria-label="Project checkout"
                   value={workspace ?? ""}
@@ -497,19 +504,19 @@ export default function App() {
                     {workspaceViewName(view)}
                   </button>
                 ))}
-              </nav>
+              </nav>}
               {selectedTree ? (
                 <Workspace
                   project={project}
                   workspace={selectedTree}
-                  view={tool}
+                  view={page === "legacy" ? legacyView : tool}
                   tick={tick}
                   openRun={openRun}
                   onOpenedRun={() => setOpenRun(null)}
                   openReview={openReview}
                   onOpenedReview={() => setOpenReview(null)}
                   onChanged={changed}
-                  onGo={setTool}
+                  onGo={page === "legacy" ? setLegacyView : setTool}
                   onTeamStarted={changed}
                 />
               ) : (

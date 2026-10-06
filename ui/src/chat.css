@@ -57,6 +57,7 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 0.55rem;
   min-height: 2rem;
   margin: 0 0.5rem 1.3rem;
 }
@@ -64,9 +65,17 @@
   font-size: 1.15rem;
   font-weight: 600;
   letter-spacing: -0.03em;
+  white-space: nowrap;
 }
-.chat-brand .notifications {
+.chat-brand > img {
+  flex-shrink: 0;
+}
+.chat-brand .notification-center {
   margin-left: auto;
+}
+.chat-brand .notification-center > button {
+  padding: 0.25rem;
+  gap: 0.2rem;
 }
 .chat-new {
   display: flex;
@@ -237,14 +246,15 @@
   border-color: transparent;
   color: var(--text-primary-muted);
 }
-.chat-tabs {
+.chat-toolbar {
   display: flex;
-  gap: 1.2rem;
+  flex-wrap: wrap;
+  gap: 1rem;
   align-items: center;
   padding: 0 1.5rem;
   border-bottom: 1px solid var(--border-subtle-default);
 }
-.chat-tabs > button {
+.chat-toolbar > button {
   border: 0;
   border-bottom: 2px solid transparent;
   padding: 0.65rem 0;
@@ -252,7 +262,7 @@
   background: transparent;
   font-size: var(--text-sm);
 }
-.chat-tabs > button[aria-selected="true"] {
+.chat-toolbar > button[aria-expanded="true"] {
   color: var(--text-primary-default);
   border-bottom-color: var(--text-primary-default);
 }
@@ -270,6 +280,49 @@
 .chat-state[data-state="team_blocked"],
 .chat-state[data-state="team_interrupted"] {
   color: var(--status-blocked-default);
+}
+.chat-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.chat-body[data-context="true"] {
+  grid-template-columns: minmax(0, 1fr) minmax(22rem, 45%);
+}
+.chat-conversation {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+}
+.chat-context {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  border-left: 1px solid var(--border-subtle-default);
+  background: var(--surface-panel-default);
+}
+.chat-context-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.6rem 1rem;
+}
+.chat-context-heading h2 {
+  font-size: var(--text-md);
+  font-weight: 500;
+  margin: 0;
+}
+.chat-context-pane {
+  min-height: 0;
+  overflow: auto;
+  padding: 0 1rem 1rem;
+}
+.chat-context .plan-heading {
+  flex-wrap: wrap;
 }
 .chat-panel {
   display: flex;
@@ -297,6 +350,8 @@
   min-height: 8rem;
 }
 .chat-panel[hidden],
+.chat-context[hidden],
+.chat-context-pane[hidden],
 .chat-tools-panel[hidden],
 .chat-tool-pane[hidden] {
   display: none;
@@ -317,9 +372,8 @@
   padding-bottom: 2rem;
 }
 .chat-empty-mark {
-  font-size: 3rem;
-  color: var(--text-primary-faint);
-  line-height: 1;
+  width: 4rem;
+  height: 4rem;
   margin-bottom: 1.5rem;
 }
 .chat-empty h2 {
@@ -411,7 +465,8 @@
 }
 .chat-composer-context {
   display: flex;
-  gap: 1rem;
+  flex-wrap: wrap;
+  gap: 0.5rem 1rem;
   color: var(--text-primary-muted);
   font-size: var(--text-xs);
   margin-bottom: 0.6rem;
@@ -434,6 +489,7 @@
 }
 .chat-composer-bottom {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 0.8rem;
   font-size: var(--text-xs);
@@ -492,21 +548,6 @@
 }
 .chat-follow {
   align-self: center;
-}
-.chat-overview {
-  width: 100%;
-  overflow-y: auto;
-  padding: 1.5rem;
-}
-.chat-overview > h2 {
-  font-size: var(--text-lg);
-  font-weight: 500;
-  margin-top: 0;
-}
-.chat-overview-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 1rem;
 }
 .chat-overview-card {
   background: var(--surface-panel-default);
@@ -578,12 +619,30 @@
     animation: none;
   }
 }
+@media (max-width: 1200px) {
+  .chat-body[data-context="true"] {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
+  }
+  .chat-body[data-context="true"] .chat-composer textarea {
+    min-height: 2.5rem;
+    height: 2.5rem;
+  }
+  .chat-context {
+    border-left: 0;
+    border-top: 1px solid var(--border-subtle-default);
+  }
+}
 @media (max-width: 900px) {
   .chat-shell {
     grid-template-columns: 3rem 12rem minmax(0, 1fr);
   }
-  .chat-overview-grid {
-    grid-template-columns: 1fr;
+  .chat-brand strong {
+    font-size: 1rem;
+  }
+  .chat-brand > img {
+    width: 24px;
+    height: 24px;
   }
   .chat-header-actions {
     gap: 0;

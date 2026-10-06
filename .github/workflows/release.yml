@@ -141,7 +141,8 @@ jobs:
           set -eux
           VERSION="${GITHUB_REF_NAME#v}"
           B=target/universal-apple-darwin/release/bundle
-          cp -R "$B/macos/ai-team.app" dist/ai-team.app
+          # Keep the updater/archive path stable while the app displays AI Team.
+          cp -R "$B/macos/AI Team.app" dist/ai-team.app
           cp "$B/dmg/"*.dmg "dist/ai-team-v${VERSION}-macos-universal.dmg"
           # The CLI and the app travel together: `ait ui` and the window are the same
           # program, and someone who installs one will want the other.

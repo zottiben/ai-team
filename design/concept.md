@@ -18,7 +18,8 @@ Three differences define ai-team:
 3. **Every chat has an Overview.** A dedicated command surface for that chat's
    plan, agents, approvals, execution controls and delivery.
 
-Keep the ai-team name and identity. Codex is the interaction and visual reference,
+Display the name **AI Team** and the existing teal logo; keep the stable app identifier,
+CLI/package names and data locations. Codex is the interaction and visual reference,
 not a reason to preserve the old dashboard-first product with different colours.
 
 ## Primary experience
@@ -39,12 +40,17 @@ Use restrained hierarchy, typography, spacing and semantic light/dark tokens in
 line with the reference app. Inspect working, approval, error and review states,
 not just its empty screen. Keyboard operation and reduced motion remain supported.
 
-### Chat and Overview
+### One chat workspace
 
-Every chat has sibling **Chat | Overview** tabs. Chat is the conversational
-surface; Overview commands the same work, not the project's latest run.
+The conversation and composer stay in place. **Overview, Review, Board and Work**
+open as contextual panels alongside that conversation, not a separate Chat/Overview
+tab hierarchy. These panels command the selected chat's own work, never the project's
+latest run. Switching panels preserves unsent messages and review/plan drafts.
 
-Overview contains:
+Project tools contain only **Editor, Terminal, Source and Team**. Legacy run/review
+links from Today remain separate history routes, not project tools or chat commands.
+
+The chat's command panels contain:
 - the plan, questions, approvals and evidence-backed progress;
 - live agent activity, including the current tool/command and elapsed time;
 - applicable stop, resume and retry controls with explicit target and effect;

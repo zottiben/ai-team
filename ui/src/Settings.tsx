@@ -73,7 +73,7 @@ export function Settings({
       <section className="settings__group">
         <h3>Models</h3>
         <p className="faint">
-          ai-team only ever uses subscriptions and local models - never a metered API key.
+          AI Team only ever uses subscriptions and local models - never a metered API key.
           Ticking one here says this machine is allowed to use it; whether it answers is a
           separate question, and both are shown.
         </p>

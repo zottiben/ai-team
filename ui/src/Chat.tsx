@@ -9,8 +9,9 @@ import {
 } from "react";
 
 import { BoardMarkdown } from "./BoardMarkdown";
-import { ChatPlanning } from "./ChatPlan";
-import { ChatTeam, TEAM_PHASES } from "./ChatTeam";
+import { CHAT_PANELS, ChatContext, type ChatPanel } from "./ChatContext";
+import { TEAM_PHASES } from "./ChatTeam";
+import logo from "../../crates/ai-team-desktop/icons/mark.svg";
 import { setChatMode } from "./team-api";
 import { models, type ModelChoice, type Project, type RunEvent } from "./api";
 import {
@@ -29,7 +30,6 @@ import {
   type ChatFollowup,
 } from "./chat-api";
 
-const ChatChanges = lazy(() => import("./ChatChanges").then((module) => ({ default: module.ChatChanges })));
 const Editor = lazy(() => import("./Editor").then((module) => ({ default: module.Editor })));
 const Terminal = lazy(() => import("./Terminal").then((module) => ({ default: module.TerminalPane })));
 
@@ -65,7 +65,8 @@ export function ChatView({
 }) {
   const [detail, setDetail] = useState<ChatDetail | null>(null);
   const [events, setEvents] = useState<RunEvent[]>([]);
-  const [view, setView] = useState<"chat" | "overview">("chat");
+  const [panel, setPanel] = useState<ChatPanel | null>(null);
+  const [openedPanels, setOpenedPanels] = useState<ReadonlySet<ChatPanel>>(new Set());
   const [tool, setTool] = useState<"editor" | "terminal" | null>(null);
   const [openedTools, setOpenedTools] = useState({ editor: false, terminal: false });
   const [catalogue, setCatalogue] = useState<ModelChoice[]>([]);
@@ -87,6 +88,16 @@ export function ChatView({
   const submission = useRef<{ body: string; key: string } | null>(null);
   const queuedSubmission = useRef<{ body: string; key: string; node: number; kind: ChatFollowup["kind"] } | null>(null);
   const feed = useRef<HTMLDivElement | null>(null);
+  const composer = useRef<HTMLTextAreaElement | null>(null);
+  const openPanel = (next: ChatPanel) => {
+    setPanel(next);
+    setTool(null);
+    setOpenedPanels(previous => new Set([...previous, next]));
+  };
+  const closePanel = () => {
+    if (panel) document.getElementById(`chat-context-${panel}`)?.focus();
+    setPanel(null);
+  };
 
   useEffect(() => {
     alive.current = true;
@@ -162,11 +173,6 @@ export function ChatView({
   const mode = detail?.mode ?? newMode;
   const queued = detail?.followups?.find((item) => item.state === "queued");
   const canQueue = detail?.state === "running" && !activeTeam && mode === "single" && !detail.stop_requested && !queued;
-  const currentEvents = events.filter(
-    (event) =>
-      event.node_run_id === (detail?.active_node_id ?? latest?.node.id),
-  );
-  const lastActivity = currentEvents.at(-1);
   const started = latest?.node.started_at;
   const elapsed = started
     ? Math.max(
@@ -188,7 +194,7 @@ export function ChatView({
   useLayoutEffect(() => {
     if (following && feed.current)
       feed.current.scrollTop = feed.current.scrollHeight;
-  }, [following, events.length, detail?.live_text, view]);
+  }, [following, events.length, detail?.live_text, tool]);
 
   const send = async () => {
     if (busy || active || queued || !message.trim() || (id !== null && detail === null))
@@ -372,28 +378,16 @@ export function ChatView({
           </div>
         )}
       </header>
-      <div className="chat-tabs" role="tablist" aria-label="Chat views">
-        {(["chat", "overview"] as const).map((tab) => (
-          <button
-            key={tab}
-            id={`chat-tab-${tab}`}
-            role="tab"
-            aria-selected={view === tab}
-            aria-controls="chat-panel"
-            tabIndex={view === tab ? 0 : -1}
-            onKeyDown={(event) => {
-              if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
-                const next = tab === "chat" ? "overview" : "chat";
-                setView(next);
-                setTool(null);
-                document.getElementById(`chat-tab-${next}`)?.focus();
-              }
-            }}
-            onClick={() => { setView(tab); setTool(null); }}
-          >
-            {tab === "chat" ? "Chat" : "Overview"}
-          </button>
-        ))}
+      <div className="chat-toolbar" role="group" aria-label="Chat tools">
+        {(Object.keys(CHAT_PANELS) as ChatPanel[]).map(name => <button
+          key={name}
+          id={`chat-context-${name}`}
+          aria-expanded={panel === name && tool === null}
+          aria-controls="chat-context"
+          disabled={!detail}
+          onClick={() => panel === name && tool === null ? closePanel() : openPanel(name)}
+        >{CHAT_PANELS[name]}</button>)}
+        {controls}
         <span
           className="chat-state"
           role="status"
@@ -405,7 +399,7 @@ export function ChatView({
       {detail?.recovery_error && (
         <p className="error chat-notice" role="alert">
           Initial recovery could not inspect interrupted work: {detail.recovery_error}.
-          {" "}No work was resumed. Restart ai-team to retry automatic recovery.
+          {" "}No work was resumed. Restart AI Team to retry automatic recovery.
         </p>
       )}
       {problem && (
@@ -420,89 +414,18 @@ export function ChatView({
           {detail.orphan_running
             ? " The original Pi process is still running. It must exit before another turn can use this checkout."
             : detail.stop_requested && queued?.kind === "steer" ? " Finish the pending stop before sending the queued steering. Stop turn instead cancels that instruction." : " Resume it, or stop it and send a new instruction."}
-          {controls}
         </div>
       )}
-      {activeTeam && view === "chat" && <div className="chat-notice notice">
+      {activeTeam && <div className="chat-notice notice">
         <strong>{TEAM_PHASES[activeTeam.phase]}.</strong> {activeTeam.reason}
-        <button className="button" onClick={() => { setView("overview"); setTool(null); }}>Open team controls</button>
+        <button className="button" onClick={() => openPanel("work")}>Open team controls</button>
       </div>}
       {latest?.node.blocked_reason && !active && (
         <p className="chat-notice notice">{latest.node.blocked_reason}</p>
       )}
-      <div
-        id="chat-panel"
-        role="tabpanel"
-        aria-labelledby={`chat-tab-${view}`}
-        className="chat-panel"
-        hidden={tool !== null}
-      >
-        {view === "overview" ? (
-          <div className="chat-overview">
-            <h2>This conversation</h2>
-            <div className="chat-overview-grid">
-              <section className="chat-overview-card">
-                <h3>Execution</h3>
-                <strong>{LABELS[detail?.state ?? "empty"]}</strong>
-                <p>{activeTeam ? "Pi team · chat-owned draft worktrees" : "Single Pi agent · local checkout"}</p>
-                {running && (
-                  <>
-                    <div
-                      className="chat-live-meter"
-                      role="progressbar"
-                      aria-label="Agent working"
-                    />
-                    <p className="mono">
-                      {Number.isFinite(elapsed) ? elapsed : 0}s elapsed
-                    </p>
-                  </>
-                )}
-                <p>
-                  {lastActivity?.summary ??
-                    "Send a message to begin. No team or plan is required."}
-                </p>
-                {controls}
-              </section>
-              <section className="chat-overview-card">
-                <h3>Working context</h3>
-                <p className="mono">{detail?.workspace_path ?? project.name}</p>
-                <p>
-                  {detail
-                    ? `${detail.provider} / ${detail.model}`
-                    : "Choose a model below"}
-                </p>
-                <p className="faint">
-                  {activeTeam
-                    ? "This is the persistent solo checkout. Team builds use separate draft worktrees and never merge here automatically."
-                    : "Changes stay in this checkout. Completion is not an automatic commit or verification verdict."}
-                </p>
-              </section>
-            </div>
-            {detail && (detail.mode === "team" || detail.team_builds.length > 0) && <ChatTeam detail={detail} busy={busy} command={command} events={events} now={clock} />}
-            {detail && <ChatPlanning key={detail.id} chatId={detail.id} tick={tick} archived={detail.archived} frozen={activeTeam?.approved_revision != null} onChanged={onChanged} />}
-            {detail && <Suspense fallback={<p className="faint">Loading changes…</p>}><ChatChanges key={`changes-${detail.id}`} chatId={detail.id} tick={tick} disabled={detail.archived || detail.active_node_id !== null} onChanged={onChanged} onFeedback={(text) => { setMessage((old) => old ? `${old}\n\n${text}` : text); setView("chat"); }} /></Suspense>}
-            <section className="chat-overview-card">
-              <h3>Turns</h3>
-              {!detail?.turns.length ? (
-                <p className="faint">No turns yet.</p>
-              ) : (
-                <ol className="chat-turn-list">
-                  {detail.turns.map((turn) => (
-                    <li key={turn.run.id}>
-                      <span>{turn.run.prompt}</span>
-                      <span className="status" data-status={turn.team ? turn.run.status : turn.node.status}>
-                        {turn.team ? TEAM_PHASES[turn.team.phase] : turn.node.status}
-                      </span>
-                      <span className="faint">
-                        run #{turn.run.id} · {turn.node.model}
-                      </span>
-                    </li>
-                  ))}
-                </ol>
-              )}
-            </section>
-          </div>
-        ) : (
+      <div className="chat-body" data-context={panel !== null && tool === null}>
+      <div className="chat-conversation">
+      <div className="chat-panel" hidden={tool !== null}>
           <div
             className="chat-transcript"
             ref={feed}
@@ -518,9 +441,7 @@ export function ChatView({
           >
             {events.length === 0 ? (
               <div className="chat-empty">
-                <span className="chat-empty-mark" aria-hidden="true">
-                  ⌘
-                </span>
+                <img className="chat-empty-mark" src={logo} alt="" width="64" height="64" />
                 <h2>What should we build in {project.name}?</h2>
                 <p className="faint">
                   Start with a question, an idea, or a change to make.
@@ -550,11 +471,9 @@ export function ChatView({
                 <span className="faint">
                   {Number.isFinite(elapsed) ? elapsed : 0}s
                 </span>
-                {controls}
               </div>
             )}
           </div>
-        )}
       </div>
       {detail && <section className="chat-tools-panel" hidden={tool === null} aria-label="Chat checkout tools">
         <div className="card__row"><strong className="mono">{detail.workspace_path}</strong><button className="button" onClick={() => setTool(null)}>Close tools</button></div>
@@ -566,7 +485,7 @@ export function ChatView({
           {openedTools.terminal && <Suspense fallback={<p>Loading terminal…</p>}><Terminal project={project.slug} workspace={detail.workspace_path} node={null} /></Suspense>}
         </div>
       </section>}
-      {!following && view === "chat" && tool === null && (
+      {!following && tool === null && (
         <button
           className="button chat-follow"
           onClick={() => setFollowing(true)}
@@ -607,6 +526,7 @@ export function ChatView({
           </select>
         </div>
         <textarea
+          ref={composer}
           aria-label="Message"
           placeholder={
             active
@@ -681,7 +601,7 @@ export function ChatView({
         {mode === "team" && !active && <small className="faint">The configured project team plans first. Review and explicitly approve before building. Your solo model and history are kept.</small>}
         {active && (
           <small className="faint">
-            {activeTeam || mode === "team" ? "Use Overview's exact team controls. A message cannot bypass build approval." : "Queue one follow-up after successful completion, or Stop and steer to drain this turn and start a new one. No instruction is injected into a running tool. Stop turn cancels the queued instruction."}
+            {activeTeam || mode === "team" ? "Use Work's exact team controls. A message cannot bypass build approval." : "Queue one follow-up after successful completion, or Stop and steer to drain this turn and start a new one. No instruction is injected into a running tool. Stop turn cancels the queued instruction."}
           </small>
         )}
         {id === null && (!catalogue.length || modelError) && (
@@ -696,6 +616,14 @@ export function ChatView({
           </div>
         )}
       </form>
+      </div>
+      {detail && <ChatContext detail={detail} panel={panel} opened={openedPanels} hidden={tool !== null}
+        status={LABELS[detail.state]} tick={tick} busy={busy} command={command} events={events} elapsed={elapsed} now={clock}
+        onChanged={onChanged} onClose={closePanel} onFeedback={text => {
+          setMessage(old => old ? `${old}\n\n${text}` : text);
+          composer.current?.focus();
+        }} />}
+      </div>
     </main>
   );
 }

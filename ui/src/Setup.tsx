@@ -96,7 +96,7 @@ export function Setup({ onReady, onProjects }: { onReady: () => void; onProjects
     <div className="setup">
       <div className="main__header">
         <h2>Let's get you set up</h2>
-        <span className="faint">ai-team {report.version}</span>
+        <span className="faint">AI Team {report.version}</span>
         <button type="button" className="button" disabled={busy !== null} onClick={() => { setBusy("recheck"); void load().finally(() => setBusy(null)); }}>
           {busy === "recheck" ? "Checking…" : "Check again"}
         </button>
@@ -105,9 +105,9 @@ export function Setup({ onReady, onProjects }: { onReady: () => void; onProjects
 
       {builtIn.length > 0 && (
         <section className="settings__group">
-          <h3>Included with ai-team</h3>
+          <h3>Included with AI Team</h3>
           {builtIn.map((entry) => <div key={entry.id} className="settings__row"><strong>{entry.label}</strong><span className="faint settings__detail">{entry.detail}</span></div>)}
-          <p className="faint">Plan in a chat's Overview. Inspect project setup, skills and MCP choices in Projects; file changes need your approval.</p>
+          <p className="faint">Plan in a chat's Board. Inspect project setup, skills and MCP choices in Projects; file changes need your approval.</p>
           {onProjects && <button className="button" onClick={onProjects}>Project setup and skills</button>}
         </section>
       )}
@@ -122,7 +122,7 @@ export function Setup({ onReady, onProjects }: { onReady: () => void; onProjects
       {ours.length > 0 && (
         <section className="settings__group">
           <h3>Ready when you are</h3>
-          <p className="faint">These are ai-team's own files. It can create them now.</p>
+          <p className="faint">These are AI Team's own files. It can create them now.</p>
           {ours.map((entry) => (
             <div key={entry.id} className="settings__row">
               <span className="settings__toggle">{entry.label}</span>
@@ -198,7 +198,7 @@ export function Setup({ onReady, onProjects }: { onReady: () => void; onProjects
         <section className="settings__group">
           <h3>What are we working on?</h3>
           <p className="faint">
-            Choose a repository to start a single-agent chat. ai-team scans its setup;
+            Choose a repository to start a single-agent chat. AI Team scans its setup;
             review recommendations before approving any file changes. Teams are optional.
           </p>
           <form
@@ -248,11 +248,11 @@ export function Setup({ onReady, onProjects }: { onReady: () => void; onProjects
 
       {commands.length > 0 && (
         <section className="settings__group">
-          <h3>Tools ai-team borrows</h3>
+          <h3>Tools AI Team borrows</h3>
           {/* D17: never a button that runs this. `curl | sh` from a GUI is a decision that
               is not ai-team's to take, so the command is shown and copied. */}
           <p className="faint">
-            These are separate tools. Run each in a terminal - ai-team will not install
+            These are separate tools. Run each in a terminal - AI Team will not install
             software on your machine.
           </p>
           {commands.map((entry) => (
@@ -298,7 +298,7 @@ export function Setup({ onReady, onProjects }: { onReady: () => void; onProjects
             Start a chat with one agent; bring in a team when you need it.
           </p>
           <button type="button" className="button button--primary" onClick={onReady}>
-            Open ai-team
+            Open AI Team
           </button>
         </section>
       )}

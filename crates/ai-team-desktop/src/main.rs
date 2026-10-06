@@ -109,7 +109,7 @@ fn run() -> Result<()> {
             // Built here rather than in tauri.conf.json because the URL is not known
             // until the OS has assigned a port and the token has been minted.
             WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url))
-                .title("ai-team")
+                .title("AI Team")
                 .inner_size(1280.0, 820.0)
                 .min_inner_size(900.0, 560.0)
                 .build()?;

@@ -43,7 +43,9 @@ const VIEWS = {
 
 export type WorkspaceView = keyof typeof VIEWS;
 
-export const WORKSPACE_VIEWS = Object.keys(VIEWS) as WorkspaceView[];
+// Run/plan/review commands live in the originating chat. Legacy Today links still
+// use the older views, but they are not a second project-level command surface.
+export const WORKSPACE_VIEWS = ["editor", "terminal", "source", "team"] as const;
 
 export function workspaceViewName(view: WorkspaceView): string {
   return VIEWS[view];

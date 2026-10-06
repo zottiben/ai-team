@@ -29,6 +29,6 @@ export function CatalogueBrowser({ catalogue }: { catalogue: ToolboxCatalogue })
     })}
     {copied && <p role="status">Copied {copied}. No files changed.</p>}
     {problem && <p role="alert" className="error">{problem}</p>}
-    <details><summary>Licences and catalogue updates</summary><p>Catalogue content ships with ai-team. Updating ai-team updates this pinned bundle; this view does not update or discover a standalone ai-toolbox clone.</p><pre tabIndex={0}>{catalogue.notice}</pre></details>
+    <details><summary>Licences and catalogue updates</summary><p>Catalogue content ships with AI Team. Updating AI Team updates this pinned bundle; this view does not update or discover a standalone ai-toolbox clone.</p><pre tabIndex={0}>{catalogue.notice}</pre></details>
   </details>;
 }

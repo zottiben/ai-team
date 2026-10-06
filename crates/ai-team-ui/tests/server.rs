@@ -577,6 +577,21 @@ fn the_window_served_is_the_bundle_of_the_checkout_it_was_built_from() {
 }
 
 #[test]
+fn the_window_uses_the_display_name_and_shared_logo() {
+    let app = Harness::start();
+    let page = app.get_anonymous("/");
+    assert!(page.body.contains("<title>AI Team</title>"));
+    assert!(page.body.contains("/mark.svg"));
+    let logo = app.get_anonymous("/mark.svg");
+    assert_eq!(logo.status, 200);
+    assert!(logo.head.contains("image/svg+xml"));
+    assert_eq!(
+        logo.body,
+        include_str!("../../ai-team-desktop/icons/mark.svg")
+    );
+}
+
+#[test]
 fn the_url_carries_the_token() {
     let app = Harness::start();
     let expected = format!("http://{}/?{TOKEN_QUERY}={}", app.addr, app.token);

@@ -278,7 +278,7 @@ it("says it is done when there is nothing left", async () => {
   expect(await screen.findByText(/That's it/)).toBeDefined();
   expect(screen.getByText(/claude is ready/)).toBeDefined();
   expect(opened).toHaveLength(0);
-  await user.click(screen.getByText("Open ai-team"));
+  await user.click(screen.getByText("Open AI Team"));
   expect(opened).toHaveLength(1);
 });
 

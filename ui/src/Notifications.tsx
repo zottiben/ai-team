@@ -53,9 +53,13 @@ export function Notifications({
         type="button"
         className="nav-item"
         aria-expanded={open}
+        aria-label={unread ? `Notifications · ${unread} unread` : "Notifications"}
+        title="Notifications"
         onClick={() => setOpen((value) => !value)}
       >
-        <span>Notifications</span>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4" />
+        </svg>
         {unread > 0 && <span className="notification-center__count">{unread}</span>}
       </button>
 

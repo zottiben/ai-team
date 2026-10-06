@@ -9,6 +9,7 @@ import {
 import { beforeEach, expect, it, vi } from "vitest";
 
 import App from "./App";
+import logo from "../../crates/ai-team-desktop/icons/mark.svg";
 import type { Chat } from "./chat-api";
 
 const state = vi.hoisted(() => ({
@@ -123,9 +124,8 @@ vi.mock("./Today", () => ({
     </section>
   ),
 }));
-vi.mock("./Workspace", () => ({
-  WORKSPACE_VIEWS: ["editor", "terminal", "source"],
-  workspaceViewName: (value: string) => value,
+vi.mock("./Workspace", async (original) => ({
+  ...(await original<typeof import("./Workspace")>()),
   Workspace: ({
     workspace,
     view,
@@ -189,6 +189,19 @@ it("opens chat-first with real chats beneath their project, not a run list", asy
     within(sidebar).getByRole("button", { name: "First conversation" }),
   ).not.toBeNull();
   expect(screen.queryByRole("heading", { name: "Today content" })).toBeNull();
+});
+
+it("shows the AI Team name and the existing logo", async () => {
+  render(<App />);
+  await screen.findByText("AI Team");
+  expect(screen.getByRole("img", { name: "AI Team logo" }).getAttribute("src")).toBe(logo);
+});
+
+it("offers only checkout and team tools at project level", async () => {
+  render(<App />);
+  fireEvent.click(await screen.findByRole("button", { name: "Project tools" }));
+  const navigation = screen.getByRole("navigation", { name: "Project tools" });
+  expect(within(navigation).getAllByRole("button").map(button => button.textContent)).toEqual(["Editor", "Terminal", "Source", "Team"]);
 });
 
 it("does not steal a chosen chat when slow initial readiness finishes", async () => {
@@ -267,7 +280,7 @@ it("retains project tools with explicit checkout ownership", async () => {
   fireEvent.change(screen.getByRole("combobox", { name: "Project checkout" }), {
     target: { value: "/demo-task" },
   });
-  fireEvent.click(screen.getByRole("button", { name: "terminal" }));
+  fireEvent.click(screen.getByRole("button", { name: "Terminal" }));
   await screen.findByRole("heading", { name: "/demo-task / terminal" });
 });
 
@@ -291,6 +304,8 @@ it("opens legacy Today runs and reviews in their own checkout", async () => {
   fireEvent.click(screen.getByRole("button", { name: "Open legacy review" }));
   await screen.findByRole("heading", { name: "/demo-task / review" });
   expect(screen.getByText("Review 7")).not.toBeNull();
+  expect(screen.queryByRole("navigation", { name: "Project tools" })).toBeNull();
+  expect(screen.getByRole("button", { name: "Back to Today" })).not.toBeNull();
 });
 
 it("does not let a late legacy review lookup replace a newly selected chat", async () => {

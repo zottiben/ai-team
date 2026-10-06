@@ -108,7 +108,7 @@ export function ChatPlanning({
       <details>
         <summary>Planning isolation</summary>
         <p className="faint">
-          This chat uses ai-team’s scoped planning tools and permitted project
+          This chat uses AI Team’s scoped planning tools and permitted project
           MCP servers, not global MCP discovery. Standalone ai-planner, global
           registrations and credentials are left unchanged. Tool scoping is not
           an OS sandbox.

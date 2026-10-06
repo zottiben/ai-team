@@ -71,7 +71,7 @@ it("asks for a restart, because a replaced binary is not a restarted process", a
   render(<UpdateBanner />);
 
   await user.click(await screen.findByText("Update"));
-  expect(await screen.findByText(/Restart ai-team/)).toBeDefined();
+  expect(await screen.findByText(/Restart AI Team/)).toBeDefined();
   expect(screen.getByText(/Updated to 0\.2\.0/)).toBeDefined();
 });
 

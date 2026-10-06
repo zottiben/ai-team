@@ -214,7 +214,7 @@ export function RepoGraph({ map, activity }: { map: RepoMap; activity: Activity 
   }, [labels, points, map.nodes, box]);
 
   if (map.nodes.length === 0) {
-    return <p className="empty">Nothing to map - this checkout has no files ai-team reads.</p>;
+    return <p className="empty">Nothing to map - this checkout has no files AI Team reads.</p>;
   }
 
   const live = [...activity.live.keys()];

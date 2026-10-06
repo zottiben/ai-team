@@ -34,7 +34,7 @@ export function UpdateBanner() {
             is already running, so a window that looks updated and is not is the one
             outcome worth preventing. */}
         <span>
-          Updated to {version}. <strong>Restart ai-team</strong> to run it.
+          Updated to {version}. <strong>Restart AI Team</strong> to run it.
         </span>
       </div>
     );

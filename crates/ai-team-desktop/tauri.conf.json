@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "ai-team",
+  "productName": "AI Team",
   "version": "0.7.4",
   "identifier": "dev.zottiben.ai-team",
   "build": {

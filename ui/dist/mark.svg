@@ -1,0 +1,42 @@
+<!--
+  The mark: an org graph. One orchestrator above, three specialists below, joined by
+  the edges that make it a team rather than three separate agents. It reads as delegation
+  at a glance and it survives being 16px in a dock, which is the only real constraint on
+  an app icon. Deliberately geometric - an illustration at this size is a smudge.
+
+  Teal rather than ai-planner's blue: the two sit next to each other in the dock and in
+  the same Applications folder, and a sibling palette that is merely *similar* is worse
+  than one that is clearly different.
+
+  Source of truth for every generated icon. See icons/README.md to regenerate the set.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#17b8a6"/>
+      <stop offset="1" stop-color="#0c8578"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1024" height="1024" rx="228" fill="url(#bg)"/>
+
+  <!--
+    Optically centred: the graph spans y 226..798, leaving 226 above and 226 below.
+    Worth the arithmetic - a mark that sits high in its tile is the kind of thing you
+    cannot unsee once it is in the dock next to correctly centred ones.
+  -->
+
+  <!-- Edges first, so the nodes sit on top of them and no seam shows at small sizes. -->
+  <g stroke="#ffffff" stroke-width="36" stroke-linecap="round" opacity="0.55">
+    <path d="M512 368 L288 680"/>
+    <path d="M512 368 L512 680"/>
+    <path d="M512 368 L736 680"/>
+  </g>
+
+  <g fill="#ffffff">
+    <circle cx="512" cy="334" r="108"/>
+    <circle cx="288" cy="714" r="84" opacity="0.92"/>
+    <circle cx="512" cy="714" r="84" opacity="0.92"/>
+    <circle cx="736" cy="714" r="84" opacity="0.92"/>
+  </g>
+</svg>

@@ -24,9 +24,11 @@ const service = vi.hoisted(() => ({
   queueChatFollowup: vi.fn(),
   cancelChatFollowup: vi.fn(),
   sendChatFollowup: vi.fn(),
+  chatPlan: vi.fn(),
 }));
 vi.mock("./Editor", () => ({ Editor: ({ project, workspace, visible }: { project: string; workspace: string; visible: boolean }) => <div><p>Editor {project}: {workspace} ({String(visible)})</p><input aria-label="Unsaved fixture file" defaultValue="kept" /></div> }));
 vi.mock("./Terminal", () => ({ TerminalPane: ({ project, workspace }: { project: string; workspace: string }) => <p>Terminal {project}: {workspace}</p> }));
+vi.mock("./ChatChanges", () => ({ ChatChanges: ({ chatId, onFeedback }: { chatId: number; onFeedback: (text: string) => void }) => <section aria-label="Review fixture"><p>Review chat {chatId}</p><input aria-label="Unsaved review finding" /><button onClick={() => onFeedback("Recorded feedback")}>Use feedback</button></section> }));
 vi.mock("./chat-api", () => service);
 vi.mock("./team-api", async (original) => ({
   ...(await original<typeof import("./team-api")>()),
@@ -34,7 +36,7 @@ vi.mock("./team-api", async (original) => ({
 }));
 vi.mock("./plan-api", async (original) => ({
   ...(await original<typeof import("./plan-api")>()),
-  chatPlan: (id: number) => Promise.resolve({ chat_id: id, project_id: 1, revision: 0, bundle: null }),
+  chatPlan: service.chatPlan,
 }));
 vi.mock("./api", async (original) => ({
   ...(await original<typeof import("./api")>()),
@@ -111,11 +113,49 @@ beforeEach(() => {
   vi.clearAllMocks();
   service.chat.mockImplementation((id: number) => Promise.resolve(detail(id)));
   service.chatEvents.mockResolvedValue([]);
+  service.chatPlan.mockImplementation((id: number) => Promise.resolve({ chat_id: id, project_id: 1, revision: 0, bundle: null }));
   service.createChat.mockResolvedValue(detail(3));
   service.sendChat.mockResolvedValue({ run_id: 1, node_id: 1, started: true });
 });
 
 describe("persistent conversation", () => {
+  it("keeps conversation and composer alongside chat-owned overview, review, board and work", async () => {
+    service.chatEvents.mockResolvedValue([event(1, "Keep this conversation visible")]);
+    render(<ChatView {...props()} id={2} />);
+    await screen.findByRole("heading", { name: "Chat 2" });
+    expect(screen.queryByRole("tablist", { name: "Chat views" })).toBeNull();
+    fireEvent.change(screen.getByRole("textbox", { name: "Message" }), { target: { value: "Unsent instruction" } });
+    for (const panel of ["Overview", "Review", "Board", "Work"]) {
+      fireEvent.click(screen.getByRole("button", { name: panel }));
+      await screen.findByRole("region", { name: panel });
+      expect(screen.getByRole("article", { name: "You" }).textContent).toContain("Keep this conversation visible");
+      expect((screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement).value).toBe("Unsent instruction");
+    }
+    await waitFor(() => expect(service.chatPlan).toHaveBeenCalledWith(2));
+    expect(service.sendChat).not.toHaveBeenCalled();
+  });
+
+  it("keeps review drafts across panels and adds feedback without sending it", async () => {
+    render(<ChatView {...props()} id={2} />);
+    await screen.findByRole("heading", { name: "Chat 2" });
+    fireEvent.click(screen.getByRole("button", { name: "Review" }));
+    await screen.findByText("Review chat 2");
+    fireEvent.change(screen.getByRole("textbox", { name: "Unsaved review finding" }), { target: { value: "Keep this draft" } });
+    fireEvent.click(screen.getByRole("button", { name: "Board" }));
+    await screen.findByRole("region", { name: "Chat plan" });
+    expect(screen.queryByRole("textbox", { name: "Unsaved review finding" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Review" }));
+    expect((screen.getByRole("textbox", { name: "Unsaved review finding" }) as HTMLInputElement).value).toBe("Keep this draft");
+    fireEvent.click(screen.getByRole("button", { name: "Use feedback" }));
+    expect((screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement).value).toBe("Recorded feedback");
+    expect(document.activeElement).toBe(screen.getByRole("textbox", { name: "Message" }));
+    fireEvent.keyDown(screen.getByRole("region", { name: "Review" }), { key: "Escape" });
+    expect(screen.queryByRole("region", { name: "Review" })).toBeNull();
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Review" }));
+    fireEvent.click(screen.getByRole("button", { name: "Review" }));
+    expect((screen.getByRole("textbox", { name: "Unsaved review finding" }) as HTMLInputElement).value).toBe("Keep this draft");
+    expect(service.sendChat).not.toHaveBeenCalled();
+  });
   it("queues against the exact solo turn rather than pretending to send into a running process", async () => {
     service.chat.mockResolvedValue({ ...detail(), state: "running", active_node_id: 41 });
     render(<ChatView {...props()} />);
@@ -222,7 +262,7 @@ describe("persistent conversation", () => {
     service.chat.mockResolvedValue({ ...detail(), recovery_error: "Could not inspect child_epoch" });
     render(<ChatView {...props()} />);
     expect((await screen.findByRole("alert")).textContent).toContain("Could not inspect child_epoch");
-    expect(screen.getByRole("alert").textContent).toContain("Restart ai-team");
+    expect(screen.getByRole("alert").textContent).toContain("Restart AI Team");
     expect(service.resumeChat).not.toHaveBeenCalled();
     expect(service.sendChat).not.toHaveBeenCalled();
   });
@@ -368,7 +408,7 @@ describe("persistent conversation", () => {
     });
     render(<ChatView {...props()} id={2} />);
     await screen.findByRole("button", { name: "Stop turn" });
-    fireEvent.click(screen.getByRole("tab", { name: "Overview" }));
+    fireEvent.click(screen.getByRole("button", { name: "Overview" }));
     fireEvent.click(screen.getByRole("button", { name: "Stop turn" }));
     await waitFor(() => expect(service.stopChat).toHaveBeenCalledWith(2, 19));
     expect(

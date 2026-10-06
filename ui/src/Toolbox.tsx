@@ -118,7 +118,7 @@ function Setup({ project, scan, catalogue, busy, setBusy }: { project: number; s
       <details><summary>External prerequisites and scope</summary>
         <p>Presets configure servers but do not install runtimes, start servers or enter credentials. Preview warnings name required credentials and harness conversion limits. Pi cannot run these shell hooks as extensions.</p>
         <p>Pi MCP support needs pi-mcp-adapter. Install or update that package in your own Pi environment if missing; project setup does not run Pi’s package installer or change global settings.</p>
-        <p>Bundled skills may refer to external CLIs or provider accounts; inspect their text before use. ai-team chats still enforce their own scoped planning and context policy, independently of project MCP configuration.</p>
+        <p>Bundled skills may refer to external CLIs or provider accounts; inspect their text before use. AI Team chats still enforce their own scoped planning and context policy, independently of project MCP configuration.</p>
         <p>Layout migration folds legacy hooks/helpers and Claude skills into .agents, refusing conflicting edits. Legacy Pi import is a separate preview: normalize known transport/auth settings into mcp-adapter.json, preserve source/shared files, and refuse conflicting destinations.</p>
         <p>User-level setup and registration discovery/pruning have separate controls on Projects. The pinned engine has no general uninstall command; deselecting an item does not remove an existing installation.</p>
       </details>
