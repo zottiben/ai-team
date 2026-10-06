@@ -13,6 +13,7 @@ mod analytics;
 mod chat;
 pub mod chat_changes;
 mod chat_schedule;
+pub mod chat_workspaces;
 mod command;
 mod context;
 mod crew;
@@ -66,6 +67,7 @@ pub use chat::{
     ChatRetainedBuild, ChatSubmission, ChatTeamMember, ChatTeamRun, ChatTurn, FollowupKind,
     NewChat,
 };
+pub mod plan_library;
 pub mod planning;
 pub mod toolbox;
 pub use context::{figma_links, parse_url, Source, CLICKUP_READ_TOOLS, FIGMA_READ_TOOLS};

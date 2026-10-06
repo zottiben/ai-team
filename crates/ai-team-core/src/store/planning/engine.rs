@@ -7,7 +7,7 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension};
 
 use crate::{Chat, Error, Result};
 
-const APPLICATION_ID: i64 = 0x4154_504c;
+pub(super) const APPLICATION_ID: i64 = 0x4154_504c;
 
 pub(super) fn path(team_db: &Path) -> Result<PathBuf> {
     if team_db == Path::new(":memory:") {

@@ -673,6 +673,25 @@
   padding: 0.8rem 1rem;
   border-bottom: 1px solid var(--border-subtle-default);
 }
+.chat-checkout-picker {
+  max-width: 13rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-checkout-popover {
+  display: grid;
+  gap: var(--space-2);
+}
+.chat-checkout-popover .mono {
+  overflow-wrap: anywhere;
+}
+.chat-checkout-popover select {
+  width: 100%;
+}
+@media (max-height: 650px) {
+  .app-rail { gap: 0.5rem; overflow-y: auto; }
+}
 @keyframes chat-pulse {
   50% {
     opacity: 0.35;

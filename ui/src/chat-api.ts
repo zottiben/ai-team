@@ -16,6 +16,7 @@ export type Chat = {
   project_id: number;
   title: string;
   workspace_path: string;
+  workspace_epoch?: number;
   provider: string;
   model: string;
   reasoning: "none" | "low" | "medium" | "high";
@@ -93,8 +94,9 @@ export function sendChat(
   id: number,
   message: string,
   requestId: string,
+  workspaceEpoch = 0,
 ): Promise<{ run_id: number; node_id: number; started: boolean }> {
-  return post(`/chats/${id}/messages`, { message, request_id: requestId });
+  return post(`/chats/${id}/messages`, { message, request_id: requestId, workspace_epoch: workspaceEpoch });
 }
 
 export function queueChatFollowup(id: number, nodeId: number, message: string, requestId: string, kind: ChatFollowup["kind"]): Promise<ChatFollowup> {

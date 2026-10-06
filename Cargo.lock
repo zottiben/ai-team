@@ -79,6 +79,7 @@ dependencies = [
 name = "ai-team-ui"
 version = "0.7.4"
 dependencies = [
+ "ai-planner-core",
  "ai-team-core",
  "axum",
  "clap",

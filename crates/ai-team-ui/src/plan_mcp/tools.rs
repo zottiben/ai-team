@@ -3,6 +3,8 @@ use serde_json::{json, Map, Value};
 
 pub(super) fn definition(name: &'static str) -> Tool {
     let (description, fields, optional): (&str, &[&str], &[&str]) = match name {
+        "list_worktrees" => ("List this chat project's existing Git worktrees and external lease availability. Read-only; no scope overrides.", &[], &[]),
+        "request_worktree" => ("Propose using an existing worktree when the user asks. Supply an exact path from list_worktrees, then END this turn. Only the human can approve switching after it settles. This does not move the running process or grant access outside its checkout.", &["path"], &[]),
         "get_plan" => ("Read this chat's plan, progress, questions, decisions and current revision. No plan is created by reading.", &[], &[]),
         "create_plan" => ("Create a plan for this chat when the user needs one; ordinary conversations need no plan.", &["title", "summary"], &["summary"]),
         "set_plan_status" => ("Update the status of this chat's plan. A planning status is not a verification verdict.", &["status"], &[]),
@@ -18,7 +20,7 @@ pub(super) fn definition(name: &'static str) -> Tool {
     };
     let mut properties = Map::new();
     let mut required = Vec::new();
-    if name != "get_plan" {
+    if !matches!(name, "get_plan" | "list_worktrees" | "request_worktree") {
         properties.insert("expect_revision".into(), json!({"type":"integer","minimum":0,"description":"Revision returned by get_plan or the previous mutation. Re-read after a conflict."}));
         required.push("expect_revision");
     }

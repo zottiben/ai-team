@@ -5,7 +5,7 @@
 //! everything a post-mortem reads comes out of here, so a row that could be rewritten
 //! would make all three untrustworthy.
 
-use rusqlite::{params, Row};
+use rusqlite::{params, OptionalExtension, Row};
 
 use crate::error::{Error, Result};
 use crate::model::{Event, EventKind, NewEvent, NewNotification};
@@ -178,6 +178,15 @@ impl Store {
     }
 
     /// The newest human-readable update for a node, skipping tool and accounting noise.
+    /// A rendered Note summary can belong to the human or supervisor. Only a Pi
+    /// assistant payload may be presented as the seat's own words.
+    pub fn latest_node_assistant_event(&self, node: i64) -> Result<Option<Event>> {
+        self.db().conn().query_row(
+            &format!("{EVENT_SELECT} WHERE node_run_id=?1 AND kind='note' AND json_extract(payload_json,'$.message.role')='assistant' ORDER BY id DESC LIMIT 1"),
+            [node], event_from_row,
+        ).optional().map_err(Into::into)
+    }
+
     pub fn latest_node_message_event(&self, node_run_id: i64) -> Result<Option<Event>> {
         let mut stmt = self.db().conn().prepare(&format!(
             "{EVENT_SELECT} WHERE node_run_id = ?1 AND kind IN (?2, ?3, ?4, ?5) \

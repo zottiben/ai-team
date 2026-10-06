@@ -21,6 +21,9 @@ tokio-stream = { version = "0.1", features = ["time"] }
 futures-core = "0.3"
 
 [dev-dependencies]
+# Test-only: the plan-import routes are driven against a scratch planner database built
+# with the engine, never the operator's own.
+ai-planner-core.workspace = true
 tempfile = "3"
 tokio = { workspace = true, features = ["net", "rt-multi-thread", "macros"] }
 

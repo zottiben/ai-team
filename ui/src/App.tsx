@@ -2,6 +2,8 @@ import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react"
 
 import { Analytics } from "./Analytics";
 import { ChatView } from "./Chat";
+import type { ChatPanel } from "./ChatContext";
+const PlanLibrary = lazy(() => import("./PlanLibrary").then(m => ({ default: m.PlanLibrary })));
 import logo from "../../crates/ai-team-desktop/icons/mark.svg";
 import { Notifications } from "./Notifications";
 import { Popover } from "./Popover";
@@ -36,6 +38,7 @@ type Page =
   | "projects"
   | "settings"
   | "schedule"
+  | "plans"
   | "today"
   | "analytics"
   | "team"
@@ -97,6 +100,7 @@ export default function App() {
   const [trees, setTrees] = useState<Worktree[]>([]);
   const [workspace, setWorkspace] = useState<string | null>(null);
   const [tool, setTool] = useState<WorkspaceView>("source");
+  const [chatStartPanel, setChatStartPanel] = useState<ChatPanel | null>(null);
   const [legacyView, setLegacyView] = useState<WorkspaceView>("work");
   const [openRun, setOpenRun] = useState<number | null>(null);
   const [openReview, setOpenReview] = useState<number | null>(null);
@@ -200,7 +204,8 @@ export default function App() {
 
   const project = projects.find((entry) => entry.slug === projectSlug);
   const selectedTree = trees.find((tree) => tree.path === workspace);
-  const navigate = (slug: string, id: number | null) => {
+  const navigate = (slug: string, id: number | null, panel: ChatPanel | null = null) => {
+    setChatStartPanel(panel);
     setProjectSlug(slug);
     setChatId(id);
     setPage("chat");
@@ -264,6 +269,7 @@ export default function App() {
             ["chat", "Chats", "chat"],
             ["projects", "Projects", "folder"],
             ["schedule", "Schedule", "clock"],
+            ["plans", "Plans", "board"],
           ] as const
         ).map(([target, label, icon]) => (
           <button
@@ -464,6 +470,7 @@ export default function App() {
         ) : page === "chat" ? (
           project ? (
             <ChatView
+              initialPanel={chatStartPanel}
               key={`${project.slug}:${chatId ?? "new"}`}
               id={chatId}
               project={project}
@@ -556,6 +563,7 @@ export default function App() {
                 onOpenChat={(slug, id) => navigate(slug, id)}
               /></Suspense>
             )}
+            {page === "plans" && <Suspense fallback={<p>Loading plans…</p>}><PlanLibrary tick={tick} onOpenChat={(slug, id) => navigate(slug, id, "board")} onChanged={changed} /></Suspense>}
             {page === "team" && <Roster onChanged={changed} />}
             {page === "analytics" && <Analytics tick={tick} />}
             {page === "today" && (
@@ -577,13 +585,14 @@ export default function App() {
 function Icon({
   name,
 }: {
-  name: "chat" | "folder" | "clock" | "more" | "help" | "settings" | "edit" | "collapse" | "expand";
+  name: "chat" | "folder" | "clock" | "board" | "more" | "help" | "settings" | "edit" | "collapse" | "expand";
 }) {
   const paths = {
     collapse: "M3 4h18v16H3V4ZM8 4v16m8-12-4 4 4 4",
     expand: "M3 4h18v16H3V4ZM8 4v16m4-12 4 4-4 4",
     chat: "M4 4h16v12H9l-5 4V4Z",
     folder: "M3 6h7l2 2h9v12H3V6Z",
+    board: "M3 4h18v16H3V4Zm6 0v16m6-16v16",
     clock: "M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18M12 7v6l4 2",
     more: "M5 12h1M11 12h1M17 12h1",
     help: "M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18M9 9a3 3 0 1 1 5 2c-2 1-2 2-2 3M12 17h.01",

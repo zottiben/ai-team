@@ -65,7 +65,13 @@ impl PlanAccess {
 
     pub fn tools(self) -> &'static [&'static str] {
         match self {
-            Self::Coordinator => &["get_plan", "open_question", "append_log"],
+            Self::Coordinator => &[
+                "get_plan",
+                "open_question",
+                "append_log",
+                "list_worktrees",
+                "request_worktree",
+            ],
             Self::Reader => &["get_plan"],
             Self::Maker => &[
                 "get_plan",
@@ -75,6 +81,8 @@ impl PlanAccess {
             ],
             Self::Planner | Self::Human => &[
                 "get_plan",
+                "list_worktrees",
+                "request_worktree",
                 "create_plan",
                 "set_plan_status",
                 "write_section",

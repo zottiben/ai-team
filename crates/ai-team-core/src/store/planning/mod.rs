@@ -4,6 +4,10 @@ pub(super) mod build;
 mod claims;
 mod closure;
 mod engine;
+mod import;
+mod import_report;
+mod import_source;
+mod library;
 mod results;
 mod writes;
 
@@ -110,7 +114,7 @@ struct Binding {
     lease: Option<String>,
 }
 
-fn scope(
+pub(super) fn scope(
     conn: &Connection,
     chat: i64,
     actor: PlanActor,

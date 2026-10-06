@@ -137,6 +137,11 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
         "notification inbox",
         include_str!("migrations/032_notification_inbox.sql"),
     ),
+    (
+        33,
+        "chat worktree requests",
+        include_str!("migrations/033_chat_workspaces.sql"),
+    ),
 ];
 
 /// The number of `v_` views the schema ships. Asserted in tests, because a view silently

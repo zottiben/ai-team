@@ -1,0 +1,142 @@
+/* The chat Overview: figures, the repository map, and one card per seat.
+ *
+ * Only the pieces the project Overview did not already have a class for. The figures,
+ * legend, plan tally and tape are the originals from styles.css - this panel is the same
+ * surface asked a chat-sized question, and giving it a second set of styles is how two
+ * views of the same thing drift apart. */
+
+.chat-figures {
+  margin-bottom: var(--space-4);
+}
+
+.chat-agent-graph .team-graph__flow {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 13rem), 1fr));
+}
+.chat-seat {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  margin-bottom: var(--space-3);
+  border: 1px solid var(--border-subtle-default);
+  border-radius: var(--radius-md);
+  background: var(--surface-canvas-default);
+}
+
+.chat-seat[data-working="true"] {
+  border-color: var(--status-running-default);
+}
+
+.chat-seat__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+/* The live half, kept visually apart from the durable half above it. */
+.chat-seat__activity {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-2);
+  border: 1px solid var(--border-subtle-default);
+  border-radius: var(--radius-sm);
+  background: var(--surface-panel-default);
+}
+
+.chat-seat__activity[data-live="true"] {
+  border-color: var(--status-running-default);
+  background: var(--accent-action-muted);
+}
+
+.chat-seat__activity-head {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-2);
+  color: var(--text-primary-muted);
+  font-size: var(--text-xs);
+}
+
+.chat-seat__activity > strong {
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  color: var(--text-primary-default);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: 1.3;
+}
+
+/* A command that is running, with no claim about how far through it is. */
+.chat-seat__meter {
+  position: relative;
+  height: 0.35rem;
+  overflow: hidden;
+  border-radius: var(--radius-sm);
+  background: var(--border-subtle-default);
+}
+
+.chat-seat__meter > span {
+  position: absolute;
+  inset-block: 0;
+  width: 36%;
+  border-radius: inherit;
+  background: var(--status-running-default);
+  animation: chat-seat-command 1.4s ease-in-out infinite;
+}
+
+@keyframes chat-seat-command {
+  from {
+    transform: translateX(-110%);
+  }
+  to {
+    transform: translateX(310%);
+  }
+}
+
+.chat-seat__said {
+  margin: 0;
+  color: var(--text-primary-muted);
+  font-size: var(--text-sm);
+}
+
+.chat-seat__facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-3);
+  font-size: var(--text-xs);
+}
+
+.chat-seat__files,
+.chat-overview-drafts {
+  display: grid;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--text-xs);
+}
+
+.chat-seat__files li,
+.chat-overview-drafts li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.chat-seat__files li > .mono {
+  overflow-wrap: anywhere;
+}
+
+/* A file it changed is work; one it only read is context. */
+.chat-seat__files li[data-wrote="true"] > .mono {
+  color: var(--text-primary-default);
+}
+
+.chat-seat__files li[data-wrote="false"] > .mono {
+  color: var(--text-primary-muted);
+}

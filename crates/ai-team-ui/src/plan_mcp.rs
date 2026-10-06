@@ -5,7 +5,7 @@ mod tools;
 
 use std::path::PathBuf;
 
-use ai_team_core::planning::{ChatPlan, PlanAction, PlanActor};
+use ai_team_core::planning::{PlanAction, PlanActor};
 use ai_team_core::Store;
 use clap::{Parser, Subcommand};
 use rmcp::model::{
@@ -84,11 +84,7 @@ impl PlannerMcp {
         Store::open_planning_host(&self.db)?.planning_access(self.chat, PlanActor::Agent(self.node))
     }
 
-    fn invoke(
-        &self,
-        name: &str,
-        mut arguments: Map<String, Value>,
-    ) -> ai_team_core::Result<ChatPlan> {
+    fn invoke(&self, name: &str, mut arguments: Map<String, Value>) -> ai_team_core::Result<Value> {
         let mut store = Store::open_planning_host(&self.db)?;
         let actor = PlanActor::Agent(self.node);
         if !store
@@ -100,13 +96,40 @@ impl PlannerMcp {
                 "that tool is not allowed for this seat",
             ));
         }
+        if matches!(name, "list_worktrees" | "request_worktree") {
+            #[derive(serde::Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct Request {
+                path: PathBuf,
+            }
+            let root = ai_team_core::chat_workspaces::repository(&store, self.chat)?;
+            let runtime = tokio::runtime::Handle::current();
+            if name == "list_worktrees" {
+                if !arguments.is_empty() {
+                    return Err(ai_team_core::Error::invalid(
+                        "list_worktrees accepts no scope overrides",
+                    ));
+                }
+                return Ok(serde_json::to_value(
+                    runtime.block_on(ai_team_core::chat_workspaces::choices(&root))?,
+                )?);
+            }
+            let request: Request = serde_json::from_value(arguments.into())?;
+            let target = runtime.block_on(ai_team_core::chat_workspaces::validate(
+                &root,
+                &request.path,
+            ))?;
+            return Ok(serde_json::to_value(
+                store.request_chat_workspace(self.chat, actor, &target)?,
+            )?);
+        }
         if name == "get_plan" {
             if !arguments.is_empty() {
                 return Err(ai_team_core::Error::invalid(
                     "get_plan accepts no scope overrides",
                 ));
             }
-            return store.chat_plan(self.chat, actor);
+            return Ok(serde_json::to_value(store.chat_plan(self.chat, actor)?)?);
         }
         if arguments.contains_key("action") {
             return Err(ai_team_core::Error::invalid(
@@ -115,7 +138,9 @@ impl PlannerMcp {
         }
         arguments.insert("action".into(), name.into());
         let action: PlanAction = serde_json::from_value(arguments.into())?;
-        store.change_chat_plan(self.chat, actor, action)
+        Ok(serde_json::to_value(
+            store.change_chat_plan(self.chat, actor, action)?,
+        )?)
     }
 }
 
@@ -123,7 +148,7 @@ impl ServerHandler for PlannerMcp {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("ai-team-planner", env!("CARGO_PKG_VERSION")))
-            .with_instructions("Planning belongs only to the bound ai-team chat. Call get_plan first; each mutation requires its expect_revision and returns the updated snapshot. Human questions must be answered in Overview, never by the agent. Do not invoke standalone aip.")
+            .with_instructions("Planning belongs only to the bound ai-team chat. Call get_plan first; each mutation requires its expect_revision and returns the updated snapshot. Human questions must be answered in the chat's Board, never by the agent. If the user asks to use another worktree, call list_worktrees and request_worktree with its exact path, then end this turn. The request needs human approval in chat after this turn settles; do not change directories or continue work in another checkout yourself. Do not invoke standalone aip.")
     }
 
     async fn list_tools(

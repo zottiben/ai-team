@@ -219,24 +219,28 @@ async fn events(
 }
 
 #[derive(Deserialize)]
-struct Message {
+struct SendRequest {
     message: String,
     request_id: String,
+    #[serde(default)]
+    workspace_epoch: i64,
 }
 
 async fn send(
     State(state): State<AppState>,
     Path(id): Path<i64>,
-    Json(input): Json<Message>,
+    Json(input): Json<SendRequest>,
 ) -> Result<Json<ai_team_core::ChatSubmission>> {
     let db = state.database_path()?;
     ai_team_core::recover_abandoned_chat_team(&db, id).await?;
     let registry = ModelRegistry::load()?;
-    let receipt =
-        state
-            .store()?
-            .lock()
-            .begin_chat_turn(id, &input.message, &input.request_id, &registry)?;
+    let receipt = state.store()?.lock().begin_chat_turn_at_epoch(
+        id,
+        &input.message,
+        &input.request_id,
+        &registry,
+        input.workspace_epoch,
+    )?;
     if receipt.started {
         if state
             .store()?

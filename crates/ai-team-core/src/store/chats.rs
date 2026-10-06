@@ -9,11 +9,21 @@ use super::Store;
 use crate::chat::{Chat, ChatSubmission, ChatTurn, NewChat};
 use crate::{ChatMode, Error, Guardrails, ModelRegistry, NodeStatus, Result};
 
-const SELECT: &str = "SELECT id, project_id, title, workspace_path, provider, model, reasoning,
+pub(super) const SELECT: &str =
+    "SELECT id, project_id, title, workspace_path, provider, model, reasoning,
     active_node_id, stop_requested, archived, rev, created_at, updated_at, live_text,
-    supervisor_identity, pi_identity, mode FROM chat";
+    supervisor_identity, pi_identity, mode,
+    COALESCE((SELECT MAX(w.id) FROM chat_workspace_request w WHERE w.chat_id=chat.id AND w.state='applied'),0)
+    FROM chat";
 
-fn from_row(row: &Row<'_>) -> rusqlite::Result<Chat> {
+#[derive(Default)]
+struct TurnOptions {
+    followup: Option<i64>,
+    settings: Option<(crate::Provider, String, crate::Reasoning)>,
+    workspace_epoch: Option<i64>,
+}
+
+pub(super) fn from_row(row: &Row<'_>) -> rusqlite::Result<Chat> {
     Ok(Chat {
         id: row.get(0)?,
         project_id: row.get(1)?,
@@ -32,6 +42,7 @@ fn from_row(row: &Row<'_>) -> rusqlite::Result<Chat> {
         supervisor_identity: row.get(14)?,
         pi_identity: row.get(15)?,
         mode: row.get(16)?,
+        workspace_epoch: row.get(17)?,
     })
 }
 
@@ -181,6 +192,25 @@ impl Store {
         request_id: &str,
         registry: &ModelRegistry,
     ) -> Result<ChatSubmission> {
+        self.begin_chat_turn_at_epoch(
+            id,
+            message,
+            request_id,
+            registry,
+            self.chat(id)?.workspace_epoch,
+        )
+    }
+
+    /// Browser prompts retain the checkout generation the human actually saw. A
+    /// delayed request must not be silently dispatched after a workspace handoff.
+    pub fn begin_chat_turn_at_epoch(
+        &mut self,
+        id: i64,
+        message: &str,
+        request_id: &str,
+        registry: &ModelRegistry,
+        epoch: i64,
+    ) -> Result<ChatSubmission> {
         if request_id.starts_with("followup/") {
             return Err(Error::invalid(
                 "followup request ids are reserved for queued instructions",
@@ -191,7 +221,16 @@ impl Store {
                 "schedule request ids are reserved for claimed schedule occurrences",
             ));
         }
-        self.begin_chat_turn_inner(id, message, request_id, registry, None, None)
+        self.begin_chat_turn_inner(
+            id,
+            message,
+            request_id,
+            registry,
+            TurnOptions {
+                workspace_epoch: Some(epoch),
+                ..TurnOptions::default()
+            },
+        )
     }
 
     /// Start the turn one claimed schedule occurrence owns.
@@ -213,7 +252,16 @@ impl Store {
                 "a scheduled turn carries its occurrence's request id",
             ));
         }
-        self.begin_chat_turn_inner(id, message, request_id, registry, None, settings)
+        self.begin_chat_turn_inner(
+            id,
+            message,
+            request_id,
+            registry,
+            TurnOptions {
+                settings,
+                ..TurnOptions::default()
+            },
+        )
     }
 
     /// Who takes this turn. A team's coordinator comes from the team, so only a solo
@@ -242,8 +290,7 @@ impl Store {
         message: &str,
         request_id: &str,
         registry: &ModelRegistry,
-        followup: Option<i64>,
-        settings: Option<(crate::Provider, String, crate::Reasoning)>,
+        options: TurnOptions,
     ) -> Result<ChatSubmission> {
         let message = message.trim();
         validate_message(message, request_id)?;
@@ -251,7 +298,7 @@ impl Store {
             .ok_or_else(|| Error::invalid("could not identify the chat supervisor process"))?;
         let chat = self.chat(id)?;
         let project = self.project(chat.project_id)?;
-        let agent = self.turn_seat(&chat, project.team_id, settings)?;
+        let agent = self.turn_seat(&chat, project.team_id, options.settings)?;
         let resolution = registry.resolve(&agent)?;
         if request_id.starts_with("schedule/")
             && (resolution.provider != agent.provider || resolution.model != agent.model)
@@ -282,17 +329,11 @@ impl Store {
                 if prompt != message { return Err(Error::invalid("that request id belongs to another message")); }
                 return Ok(ChatSubmission { run_id, node_id, started: false });
             }
-            check_chat_admission(tx, &chat, &workspace)?;
+            super::chat_workspaces::check_epoch(tx, id, options.workspace_epoch)?;
+            check_chat_admission(tx, &chat, &workspace, false)?;
             super::chat_schedules::check_admission(tx, &chat, message, request_id, &agent)?;
-            followups::check_admission(tx, id, message, followup)?;
-            let previous: Option<(Option<String>, i64)> = tx.query_row(
-                "SELECT CASE WHEN n.session_retired_at IS NULL THEN n.session_id END, n.stream_cursor
-                 FROM chat_turn t JOIN node_run n ON n.id = t.node_id
-                 WHERE t.chat_id = ?1 AND EXISTS(SELECT 1 FROM chat_team_run tr WHERE tr.run_id = t.run_id) = ?2
-                 ORDER BY t.run_id DESC LIMIT 1", params![id, chat.mode == ChatMode::Team],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            ).optional()?;
-            let (session, cursor) = previous.unwrap_or((None, 0));
+            followups::check_admission(tx, id, message, options.followup)?;
+            let (session, cursor) = context::previous_session(tx, id, chat.mode == ChatMode::Team, &workspace)?;
             tx.execute(
                 "INSERT INTO run (project_id, team_id, prompt, trigger, status, workspace_path,
                     parallel_width, budget_tokens, budget_seconds, max_repairs, budget_tokens_node,
@@ -313,7 +354,7 @@ impl Store {
                     agent.role, (chat.mode == ChatMode::Team).then_some(agent.id)],
             )?;
             let node_id = tx.last_insert_rowid();
-            if let Some(followup) = followup {
+            if let Some(followup) = options.followup {
                 tx.execute("UPDATE chat_followup SET state='starting',node_id=?2 WHERE id=?1 AND state='queued'", params![followup,node_id])?;
             }
             tx.execute("INSERT INTO chat_turn (chat_id, run_id, node_id, request_id) VALUES (?1, ?2, ?3, ?4)",
@@ -513,10 +554,11 @@ fn validate_message(message: &str, request_id: &str) -> Result<()> {
 }
 
 /// Admission checks share the same writer transaction as the reservation and evidence.
-fn check_chat_admission(
+pub(super) fn check_chat_admission(
     tx: &rusqlite::Transaction<'_>,
     expected: &Chat,
     workspace: &str,
+    switching: bool,
 ) -> Result<()> {
     super::chat_changes::check_workspace(tx, workspace)?;
     let current = tx.query_row(&format!("{SELECT} WHERE id = ?1"), [expected.id], from_row)?;
@@ -534,6 +576,16 @@ fn check_chat_admission(
         return Err(Error::invalid(
             "this chat is archived or still working; stop or wait before sending",
         ));
+    }
+    if current.workspace_path != expected.workspace_path
+        || current.workspace_epoch != expected.workspace_epoch
+    {
+        return Err(Error::invalid(
+            "this chat's checkout changed; refresh before sending",
+        ));
+    }
+    if !switching {
+        super::chat_workspaces::pending(tx, current.id)?;
     }
     if current.mode != expected.mode {
         return Err(Error::invalid(

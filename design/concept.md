@@ -63,8 +63,21 @@ The chat's command panels contain:
 - changes, review findings and delivery state.
 
 For a single-agent chat, show the useful subset rather than an empty team
-organisation chart. Team configuration describes who the agents are; live activity
-describes what they are doing. Never turn token usage into a completion percentage.
+organisation chart. Overview restores the repository/file activity map and execution
+seat graph, current commands, usage/context, recent turns, plan questions/progress,
+and checkout/draft facts. Evidence comes only from this chat; bounded history says
+what it covers, and old file touches never masquerade as the latest attempt's work.
+Team configuration describes who the agents are; live activity describes what they
+are doing. Never turn token usage into a completion percentage.
+
+An existing Git worktree can be chosen before creating a chat. During a conversation,
+a human or its coordinating agent can propose a different checkout; only the human
+can approve it after the turn drains. Revalidate Git/awt and destination ownership at
+approval. Move no files, create/reset no worktree, and preserve old execution evidence,
+editor drafts and terminal bindings. A handoff starts a fresh Pi session, even on a
+later return to the old path. Delayed messages retain their original checkout generation;
+schedules retain their recorded checkout, model and mode. Never relax the workspace
+guard to make a natural-language checkout request succeed.
 
 ### Solo and team work
 
@@ -121,6 +134,15 @@ it. Do not replace or modify `aip`, its database, global registrations or defaul
 Do not share its mutable store, auto-import its projects, or redirect clients into
 ai-team. New planning commands use an ai-team namespace, not `aip`.
 
+The global **Plans** board lists owned plans across registered projects and opens their
+exact owning chat. An explicit standalone snapshot import supports retiring `aip` without
+sharing its storage: survey a named database, preview a plan, then approve its import
+into an idle, empty, plan-free chat. Preserve source content, history and provenance;
+leave originals and registrations untouched. Refuse stale previews and duplicates,
+including moved copies. Claims, delivery state and past approvals arrive as history,
+never execution authority. Imported content is editable through the same owned planning
+service; there is no automatic synchronization with the source.
+
 **Agent interface:** keep structured MCP tools hosted by ai-team (for example
 `ait plan serve`), with a distinct server name and
 seat-local configuration. Keep role tool allow-lists and scope calls to the chat's
@@ -132,7 +154,7 @@ Chat MCP discovery is explicit: generated planning/context servers and unrelated
 checkout MCP servers are included; global MCP discovery is not inherited. This
 prevents standalone planning from silently reappearing alongside the scoped tools.
 It changes which servers a chat sees, not the operator's registrations or extensions.
-Future toolbox onboarding can offer previewed, approved imports.
+Toolbox onboarding remains a separate previewed, approved configuration workflow.
 
 MCP is an interface, not a security boundary. Server-side validation and policy
 still matter; an unrestricted shell cannot be contained by hiding a tool name.

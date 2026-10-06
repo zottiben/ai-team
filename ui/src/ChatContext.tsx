@@ -4,6 +4,7 @@ import type { ChatDetail } from "./chat-api";
 import type { RunEvent } from "./api";
 
 const ChatChanges = lazy(() => import("./ChatChanges").then(module => ({ default: module.ChatChanges })));
+const ChatOverview = lazy(() => import("./ChatOverview").then(module => ({ default: module.ChatOverview })));
 const ChatPlanning = lazy(() => import("./ChatPlan").then(module => ({ default: module.ChatPlanning })));
 
 export const CHAT_PANELS = {
@@ -32,8 +33,6 @@ export function ChatContext({ detail, panel, opened, hidden, status, tick, busy,
   onClose: () => void;
 }) {
   const activeTeam = detail.turns.find(turn => turn.team?.control_node_id === detail.active_node_id)?.team;
-  const running = detail.state === "running" || detail.state === "stopping";
-  const activity = events.filter(event => event.node_run_id === (detail.active_node_id ?? detail.turns.at(-1)?.node.id));
   return <aside id="chat-context" className="chat-context" aria-label="Chat context" hidden={hidden || panel === null}
     onKeyDown={event => { if (event.key === "Escape" && !event.defaultPrevented) { event.stopPropagation(); onClose(); } }}>
     <header className="chat-context-heading">
@@ -42,25 +41,9 @@ export function ChatContext({ detail, panel, opened, hidden, status, tick, busy,
     </header>
     {/* Keep opened panels mounted: switching context must not discard review/plan drafts. */}
     {opened.has("overview") && <section className="chat-context-pane" aria-label="Overview" hidden={panel !== "overview"}>
-      <section className="chat-overview-card">
-        <h3>Execution</h3>
-        <strong>{status}</strong>
-        <p>{detail.mode === "team" ? "Pi team · chat-owned draft worktrees" : "Single Pi agent · local checkout"}</p>
-        {running && <>
-          <div className="chat-live-meter" role="progressbar" aria-label="Agent working" />
-          <p className="mono">{Number.isFinite(elapsed) ? elapsed : 0}s elapsed</p>
-        </>}
-        <p>{activity.at(-1)?.summary ?? "Send a message to begin. No team or plan is required."}</p>
-        <p className="faint">{detail.turns.length} {detail.turns.length === 1 ? "turn" : "turns"} in this conversation</p>
-      </section>
-      <section className="chat-overview-card">
-        <h3>Working context</h3>
-        <p className="mono">{detail.workspace_path}</p>
-        <p>{detail.provider} / {detail.model}</p>
-        <p className="faint">{activeTeam
-          ? "This is the persistent solo checkout. Team builds use separate draft worktrees and never merge here automatically."
-          : "Changes stay in this checkout. Completion is not an automatic commit or verification verdict."}</p>
-      </section>
+      <Suspense fallback={<p className="faint">Loading overview…</p>}>
+        <ChatOverview detail={detail} status={status} tick={tick} events={events} elapsed={elapsed} now={now} />
+      </Suspense>
     </section>}
     {opened.has("review") && <section className="chat-context-pane" aria-label="Review" hidden={panel !== "review"}>
       <Suspense fallback={<p className="faint">Loading changes…</p>}>

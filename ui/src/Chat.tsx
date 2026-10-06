@@ -11,6 +11,7 @@ import {
 import { BoardMarkdown } from "./BoardMarkdown";
 import { CHAT_PANELS, ChatContext, type ChatPanel } from "./ChatContext";
 import { TEAM_PHASES } from "./ChatTeam";
+import { ChatWorkspace } from "./ChatWorkspace";
 import logo from "../../crates/ai-team-desktop/icons/mark.svg";
 import { setChatMode } from "./team-api";
 import { models, type ModelChoice, type Project, type RunEvent } from "./api";
@@ -54,6 +55,7 @@ export function ChatView({
   onChanged,
   onArchived,
   onSettings,
+  initialPanel = null,
 }: {
   id: number | null;
   project: Project;
@@ -62,13 +64,16 @@ export function ChatView({
   onChanged: () => void;
   onArchived: () => void;
   onSettings: () => void;
+  initialPanel?: ChatPanel | null;
 }) {
   const [detail, setDetail] = useState<ChatDetail | null>(null);
   const [events, setEvents] = useState<RunEvent[]>([]);
-  const [panel, setPanel] = useState<ChatPanel | null>(null);
-  const [openedPanels, setOpenedPanels] = useState<ReadonlySet<ChatPanel>>(new Set());
+  const [panel, setPanel] = useState<ChatPanel | null>(initialPanel);
+  const [openedPanels, setOpenedPanels] = useState<ReadonlySet<ChatPanel>>(new Set(initialPanel ? [initialPanel] : []));
   const [tool, setTool] = useState<"editor" | "terminal" | null>(null);
-  const [openedTools, setOpenedTools] = useState({ editor: false, terminal: false });
+  const [openedTools, setOpenedTools] = useState<Record<string, { editor: boolean; terminal: boolean }>>({});
+  const [newWorkspace, setNewWorkspace] = useState<string | null>(null);
+  const [workspacePending, setWorkspacePending] = useState(false);
   const [catalogue, setCatalogue] = useState<ModelChoice[]>([]);
   const [modelKey, setModelKey] = useState("");
   const [newMode, setNewMode] = useState<"single" | "team">("single");
@@ -85,7 +90,7 @@ export function ChatView({
   const pending = useRef(false);
   const cursor = useRef(0);
   const created = useRef<number | null>(null);
-  const submission = useRef<{ body: string; key: string } | null>(null);
+  const submission = useRef<{ body: string; key: string; workspaceEpoch: number } | null>(null);
   const queuedSubmission = useRef<{ body: string; key: string; node: number; kind: ChatFollowup["kind"] } | null>(null);
   const feed = useRef<HTMLDivElement | null>(null);
   const composer = useRef<HTMLTextAreaElement | null>(null);
@@ -172,7 +177,7 @@ export function ChatView({
   const activeTeam = detail?.turns.find((turn) => turn.team?.control_node_id === detail.active_node_id)?.team;
   const mode = detail?.mode ?? newMode;
   const queued = detail?.followups?.find((item) => item.state === "queued");
-  const canQueue = detail?.state === "running" && !activeTeam && mode === "single" && !detail.stop_requested && !queued;
+  const canQueue = detail?.state === "running" && !activeTeam && mode === "single" && !detail.stop_requested && !queued && !workspacePending;
   const soloActive = active && !activeTeam && mode === "single";
   const showStop = soloActive && (!message.trim() || !running);
   const stopping = !!detail?.stop_requested && detail.state !== "interrupted";
@@ -201,7 +206,7 @@ export function ChatView({
   }, [following, events.length, detail?.live_text, tool]);
 
   const send = async () => {
-    if (busy || active || queued || !message.trim() || (id !== null && detail === null))
+    if (busy || active || queued || workspacePending || !message.trim() || (id !== null && detail === null))
       return;
     const chosen = catalogue.find(
       (choice) => `${choice.provider}/${choice.model}` === modelKey,
@@ -211,12 +216,13 @@ export function ChatView({
     setProblem(null);
     const body = message.trim();
     if (submission.current?.body !== body)
-      submission.current = { body, key: crypto.randomUUID() };
+      submission.current = { body, key: crypto.randomUUID(), workspaceEpoch: detail?.workspace_epoch ?? 0 };
     try {
       let target = id ?? created.current;
       if (target === null && chosen) {
         const draft = await createChat({
           project: project.slug,
+          ...(newWorkspace ? { workspace: newWorkspace } : {}),
           provider: chosen.provider,
           model: chosen.model,
           reasoning: "high",
@@ -226,7 +232,7 @@ export function ChatView({
         created.current = target;
       }
       if (target === null) return;
-      await sendChat(target, body, submission.current.key);
+      await sendChat(target, body, submission.current.key, submission.current.workspaceEpoch);
       if (!alive.current) return;
       setMessage("");
       submission.current = null;
@@ -343,9 +349,9 @@ export function ChatView({
         </div>
         {detail && (
           <div className="chat-header-actions">
-            {(["editor", "terminal"] as const).map((name) => <button key={name} className="button" aria-pressed={tool === name} aria-controls={`chat-tool-${name}`} onClick={() => {
+            {(["editor", "terminal"] as const).map((name) => <button key={name} className="button" aria-pressed={tool === name} aria-controls={`chat-tool-${name}-${encodeURIComponent(detail.workspace_path)}`} onClick={() => {
               setTool(tool === name ? null : name);
-              setOpenedTools((opened) => ({ ...opened, [name]: true }));
+              setOpenedTools((opened) => ({ ...opened, [detail.workspace_path]: { editor: false, terminal: false, ...opened[detail.workspace_path], [name]: true } }));
             }}>{name === "editor" ? "Editor" : "Terminal"}</button>)}
             <button
               className="button"
@@ -468,16 +474,16 @@ export function ChatView({
             )}
           </div>
       </div>
-      {detail && <section className="chat-tools-panel" hidden={tool === null} aria-label="Chat checkout tools">
-        <div className="card__row"><strong className="mono">{detail.workspace_path}</strong><button className="button" onClick={() => setTool(null)}>Close tools</button></div>
+      {detail && Object.entries(openedTools).map(([workspace, opened]) => <section key={workspace} className="chat-tools-panel" hidden={tool === null || workspace !== detail.workspace_path} aria-label="Chat checkout tools">
+        <div className="card__row"><strong className="mono">{workspace}</strong><button className="button" onClick={() => setTool(null)}>Close tools</button></div>
         <p className="faint">These are operator tools, not covered by the agent's checkout guard. This is the persistent chat checkout, not a team draft. Save edits before leaving this chat.</p>
-        <div id="chat-tool-editor" className="chat-tool-pane" hidden={tool !== "editor"}>
-          {openedTools.editor && <Suspense fallback={<p>Loading editor…</p>}><Editor project={project.slug} workspace={detail.workspace_path} node={null} visible={tool === "editor"} /></Suspense>}
+        <div id={`chat-tool-editor-${encodeURIComponent(workspace)}`} className="chat-tool-pane" hidden={tool !== "editor"}>
+          {opened.editor && <Suspense fallback={<p>Loading editor…</p>}><Editor project={project.slug} workspace={workspace} node={null} visible={tool === "editor" && workspace === detail.workspace_path} /></Suspense>}
         </div>
-        <div id="chat-tool-terminal" className="chat-tool-pane" hidden={tool !== "terminal"}>
-          {openedTools.terminal && <Suspense fallback={<p>Loading terminal…</p>}><Terminal project={project.slug} workspace={detail.workspace_path} node={null} /></Suspense>}
+        <div id={`chat-tool-terminal-${encodeURIComponent(workspace)}`} className="chat-tool-pane" hidden={tool !== "terminal"}>
+          {opened.terminal && <Suspense fallback={<p>Loading terminal…</p>}><Terminal project={project.slug} workspace={workspace} node={null} /></Suspense>}
         </div>
-      </section>}
+      </section>)}
       {!following && tool === null && (
         <button
           className="button chat-follow"
@@ -507,7 +513,7 @@ export function ChatView({
       >
         <div className="chat-composer-context">
           <span title={project.name}>{project.name}</span>
-          <span>Local</span>
+          <ChatWorkspace project={project.slug} detail={detail} selected={newWorkspace} tick={tick} disabled={busy || !!detail?.archived || (id !== null && !detail) || (id === null && created.current !== null)} onSelect={setNewWorkspace} onChanged={() => { setTool(null); onChanged(); void load(); }} onPending={setWorkspacePending} />
           <span className="chat-select">
           <select aria-label="Execution mode" value={mode} disabled={busy || active || !!queued || detail?.archived || (id !== null && !detail) || (id === null && created.current !== null)}
             onChange={(event) => {
@@ -591,6 +597,7 @@ export function ChatView({
               busy ||
               (active && !canQueue) ||
               !!queued ||
+              workspacePending ||
               detail?.archived ||
               !message.trim() ||
               (id === null ? !modelKey : detail === null)
@@ -601,9 +608,9 @@ export function ChatView({
               : <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M5 12h14m-6-6 6 6-6 6" /></svg>}
           </button>
         </div>
-        {queuedSubmission.current && problem && <small className="faint">
-          This draft still targets turn #{queuedSubmission.current.node}. Clearing it does not cancel an instruction already accepted by the server; inspect its receipt above.
-          <button className="button" type="button" disabled={busy} onClick={() => { queuedSubmission.current = null; setMessage(""); setProblem(null); }}>Clear this draft</button>
+        {(queuedSubmission.current || submission.current) && problem && <small className="faint">
+          {queuedSubmission.current ? `This draft still targets turn #${queuedSubmission.current.node}.` : "This message still targets the checkout selected for its original send."} Clearing it does not cancel work already accepted by the server; inspect this chat's history and receipts first.
+          <button className="button" type="button" disabled={busy} onClick={() => { queuedSubmission.current = null; submission.current = null; setMessage(""); setProblem(null); }}>Clear this draft</button>
         </small>}
         {mode === "team" && !active && <small className="faint">The configured project team plans first. Review and explicitly approve before building. Your solo model and history are kept.</small>}
         {active && (

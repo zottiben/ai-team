@@ -26,11 +26,14 @@ const service = vi.hoisted(() => ({
   cancelChatFollowup: vi.fn(),
   sendChatFollowup: vi.fn(),
   chatPlan: vi.fn(),
+  workspaceRequests: vi.fn(),
+  chatWorkspaces: vi.fn(),
 }));
 vi.mock("./Editor", () => ({ Editor: ({ project, workspace, visible }: { project: string; workspace: string; visible: boolean }) => <div><p>Editor {project}: {workspace} ({String(visible)})</p><input aria-label="Unsaved fixture file" defaultValue="kept" /></div> }));
 vi.mock("./Terminal", () => ({ TerminalPane: ({ project, workspace }: { project: string; workspace: string }) => <p>Terminal {project}: {workspace}</p> }));
 vi.mock("./ChatChanges", () => ({ ChatChanges: ({ chatId, onFeedback }: { chatId: number; onFeedback: (text: string) => void }) => <section aria-label="Review fixture"><p>Review chat {chatId}</p><input aria-label="Unsaved review finding" /><button onClick={() => onFeedback("Recorded feedback")}>Use feedback</button></section> }));
 vi.mock("./chat-api", () => service);
+vi.mock("./chat-workspace-api", async original => ({ ...(await original<typeof import("./chat-workspace-api")>()), workspaceRequests: service.workspaceRequests, chatWorkspaces: service.chatWorkspaces }));
 vi.mock("./team-api", async (original) => ({
   ...(await original<typeof import("./team-api")>()),
   setChatMode: service.setChatMode,
@@ -114,6 +117,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   service.chat.mockImplementation((id: number) => Promise.resolve(detail(id)));
   service.chatEvents.mockResolvedValue([]);
+  service.workspaceRequests.mockResolvedValue({ requests: [] });
+  service.chatWorkspaces.mockResolvedValue([{ path: "/repo/demo", name: "main", branch: "main", unavailable: null }, { path: "/repo/linked-chat", name: "3", branch: "feature", unavailable: null }]);
   service.chatPlan.mockImplementation((id: number) => Promise.resolve({ chat_id: id, project_id: 1, revision: 0, bundle: null }));
   service.createChat.mockResolvedValue(detail(3));
   service.sendChat.mockResolvedValue({ run_id: 1, node_id: 1, started: true });
@@ -300,6 +305,58 @@ describe("persistent conversation", () => {
     expect(screen.getByText(/not covered by the agent's checkout guard/)).not.toBeNull();
   });
 
+  it("keeps an uncertain send bound to its original checkout epoch", async () => {
+    const input = props();
+    service.sendChat.mockRejectedValue(new Error("response lost"));
+    service.chat.mockResolvedValue({ ...detail(), workspace_epoch: 1 });
+    const view = render(<ChatView {...input} />);
+    await screen.findByRole("heading", { name: "Chat 1" });
+    fireEvent.change(screen.getByRole("textbox", { name: "Message" }), { target: { value: "Inspect these files" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+    await screen.findByText("response lost");
+    const original = service.sendChat.mock.calls[0];
+    expect(original?.[3]).toBe(1);
+    service.chat.mockResolvedValue({ ...detail(), workspace_path: "/repo/linked-chat", workspace_epoch: 2 });
+    view.rerender(<ChatView {...input} tick={1} />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Choose checkout" }).title).toBe("/repo/linked-chat"));
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() => expect(service.sendChat).toHaveBeenCalledTimes(2));
+    expect(service.sendChat.mock.calls[1]).toEqual(original);
+    fireEvent.click(await screen.findByRole("button", { name: "Clear this draft" }));
+    expect((screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement).value).toBe("");
+  });
+
+  it("creates a new chat in the selected worktree", async () => {
+    render(<ChatView {...props()} id={null} />);
+    await screen.findByRole("option", { name: "gpt-5 · openai" });
+    fireEvent.click(screen.getByRole("button", { name: "Choose checkout" }));
+    await screen.findByRole("option", { name: "3 · feature" });
+    fireEvent.change(screen.getByRole("combobox", { name: "Chat worktree" }), { target: { value: "/repo/linked-chat" } });
+    fireEvent.click(screen.getByRole("button", { name: "Use this checkout" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Message" }), { target: { value: "Work here" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() => expect(service.createChat).toHaveBeenCalledWith(expect.objectContaining({ workspace: "/repo/linked-chat", project: "demo" })));
+  });
+
+  it("pins editor drafts to their original checkout across a switch", async () => {
+    const input = props();
+    const view = render(<ChatView {...input} />);
+    await screen.findByRole("heading", { name: "Chat 1" });
+    fireEvent.click(screen.getByRole("button", { name: "Editor" }));
+    await screen.findByText("Editor demo: /repo/demo (true)");
+    fireEvent.change(screen.getByRole("textbox", { name: "Unsaved fixture file" }), { target: { value: "Original checkout draft" } });
+    service.chat.mockResolvedValue({ ...detail(), workspace_path: "/repo/linked-chat" });
+    view.rerender(<ChatView {...input} tick={1} />);
+    await screen.findByText("Editor demo: /repo/demo (false)");
+    fireEvent.click(screen.getByRole("button", { name: "Terminal" }));
+    await screen.findByText("Terminal demo: /repo/linked-chat");
+    service.chat.mockResolvedValue(detail());
+    view.rerender(<ChatView {...input} tick={2} />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Choose checkout" }).title).toBe("/repo/demo"));
+    fireEvent.click(screen.getByRole("button", { name: "Editor" }));
+    expect((screen.getByRole("textbox", { name: "Unsaved fixture file" }) as HTMLInputElement).value).toBe("Original checkout draft");
+  });
+
   it("does not guess a checkout for tools before the chat exists", async () => {
     render(<ChatView {...props()} id={null} />);
     await screen.findByRole("option", { name: "gpt-5 · openai" });
@@ -354,6 +411,7 @@ describe("persistent conversation", () => {
       3,
       "Explain the app",
       expect.any(String),
+      0,
     );
     expect(screen.queryByRole("button", { name: /Start team/ })).toBeNull();
   });

@@ -106,6 +106,7 @@ vi.mock("./Settings", () => ({
   ),
 }));
 vi.mock("./Schedule", () => ({ Schedule: () => <h1>Schedule content</h1> }));
+vi.mock("./PlanLibrary", () => ({ PlanLibrary: ({ onOpenChat }: { onOpenChat: (project: string, chat: number) => void }) => <section><h1>All plans</h1><button onClick={() => onOpenChat("demo", 42)}>Open exact plan</button></section> }));
 vi.mock("./Roster", () => ({ Roster: () => <h1>Default team</h1> }));
 vi.mock("./Analytics", () => ({ Analytics: () => <h1>Analytics content</h1> }));
 vi.mock("./Today", () => ({
@@ -307,6 +308,13 @@ it("keeps only Source and Team in project tools, with explicit checkout ownershi
   });
   fireEvent.click(screen.getByRole("button", { name: "Team" }));
   await screen.findByRole("heading", { name: "/demo-task / team" });
+});
+
+it("opens a global plan in its exact chat rather than the project's latest", async () => {
+  render(<App />);
+  fireEvent.click(await screen.findByRole("button", { name: "Plans" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Open exact plan" }));
+  await screen.findByRole("heading", { name: "Demo project / 42" });
 });
 
 it("keeps schedule and less frequent tools accessible without replacing chat navigation", async () => {

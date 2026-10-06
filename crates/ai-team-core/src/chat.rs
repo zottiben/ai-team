@@ -25,6 +25,8 @@ pub struct Chat {
     pub project_id: i64,
     pub title: String,
     pub workspace_path: String,
+    /// Last approved checkout handoff; unlike `rev`, stable through model/title edits.
+    pub workspace_epoch: i64,
     pub provider: Provider,
     pub model: String,
     pub reasoning: Reasoning,

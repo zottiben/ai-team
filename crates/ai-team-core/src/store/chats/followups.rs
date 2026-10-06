@@ -52,6 +52,7 @@ impl Store {
                 if prior != after || text != body || intent != kind { return Err(Error::invalid("that request id belongs to another queued instruction")); }
                 return Ok(id);
             }
+            super::super::chat_workspaces::pending(tx, chat)?;
             let allowed: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM chat c JOIN chat_turn t ON t.chat_id=c.id JOIN node_run n ON n.id=t.node_id JOIN project p ON p.id=c.project_id WHERE c.id=?1 AND c.active_node_id=?2 AND t.node_id=?2 AND c.archived=0 AND p.status!='archived' AND c.mode='single' AND c.stop_requested=0 AND n.status='running' AND NOT EXISTS(SELECT 1 FROM chat_team_run tr WHERE tr.run_id=t.run_id))", params![chat,after], |r| r.get(0))?;
             if !allowed { return Err(Error::invalid("that solo turn is no longer accepting instructions; inspect its receipts, or clear this draft before composing for another turn")); }
             let pending: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM chat_followup WHERE chat_id=?1 AND state='queued')", [chat], |r| r.get(0))?;
@@ -98,8 +99,10 @@ impl Store {
             &queued.body,
             &format!("followup/{id}"),
             registry,
-            Some(id),
-            None,
+            super::TurnOptions {
+                followup: Some(id),
+                ..super::TurnOptions::default()
+            },
         )
     }
 
