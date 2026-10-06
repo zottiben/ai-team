@@ -4,6 +4,7 @@ import { Analytics } from "./Analytics";
 import { ChatView } from "./Chat";
 import logo from "../../crates/ai-team-desktop/icons/mark.svg";
 import { Notifications } from "./Notifications";
+import { Popover } from "./Popover";
 import { Projects } from "./Projects";
 import { Roster } from "./Roster";
 const Schedule = lazy(() => import("./Schedule").then(m => ({ default: m.Schedule })));
@@ -41,6 +42,7 @@ type Page =
   | "tools"
   | "legacy";
 const LAST_CHAT = "ai-team.last-chat";
+const SIDEBAR_COLLAPSED = "ai-team.sidebar-collapsed";
 
 function restored(): { project: string | null; chat: number | null } {
   try {
@@ -82,6 +84,15 @@ export default function App() {
   const interacted = useRef(false);
   const [problem, setProblem] = useState<string | null>(null);
   const [more, setMore] = useState(false);
+  const moreButton = useRef<HTMLButtonElement | null>(null);
+  const [collapsed, setCollapsed] = useState(() => {
+    try { return localStorage.getItem(SIDEBAR_COLLAPSED) === "true"; }
+    catch { return false; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem(SIDEBAR_COLLAPSED, String(collapsed)); }
+    catch { /* The sidebar still works without persistent storage. */ }
+  }, [collapsed]);
   const [filter, setFilter] = useState("");
   const [trees, setTrees] = useState<Worktree[]>([]);
   const [workspace, setWorkspace] = useState<string | null>(null);
@@ -222,9 +233,32 @@ export default function App() {
     }
   };
 
+  const notificationButton = <Notifications tick={tick} onOpen={notification => {
+    const owner = projects.find(candidate => candidate.id === notification.project_id);
+    if (!owner) {
+      setProblem("This notification's project is not available. Restore its registration in Projects to inspect it.");
+      return;
+    }
+    if (notification.chat_id != null) {
+      navigate(owner.slug, notification.chat_id);
+      return;
+    }
+    setProjectSlug(owner.slug);
+    setWorkspace(notification.workspace_path);
+    setOpenRun(notification.run_id);
+    setLegacyView("work");
+    setPage("legacy");
+    setSetup(false);
+  }} />;
+
   return (
-    <div className="chat-shell" onClickCapture={() => { interacted.current = true; }} onKeyDownCapture={() => { interacted.current = true; }}>
+    <div className="chat-shell" data-sidebar-collapsed={collapsed} onClickCapture={() => { interacted.current = true; }} onKeyDownCapture={() => { interacted.current = true; }}>
       <nav className="app-rail" aria-label="Application">
+        <button type="button" aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"} title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+          aria-expanded={!collapsed} aria-controls="chat-sidebar" onClick={() => setCollapsed(value => !value)}>
+          <Icon name={collapsed ? "expand" : "collapse"} />
+        </button>
+        {collapsed && <button type="button" aria-label="New chat" title="New chat" onClick={newChat}><Icon name="edit" /></button>}
         {(
           [
             ["chat", "Chats", "chat"],
@@ -246,7 +280,9 @@ export default function App() {
             <Icon name={icon} />
           </button>
         ))}
+        {collapsed && notificationButton}
         <button
+          ref={moreButton}
           type="button"
           aria-label="More tools"
           title="More tools"
@@ -278,32 +314,11 @@ export default function App() {
           </button>
         </div>
       </nav>
-      <aside className="chat-sidebar">
+      <aside id="chat-sidebar" className="chat-sidebar" hidden={collapsed}>
         <div className="chat-brand">
           <img src={logo} width="28" height="28" alt="AI Team logo" />
           <strong>AI Team</strong>
-          <Notifications
-            tick={tick}
-            onOpen={(notification) => {
-              const owner = projects.find(
-                (candidate) => candidate.id === notification.project_id,
-              );
-              if (!owner) {
-                setProblem("This notification's project is not available. Restore its registration in Projects to inspect it.");
-                return;
-              }
-              if (notification.chat_id != null) {
-                navigate(owner.slug, notification.chat_id);
-                return;
-              }
-              setProjectSlug(owner.slug);
-              setWorkspace(notification.workspace_path);
-              setOpenRun(notification.run_id);
-              setLegacyView("work");
-              setPage("legacy");
-              setSetup(false);
-            }}
-          />
+          {!collapsed && notificationButton}
         </div>
         <button type="button" className="chat-new" onClick={newChat}>
           <Icon name="edit" />
@@ -390,7 +405,7 @@ export default function App() {
             <p className="faint">Add a project to start a conversation.</p>
           )}
         </div>
-        {more && (
+        {more && <Popover anchor={moreButton} label="Additional tools" width={220} onClose={() => setMore(false)}>
           <nav className="chat-secondary" aria-label="More tools">
             {(
               [
@@ -407,13 +422,14 @@ export default function App() {
                 onClick={() => {
                   setPage(target);
                   setSetup(false);
+                  setMore(false);
                 }}
               >
                 {label}
               </button>
             ))}
           </nav>
-        )}
+        </Popover>}
         <div className="chat-sidebar-footer">
           <span>Powered by Pi</span>
           {project && (
@@ -561,9 +577,11 @@ export default function App() {
 function Icon({
   name,
 }: {
-  name: "chat" | "folder" | "clock" | "more" | "help" | "settings" | "edit";
+  name: "chat" | "folder" | "clock" | "more" | "help" | "settings" | "edit" | "collapse" | "expand";
 }) {
   const paths = {
+    collapse: "M3 4h18v16H3V4ZM8 4v16m8-12-4 4 4 4",
+    expand: "M3 4h18v16H3V4ZM8 4v16m4-12 4 4-4 4",
     chat: "M4 4h16v12H9l-5 4V4Z",
     folder: "M3 6h7l2 2h9v12H3V6Z",
     clock: "M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18M12 7v6l4 2",

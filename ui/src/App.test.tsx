@@ -89,6 +89,7 @@ vi.mock("./Chat", () => ({
       <h1>
         {project.name} / {id ?? "New chat"}
       </h1>
+      <input aria-label="Fixture draft" />
       <button onClick={() => onCreated(99)}>Test creation</button>
     </section>
   ),
@@ -189,6 +190,25 @@ it("opens chat-first with real chats beneath their project, not a run list", asy
     within(sidebar).getByRole("button", { name: "First conversation" }),
   ).not.toBeNull();
   expect(screen.queryByRole("heading", { name: "Today content" })).toBeNull();
+});
+
+it("collapses to an icon rail without losing the chat or draft, and remembers it", async () => {
+  const view = render(<App />);
+  fireEvent.click(await screen.findByRole("button", { name: "Second conversation" }));
+  fireEvent.change(screen.getByRole("textbox", { name: "Fixture draft" }), { target: { value: "Keep this message" } });
+  fireEvent.click(screen.getByRole("button", { name: "Collapse sidebar" }));
+  expect(screen.queryByRole("navigation", { name: "Projects and chats" })).toBeNull();
+  expect(screen.getByRole("heading", { name: "Demo project / 2" })).not.toBeNull();
+  expect((screen.getByRole("textbox", { name: "Fixture draft" }) as HTMLInputElement).value).toBe("Keep this message");
+  expect(screen.getByRole("button", { name: "New chat" })).not.toBeNull();
+  expect(screen.getByRole("button", { name: "Open notification" })).not.toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "More tools" }));
+  expect(screen.getByRole("button", { name: "Project tools" })).not.toBeNull();
+  view.unmount();
+  render(<App />);
+  await screen.findByRole("heading", { name: "Demo project / 2" });
+  fireEvent.click(screen.getByRole("button", { name: "Expand sidebar" }));
+  expect(screen.getByRole("navigation", { name: "Projects and chats" })).not.toBeNull();
 });
 
 it("shows the AI Team name and the existing logo", async () => {
@@ -300,6 +320,7 @@ it("opens legacy Today runs and reviews in their own checkout", async () => {
   fireEvent.click(screen.getByRole("button", { name: "Today" }));
   fireEvent.click(screen.getByRole("button", { name: "Open legacy run" }));
   await screen.findByRole("heading", { name: "/demo-task / work" });
+  fireEvent.click(screen.getByRole("button", { name: "More tools" }));
   fireEvent.click(screen.getByRole("button", { name: "Today" }));
   fireEvent.click(screen.getByRole("button", { name: "Open legacy review" }));
   await screen.findByRole("heading", { name: "/demo-task / review" });

@@ -65,11 +65,7 @@ pub(crate) fn routes() -> Router<AppState> {
             axum::routing::post(note_board_slice),
         )
         .route("/today", get(today))
-        .route("/notifications", get(notifications))
-        .route(
-            "/notifications/{id}/read",
-            axum::routing::post(read_notification),
-        )
+        .merge(notification_routes())
         .route("/tree", get(tree))
         .route("/map", get(repo_map))
         .route("/file", get(read_file).post(write_file))
@@ -126,6 +122,28 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/reviews/{id}/comments", axum::routing::post(add_comment))
         .route("/reviews/{id}/submit", axum::routing::post(submit))
         .route("/comments/{id}/resolve", axum::routing::post(resolve))
+}
+
+fn notification_routes() -> Router<AppState> {
+    Router::new()
+        .route("/notifications", get(notifications))
+        .route("/notifications/inbox", get(notification_inbox))
+        .route(
+            "/notifications/read",
+            axum::routing::post(read_notifications),
+        )
+        .route(
+            "/notifications/clear",
+            axum::routing::post(clear_notifications),
+        )
+        .route(
+            "/notifications/{id}/clear",
+            axum::routing::post(clear_notification),
+        )
+        .route(
+            "/notifications/{id}/read",
+            axum::routing::post(read_notification),
+        )
 }
 
 fn node_routes() -> Router<AppState> {
@@ -3696,6 +3714,18 @@ async fn notifications(
     Ok(Json(store.notifications(query.limit)?))
 }
 
+async fn notification_inbox(
+    State(state): State<AppState>,
+    Query(query): Query<NotificationQuery>,
+) -> Result<Json<serde_json::Value>> {
+    let store = state.store()?;
+    let store = store.lock();
+    Ok(Json(serde_json::json!({
+        "items": store.notifications(query.limit)?,
+        "unread": store.unread_notification_count()?,
+    })))
+}
+
 async fn read_notification(
     State(state): State<AppState>,
     Path(id): Path<i64>,
@@ -3703,6 +3733,39 @@ async fn read_notification(
     let store = state.store()?;
     let mut store = store.lock();
     Ok(Json(store.read_notification(id)?))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NotificationBoundary {
+    through_id: i64,
+}
+
+async fn read_notifications(
+    State(state): State<AppState>,
+    Json(body): Json<NotificationBoundary>,
+) -> Result<Json<serde_json::Value>> {
+    let store = state.store()?;
+    let updated = store.lock().read_notifications(body.through_id)?;
+    Ok(Json(serde_json::json!({"updated": updated})))
+}
+
+async fn clear_notifications(
+    State(state): State<AppState>,
+    Json(body): Json<NotificationBoundary>,
+) -> Result<Json<serde_json::Value>> {
+    let store = state.store()?;
+    let updated = store.lock().clear_notifications(body.through_id)?;
+    Ok(Json(serde_json::json!({"updated": updated})))
+}
+
+async fn clear_notification(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> Result<Json<serde_json::Value>> {
+    let store = state.store()?;
+    store.lock().clear_notification(id)?;
+    Ok(Json(serde_json::json!({"cleared": true})))
 }
 
 /// What changed, as far as a window needs to care.
@@ -3716,6 +3779,7 @@ struct Tick {
     planning_revision: i64,
     latest_event: i64,
     latest_notification: i64,
+    notification_revision: i64,
     open_runs: usize,
 }
 
@@ -3732,6 +3796,7 @@ async fn stream(
                     planning_revision: -1,
                     latest_event: -1,
                     latest_notification: -1,
+                    notification_revision: -1,
                     open_runs: 0,
                 });
                 Ok(SseEvent::default().json_data(tick).unwrap_or_default())
@@ -3807,6 +3872,7 @@ impl AppState {
             planning_revision: store.planning_revision().unwrap_or(-1),
             latest_event,
             latest_notification,
+            notification_revision: store.notification_revision()?,
             open_runs,
         })
     }
@@ -3815,6 +3881,53 @@ impl AppState {
 #[cfg(test)]
 mod activity_event_tests {
     use super::*;
+
+    #[test]
+    fn inbox_reads_and_clears_tick_without_changing_execution_cursors() {
+        let mut store = ai_team_core::Store::memory().unwrap();
+        let project = store
+            .create_project(ai_team_core::NewProject {
+                name: "Inbox".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        let notice = store
+            .notify_once(ai_team_core::NewNotification {
+                dedupe_key: "inbox-test".into(),
+                project_id: project.id,
+                workspace_path: None,
+                run_id: None,
+                node_run_id: None,
+                kind: "completed".into(),
+                title: "Done".into(),
+                body: "Inspect the result".into(),
+                action_path: None,
+            })
+            .unwrap()
+            .unwrap();
+        let state = AppState::new("test").with_store(store);
+        let before = state.tick().unwrap();
+        state
+            .store()
+            .unwrap()
+            .lock()
+            .read_notification(notice.id)
+            .unwrap();
+        let read = state.tick().unwrap();
+        assert!(read.notification_revision > before.notification_revision);
+        state
+            .store()
+            .unwrap()
+            .lock()
+            .clear_notification(notice.id)
+            .unwrap();
+        let cleared = state.tick().unwrap();
+        assert!(cleared.notification_revision > read.notification_revision);
+        assert_eq!(cleared.latest_notification, before.latest_notification);
+        assert_eq!(cleared.latest_event, before.latest_event);
+        assert_eq!(cleared.chat_revision, before.chat_revision);
+        assert_eq!(cleared.open_runs, before.open_runs);
+    }
 
     #[test]
     fn a_broken_planner_does_not_freeze_chat_and_event_ticks() {

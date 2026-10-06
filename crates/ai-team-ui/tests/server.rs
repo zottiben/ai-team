@@ -1329,9 +1329,45 @@ fn notifications_are_listed_and_marked_read_without_changing_run_state() {
     assert_eq!(listed.json()[0]["title"], "Planner needs input");
     assert!(listed.json()[0]["read_at"].is_null());
 
+    let inbox = app.get("/api/notifications/inbox").json();
+    assert_eq!(inbox["unread"], 1);
+    assert_eq!(inbox["items"][0]["id"], notice.id);
+    for path in [
+        "/api/notifications/read".to_string(),
+        "/api/notifications/clear".into(),
+        format!("/api/notifications/{}/clear", notice.id),
+    ] {
+        let mut stream = TcpStream::connect(app.addr).unwrap();
+        let body = format!(r#"{{"through_id":{}}}"#, notice.id);
+        write!(stream, "POST {path} HTTP/1.1\r\nHost: {}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nConnection: close\r\n\r\n{body}", app.addr, body.len()).unwrap();
+        assert_eq!(read_response(stream).status, 401);
+    }
     let read = app.post(&format!("/api/notifications/{}/read", notice.id), "{}");
     assert_eq!(read.status, 200);
     assert!(read.json()["read_at"].is_string());
+
+    let scope = format!(r#"{{"through_id":{}}}"#, notice.id);
+    assert_eq!(app.post("/api/notifications/read", &scope).status, 200);
+    assert_eq!(app.post("/api/notifications/clear", &scope).status, 200);
+    assert_eq!(app.get("/api/notifications").json(), serde_json::json!([]));
+    assert_eq!(app.get("/api/notifications/inbox").json()["unread"], 0);
+    // Clearing is an idempotent inbox change, not deletion of its durable identity.
+    assert_eq!(
+        app.post(&format!("/api/notifications/{}/clear", notice.id), "{}")
+            .status,
+        200
+    );
+    let store = ai_team_core::Store::open(&path).unwrap();
+    assert_eq!(
+        store.notification(notice.id).unwrap().title,
+        "Planner needs input"
+    );
+    assert_eq!(
+        app.post("/api/notifications/clear", r#"{"through_id":-1}"#)
+            .status,
+        400
+    );
+    assert_eq!(app.get_anonymous("/api/notifications").status, 401);
 }
 
 #[test]

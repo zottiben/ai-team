@@ -513,8 +513,9 @@ export function ChatView({
         }}
       >
         <div className="chat-composer-context">
-          <span>{project.name}</span>
+          <span title={project.name}>{project.name}</span>
           <span>Local</span>
+          <span className="chat-select">
           <select aria-label="Execution mode" value={mode} disabled={busy || active || !!queued || detail?.archived || (id !== null && !detail) || (id === null && created.current !== null)}
             onChange={(event) => {
               const next = event.target.value === "team" ? "team" : "single";
@@ -524,6 +525,8 @@ export function ChatView({
             <option value="single">Single agent · Pi</option>
             <option value="team">Team · Pi</option>
           </select>
+          <SelectChevron />
+          </span>
         </div>
         <textarea
           ref={composer}
@@ -556,6 +559,7 @@ export function ChatView({
             Checkout guard
           </span>
           {id === null ? (
+            <span className="chat-select chat-model-select">
             <select
               aria-label="Model"
               value={modelKey}
@@ -574,8 +578,10 @@ export function ChatView({
                 </option>
               ))}
             </select>
+            <SelectChevron />
+            </span>
           ) : (
-            <span className="faint">{detail?.model}</span>
+            <span className="chat-model-name faint" title={detail?.model}>{detail?.model}</span>
           )}
           {active && mode === "single" && !activeTeam && <button type="button" className="button" disabled={busy || !canQueue || !message.trim()} onClick={() => void queue("steer")}>Stop and steer</button>}
           <button
@@ -591,7 +597,7 @@ export function ChatView({
               (id === null ? !modelKey : detail === null)
             }
           >
-            {busy ? "…" : "↑"}
+            {busy ? "…" : <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M5 12h14m-6-6 6 6-6 6" /></svg>}
           </button>
         </div>
         {queuedSubmission.current && problem && <small className="faint">
@@ -626,6 +632,10 @@ export function ChatView({
       </div>
     </main>
   );
+}
+
+function SelectChevron() {
+  return <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m7 10 5 5 5-5" /></svg>;
 }
 
 function Message({ event }: { event: RunEvent }) {

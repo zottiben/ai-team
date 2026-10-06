@@ -165,6 +165,22 @@ export function readNotification(id: number): Promise<Notification> {
   return post(`/notifications/${id}/read`, {});
 }
 
+export function notificationInbox(): Promise<{ items: Notification[]; unread: number }> {
+  return api("/notifications/inbox?limit=60");
+}
+
+export function readNotifications(throughId: number): Promise<{ updated: number }> {
+  return post("/notifications/read", { through_id: throughId });
+}
+
+export function clearNotifications(throughId: number): Promise<{ updated: number }> {
+  return post("/notifications/clear", { through_id: throughId });
+}
+
+export function clearNotification(id: number): Promise<{ cleared: boolean }> {
+  return post(`/notifications/${id}/clear`, {});
+}
+
 export function runs(project?: number, workspace?: string | null): Promise<Run[]> {
   const params = new URLSearchParams();
   if (project !== undefined) params.set("project", String(project));

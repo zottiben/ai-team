@@ -53,14 +53,21 @@ impl Store {
     }
 
     pub fn notifications(&self, limit: i64) -> Result<Vec<Notification>> {
-        let mut stmt = self
-            .db()
-            .conn()
-            .prepare(&format!("{NOTIFICATION_SELECT} ORDER BY id DESC LIMIT ?1"))?;
+        let mut stmt = self.db().conn().prepare(&format!(
+            "{NOTIFICATION_SELECT} WHERE cleared_at IS NULL ORDER BY id DESC LIMIT ?1"
+        ))?;
         let rows = stmt
             .query_map(params![limit.clamp(1, 200)], notification_from_row)?
             .collect::<rusqlite::Result<_>>()?;
         Ok(rows)
+    }
+
+    pub fn unread_notification_count(&self) -> Result<i64> {
+        Ok(self.db().conn().query_row(
+            "SELECT COUNT(*) FROM notification WHERE read_at IS NULL AND cleared_at IS NULL",
+            [],
+            |row| row.get(0),
+        )?)
     }
 
     pub fn read_notification(&mut self, id: i64) -> Result<Notification> {
@@ -77,13 +84,66 @@ impl Store {
         self.notification(id)
     }
 
+    /// Read only the inbox snapshot the operator saw; later arrivals stay unread.
+    pub fn read_notifications(&mut self, through_id: i64) -> Result<usize> {
+        if through_id <= 0 {
+            return Err(Error::invalid("notification boundary must be positive"));
+        }
+        let at = now();
+        self.db_mut().write(|tx| {
+            Ok(tx.execute(
+                "UPDATE notification SET read_at = ?2
+                 WHERE id <= ?1 AND read_at IS NULL AND cleared_at IS NULL",
+                params![through_id, at],
+            )?)
+        })
+    }
+
+    pub fn clear_notification(&mut self, id: i64) -> Result<()> {
+        let at = now();
+        let rows = self.db_mut().write(|tx| {
+            Ok(tx.execute(
+                "UPDATE notification SET cleared_at = COALESCE(cleared_at, ?2),
+                   read_at = COALESCE(read_at, ?2) WHERE id = ?1",
+                params![id, at],
+            )?)
+        })?;
+        if rows == 0 {
+            return Err(Error::invalid(format!("no notification {id}")));
+        }
+        Ok(())
+    }
+
+    /// Keep dedupe keys so an observer cannot recreate a cleared notification.
+    pub fn clear_notifications(&mut self, through_id: i64) -> Result<usize> {
+        if through_id <= 0 {
+            return Err(Error::invalid("notification boundary must be positive"));
+        }
+        let at = now();
+        self.db_mut().write(|tx| {
+            Ok(tx.execute(
+                "UPDATE notification SET cleared_at = ?2, read_at = COALESCE(read_at, ?2)
+                 WHERE id <= ?1 AND cleared_at IS NULL",
+                params![through_id, at],
+            )?)
+        })
+    }
+
+    pub fn notification_revision(&self) -> Result<i64> {
+        Ok(self.db().conn().query_row(
+            "SELECT revision FROM notification_inbox_revision WHERE singleton = 1",
+            [],
+            |row| row.get(0),
+        )?)
+    }
+
     /// Claim pending native deliveries in one write transaction.
     pub fn claim_notification_delivery(&mut self, limit: i64) -> Result<Vec<Notification>> {
         let at = now();
         self.db_mut().write(|tx| {
             let mut stmt = tx.prepare(&format!(
                 "{NOTIFICATION_SELECT}
-                  WHERE delivered_at IS NULL
+                  WHERE delivered_at IS NULL AND read_at IS NULL AND cleared_at IS NULL
                     AND (delivery_claimed_at IS NULL
                          OR julianday(delivery_claimed_at) < julianday('now', '-5 minutes'))
                   ORDER BY id
@@ -98,6 +158,7 @@ impl Store {
                 let rows = tx.execute(
                     "UPDATE notification SET delivery_claimed_at = ?2
                       WHERE id = ?1 AND delivered_at IS NULL
+                        AND read_at IS NULL AND cleared_at IS NULL
                         AND (delivery_claimed_at IS NULL
                              OR julianday(delivery_claimed_at) < julianday('now', '-5 minutes'))",
                     params![item.id, at],
@@ -231,6 +292,43 @@ mod tests {
         let read = store.read_notification(first.id).unwrap();
         assert!(read.read_at.is_some());
         assert_eq!(store.notifications(10).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn inbox_actions_keep_dedupe_and_later_arrivals_without_replaying_native_alerts() {
+        let (mut store, project) = seeded();
+        let first = store.notify_once(notice(project)).unwrap().unwrap();
+        let mut next = notice(project);
+        next.dedupe_key = "later".into();
+        let later = store.notify_once(next).unwrap().unwrap();
+        let revision = store.notification_revision().unwrap();
+        assert_eq!(store.read_notifications(first.id).unwrap(), 1);
+        assert!(store.notification(first.id).unwrap().read_at.is_some());
+        assert!(store.notification(later.id).unwrap().read_at.is_none());
+        assert!(store.notification_revision().unwrap() > revision);
+        assert_eq!(store.unread_notification_count().unwrap(), 1);
+        let read_revision = store.notification_revision().unwrap();
+        assert_eq!(store.read_notifications(first.id).unwrap(), 0);
+        assert_eq!(store.notification_revision().unwrap(), read_revision);
+        assert_eq!(store.clear_notifications(first.id).unwrap(), 1);
+        assert_eq!(store.notifications(10).unwrap().len(), 1);
+        assert!(store.notify_once(notice(project)).unwrap().is_none());
+        assert_eq!(
+            store.claim_notification_delivery(10).unwrap()[0].id,
+            later.id
+        );
+        store.clear_notification(later.id).unwrap();
+        assert!(store.notifications(10).unwrap().is_empty());
+        assert_eq!(store.unread_notification_count().unwrap(), 0);
+        assert!(store.claim_notification_delivery(10).unwrap().is_empty());
+        let cleared_revision = store.notification_revision().unwrap();
+        store.clear_notification(later.id).unwrap();
+        assert_eq!(store.notification_revision().unwrap(), cleared_revision);
+        assert!(store.notification(first.id).is_ok());
+        assert!(store.notification(later.id).is_ok());
+        assert!(store.clear_notifications(-1).is_err());
+        assert!(store.read_notifications(0).is_err());
+        assert!(store.clear_notification(999).is_err());
     }
 
     #[test]

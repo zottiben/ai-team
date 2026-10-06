@@ -1207,15 +1207,13 @@ button.card:hover {
   text-align: center;
 }
 
-.notification-center__panel {
-  /* Notifications portals this fixed panel to body. Keeping it inside the scrolling
-   * sidebar made it exist in the accessibility tree while overflow cut off every pixel. */
+.anchored-popover {
+  /* Portalled to body, positioned from the trigger's viewport rectangle. */
   position: fixed;
   z-index: 20;
-  bottom: var(--space-4);
-  left: calc(var(--sidebar-width) + var(--space-3));
-  width: min(28rem, calc(100vw - var(--sidebar-width) - var(--space-8)));
-  max-height: min(38rem, calc(100vh - var(--space-8)));
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100dvh - 1rem);
   overflow: hidden;
   padding: var(--space-4);
   border: 1px solid var(--border-subtle-default);
@@ -1224,8 +1222,25 @@ button.card:hover {
   box-shadow: 0 1rem 3rem color-mix(in srgb, var(--surface-canvas-default) 72%, transparent);
 }
 
+.notification-center__panel {
+  gap: var(--space-3);
+}
+.notification-center__panel .block__head {
+  margin: 0;
+  flex: none;
+}
+.notification-center__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  flex: none;
+}
+.notification-center__hint {
+  flex: none;
+}
 .notification-center__list {
   display: flex;
+  min-height: 0;
   max-height: 31rem;
   flex-direction: column;
   gap: var(--space-2);
@@ -1233,8 +1248,9 @@ button.card:hover {
 }
 
 .notification-center__item {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
+  display: flex;
+  flex-direction: column;
+  flex: none;
   gap: var(--space-3);
   width: 100%;
   padding: var(--space-3);
@@ -1253,7 +1269,19 @@ button.card:hover {
   background: var(--surface-panel-hover);
 }
 
-.notification-center__item > span:last-child,
+.notification-center__open {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--space-3);
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.notification-center__open > span:last-child,
 .notification-center__item strong,
 .notification-center__item time {
   display: block;
