@@ -217,11 +217,12 @@ it("shows the AI Team name and the existing logo", async () => {
   expect(screen.getByRole("img", { name: "AI Team logo" }).getAttribute("src")).toBe(logo);
 });
 
-it("offers only checkout and team tools at project level", async () => {
+it("offers only source and team tools at project level", async () => {
   render(<App />);
   fireEvent.click(await screen.findByRole("button", { name: "Project tools" }));
+  await screen.findByRole("heading", { name: "/demo / source" });
   const navigation = screen.getByRole("navigation", { name: "Project tools" });
-  expect(within(navigation).getAllByRole("button").map(button => button.textContent)).toEqual(["Editor", "Terminal", "Source", "Team"]);
+  expect(within(navigation).getAllByRole("button").map(button => button.textContent)).toEqual(["Source", "Team"]);
 });
 
 it("does not steal a chosen chat when slow initial readiness finishes", async () => {
@@ -293,15 +294,19 @@ it("preserves onboarding, project registration, and Settings entry points", asyn
   await screen.findByRole("heading", { name: "Register projects" });
 });
 
-it("retains project tools with explicit checkout ownership", async () => {
+it("keeps only Source and Team in project tools, with explicit checkout ownership", async () => {
   render(<App />);
   fireEvent.click(await screen.findByRole("button", { name: "Project tools" }));
-  await screen.findByRole("heading", { name: "/demo / editor" });
+  await screen.findByRole("heading", { name: "/demo / source" });
+  const tools = screen.getByRole("navigation", { name: "Project tools" });
+  expect(within(tools).getAllByRole("button").map(button => button.textContent)).toEqual(["Source", "Team"]);
+  expect(screen.queryByRole("button", { name: "Editor" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Terminal" })).toBeNull();
   fireEvent.change(screen.getByRole("combobox", { name: "Project checkout" }), {
     target: { value: "/demo-task" },
   });
-  fireEvent.click(screen.getByRole("button", { name: "Terminal" }));
-  await screen.findByRole("heading", { name: "/demo-task / terminal" });
+  fireEvent.click(screen.getByRole("button", { name: "Team" }));
+  await screen.findByRole("heading", { name: "/demo-task / team" });
 });
 
 it("keeps schedule and less frequent tools accessible without replacing chat navigation", async () => {

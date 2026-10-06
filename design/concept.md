@@ -47,8 +47,14 @@ open as contextual panels alongside that conversation, not a separate Chat/Overv
 tab hierarchy. These panels command the selected chat's own work, never the project's
 latest run. Switching panels preserves unsent messages and review/plan drafts.
 
-Project tools contain only **Editor, Terminal, Source and Team**. Legacy run/review
-links from Today remain separate history routes, not project tools or chat commands.
+Project tools contain only **Source and Team**; Editor and Terminal belong to the
+chat's checkout. Legacy run/review links from Today remain separate history routes,
+not project tools or chat commands.
+
+During a solo turn, the composer's primary action is a pulsing Stop button. Typing
+replaces it with the send arrow to queue a follow-up; Stop and steer remains an explicit
+choice. Empty Enter never stops a turn. Honour reduced motion and retain exact-attempt
+interrupted recovery rather than silently retrying work.
 
 The chat's command panels contain:
 - the plan, questions, approvals and evidence-backed progress;

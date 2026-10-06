@@ -4,6 +4,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -156,6 +157,54 @@ describe("persistent conversation", () => {
     expect((screen.getByRole("textbox", { name: "Unsaved review finding" }) as HTMLInputElement).value).toBe("Keep this draft");
     expect(service.sendChat).not.toHaveBeenCalled();
   });
+  it("uses the composer action to stop, or queue when typing, without making Enter stop a turn", async () => {
+    service.chat.mockResolvedValue({ ...detail(), state: "running", active_node_id: 41 });
+    const input = props();
+    const view = render(<ChatView {...input} />);
+    const stop = await screen.findByRole("button", { name: "Stop turn" });
+    expect(stop.closest(".chat-composer")).not.toBeNull();
+    expect(stop.getAttribute("data-working")).toBe("true");
+    expect(within(screen.getByRole("group", { name: "Chat tools" })).queryByRole("button", { name: "Stop turn" })).toBeNull();
+    const message = screen.getByRole("textbox", { name: "Message" });
+    fireEvent.keyDown(message, { key: "Enter" });
+    expect(service.stopChat).not.toHaveBeenCalled();
+    fireEvent.change(message, { target: { value: "Check the error path too" } });
+    expect(screen.queryByRole("button", { name: "Stop turn" })).toBeNull();
+    const queue = screen.getByRole("button", { name: "Queue follow-up" });
+    expect(queue.closest(".chat-composer")).not.toBeNull();
+    expect((queue as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.change(message, { target: { value: "   " } });
+    fireEvent.click(screen.getByRole("button", { name: "Stop turn" }));
+    await waitFor(() => expect(service.stopChat).toHaveBeenCalledWith(1, 41));
+    service.chat.mockResolvedValue({ ...detail(), state: "stopped" });
+    view.rerender(<ChatView {...input} tick={1} />);
+    const send = await screen.findByRole("button", { name: "Send message" });
+    expect(send.getAttribute("data-working")).toBe("false");
+    expect((send as HTMLButtonElement).disabled).toBe(true);
+    expect(service.sendChat).not.toHaveBeenCalled();
+    expect(service.queueChatFollowup).not.toHaveBeenCalled();
+  });
+
+  it("keeps stopping and interrupted recovery in the composer without retargeting a typed draft", async () => {
+    service.chat.mockResolvedValue({ ...detail(), state: "stopping", stop_requested: true, active_node_id: 41 });
+    const input = props();
+    const view = render(<ChatView {...input} />);
+    const stopping = await screen.findByRole("button", { name: "Stopping…" });
+    expect(stopping.closest(".chat-composer")).not.toBeNull();
+    expect((stopping as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(stopping);
+    expect(service.stopChat).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByRole("textbox", { name: "Message" }), { target: { value: "Keep this draft" } });
+    service.chat.mockResolvedValue({ ...detail(), state: "interrupted", active_node_id: 41, can_resume: true });
+    view.rerender(<ChatView {...input} tick={1} />);
+    const stop = await screen.findByRole("button", { name: "Stop turn" });
+    expect(stop.getAttribute("data-working")).toBe("false");
+    fireEvent.click(stop);
+    await waitFor(() => expect(service.stopChat).toHaveBeenCalledWith(1, 41));
+    expect((screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement).value).toBe("Keep this draft");
+    expect(service.queueChatFollowup).not.toHaveBeenCalled();
+  });
+
   it("queues against the exact solo turn rather than pretending to send into a running process", async () => {
     service.chat.mockResolvedValue({ ...detail(), state: "running", active_node_id: 41 });
     render(<ChatView {...props()} />);
@@ -411,13 +460,8 @@ describe("persistent conversation", () => {
     fireEvent.click(screen.getByRole("button", { name: "Overview" }));
     fireEvent.click(screen.getByRole("button", { name: "Stop turn" }));
     await waitFor(() => expect(service.stopChat).toHaveBeenCalledWith(2, 19));
-    expect(
-      (
-        screen.getByRole("button", {
-          name: "Queue follow-up",
-        }) as HTMLButtonElement
-      ).disabled,
-    ).toBe(true);
+    expect(screen.queryByRole("button", { name: "Queue follow-up" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Stop turn" }).closest(".chat-composer")).not.toBeNull();
     expect(
       screen
         .getByRole("progressbar", { name: "Agent working" })

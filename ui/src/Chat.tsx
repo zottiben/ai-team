@@ -173,6 +173,10 @@ export function ChatView({
   const mode = detail?.mode ?? newMode;
   const queued = detail?.followups?.find((item) => item.state === "queued");
   const canQueue = detail?.state === "running" && !activeTeam && mode === "single" && !detail.stop_requested && !queued;
+  const soloActive = active && !activeTeam && mode === "single";
+  const showStop = soloActive && (!message.trim() || !running);
+  const stopping = !!detail?.stop_requested && detail.state !== "interrupted";
+  const actionLabel = showStop ? stopping ? "Stopping…" : "Stop turn" : soloActive ? "Queue follow-up" : "Send message";
   const started = latest?.node.started_at;
   const elapsed = started
     ? Math.max(
@@ -281,27 +285,16 @@ export function ChatView({
   };
 
   const controls =
-    detail?.active_node_id == null || activeTeam ? null : (
+    !soloActive || !detail?.can_resume ? null : (
       <div className="chat-controls">
-        {detail.can_resume && (
-          <button
-            className="button button--primary"
-            disabled={busy}
-            onClick={() =>
-              void command(() => resumeChat(detail.id, detail.active_node_id!))
-            }
-          >
-            {detail.stop_requested && queued?.kind === "steer" ? "Finish stop and send steering" : "Resume turn"}
-          </button>
-        )}
         <button
-          className="button"
-          disabled={busy || (detail.stop_requested && detail.state !== "interrupted") || detail.orphan_running}
+          className="button button--primary"
+          disabled={busy}
           onClick={() =>
-            void command(() => stopChat(detail.id, detail.active_node_id!))
+            void command(() => resumeChat(detail.id, detail.active_node_id!))
           }
         >
-          {detail.stop_requested && detail.state !== "interrupted" ? "Stopping…" : "Stop turn"}
+          {detail.stop_requested && queued?.kind === "steer" ? "Finish stop and send steering" : "Resume turn"}
         </button>
       </div>
     );
@@ -583,12 +576,18 @@ export function ChatView({
           ) : (
             <span className="chat-model-name faint" title={detail?.model}>{detail?.model}</span>
           )}
-          {active && mode === "single" && !activeTeam && <button type="button" className="button" disabled={busy || !canQueue || !message.trim()} onClick={() => void queue("steer")}>Stop and steer</button>}
+          {soloActive && running && !!message.trim() && <button type="button" className="button" disabled={busy || !canQueue} onClick={() => void queue("steer")}>Stop and steer</button>}
           <button
-            type="submit"
+            type={showStop ? "button" : "submit"}
             className="chat-send"
-            aria-label={active && mode === "single" && !activeTeam ? "Queue follow-up" : "Send message"}
-            disabled={
+            data-working={soloActive && running}
+            aria-label={actionLabel}
+            title={actionLabel}
+            onClick={() => {
+              if (showStop && detail?.active_node_id != null)
+                void command(() => stopChat(detail.id, detail.active_node_id!));
+            }}
+            disabled={showStop ? busy || stopping || detail?.orphan_running :
               busy ||
               (active && !canQueue) ||
               !!queued ||
@@ -597,7 +596,9 @@ export function ChatView({
               (id === null ? !modelKey : detail === null)
             }
           >
-            {busy ? "…" : <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M5 12h14m-6-6 6 6-6 6" /></svg>}
+            {busy ? "…" : showStop
+              ? <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1" fill="currentColor" /></svg>
+              : <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M5 12h14m-6-6 6 6-6 6" /></svg>}
           </button>
         </div>
         {queuedSubmission.current && problem && <small className="faint">

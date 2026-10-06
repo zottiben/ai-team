@@ -96,7 +96,7 @@ export default function App() {
   const [filter, setFilter] = useState("");
   const [trees, setTrees] = useState<Worktree[]>([]);
   const [workspace, setWorkspace] = useState<string | null>(null);
-  const [tool, setTool] = useState<WorkspaceView>("editor");
+  const [tool, setTool] = useState<WorkspaceView>("source");
   const [legacyView, setLegacyView] = useState<WorkspaceView>("work");
   const [openRun, setOpenRun] = useState<number | null>(null);
   const [openReview, setOpenReview] = useState<number | null>(null);
