@@ -142,6 +142,11 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
         "chat worktree requests",
         include_str!("migrations/033_chat_workspaces.sql"),
     ),
+    (
+        34,
+        "AWT workspace setup",
+        include_str!("migrations/034_workspace_setup.sql"),
+    ),
 ];
 
 /// The number of `v_` views the schema ships. Asserted in tests, because a view silently

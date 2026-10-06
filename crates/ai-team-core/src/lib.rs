@@ -13,6 +13,7 @@ mod analytics;
 mod chat;
 pub mod chat_changes;
 mod chat_schedule;
+pub mod chat_today;
 pub mod chat_workspaces;
 mod command;
 mod context;
@@ -55,6 +56,7 @@ mod update;
 mod util;
 mod workflow;
 mod workspace;
+pub mod workspace_setup;
 
 pub use analytics::{rollup, rollup_workspace, By, Row};
 pub use chat::{

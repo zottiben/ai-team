@@ -914,11 +914,14 @@ async fn git_until<S>(worktree: &Path, args: &[&str], stop: S) -> Result<String>
 where
     S: std::future::Future<Output = String> + Send,
 {
+    let mut command = Command::new("git");
+    command
+        .args(args)
+        .current_dir(worktree)
+        .env("GIT_OPTIONAL_LOCKS", "0");
+    crate::command::strip_git_overrides(&mut command);
     let output = crate::command::run(
-        Command::new("git")
-            .args(args)
-            .current_dir(worktree)
-            .env("GIT_OPTIONAL_LOCKS", "0"),
+        &mut command,
         std::time::Duration::from_secs(120),
         8 * 1024 * 1024,
         stop,

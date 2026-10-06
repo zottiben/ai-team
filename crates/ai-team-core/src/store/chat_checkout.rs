@@ -115,6 +115,7 @@ impl Store {
 }
 fn available(conn: &Connection, chat: i64, operation: Option<i64>) -> Result<()> {
     let (workspace,project):(String,i64)=conn.query_row("SELECT c.workspace_path,c.project_id FROM chat c JOIN project p ON p.id=c.project_id WHERE c.id=?1 AND c.active_node_id IS NULL AND c.archived=0 AND p.status!='archived'",[chat],|r|Ok((r.get(0)?,r.get(1)?))).optional()?.ok_or_else(||Error::invalid("wait for this chat to be idle; archived chats/projects are read-only"))?;
+    super::workspace_setup::check_project(conn, project)?;
     match operation {
         Some(id) => super::chat_changes::check_workspace_except_checkout(conn, &workspace, id)?,
         None => super::chat_changes::check_workspace(conn, &workspace)?,

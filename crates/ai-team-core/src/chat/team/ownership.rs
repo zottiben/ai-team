@@ -19,28 +19,34 @@ pub(crate) struct Ownership {
     pub(crate) run: i64,
     pub(crate) delivery: Option<i64>,
     pub(crate) checkout: Option<i64>,
+    pub(crate) setup: Option<i64>,
     epoch: AtomicI64,
     uncertain: AtomicBool,
 }
 impl Ownership {
     pub(crate) fn acquire(db: &Path, run: i64) -> Result<Arc<Self>> {
-        Self::acquire_scoped(db, run, None, None)
+        Self::acquire_scoped(db, run, None, None, None)
     }
     pub(crate) fn acquire_delivery(db: &Path, run: i64, delivery: i64) -> Result<Arc<Self>> {
-        Self::acquire_scoped(db, run, Some(delivery), None)
+        Self::acquire_scoped(db, run, Some(delivery), None, None)
     }
     pub(crate) fn acquire_checkout(db: &Path, id: i64) -> Result<Arc<Self>> {
-        Self::acquire_scoped(db, 0, None, Some(id))
+        Self::acquire_scoped(db, 0, None, Some(id), None)
+    }
+    pub(crate) fn acquire_setup(db: &Path, id: i64) -> Result<Arc<Self>> {
+        Self::acquire_scoped(db, 0, None, None, Some(id))
     }
     fn acquire_scoped(
         db: &Path,
         run: i64,
         delivery: Option<i64>,
         checkout: Option<i64>,
+        setup: Option<i64>,
     ) -> Result<Arc<Self>> {
-        let path = match checkout {
-            Some(id) => lock_path(db, 0)?.with_file_name(format!("checkout-{id}.lock")),
-            None => lock_path(db, run)?,
+        let path = match (setup, checkout) {
+            (Some(id), _) => lock_path(db, 0)?.with_file_name(format!("setup-{id}.lock")),
+            (_, Some(id)) => lock_path(db, 0)?.with_file_name(format!("checkout-{id}.lock")),
+            _ => lock_path(db, run)?,
         };
         std::fs::create_dir_all(
             path.parent()
@@ -64,7 +70,7 @@ impl Ownership {
             // receipts require local, independent file-description semantics.
             let probe = OpenOptions::new().read(true).write(true).open(&path)?;
             match probe.try_lock() {
-                    Err(TryLockError::WouldBlock) => Ok(Arc::new(Self { file, db: db.canonicalize()?, run, delivery, checkout, epoch: AtomicI64::new(0), uncertain: AtomicBool::new(false) })),
+                    Err(TryLockError::WouldBlock) => Ok(Arc::new(Self { file, db: db.canonicalize()?, run, delivery, checkout, setup, epoch: AtomicI64::new(0), uncertain: AtomicBool::new(false) })),
                     Err(TryLockError::Error(error)) => Err(error.into()),
                     Ok(()) => Err(Error::invalid("controller storage does not provide independent file locks; use a local data directory")),
                 }
@@ -75,9 +81,10 @@ impl Ownership {
         }
     }
     pub(crate) fn bind(&self, store: &crate::Store) -> Result<()> {
-        let epoch = match self.checkout {
-            Some(id) => store.checkout_child_epoch(id)?,
-            None => store.chat_child_epoch(self.run)?,
+        let epoch = match (self.setup, self.checkout) {
+            (Some(id), _) => store.workspace_setup_epoch(id)?,
+            (_, Some(id)) => store.checkout_child_epoch(id)?,
+            _ => store.chat_child_epoch(self.run)?,
         };
         self.epoch.store(epoch, Ordering::SeqCst);
         Ok(())

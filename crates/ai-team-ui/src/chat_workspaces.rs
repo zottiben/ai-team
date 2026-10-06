@@ -14,6 +14,8 @@ use ai_team_core::planning::PlanActor;
 pub(crate) fn routes() -> Router<AppState> {
     Router::new()
         .route("/chat-workspaces", get(choices))
+        .route("/chat-workspace-setups", get(setups).post(setup))
+        .route("/chat-workspace-setups/{id}", post(setup_command))
         .route("/chats/{id}/workspace", get(requests).post(propose))
         .route("/chats/{id}/workspace/approve", post(approve))
         .route("/chats/{id}/workspace/cancel", post(cancel))
@@ -32,7 +34,8 @@ async fn choices(
         let store = store.lock();
         chat_workspaces::project_repository(&store, store.find_project(&query.project)?.id)?
     };
-    Ok(Json(chat_workspaces::choices(&root).await?))
+    let db = state.store()?.lock().path().to_path_buf();
+    Ok(Json(chat_workspaces::owned_choices(&db, &root).await?))
 }
 #[derive(Serialize)]
 struct Requests {
@@ -54,7 +57,8 @@ async fn propose(
     Json(input): Json<Propose>,
 ) -> Result<Json<WorkspaceRequest>> {
     let root = chat_workspaces::repository(&state.store()?.lock(), chat)?;
-    let path = chat_workspaces::validate(&root, FsPath::new(&input.path)).await?;
+    let db = state.store()?.lock().path().to_path_buf();
+    let path = chat_workspaces::validate_owned(&db, &root, FsPath::new(&input.path)).await?;
     Ok(Json(state.store()?.lock().request_chat_workspace(
         chat,
         PlanActor::Human,
@@ -80,7 +84,9 @@ async fn approve(
             store.chat_workspace_request(chat, input.request)?,
         )
     };
-    let target = chat_workspaces::validate(&root, FsPath::new(&proposal.to_path)).await?;
+    let db = state.store()?.lock().path().to_path_buf();
+    let target =
+        chat_workspaces::validate_owned(&db, &root, FsPath::new(&proposal.to_path)).await?;
     Ok(Json(state.store()?.lock().apply_chat_workspace(
         chat,
         input.request,
@@ -103,4 +109,103 @@ async fn cancel(
         .lock()
         .cancel_chat_workspace(chat, input.request)?;
     Ok(Json(serde_json::json!({"cancelled":true})))
+}
+
+async fn setups(
+    State(state): State<AppState>,
+    Query(query): Query<ProjectQuery>,
+) -> Result<Json<Vec<ai_team_core::workspace_setup::Setup>>> {
+    let store = state.store()?;
+    let store = store.lock();
+    Ok(Json(store.workspace_setups(
+        store.find_project(&query.project)?.id,
+    )?))
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SetupInput {
+    project: String,
+    request_id: String,
+    #[serde(default)]
+    branch: String,
+    #[serde(default)]
+    approved: bool,
+}
+async fn setup(
+    State(state): State<AppState>,
+    Json(input): Json<SetupInput>,
+) -> Result<Json<ai_team_core::workspace_setup::Setup>> {
+    if !input.approved {
+        return Err(ai_team_core::Error::invalid(
+            "approve AWT pool reuse, hooks and dependency setup before starting",
+        )
+        .into());
+    }
+    let (db, receipt, started) = {
+        let store = state.store()?;
+        let mut store = store.lock();
+        let project = store.find_project(&input.project)?.id;
+        let root = chat_workspaces::project_repository(&store, project)?;
+        let (receipt, started) = store.request_workspace_setup(
+            project,
+            &root,
+            &input.request_id,
+            input.branch.trim(),
+        )?;
+        (store.path().to_path_buf(), receipt, started)
+    };
+    if started {
+        let (project, id) = (receipt.project_id, receipt.id);
+        tokio::spawn(async move {
+            if let Err(error) = ai_team_core::workspace_setup::run(&db, project, id).await {
+                eprintln!("AWT setup {id} retained for inspection: {error}");
+            }
+        });
+    }
+    Ok(Json(receipt))
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum SetupAction {
+    Inspect,
+    RetryDependencies,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SetupCommand {
+    project: String,
+    revision: i64,
+    action: SetupAction,
+}
+async fn setup_command(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Json(input): Json<SetupCommand>,
+) -> Result<Json<ai_team_core::workspace_setup::Setup>> {
+    let (db, project) = {
+        let store = state.store()?;
+        let store = store.lock();
+        (
+            store.path().to_path_buf(),
+            store.find_project(&input.project)?.id,
+        )
+    };
+    let result = tokio::spawn(async move {
+        match input.action {
+            SetupAction::Inspect => {
+                ai_team_core::workspace_setup::inspect(&db, project, id, input.revision).await
+            }
+            SetupAction::RetryDependencies => {
+                ai_team_core::workspace_setup::retry_dependencies(&db, project, id, input.revision)
+                    .await
+            }
+        }
+    })
+    .await
+    .map_err(|error| {
+        ai_team_core::Error::invalid(format!(
+            "setup worker stopped; inspect its receipt: {error}"
+        ))
+    })??;
+    Ok(Json(result))
 }

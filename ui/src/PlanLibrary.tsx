@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { PlansWorkspace } from "./PlansWorkspace";
 
 import { models as fetchModels, type ModelChoice } from "./api";
 import { createChat } from "./chat-api";
@@ -12,7 +13,6 @@ import {
   type PlanImportPreview,
   type PlanImportTarget,
   type PlanLibrary as Board,
-  type PlanLibraryEntry,
   type PlanImported,
   type PlanSourceSurvey,
 } from "./plan-library-api";
@@ -23,8 +23,8 @@ import "./plan-library.css";
  * planner gets in here.
  *
  * The board is global because planning is: "what am I in the middle of" is rarely a
- * question about one project. Opening a plan opens the exact chat that owns it, never a
- * project's newest conversation.
+ * question about one project. Opening a plan stays here in its Board/Plan workspace;
+ * the separate Open chat action targets its exact owner, never a project's latest chat.
  *
  * Import is deliberately four explicit steps - name a database, read it, review one
  * plan, approve it into one chat - and none of them happen on load. Nothing on this page
@@ -44,6 +44,7 @@ export function PlanLibrary({
   const [project, setProject] = useState("");
   const [status, setStatus] = useState<"" | PlanStatus>("");
   const [reload, setReload] = useState(0);
+  const importArea = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -69,11 +70,28 @@ export function PlanLibrary({
   return (
     <section className="plan-library" aria-label="Plans">
       <header className="plan-library-heading">
-        <h2>Plans</h2>
-        <p className="faint">
-          Every plan AI Team owns, across projects. A plan belongs to one chat, and
-          opening it goes there.
-        </p>
+        <div>
+          <h2>Plans</h2>
+          <p className="faint">
+            Plan across projects. Work in the Board or Plan here; open the
+            owning chat when you need its conversation or execution controls.
+          </p>
+        </div>
+        <button
+          type="button"
+          className="button"
+          disabled={!board}
+          onClick={() => {
+            const details = importArea.current?.querySelector("details");
+            if (details) {
+              details.open = true;
+              details.scrollIntoView?.({ block: "start" });
+              details.querySelector("summary")?.focus();
+            }
+          }}
+        >
+          Import plan…
+        </button>
       </header>
       {problem && (
         <div className="error" role="alert">
@@ -83,115 +101,88 @@ export function PlanLibrary({
           </button>
         </div>
       )}
-      <div className="plan-library-filters">
-        <label>
-          Project
-          <select value={project} onChange={(event) => setProject(event.target.value)}>
-            <option value="">Every project</option>
-            {board?.projects.map((entry) => (
-              <option key={entry.id} value={entry.slug}>
-                {entry.name} ({entry.plans})
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          Status
-          <select
-            value={status}
-            onChange={(event) => setStatus(event.target.value as "" | PlanStatus)}
-          >
-            <option value="">Any status</option>
-            {PLAN_STATUSES.map((value) => (
-              <option key={value} value={value}>
-                {statusLabel(value)}
-              </option>
-            ))}
-          </select>
-        </label>
-      </div>
-      {!board ? (
-        <p className="faint">{problem ? "The board could not be read." : "Loading plans…"}</p>
-      ) : board.entries.length === 0 ? (
+      {board && (
+        <PlansWorkspace
+          board={board}
+          tick={tick + reload}
+          onOpenChat={onOpenChat}
+          onChanged={() => {
+            refresh();
+            onChanged?.();
+          }}
+          filters={
+            <div className="plan-library-filters">
+              <label>
+                Project
+                <select
+                  value={project}
+                  onChange={(event) => setProject(event.target.value)}
+                >
+                  <option value="">Every project</option>
+                  {board?.projects.map((entry) => (
+                    <option key={entry.id} value={entry.slug}>
+                      {entry.name} ({entry.plans})
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Status
+                <select
+                  value={status}
+                  onChange={(event) =>
+                    setStatus(event.target.value as "" | PlanStatus)
+                  }
+                >
+                  <option value="">Any status</option>
+                  {PLAN_STATUSES.map((value) => (
+                    <option key={value} value={value}>
+                      {statusLabel(value)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+          }
+        />
+      )}
+      {!board && (
         <p className="faint">
-          No plans here yet. Plan inside a chat, or import one from the standalone
-          planner below.
+          {problem ? "The board could not be read." : "Loading plans…"}
         </p>
-      ) : (
-        <ul className="plan-library-list">
-          {board.entries.map((entry) => (
-            <Plan key={entry.plan_id} entry={entry} onOpenChat={onOpenChat} />
-          ))}
-        </ul>
       )}
       {board && board.detached.length > 0 && (
         <details className="plan-library-detached">
-          <summary>Plans with no chat to open ({board.detached.length})</summary>
+          <summary>
+            Plans with no chat to open ({board.detached.length})
+          </summary>
           <p className="faint">
-            Kept, not deleted. Each one still reserves its chat id, so an import cannot
-            land underneath it.
+            Kept, not deleted. Each one still reserves its chat id, so an import
+            cannot land underneath it.
           </p>
           <ul>
             {board.detached.map((plan) => (
               <li key={plan.plan_id}>
-                <strong>{plan.title}</strong> <code>{plan.slug}</code> - {plan.why}
+                <strong>{plan.title}</strong> <code>{plan.slug}</code> -{" "}
+                {plan.why}
               </li>
             ))}
           </ul>
         </details>
       )}
-      {board && (
-        <Import
-          destinations={board.destinations}
-          onImported={() => {
-            refresh();
-            onChanged?.();
-          }}
-          onOpenChat={onOpenChat}
-        />
-      )}
-    </section>
-  );
-}
-
-function Plan({
-  entry,
-  onOpenChat,
-}: {
-  entry: PlanLibraryEntry;
-  onOpenChat: (project: string, chat: number) => void;
-}) {
-  return (
-    <li className="plan-library-card">
-      <div className="plan-library-card-head">
-        <h3>{entry.title}</h3>
-        <span className="plan-library-status" data-status={entry.status}>
-          {statusLabel(entry.status)}
-        </span>
+      <div ref={importArea}>
+        {board && (
+          <Import
+            destinations={board.destinations}
+            onImported={() => {
+              refresh();
+              onChanged?.();
+            }}
+            onOpenChat={onOpenChat}
+          />
+        )}
       </div>
-      <p className="faint">
-        {entry.project_name} · {entry.chat_title}
-        {entry.chat_archived && " · archived"}
-      </p>
-      {entry.summary && <p className="plan-library-summary">{entry.summary}</p>}
-      <p className="faint">
-        {entry.done} of {entry.slices} slices done
-        {entry.open_questions > 0 && ` · ${entry.open_questions} open questions`}
-        {entry.last_activity &&
-          ` · last note ${new Date(entry.last_activity).toLocaleString()}`}
-      </p>
-      {entry.imported && (
-        <p className="plan-library-provenance">
-          Imported from <code>{entry.imported.source_path}</code>
-          {entry.imported.source_plan && <> ({entry.imported.source_plan})</>} on{" "}
-          {new Date(entry.imported.imported_at).toLocaleString()}. That database is not
-          written to or kept in step with this copy.
-        </p>
-      )}
-      <button className="button" onClick={() => onOpenChat(entry.project_slug, entry.chat_id)}>
-        Open {entry.chat_title}
-      </button>
-    </li>
+    </section>
   );
 }
 
@@ -230,10 +221,10 @@ function Import({
     <details className="plan-library-import">
       <summary>Import a plan from standalone ai-planner</summary>
       <p className="faint">
-        AI Team reads a private copy of the database you name and writes the plan into one
-        chat you choose. It never writes to that database, registers it, or keeps the two
-        in step afterwards - the imported plan is yours to edit here, and the original
-        stays exactly as it is.
+        AI Team reads a private copy of the database you name and writes the
+        plan into one chat you choose. It never writes to that database,
+        registers it, or keeps the two in step afterwards - the imported plan is
+        yours to edit here, and the original stays exactly as it is.
       </p>
       {problem && (
         <div className="error" role="alert">
@@ -268,23 +259,26 @@ function Import({
       {survey && (
         <section className="plan-library-source" aria-label="Source database">
           <p className="faint">
-            <code>{survey.source.path}</code> · {survey.source.bytes} bytes · schema{" "}
-            {survey.source.schema_version} · {survey.source.plans} plans · sha256{" "}
-            <code>{survey.source.digest.slice(0, 12)}</code>
+            <code>{survey.source.path}</code> · {survey.source.bytes} bytes ·
+            schema {survey.source.schema_version} · {survey.source.plans} plans
+            · sha256 <code>{survey.source.digest.slice(0, 12)}</code>
           </p>
           <ul className="plan-library-source-plans">
             {survey.plans.map((plan) => (
               <li key={plan.id}>
                 <div>
                   <strong>{plan.title}</strong> <code>{plan.slug}</code> ·{" "}
-                  {statusLabel(plan.status)} · {plan.done}/{plan.slices} slices ·{" "}
-                  {plan.repo_name}
+                  {statusLabel(plan.status)} · {plan.done}/{plan.slices} slices
+                  · {plan.repo_name}
                 </div>
                 {plan.already_imported ? (
                   <p className="notice">
                     Already imported into chat {plan.already_imported.chat_id} (
                     {plan.already_imported.title}) on{" "}
-                    {new Date(plan.already_imported.imported_at).toLocaleString()}.
+                    {new Date(
+                      plan.already_imported.imported_at,
+                    ).toLocaleString()}
+                    .
                   </p>
                 ) : (
                   <button
@@ -293,7 +287,9 @@ function Import({
                     onClick={() =>
                       void run(async () => {
                         setDone(null);
-                        setPreview(await previewPlanImport(survey.source.path, plan.id));
+                        setPreview(
+                          await previewPlanImport(survey.source.path, plan.id),
+                        );
                       })
                     }
                   >
@@ -373,8 +369,8 @@ function Import({
                 </tbody>
               </table>
               <p className="faint">
-                No claim, lease, branch or pull request is carried over. This import leases
-                nothing, builds nothing and publishes nothing.
+                No claim, lease, branch or pull request is carried over. This
+                import leases nothing, builds nothing and publishes nothing.
               </p>
             </>
           )}
@@ -411,9 +407,10 @@ function Import({
       {done && (
         <section className="plan-library-done" aria-label="Imported">
           <p>
-            <strong>{done.title}</strong> is now chat {done.chat_id}&rsquo;s plan in{" "}
-            {done.project_slug}. {done.counts.slices} slices, {done.counts.log} progress
-            notes and {done.counts.decisions} decisions came with it.
+            <strong>{done.title}</strong> is now chat {done.chat_id}&rsquo;s
+            plan in {done.project_slug}. {done.counts.slices} slices,{" "}
+            {done.counts.log} progress notes and {done.counts.decisions}{" "}
+            decisions came with it.
           </p>
           <button
             className="button"
@@ -465,11 +462,15 @@ function Destination({
         </select>
       </label>
       <p className="faint">
-        An imported plan becomes that chat&rsquo;s own plan, so it has to be a chat that
-        is idle, has run nothing, and has no plan yet.
+        An imported plan becomes that chat&rsquo;s own plan, so it has to be a
+        chat that is idle, has run nothing, and has no plan yet.
       </p>
       {!creating && (
-        <button className="button" disabled={busy} onClick={() => setCreating(true)}>
+        <button
+          className="button"
+          disabled={busy}
+          onClick={() => setCreating(true)}
+        >
           Create an empty chat
         </button>
       )}
@@ -583,7 +584,8 @@ function NewChat({ onCreated }: { onCreated: () => void }) {
       </label>
       <button className="button">Create the chat</button>
       <p className="faint">
-        A new chat waits for you. Creating one here starts no turn and sends no prompt.
+        A new chat waits for you. Creating one here starts no turn and sends no
+        prompt.
       </p>
     </form>
   );

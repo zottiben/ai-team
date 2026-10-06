@@ -23,6 +23,7 @@ pub(crate) async fn recover_on_attach(
 
 pub(crate) fn routes() -> Router<AppState> {
     Router::new()
+        .route("/chat-today", get(today))
         .route("/chats", get(list).post(create))
         .route("/chats/{id}", get(detail).patch(edit))
         .route("/chats/{id}/events", get(events))
@@ -37,6 +38,10 @@ pub(crate) fn routes() -> Router<AppState> {
 #[derive(Deserialize)]
 struct ProjectQuery {
     project: String,
+}
+
+async fn today(State(state): State<AppState>) -> Result<Json<ai_team_core::chat_today::ChatToday>> {
+    Ok(Json(state.store()?.lock().chat_today()?))
 }
 
 async fn list(
@@ -63,6 +68,20 @@ struct Create {
 async fn create(State(state): State<AppState>, Json(input): Json<Create>) -> Result<Json<Chat>> {
     let workspace =
         crate::api::worktree_for(&state, &input.project, None, input.workspace.as_deref()).await?;
+    if input.workspace.is_some() {
+        let (db, root) = {
+            let store = state.store()?;
+            let store = store.lock();
+            (
+                store.path().to_path_buf(),
+                ai_team_core::chat_workspaces::project_repository(
+                    &store,
+                    store.find_project(&input.project)?.id,
+                )?,
+            )
+        };
+        ai_team_core::chat_workspaces::validate_owned(&db, &root, &workspace).await?;
+    }
     let store = state.store()?;
     let mut store = store.lock();
     let project = store.find_project(&input.project)?;

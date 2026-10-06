@@ -3778,6 +3778,7 @@ async fn clear_notification(
 /// this endpoint knowing what every surface renders.
 #[derive(Debug, Serialize)]
 struct Tick {
+    workspace_setup_revision: i64,
     chat_revision: i64,
     planning_revision: i64,
     latest_event: i64,
@@ -3795,6 +3796,7 @@ async fn stream(
             async move {
                 state.deliver_notifications().await;
                 let tick = state.tick().unwrap_or(Tick {
+                    workspace_setup_revision: -1,
                     chat_revision: -1,
                     planning_revision: -1,
                     latest_event: -1,
@@ -3869,6 +3871,7 @@ impl AppState {
         let latest_event = store.latest_event_id()?;
         let latest_notification = store.latest_notification_id()?;
         Ok(Tick {
+            workspace_setup_revision: store.workspace_setup_revision()?,
             chat_revision: store.chat_revision()?,
             // A broken/foreign planner store must not freeze the conversation feed.
             // The plan endpoint reports its real error; other cursors keep moving.

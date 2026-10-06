@@ -78,13 +78,13 @@ pub struct GateResult {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DependencySetup {
-    dir: String,
+    pub(crate) dir: String,
     pub(crate) program: String,
     pub(crate) args: Vec<String>,
 }
 
 impl DependencySetup {
-    fn command(&self) -> String {
+    pub(crate) fn command(&self) -> String {
         format!("{} {}", self.program, self.args.join(" "))
             .trim_end()
             .to_string()
@@ -103,10 +103,39 @@ struct PackageJson {
 /// gates" rather than as success - a verifier that finds nothing to run has verified
 /// nothing.
 pub(crate) fn discover_dependency_setup(worktree: &Path) -> Vec<DependencySetup> {
+    dependency_setup(worktree, false)
+}
+
+/// A human-requested AWT setup refreshes warm installs too: their directories alone
+/// do not establish that dependencies match the newly acquired branch's lockfiles.
+pub(crate) fn refresh_dependency_setup(worktree: &Path) -> Vec<DependencySetup> {
+    let mut steps = dependency_setup(worktree, true);
+    for (manifest, lock, program, args) in [
+        (
+            "Cargo.toml",
+            "Cargo.lock",
+            "cargo",
+            vec!["fetch", "--locked"],
+        ),
+        ("pyproject.toml", "uv.lock", "uv", vec!["sync", "--frozen"]),
+        ("go.mod", "go.sum", "go", vec!["mod", "download"]),
+    ] {
+        if worktree.join(manifest).is_file() && worktree.join(lock).is_file() {
+            steps.push(DependencySetup {
+                dir: ".".into(),
+                program: program.into(),
+                args: args.into_iter().map(str::to_owned).collect(),
+            });
+        }
+    }
+    steps
+}
+
+fn dependency_setup(worktree: &Path, refresh: bool) -> Vec<DependencySetup> {
     let mut steps = Vec::new();
     if worktree.join("composer.json").exists()
         && worktree.join("composer.lock").exists()
-        && !worktree.join("vendor/autoload.php").exists()
+        && (refresh || !worktree.join("vendor/autoload.php").exists())
     {
         steps.push(DependencySetup {
             dir: ".".into(),
@@ -125,7 +154,7 @@ pub(crate) fn discover_dependency_setup(worktree: &Path) -> Vec<DependencySetup>
 
     for dir in [".", "ui", "web", "frontend", "app"] {
         let root = worktree.join(dir);
-        if !root.join("package.json").exists() || root.join("node_modules").exists() {
+        if !root.join("package.json").exists() || (!refresh && root.join("node_modules").exists()) {
             continue;
         }
         let command = if root.join("bun.lock").exists() || root.join("bun.lockb").exists() {

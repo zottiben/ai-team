@@ -16,12 +16,16 @@ mod chat_overview;
 mod chat_recovery;
 #[path = "server/chat_teams.rs"]
 mod chat_teams;
+#[path = "server/chat_today.rs"]
+mod chat_today;
 #[path = "server/plan_library.rs"]
 mod plan_library;
 #[path = "server/toolbox.rs"]
 mod toolbox;
 #[path = "server/toolbox_operations.rs"]
 mod toolbox_operations;
+#[path = "server/workspace_setup.rs"]
+mod workspace_setup;
 
 #[test]
 fn chats_are_a_first_class_project_collection_not_the_run_list() {

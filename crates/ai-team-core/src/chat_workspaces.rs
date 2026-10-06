@@ -22,6 +22,8 @@ pub struct WorkspaceChoice {
     pub name: String,
     pub branch: Option<String>,
     pub unavailable: Option<String>,
+    pub processes: Vec<crate::Process>,
+    pub lease_holder: Option<String>,
 }
 
 pub fn repository(store: &Store, chat: i64) -> Result<PathBuf> {
@@ -58,11 +60,7 @@ pub async fn choices(repo: &Path) -> Result<Vec<WorkspaceChoice>> {
                 .iter()
                 .find(|entry| crate::same_worktree(&entry.path, &path));
             let unavailable = entry
-                .filter(|entry| {
-                    entry.status == "leased"
-                        || entry.lease_holder.is_some()
-                        || !entry.processes.is_empty()
-                })
+                .filter(|entry| entry.status == "leased" || entry.lease_holder.is_some())
                 .map(|entry| {
                     format!(
                         "This checkout is occupied in awt ({})",
@@ -88,9 +86,38 @@ pub async fn choices(repo: &Path) -> Result<Vec<WorkspaceChoice>> {
                 name,
                 branch,
                 unavailable,
+                processes: entry.map_or_else(Vec::new, |entry| entry.processes.clone()),
+                lease_holder: entry.and_then(|entry| entry.lease_holder.clone()),
             })
         })
         .collect()
+}
+
+/// A lease created by a completed human setup is an intentional operator checkout,
+/// not a team build's retained work. Match both the path and exact database-scoped holder.
+pub async fn owned_choices(db: &Path, repo: &Path) -> Result<Vec<WorkspaceChoice>> {
+    let mut choices = choices(repo).await?;
+    let store = Store::open_planning_host(db)?;
+    for choice in &mut choices {
+        if let Some(holder) = &choice.lease_holder {
+            if store.ready_setup_lease(&choice.path, holder)? {
+                choice.unavailable = None;
+            }
+        }
+    }
+    Ok(choices)
+}
+pub async fn validate_owned(db: &Path, repo: &Path, requested: &Path) -> Result<PathBuf> {
+    let target = Worktrees::at(repo).resolve(requested).await?;
+    let choice = owned_choices(db, repo)
+        .await?
+        .into_iter()
+        .find(|choice| crate::same_worktree(&choice.path, &target.to_string_lossy()))
+        .ok_or_else(|| Error::invalid("the requested worktree disappeared; choose it again"))?;
+    if let Some(reason) = choice.unavailable {
+        return Err(Error::invalid(reason));
+    }
+    Ok(target)
 }
 
 pub async fn validate(repo: &Path, requested: &Path) -> Result<PathBuf> {

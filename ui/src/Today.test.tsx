@@ -1,203 +1,201 @@
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, within, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, it, vi } from "vitest";
-
 import { Today } from "./Today";
-import type { TodayItem } from "./api";
+import type { ChatToday, ChatTodayEntry } from "./chat-today-api";
 
-afterEach(() => {
-  vi.unstubAllGlobals();
-});
-
-function item(over: Partial<TodayItem>): TodayItem {
+afterEach(() => vi.unstubAllGlobals());
+function entry(over: Partial<ChatTodayEntry> = {}): ChatTodayEntry {
   return {
-    urgency: "review",
-    kind: "review",
-    title: "something",
-    detail: null,
-    project: "widget",
-    run_id: null,
-    since: null,
+    chat_id: 7,
+    project_slug: "widget",
+    project_name: "Widget",
+    title: "My chat",
+    workspace_path: "/repo/linked",
+    updated_at: "2026-10-06T10:00:00Z",
+    state: "failed",
+    detail: "Check failed",
+    panel: "work",
+    needs_attention: true,
+    working: false,
+    drafts: 0,
+    questions: 0,
     ...over,
   };
 }
-
-function stub(
-  items: TodayItem[],
-  support: { projects?: unknown[]; runs?: unknown[]; analytics?: unknown[] } = {},
-) {
+function data(entries: ChatTodayEntry[]): ChatToday {
+  return {
+    entries,
+    chats: entries.length,
+    needs_attention: entries.filter((item) => item.needs_attention).length,
+    working: entries.filter((item) => item.working).length,
+    drafts: entries.reduce((sum, item) => sum + item.drafts, 0),
+  };
+}
+function stub(body: ChatToday) {
+  const calls: string[] = [];
   vi.stubGlobal(
     "fetch",
     vi.fn((input: string) => {
-      const url = String(input).replace(/^\/api/, "");
-      const body = url === "/today"
-        ? items
-        : url === "/projects"
-          ? (support.projects ?? [])
-          : url.startsWith("/runs")
-            ? (support.runs ?? [])
-            : url.startsWith("/analytics")
-              ? (support.analytics ?? [])
-              : [];
-      return Promise.resolve({ ok: true, json: async () => body });
+      const path = String(input).replace(/^\/api/, "");
+      calls.push(path);
+      // A legacy leak must be visible, not masked by a permissive empty-array mock.
+      const response =
+        path === "/chat-today"
+          ? body
+          : [
+              {
+                id: 99,
+                project_id: 1,
+                prompt: "legacy work unrelated to chats",
+                status: "blocked",
+              },
+            ];
+      return Promise.resolve({ ok: true, json: async () => response });
     }),
   );
+  return calls;
 }
-
-it("calls out the first item rather than leaving it to look like the rest", async () => {
-  // A ranked list whose top item renders identically to the others is a list people read
-  // top to bottom anyway, which wastes the ranking.
-  stub([
-    item({ urgency: "blocking", kind: "approval", title: "may I commit?", run_id: 7 }),
-    item({ title: "PR1" }),
-  ]);
-  render(<Today tick={0} onOpenRun={() => {}} />);
-
-  expect(await screen.findByText("Do this first")).toBeDefined();
-  expect(await screen.findByText("may I commit?")).toBeDefined();
-  expect(await screen.findByText(/a run is parked and you are the reason/)).toBeDefined();
+it("does not query legacy feeds or count old runs when there are no active chats", async () => {
+  const calls = stub(data([]));
+  render(<Today tick={0} onOpenChat={vi.fn()} />);
+  await screen.findByText("Nothing is waiting on you");
+  expect(calls).toEqual(["/chat-today"]);
+  expect(screen.queryByText("legacy work unrelated to chats")).toBeNull();
+  for (const label of [
+    "Needs you",
+    "Chats working",
+    "Drafts to review",
+    "Open chats",
+  ])
+    expect(screen.getByText(label).previousElementSibling?.textContent).toBe(
+      "0",
+    );
+  expect(screen.queryByText("Throughput")).toBeNull();
+  expect(screen.queryByText("Active runs")).toBeNull();
 });
-
-it("keeps the server's order instead of re-sorting it", async () => {
-  // The ranking is one judgement, tested in core. A second one here would be a second
-  // answer to the same question.
-  stub([
-    item({ urgency: "blocking", title: "first" }),
-    item({ urgency: "failed", title: "second" }),
-    item({ urgency: "in_flight", title: "third" }),
-  ]);
-  const { container } = render(<Today tick={0} onOpenRun={() => {}} />);
-  await screen.findByText("first");
-
-  const titles = [...container.querySelectorAll(".today-row")].map(
-    (card) => card.querySelector("strong")?.textContent,
-  );
-  expect(titles).toEqual(["first", "second", "third"]);
-});
-
-it("an item pointing at a run can be followed; one that does not, cannot", async () => {
-  // A button that does nothing is worse than plain text: it invites a click and then
-  // ignores it.
-  const user = userEvent.setup();
-  const opened: number[] = [];
-  stub([
-    item({ urgency: "blocking", title: "answer this", run_id: 7 }),
-    item({ urgency: "due", kind: "reminder", title: "stand-up", run_id: null }),
-  ]);
-  render(<Today tick={0} onOpenRun={(id) => opened.push(id)} />);
-
-  await user.click(await screen.findByText("answer this"));
-  expect(opened).toEqual([7]);
-
-  expect(screen.getByText("stand-up").closest("button")).toBeNull();
-});
-
-it("a review waiting on you opens that review, not the run that built it", async () => {
-  // Following it used to open the run - a page of agent activity - and the review had to
-  // be found again under Review.
-  const user = userEvent.setup();
-  const runs: number[] = [];
-  const reviews: Array<[number, string | null, number | null]> = [];
-  stub([
-    item({ urgency: "review", kind: "review", title: "PR1: subtract", run_id: 7, review_id: 3 }),
-  ]);
-  render(
-    <Today
-      tick={0}
-      onOpenRun={(id) => runs.push(id)}
-      onOpenReview={(id, project, run) => reviews.push([id, project, run])}
-    />,
-  );
-
-  await user.click(await screen.findByText("PR1: subtract"));
-  expect(reviews).toEqual([[3, "widget", 7]]);
-  expect(runs).toEqual([]);
-});
-
-it("an item's urgency, project and kind read as one line, the kind only when it adds to it", async () => {
-  // They were three children of a row that spaces its children apart, so the project sat
-  // alone mid-card - and a review said "Review ... review" from either end.
-  stub([
-    item({ urgency: "review", kind: "review", title: "PR1: subtract" }),
-    item({ urgency: "failed", kind: "node", title: "PR2 T1: parse" }),
-  ]);
-  render(<Today tick={0} onOpenRun={() => {}} />);
-
-  const meta = async (title: string) => {
-    const row = (await screen.findByText(title)).closest(".today-row") as HTMLElement;
-    return within(row.querySelector(".today-row__meta") as HTMLElement);
-  };
-  const review = await meta("PR1: subtract");
-  expect(review.getByText("Review")).toBeDefined();
-  expect(review.getByText("widget")).toBeDefined();
-  expect(review.queryByText("review")).toBeNull();
-  expect((await meta("PR2 T1: parse")).getByText("node")).toBeDefined();
-});
-
-it("says plainly when nothing is waiting", async () => {
-  stub([]);
-  render(<Today tick={0} onOpenRun={() => {}} />);
-  expect(await screen.findByText(/Nothing is waiting on you/)).toBeDefined();
-});
-
-it("shows live operations without changing the ranked queue", async () => {
+it("keeps the chat-owned server ranking rather than resurfacing older attempts", async () => {
   stub(
-    [
-      item({ urgency: "failed", title: "fix gates", project: "widget" }),
-      item({ urgency: "review", title: "review it", project: "widget" }),
-      item({ urgency: "in_flight", title: "backend is building", project: "widget" }),
-    ],
-    {
-      projects: [
-        { id: 1, slug: "widget", name: "Widget", kind: "repo", status: "active", open_runs: 1 },
-      ],
-      runs: [
-        { id: 9, project_id: 1, prompt: "build", status: "running", trigger: "manual", created_at: "now", started_at: "now", ended_at: null },
-      ],
-      analytics: [
-        { attempts: 10, accepted: 8, gates_run: 5, gates_passed: 4 },
-      ],
-    },
+    data([
+      entry({ title: "first" }),
+      entry({ chat_id: 8, title: "second", state: "inspection" }),
+      entry({
+        chat_id: 9,
+        title: "third",
+        state: "running",
+        needs_attention: false,
+        working: true,
+      }),
+    ]),
   );
-  render(<Today tick={0} onOpenRun={() => {}} />);
-
-  expect(await screen.findByText("Personal operations")).toBeDefined();
-  expect(screen.getByText("Agents working").previousElementSibling?.textContent).toBe("1");
-  expect(screen.getByText("Active runs").previousElementSibling?.textContent).toBe("1");
-  expect(screen.getByText("Widget")).toBeDefined();
-  expect(screen.getByText("Recent activity")).toBeDefined();
-  expect(screen.getByText("build")).toBeDefined();
-  expect(screen.getAllByText("80%").length).toBe(2);
+  const { container } = render(<Today tick={0} onOpenChat={vi.fn()} />);
+  await screen.findByText("Do this first");
+  expect(
+    [...container.querySelectorAll(".today-row strong")].map(
+      (node) => node.textContent,
+    ),
+  ).toEqual(["first", "second", "third"]);
 });
-
-it("labels every tier with a word, not only a colour", async () => {
-  // There is no browser on the machine this is built on, and a colour alone is
-  // unreadable to anyone who cannot tell two of them apart.
-  stub([
-    item({ urgency: "blocking", title: "a" }),
-    item({ urgency: "overdue", title: "b" }),
-    item({ urgency: "failed", title: "c" }),
-    item({ urgency: "review", title: "d" }),
-    item({ urgency: "question", title: "e" }),
-    item({ urgency: "due", title: "f" }),
-    item({ urgency: "in_flight", title: "g" }),
-  ]);
-  render(<Today tick={0} onOpenRun={() => {}} />);
-
-  for (const label of ["Blocking", "Overdue", "Failed", "Review", "Question", "Due", "In flight"]) {
-    expect((await screen.findAllByText(label)).length).toBeGreaterThan(0);
-  }
+it("opens the exact owning chat and contextual panel, never a project latest run", async () => {
+  stub(
+    data([
+      entry({
+        chat_id: 17,
+        title: "Inspect my draft",
+        panel: "review",
+        state: "review",
+        drafts: 2,
+      }),
+    ]),
+  );
+  const open = vi.fn();
+  render(<Today tick={0} onOpenChat={open} />);
+  await userEvent.click(await screen.findByRole("button", { name: /chat 17/ }));
+  expect(open).toHaveBeenCalledWith("widget", 17, "review");
+  expect(screen.getByText(/review is not publication approval/)).toBeTruthy();
 });
-
-it("says what is wrong rather than showing an empty day", async () => {
+it("uses the same response for counters and clearly bounds the displayed detail", async () => {
+  const response = {
+    ...data([
+      entry({ working: true }),
+      entry({ chat_id: 8, state: "review", drafts: 2, questions: 1 }),
+    ]),
+    chats: 210,
+    needs_attention: 20,
+    working: 3,
+    drafts: 12,
+  };
+  stub(response);
+  render(<Today tick={0} onOpenChat={vi.fn()} />);
+  await screen.findByText("Do this first");
+  const counts = within(
+    screen.getByRole("region", { name: "Chat activity counts" }),
+  );
+  expect(
+    counts.getByText("Needs you").previousElementSibling?.textContent,
+  ).toBe("20");
+  expect(
+    counts.getByText("Chats working").previousElementSibling?.textContent,
+  ).toBe("3");
+  expect(
+    counts.getByText("Drafts to review").previousElementSibling?.textContent,
+  ).toBe("12");
+  expect(screen.getByText(/Showing 2 of 210 open chats/)).toBeTruthy();
+});
+it("labels idle, queued and interrupted activity without treating it all as working", async () => {
+  stub(
+    data([
+      entry({ state: "interrupted" }),
+      entry({ chat_id: 8, state: "starting", needs_attention: false }),
+      entry({ chat_id: 9, state: "idle", needs_attention: false }),
+    ]),
+  );
+  render(<Today tick={0} onOpenChat={vi.fn()} />);
+  await screen.findByText("Do this first");
+  for (const label of ["Interrupted", "Starting / waiting", "Idle"])
+    expect(screen.getAllByText(label).length).toBeGreaterThan(0);
+  expect(
+    screen.getByText("Chats working").previousElementSibling?.textContent,
+  ).toBe("0");
+});
+it("shows read failures instead of a misleading clear day", async () => {
   vi.stubGlobal(
     "fetch",
-    vi.fn().mockResolvedValue({
-      ok: false,
-      status: 503,
-      json: async () => ({ error: "no database yet - run `ait init`" }),
+    vi
+      .fn()
+      .mockResolvedValue({
+        ok: false,
+        status: 503,
+        json: async () => ({ error: "could not read chat activity" }),
+      }),
+  );
+  render(<Today tick={0} onOpenChat={vi.fn()} />);
+  expect(await screen.findByRole("alert")).toHaveProperty(
+    "textContent",
+    "could not read chat activity",
+  );
+  expect(screen.queryByText("Nothing is waiting on you")).toBeNull();
+});
+it("does not replace a newer tick with a late response", async () => {
+  let old!: (value: unknown) => void;
+  const first = new Promise((resolve) => {
+    old = resolve;
+  });
+  vi.stubGlobal(
+    "fetch",
+    vi
+      .fn()
+      .mockReturnValueOnce(first)
+      .mockResolvedValue({ ok: true, json: async () => data([]) }),
+  );
+  const view = render(<Today tick={0} onOpenChat={vi.fn()} />);
+  view.rerender(<Today tick={1} onOpenChat={vi.fn()} />);
+  await screen.findByText("Nothing is waiting on you");
+  await act(async () =>
+    old({
+      ok: true,
+      json: async () => data([entry({ title: "stale response" })]),
     }),
   );
-  render(<Today tick={0} onOpenRun={() => {}} />);
-  expect(await screen.findByText(/ait init/)).toBeDefined();
+  expect(screen.queryByText("stale response")).toBeNull();
 });

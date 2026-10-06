@@ -70,7 +70,7 @@ fn fixture() -> Fixture {
     }
     executable(
         &bin.join("awt"),
-        "#!/bin/sh\n[ \"$*\" = 'status --json' ] || exit 99\nprintf '%s' '{\"worktrees\":[]}'\n",
+        "#!/bin/sh\n[ \"$*\" = 'status --json' ] || exit 99\nif [ -f \"$CHAT_TEST_ROOT/awt-status\" ]; then /bin/cat \"$CHAT_TEST_ROOT/awt-status\"; else printf '%s' '{\"worktrees\":[]}'; fi\n",
     );
     std::fs::write(root.join("mode"), "done").unwrap();
     git(&repo, &["init", "-q"]);
@@ -126,6 +126,17 @@ async fn a_confirmed_switch_drives_the_next_process_in_the_new_checkout() {
         mut store,
         chat,
     } = fixture();
+    std::fs::write(root.join("awt-status"), serde_json::json!({"worktrees":[{"name":"3","path":linked,"status":"in-use","leaseHolder":"","processes":[{"pid":123,"name":"zsh"},{"pid":124,"name":"nvim"},{"pid":125,"name":"bun"}]}]}).to_string()).unwrap();
+    let options = ai_team_core::chat_workspaces::choices(&repo).await.unwrap();
+    assert!(
+        options
+            .iter()
+            .find(|option| option.path == linked.to_string_lossy())
+            .unwrap()
+            .unavailable
+            .is_none(),
+        "ordinary shells, editors and dev servers are not exclusive worktree ownership"
+    );
     let first = store
         .begin_chat_turn(chat.id, "first", "first", &ModelRegistry::local_only())
         .unwrap();

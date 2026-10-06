@@ -560,6 +560,7 @@ pub(super) fn check_chat_admission(
     workspace: &str,
     switching: bool,
 ) -> Result<()> {
+    super::workspace_setup::check_project(tx, expected.project_id)?;
     super::chat_changes::check_workspace(tx, workspace)?;
     let current = tx.query_row(&format!("{SELECT} WHERE id = ?1"), [expected.id], from_row)?;
     let project_archived: bool = tx.query_row(

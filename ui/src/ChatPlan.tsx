@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { BoardMarkdown } from "./BoardMarkdown";
+import { PlanKanban } from "./PlanKanban";
 import { chatPlan, changeChatPlan, PLAN_STATUSES } from "./plan-api";
 import type {
   ChatPlan as Snapshot,
@@ -21,14 +22,17 @@ export function ChatPlanning({
   tick,
   archived,
   frozen = false,
+  workspace = false,
   onChanged,
 }: {
   chatId: number;
   tick: number;
   archived: boolean;
   frozen?: boolean;
+  workspace?: boolean;
   onChanged: () => void;
 }) {
+  const [view, setView] = useState<"board" | "plan">("board");
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const [loadProblem, setLoadProblem] = useState<string | null>(null);
@@ -93,6 +97,8 @@ export function ChatPlanning({
     }
   };
   const issue = problem ?? loadProblem;
+  const readOnly = archived || snapshot?.archived === true;
+  const locked = frozen || snapshot?.frozen === true;
   const bundle = snapshot?.bundle;
   const done =
     bundle?.slices.filter((slice) => slice.status === "done").length ?? 0;
@@ -101,11 +107,13 @@ export function ChatPlanning({
       className="chat-overview-card chat-planning"
       aria-label="Chat plan"
     >
-      <div className="plan-heading">
-        <h3>Plan</h3>
-        <span className="faint">Only this chat · built in</span>
-      </div>
-      <details>
+      {!workspace && (
+        <div className="plan-heading">
+          <h3>Plan</h3>
+          <span className="faint">Only this chat · built in</span>
+        </div>
+      )}
+      <details hidden={workspace && view !== "plan"}>
         <summary>Planning isolation</summary>
         <p className="faint">
           This chat uses AI Team’s scoped planning tools and permitted project
@@ -134,14 +142,17 @@ export function ChatPlanning({
           {issue ? "The plan could not be loaded." : "Loading plan…"}
         </p>
       ) : (
-        <fieldset disabled={busy || archived} className="plan-controls">
+        <fieldset
+          disabled={busy || (readOnly && !workspace)}
+          className="plan-controls"
+        >
           {!bundle ? (
             <>
               <p className="faint">
                 No plan yet. Chat normally, ask Pi to plan, or create one here.
                 Nothing is written to standalone ai-planner.
               </p>
-              {!archived && <CreatePlan save={save} />}
+              {!readOnly && <CreatePlan save={save} />}
             </>
           ) : (
             <>
@@ -150,7 +161,7 @@ export function ChatPlanning({
                 <label>
                   Plan status
                   <select
-                    disabled={frozen}
+                    disabled={locked || readOnly}
                     value={bundle.plan.status}
                     onChange={(event) =>
                       void save({
@@ -168,7 +179,9 @@ export function ChatPlanning({
                 </label>
               </div>
               {bundle.plan.summary && (
-                <BoardMarkdown source={bundle.plan.summary} />
+                <div hidden={workspace && view === "board"}>
+                  <BoardMarkdown source={bundle.plan.summary} />
+                </div>
               )}
               <div className="plan-progress">
                 <span>
@@ -181,148 +194,217 @@ export function ChatPlanning({
                     max={bundle.slices.length}
                   />
                 )}
-                <small className="faint">
-                  Reported progress, not automatic verification or execution.
-                </small>
+                {!workspace && (
+                  <small className="faint">
+                    Reported progress, not automatic verification or execution.
+                  </small>
+                )}
               </div>
-              <PlanQuestions questions={bundle.questions} save={save} />
-              {frozen && <p className="notice">Approved work is frozen until this build releases the chat. Questions remain available; answers do not approve more work.</p>}
-              <fieldset disabled={frozen} className="plan-controls">
-              <div className="plan-heading">
-                <h4>Scope & notes</h4>
-                <button
-                  className="button"
-                  onClick={() => setEditor({ kind: "section" })}
-                >
-                  Add section
-                </button>
-              </div>
-              {bundle.sections
-                .filter((section) => section.body.trim())
-                .map((section) => (
-                  <article className="plan-item" key={section.key}>
-                    <div className="plan-heading">
-                      <h5>{section.title}</h5>
-                      <button
-                        className="button"
-                        onClick={() =>
-                          setEditor({ kind: "section", key: section.key })
-                        }
-                      >
-                        Edit {section.title}
+              {workspace && (
+                <>
+                  <nav className="plan-workspace-tabs" aria-label="Plan views">
+                    <button
+                      type="button"
+                      aria-current={view === "board" ? "page" : undefined}
+                      onClick={() => setView("board")}
+                    >
+                      Board
+                    </button>
+                    <button
+                      type="button"
+                      aria-current={view === "plan" ? "page" : undefined}
+                      onClick={() => setView("plan")}
+                    >
+                      Plan
+                    </button>
+                    {bundle.questions.some(
+                      (question) => question.status === "open",
+                    ) && (
+                      <button type="button" onClick={() => setView("plan")}>
+                        {
+                          bundle.questions.filter(
+                            (question) => question.status === "open",
+                          ).length
+                        }{" "}
+                        open questions
                       </button>
-                    </div>
-                    <BoardMarkdown source={section.body} />
-                  </article>
-                ))}
-              {editor?.kind === "section" && (
-                <SectionForm
-                  key={`section-${editor.key ?? "new"}`}
-                  section={bundle.sections.find(
-                    (section) => section.key === editor.key,
+                    )}
+                  </nav>
+                  {locked && view === "board" && (
+                    <p className="notice">
+                      Approved work is frozen until this build releases the
+                      chat. Open Plan to read or answer questions.
+                    </p>
                   )}
-                  revision={snapshot.revision}
-                  save={save}
-                  close={() => setEditor(null)}
-                />
+                  {readOnly && (
+                    <p className="notice">
+                      This chat is archived. Its plan and board remain readable;
+                      restore the chat to edit.
+                    </p>
+                  )}
+                  <div hidden={view !== "board"}>
+                    <PlanKanban
+                      slices={bundle.slices}
+                      revision={snapshot.revision}
+                      save={save}
+                      disabled={busy || locked || readOnly}
+                    />
+                  </div>
+                </>
               )}
-              <div className="plan-heading">
-                <h4>Work slices</h4>
-                <button
-                  className="button"
-                  onClick={() => setEditor({ kind: "slice" })}
+              <div hidden={workspace && view !== "plan"}>
+                <fieldset disabled={readOnly} className="plan-controls">
+                  <PlanQuestions questions={bundle.questions} save={save} />
+                </fieldset>
+                {locked && (
+                  <p className="notice">
+                    Approved work is frozen until this build releases the chat.
+                    Questions remain available; answers do not approve more
+                    work.
+                  </p>
+                )}
+                <fieldset
+                  disabled={locked || readOnly}
+                  className="plan-controls"
                 >
-                  Add slice
-                </button>
-              </div>
-              {!bundle.slices.length && (
-                <p className="faint">
-                  Break the work into verifiable slices when useful.
-                </p>
-              )}
-              {bundle.slices.map((slice) => (
-                <article className="plan-item" key={slice.id}>
                   <div className="plan-heading">
-                    <h5>
-                      {slice.key} · {slice.title}
-                    </h5>
+                    <h4>Scope & notes</h4>
                     <button
                       className="button"
-                      onClick={() =>
-                        setEditor({ kind: "slice", key: slice.key })
-                      }
+                      onClick={() => setEditor({ kind: "section" })}
                     >
-                      Edit {slice.key}
+                      Add section
                     </button>
                   </div>
-                  <BoardMarkdown source={slice.scope_md} />
-                  {slice.demo_md && (
-                    <details>
-                      <summary>Verification criteria</summary>
-                      <BoardMarkdown source={slice.demo_md} />
-                    </details>
+                  {bundle.sections
+                    .filter((section) => section.body.trim())
+                    .map((section) => (
+                      <article className="plan-item" key={section.key}>
+                        <div className="plan-heading">
+                          <h5>{section.title}</h5>
+                          <button
+                            className="button"
+                            onClick={() =>
+                              setEditor({ kind: "section", key: section.key })
+                            }
+                          >
+                            Edit {section.title}
+                          </button>
+                        </div>
+                        <BoardMarkdown source={section.body} />
+                      </article>
+                    ))}
+                  {editor?.kind === "section" && (
+                    <SectionForm
+                      key={`section-${editor.key ?? "new"}`}
+                      section={bundle.sections.find(
+                        (section) => section.key === editor.key,
+                      )}
+                      revision={snapshot.revision}
+                      save={save}
+                      close={() => setEditor(null)}
+                    />
                   )}
-                  {slice.blocked_reason && (
-                    <p className="notice">Blocked: {slice.blocked_reason}</p>
+                  <div className="plan-heading">
+                    <h4>Work slices</h4>
+                    <button
+                      className="button"
+                      onClick={() => setEditor({ kind: "slice" })}
+                    >
+                      Add slice
+                    </button>
+                  </div>
+                  {!bundle.slices.length && (
+                    <p className="faint">
+                      Break the work into verifiable slices when useful.
+                    </p>
                   )}
-                  <SliceStatus slice={slice} save={save} />
-                </article>
-              ))}
-              {editor?.kind === "slice" && (
-                <SliceForm
-                  key={`slice-${editor.key ?? "new"}`}
-                  slice={bundle.slices.find(
-                    (slice) => slice.key === editor.key,
-                  )}
-                  revision={snapshot.revision}
-                  save={save}
-                  close={() => setEditor(null)}
-                />
-              )}
-              </fieldset>
-              {bundle.decisions.length > 0 && (
-                <details>
-                  <summary>Decisions ({bundle.decisions.length})</summary>
-                  {bundle.decisions.map((decision) => (
-                    <article className="plan-item" key={decision.id}>
-                      <h5>
-                        {decision.key} · {decision.title} · {decision.status}
-                      </h5>
-                      <BoardMarkdown source={decision.body} />
+                  {bundle.slices.map((slice) => (
+                    <article className="plan-item" key={slice.id}>
+                      <div className="plan-heading">
+                        <h5>
+                          {slice.key} · {slice.title}
+                        </h5>
+                        <button
+                          className="button"
+                          onClick={() =>
+                            setEditor({ kind: "slice", key: slice.key })
+                          }
+                        >
+                          Edit {slice.key}
+                        </button>
+                      </div>
+                      <BoardMarkdown source={slice.scope_md} />
+                      {slice.demo_md && (
+                        <details>
+                          <summary>Verification criteria</summary>
+                          <BoardMarkdown source={slice.demo_md} />
+                        </details>
+                      )}
+                      {slice.blocked_reason && (
+                        <p className="notice">
+                          Blocked: {slice.blocked_reason}
+                        </p>
+                      )}
+                      <SliceStatus slice={slice} save={save} />
                     </article>
                   ))}
-                </details>
-              )}
-              {bundle.gotchas.length > 0 && (
-                <details>
-                  <summary>Gotchas ({bundle.gotchas.length})</summary>
-                  {bundle.gotchas.map((gotcha) => (
-                    <article className="plan-item" key={gotcha.id}>
-                      <h5>{gotcha.title}</h5>
-                      <BoardMarkdown source={gotcha.body} />
-                    </article>
-                  ))}
-                </details>
-              )}
-              {bundle.log.length > 0 && (
-                <details>
-                  <summary>Planning activity ({bundle.log.length})</summary>
-                  <ol className="plan-log">
-                    {bundle.log
-                      .slice()
-                      .reverse()
-                      .map((entry) => (
-                        <li key={entry.id}>
-                          <BoardMarkdown source={entry.body} />
-                          <small className="faint">
-                            {entry.actor ?? "Planner"} ·{" "}
-                            {new Date(entry.at).toLocaleString()}
-                          </small>
-                        </li>
-                      ))}
-                  </ol>
-                </details>
-              )}
+                  {editor?.kind === "slice" && (
+                    <SliceForm
+                      key={`slice-${editor.key ?? "new"}`}
+                      slice={bundle.slices.find(
+                        (slice) => slice.key === editor.key,
+                      )}
+                      revision={snapshot.revision}
+                      save={save}
+                      close={() => setEditor(null)}
+                    />
+                  )}
+                </fieldset>
+                {bundle.decisions.length > 0 && (
+                  <details>
+                    <summary>Decisions ({bundle.decisions.length})</summary>
+                    {bundle.decisions.map((decision) => (
+                      <article className="plan-item" key={decision.id}>
+                        <h5>
+                          {decision.key} · {decision.title} · {decision.status}
+                        </h5>
+                        <BoardMarkdown source={decision.body} />
+                      </article>
+                    ))}
+                  </details>
+                )}
+                {bundle.gotchas.length > 0 && (
+                  <details>
+                    <summary>Gotchas ({bundle.gotchas.length})</summary>
+                    {bundle.gotchas.map((gotcha) => (
+                      <article className="plan-item" key={gotcha.id}>
+                        <h5>{gotcha.title}</h5>
+                        <BoardMarkdown source={gotcha.body} />
+                      </article>
+                    ))}
+                  </details>
+                )}
+                {bundle.log.length > 0 && (
+                  <details>
+                    <summary>Planning activity ({bundle.log.length})</summary>
+                    <ol className="plan-log">
+                      {bundle.log
+                        .slice()
+                        .reverse()
+                        .map((entry) => (
+                          <li key={entry.id}>
+                            <BoardMarkdown source={entry.body} />
+                            <small className="faint">
+                              {entry.actor ?? "Planner"} ·{" "}
+                              {new Date(entry.at).toLocaleString()}
+                            </small>
+                          </li>
+                        ))}
+                    </ol>
+                  </details>
+                )}
+              </div>
             </>
           )}
         </fieldset>

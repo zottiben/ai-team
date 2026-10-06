@@ -15,6 +15,7 @@ impl Store {
         workspace: &str,
         approval: Option<i64>,
     ) -> Result<()> {
+        super::workspace_setup::check_project(self.db().conn(), project)?;
         super::chat_changes::check_workspace_except_toolbox(self.db().conn(), workspace, approval)?;
         super::chat_teams::kept::check_unlocated(self.db().conn(), project, Some(workspace), None)?;
         let mut q=self.db().conn().prepare("SELECT workspace_path FROM chat WHERE active_node_id IS NOT NULL

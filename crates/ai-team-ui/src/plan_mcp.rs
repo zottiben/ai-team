@@ -110,12 +110,13 @@ impl PlannerMcp {
                         "list_worktrees accepts no scope overrides",
                     ));
                 }
-                return Ok(serde_json::to_value(
-                    runtime.block_on(ai_team_core::chat_workspaces::choices(&root))?,
-                )?);
+                return Ok(serde_json::to_value(runtime.block_on(
+                    ai_team_core::chat_workspaces::owned_choices(&self.db, &root),
+                )?)?);
             }
             let request: Request = serde_json::from_value(arguments.into())?;
-            let target = runtime.block_on(ai_team_core::chat_workspaces::validate(
+            let target = runtime.block_on(ai_team_core::chat_workspaces::validate_owned(
+                &self.db,
                 &root,
                 &request.path,
             ))?;

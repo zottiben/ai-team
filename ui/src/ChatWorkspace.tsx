@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import { Popover } from "./Popover";
+import { WorkspaceSetup, useWorkspaceSetup } from "./WorkspaceSetup";
 import type { ChatDetail } from "./chat-api";
 import { approveWorkspace, cancelWorkspace, chatWorkspaces, requestWorkspace, workspaceRequests, type WorkspaceChoice, type WorkspaceRequest } from "./chat-workspace-api";
 
@@ -25,6 +26,8 @@ export function ChatWorkspace({ project, detail, selected, tick, disabled, onSel
   const working = useRef(false);
   const notified = useRef<number | null>(null);
   const id = detail?.id;
+  const setup = useWorkspaceSetup(project, id === undefined, tick);
+  useEffect(() => { onPending(pending !== null || setup.pending); }, [pending, setup.pending, onPending]);
   const workspace = detail?.workspace_path ?? selected;
   useEffect(() => {
     if (!id) return;
@@ -33,7 +36,6 @@ export function ChatWorkspace({ project, detail, selected, tick, disabled, onSel
       if (!current) return;
       const next = result.requests.find(request => request.state === "pending") ?? null;
       setPending(next);
-      onPending(next !== null);
       if (next && notified.current !== next.id) { notified.current = next.id; setOpen(true); }
     }).catch((error: unknown) => { if (current) setProblem(error instanceof Error ? error.message : String(error)); });
     return () => { current = false; };
@@ -59,7 +61,7 @@ export function ChatWorkspace({ project, detail, selected, tick, disabled, onSel
   const choice = choices.find(choice => choice.path === target);
   return <>
     <button type="button" ref={button} className="button chat-checkout-picker" aria-label="Choose checkout" aria-expanded={open} title={workspace ?? "Choose a project checkout"} disabled={disabled && !pending} onClick={() => setOpen(!open)}>
-      {pending ? "Worktree change waiting" : workspace ? workspace.split("/").at(-1) : "Local"}
+      {setup.pending ? "Worktree setup in progress" : pending ? "Worktree change waiting" : workspace ? workspace.split("/").at(-1) : "Local"}
     </button>
     {open && <Popover anchor={button} label="Chat checkout" onClose={() => setOpen(false)} className="chat-checkout-popover">
       <strong>Chat checkout</strong>
@@ -74,13 +76,16 @@ export function ChatWorkspace({ project, detail, selected, tick, disabled, onSel
       </> : <>
         <label>Worktree<select aria-label="Chat worktree" value={target} disabled={busy} onChange={event => setTarget(event.target.value)}>
           {!choices.length && <option value="">No worktrees loaded</option>}
-          {choices.map(choice => <option key={choice.path} value={choice.path} disabled={!!choice.unavailable}>{choice.name}{choice.branch ? ` · ${choice.branch}` : ""}{choice.unavailable ? " · occupied" : ""}</option>)}
+          {choices.map(choice => <option key={choice.path} value={choice.path} disabled={!!choice.unavailable}>{choice.name}{choice.branch ? ` · ${choice.branch}` : ""}{choice.unavailable ? " · unavailable" : ""}</option>)}
         </select></label>
         {choice && <p className="mono">{choice.path}</p>}
+        {!!choice?.processes?.length && <p className="notice">Processes detected: {[...new Set(choice.processes.map(process => process.name))].join(", ")}. Selecting this checkout leaves them running and does not reset files. Coordinate any concurrent edits.</p>}
+        {choices.some(choice => choice.unavailable) && <details><summary>Why some checkouts are unavailable</summary><ul>{choices.filter(choice => choice.unavailable).map(choice => <li key={choice.path}><strong>{choice.name} · {choice.branch}</strong>: {choice.unavailable}. Inspect the lease; do not return/reset it merely to select it.</li>)}</ul></details>}
         <button type="button" className="button" disabled={busy || disabled || !choice || !!choice.unavailable || choice.path === workspace} onClick={() => {
           if (detail) void act(() => requestWorkspace(detail.id, target));
           else { onSelect(target); setOpen(false); }
         }}>{detail ? "Review checkout switch" : "Use this checkout"}</button>
+        {!detail && <WorkspaceSetup state={setup} disabled={disabled} onSelect={path => { onSelect(path); setOpen(false); }} />}
       </>}
     </Popover>}
   </>;

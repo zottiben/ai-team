@@ -18,6 +18,11 @@ export type PlanSlice = {
   scope_md: string;
   demo_md: string | null;
   blocked_reason: string | null;
+  branch?: string | null;
+  worktree_path?: string | null;
+  pr_url?: string | null;
+  estimate_files?: number | null;
+  claimed_by?: string | null;
   rev: number;
 };
 export type PlanSection = {
@@ -34,6 +39,8 @@ export type PlanQuestion = {
   slice_key: string | null;
 };
 export type ChatPlan = {
+  archived?: boolean;
+  frozen?: boolean;
   chat_id: number;
   project_id: number;
   revision: number;

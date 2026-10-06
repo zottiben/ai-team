@@ -11,6 +11,23 @@ use tokio::{
     process::{Child, Command},
 };
 
+/// For commands whose explicit checkout is authoritative. Call before setting any
+/// intentional temporary-index override; do not retarget through the parent shell.
+pub(crate) fn strip_git_overrides(command: &mut Command) {
+    for key in [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_COMMON_DIR",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_PARAMETERS",
+    ] {
+        command.env_remove(key);
+    }
+}
+
 pub(crate) struct Output {
     pub status: ExitStatus,
     pub stdout: Vec<u8>,

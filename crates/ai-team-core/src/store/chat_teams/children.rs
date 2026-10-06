@@ -6,11 +6,11 @@ use std::path::Path;
 // Both owners use the same spawn/identity/drain protocol, but operator checkout work
 // never manufactures a team execution. SQL identifiers are fixed here, not supplied.
 fn scope(owner: &Ownership) -> (&'static str, &'static str, i64) {
-    owner
-        .checkout
-        .map_or(("chat_child", "run_id", owner.run), |id| {
-            ("checkout_child", "operation_id", id)
-        })
+    match (owner.setup, owner.checkout) {
+        (Some(id), _) => ("workspace_setup_child", "setup_id", id),
+        (_, Some(id)) => ("checkout_child", "operation_id", id),
+        _ => ("chat_child", "run_id", owner.run),
+    }
 }
 impl Store {
     pub(crate) fn chat_child_epoch(&self, run: i64) -> Result<i64> {
@@ -89,6 +89,9 @@ impl Store {
     pub(crate) fn checkout_children(&self, id: i64) -> Result<Vec<ChildRecord>> {
         records(self.db().conn(), "checkout_child", "operation_id", id)
     }
+    pub(crate) fn workspace_setup_children(&self, id: i64) -> Result<Vec<ChildRecord>> {
+        records(self.db().conn(), "workspace_setup_child", "setup_id", id)
+    }
 }
 fn records(conn: &Connection, table: &str, key: &str, id: i64) -> Result<Vec<ChildRecord>> {
     let mut query = conn.prepare(&format!(
@@ -109,6 +112,9 @@ fn records(conn: &Connection, table: &str, key: &str, id: i64) -> Result<Vec<Chi
     Ok(rows)
 }
 pub(super) fn check(conn: &Connection, owner: &Ownership) -> Result<()> {
+    if let Some(id) = owner.setup {
+        return super::super::workspace_setup::check_child_owner(conn, owner, id);
+    }
     if let Some(id) = owner.checkout {
         return super::super::chat_checkout::check_child_owner(conn, owner, id);
     }

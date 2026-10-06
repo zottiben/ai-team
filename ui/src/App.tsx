@@ -22,7 +22,6 @@ import {
 import {
   doctor,
   projects as fetchProjects,
-  run as fetchRun,
   subscribe,
   worktrees,
   type Project,
@@ -104,13 +103,6 @@ export default function App() {
   const [legacyView, setLegacyView] = useState<WorkspaceView>("work");
   const [openRun, setOpenRun] = useState<number | null>(null);
   const [openReview, setOpenReview] = useState<number | null>(null);
-  const toolNavigation = useRef(0);
-  useEffect(
-    () => () => {
-      toolNavigation.current += 1;
-    },
-    [page, projectSlug, chatId, setup],
-  );
   const generation = useRef(0);
   const checkedRestore = useRef(false);
 
@@ -215,29 +207,6 @@ export default function App() {
     if (projectSlug) navigate(projectSlug, null);
     else setPage("projects");
   };
-  const openExecution = async (
-    run: number | null,
-    slug: string | null,
-    review: number | null = null,
-  ) => {
-    const target = slug ?? projectSlug;
-    if (!target) return;
-    const request = ++toolNavigation.current;
-    try {
-      const detail = run === null ? null : await fetchRun(run);
-      if (request !== toolNavigation.current) return;
-      setProjectSlug(target);
-      setWorkspace(detail?.workspace_path ?? null);
-      setOpenRun(review === null ? run : null);
-      setOpenReview(review);
-      setLegacyView(review === null ? "work" : "review");
-      setPage("legacy");
-    } catch (error) {
-      if (request === toolNavigation.current)
-        setProblem(error instanceof Error ? error.message : String(error));
-    }
-  };
-
   const notificationButton = <Notifications tick={tick} onOpen={notification => {
     const owner = projects.find(candidate => candidate.id === notification.project_id);
     if (!owner) {
@@ -558,10 +527,7 @@ export default function App() {
             {page === "today" && (
               <Today
                 tick={tick}
-                onOpenRun={(id, slug) => void openExecution(id, slug)}
-                onOpenReview={(id, slug, run) =>
-                  void openExecution(run, slug, id)
-                }
+                onOpenChat={(slug, id, panel) => navigate(slug, id, panel)}
               />
             )}
           </main>

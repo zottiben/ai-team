@@ -111,17 +111,15 @@ vi.mock("./Roster", () => ({ Roster: () => <h1>Default team</h1> }));
 vi.mock("./Analytics", () => ({ Analytics: () => <h1>Analytics content</h1> }));
 vi.mock("./Today", () => ({
   Today: ({
-    onOpenRun,
-    onOpenReview,
+    onOpenChat,
   }: {
-    onOpenRun: (id: number, slug: string) => void;
-    onOpenReview: (id: number, slug: string, run: number) => void;
+    onOpenChat: (slug: string, id: number, panel: "work" | "review") => void;
   }) => (
     <section>
       <h1>Today content</h1>
-      <button onClick={() => onOpenRun(10, "demo")}>Open legacy run</button>
-      <button onClick={() => onOpenReview(7, "demo", 10)}>
-        Open legacy review
+      <button onClick={() => onOpenChat("demo", 1, "work")}>Open chat work</button>
+      <button onClick={() => onOpenChat("demo", 2, "review")}>
+        Open chat review
       </button>
     </section>
   ),
@@ -337,23 +335,22 @@ it("keeps schedule and less frequent tools accessible without replacing chat nav
   await screen.findByRole("heading", { name: "Today content" });
 });
 
-it("opens legacy Today runs and reviews in their own checkout", async () => {
+it("opens Today work and review in their exact owning chats", async () => {
   render(<App />);
   await screen.findByRole("heading", { name: "Demo project / New chat" });
   fireEvent.click(screen.getByRole("button", { name: "More tools" }));
   fireEvent.click(screen.getByRole("button", { name: "Today" }));
-  fireEvent.click(screen.getByRole("button", { name: "Open legacy run" }));
-  await screen.findByRole("heading", { name: "/demo-task / work" });
+  fireEvent.click(screen.getByRole("button", { name: "Open chat work" }));
+  await screen.findByRole("heading", { name: "Demo project / 1" });
   fireEvent.click(screen.getByRole("button", { name: "More tools" }));
   fireEvent.click(screen.getByRole("button", { name: "Today" }));
-  fireEvent.click(screen.getByRole("button", { name: "Open legacy review" }));
-  await screen.findByRole("heading", { name: "/demo-task / review" });
-  expect(screen.getByText("Review 7")).not.toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Open chat review" }));
+  await screen.findByRole("heading", { name: "Demo project / 2" });
   expect(screen.queryByRole("navigation", { name: "Project tools" })).toBeNull();
-  expect(screen.getByRole("button", { name: "Back to Today" })).not.toBeNull();
+  expect(screen.queryByRole("button", { name: "Back to Today" })).toBeNull();
 });
 
-it("does not let a late legacy review lookup replace a newly selected chat", async () => {
+it("does not depend on a legacy run lookup when Today opens a chat", async () => {
   let resolve!: (value: { workspace_path: string }) => void;
   state.run = new Promise((done) => {
     resolve = done;
@@ -362,7 +359,8 @@ it("does not let a late legacy review lookup replace a newly selected chat", asy
   await screen.findByRole("heading", { name: "Demo project / New chat" });
   fireEvent.click(screen.getByRole("button", { name: "More tools" }));
   fireEvent.click(screen.getByRole("button", { name: "Today" }));
-  fireEvent.click(screen.getByRole("button", { name: "Open legacy review" }));
+  fireEvent.click(screen.getByRole("button", { name: "Open chat review" }));
+  await screen.findByRole("heading", { name: "Demo project / 2" });
   fireEvent.click(screen.getByRole("button", { name: "Other project" }));
   await act(async () => resolve({ workspace_path: "/demo-task" }));
   expect(

@@ -252,6 +252,7 @@ fn check_workspace_except(
     approval: Option<i64>,
     operation: Option<i64>,
 ) -> Result<()> {
+    super::workspace_setup::check_workspace(conn, workspace)?;
     let mut query = conn.prepare(
         "SELECT workspace_path FROM chat_delivery WHERE state IN ('running','inspection')
          UNION SELECT json_extract(snapshot_json,'$.authority.target') FROM toolbox_operation

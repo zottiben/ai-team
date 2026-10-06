@@ -380,8 +380,11 @@ impl Worktrees {
     where
         S: std::future::Future<Output = String> + Send,
     {
+        let mut command = Command::new("awt");
+        command.args(args).current_dir(&self.repo);
+        crate::command::strip_git_overrides(&mut command);
         let output = crate::command::run(
-            Command::new("awt").args(args).current_dir(&self.repo),
+            &mut command,
             std::time::Duration::from_secs(600),
             8 * 1024 * 1024,
             stop,

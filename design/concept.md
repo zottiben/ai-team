@@ -48,8 +48,9 @@ tab hierarchy. These panels command the selected chat's own work, never the proj
 latest run. Switching panels preserves unsent messages and review/plan drafts.
 
 Project tools contain only **Source and Team**; Editor and Terminal belong to the
-chat's checkout. Legacy run/review links from Today remain separate history routes,
-not project tools or chat commands.
+chat's checkout. Project tools have one entry under More tools; the sidebar footer is
+attribution only. Today shows chat-owned activity, counters and exact-chat links only.
+Legacy run/review history remains separate, never mixed into Today or chat commands.
 
 During a solo turn, the composer's primary action is a pulsing Stop button. Typing
 replaces it with the send arrow to queue a follow-up; Stop and steer remains an explicit
@@ -77,7 +78,20 @@ approval. Move no files, create/reset no worktree, and preserve old execution ev
 editor drafts and terminal bindings. A handoff starts a fresh Pi session, even on a
 later return to the old path. Delayed messages retain their original checkout generation;
 schedules retain their recorded checkout, model and mode. Never relax the workspace
-guard to make a natural-language checkout request succeed.
+guard to make a natural-language checkout request succeed. Ordinary shells, editors and
+dev servers are disclosed activity, not exclusive checkout ownership; real application,
+lease and retained-work fences still apply. Orphaned AWT leases require explicit handling.
+
+New-chat checkout setup reuses external AWT's proven acquisition workflow, not a second
+worktree manager. Human approval explicitly covers normal pool reuse/reset, configured
+hooks, network access and dependency installation. An unleased pool slot pinned by a chat
+(including idle/archived chats), a pre-node planning run or nonterminal/retained work is
+not disposable; refuse acquisition before AWT can reset it. Refresh detected locked dependencies,
+including warm Composer/JS installations, before reporting readiness. Journal commands
+and child lifetimes; lost responses cannot acquire another checkout. Failed or uncertain
+setup retains its lease and evidence. Inspection never replays acquisition/hooks; retry
+is explicit and confined to dependencies in the same confirmed checkout and branch.
+Selecting an existing checkout never triggers this setup or resets its contents.
 
 ### Solo and team work
 
@@ -134,8 +148,11 @@ it. Do not replace or modify `aip`, its database, global registrations or defaul
 Do not share its mutable store, auto-import its projects, or redirect clients into
 ai-team. New planning commands use an ai-team namespace, not `aip`.
 
-The global **Plans** board lists owned plans across registered projects and opens their
-exact owning chat. An explicit standalone snapshot import supports retiring `aip` without
+The global **Plans** workspace groups plans by project and opens editable **Board / Plan**
+views in place: status lanes, slice details, the plan document, questions and history.
+Keep unsaved edits when changing views or plans. A separate Open chat action targets the
+exact owner; archived/frozen scope remains enforced by the owned planning service.
+An explicit standalone snapshot import supports retiring `aip` without
 sharing its storage: survey a named database, preview a plan, then approve its import
 into an idle, empty, plan-free chat. Preserve source content, history and provenance;
 leave originals and registrations untouched. Refuse stale previews and duplicates,
