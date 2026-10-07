@@ -25,8 +25,11 @@ On macOS this installs the `ait` CLI and, when the release archive carries one,
 `ai-team.app` into `/Applications`. The `.tar.gz` route carries no quarantine attribute,
 so it launches without a Gatekeeper prompt; a `.dmg` downloaded in a browser does not.
 
-If a matching release archive is unavailable, the script can build from source with a
-Rust toolchain ([rustup.rs](https://rustup.rs)).
+To update, finish active work, save unsaved edits and quit AI Team, then rerun the
+installer above. It updates both the CLI and the macOS app; `ait update` targets only
+the CLI. A failed release download stops rather than silently building only the CLI.
+Explicit `--from-source` builds require a Rust toolchain ([rustup.rs](https://rustup.rs))
+and do not install the desktop app.
 
 ```sh
 ait init      # register this checkout; choose a provider in Settings (local is optional)

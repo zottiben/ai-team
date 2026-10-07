@@ -23,6 +23,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: installer (isolated, both platforms)
+        run: python3 -B -m unittest discover -s install -p '*_test.py'
+
       # Keep this version in sync with rust-toolchain.toml when it is bumped. It cannot
       # be read from that file: the toolchain has to exist before cargo can parse it.
       - uses: dtolnay/rust-toolchain@1.98.1

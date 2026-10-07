@@ -2,12 +2,14 @@
 # Install ai-team: the `ait` binary, and the desktop app on macOS.
 #
 #   curl -fsSL https://zottiben.github.io/ai-team/install.sh | sh
+# AI_TEAM_APP_DIR selects an alternate macOS bundle destination (also used by tests).
 #
 # Then:  ait doctor
 set -eu
 
 REPO="zottiben/ai-team"
 REPO_URL="https://github.com/${REPO}"
+APP_DIR="${AI_TEAM_APP_DIR:-/Applications/ai-team.app}"
 
 say()  { printf '\033[1;36m==>\033[0m %s\n' "$1"; }
 ok()   { printf '\033[32m✓\033[0m %s\n' "$1"; }
@@ -29,7 +31,7 @@ for arg in "$@"; do
     --from-source) from_source=yes ;;
     -h|--help)
       echo "usage: install.sh [--from-source]"
-      echo "  --from-source  build with cargo instead of downloading a release"
+      echo "  --from-source  explicitly build only the CLI with cargo (not the desktop app)"
       exit 0 ;;
     *) die "unknown argument: $arg" ;;
   esac
@@ -44,6 +46,17 @@ else
   BIN_DIR="/usr/local/bin"
 fi
 
+bin_command() {
+  if [ -w "$BIN_DIR" ]; then "$@"; else sudo "$@"; fi
+}
+
+cleanup() {
+  rm -rf "$tmp"
+  [ -z "${app_stage:-}" ] || rm -rf "$app_stage"
+  [ -z "${cli_stage:-}" ] || bin_command rm -f "$cli_stage"
+  # A previous app is recovery evidence, not temporary download content.
+}
+
 # --- prebuilt release -------------------------------------------------------------
 #
 # Preferred, because it needs no Rust toolchain and takes seconds. The frontend is
@@ -56,9 +69,13 @@ install_release() {
   arch=$(uname -m)
   case "$os" in darwin|linux) ;; *) return 1 ;; esac
 
-  version=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null \
-    | grep '"tag_name"' | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
-  [ -n "$version" ] || return 1
+  # The public redirect does not consume the unauthenticated API's tiny quota.
+  latest=$(curl -fsSL -o /dev/null -w '%{url_effective}' "${REPO_URL}/releases/latest") || return 1
+  case "$latest" in
+    "${REPO_URL}/releases/tag/"*) version=${latest##*/} ;;
+    *) warn "unexpected latest-release URL: $latest"; return 1 ;;
+  esac
+  printf '%s\n' "$version" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' || return 1
   num="${version#v}"
   base="${REPO_URL}/releases/download/${version}"
 
@@ -73,55 +90,72 @@ install_release() {
     file="ai-team-v${num}-linux-${larch}.tar.gz"
   fi
 
-  tmp=$(mktemp -d) || return 1
-  trap 'rm -rf "$tmp"' EXIT HUP INT TERM
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/ai-team-install.XXXXXX") || return 1
+  trap cleanup EXIT
+  trap 'exit 1' HUP INT TERM
 
   say "Downloading ai-team ${version}"
   curl -fsSL "${base}/${file}" -o "${tmp}/${file}" || return 1
 
-  # Best effort: only when checksums are published and a hasher exists.
-  if curl -fsSL "${base}/checksums.txt" -o "${tmp}/checksums.txt" 2>/dev/null; then
-    expected=$(grep " ${file}\$" "${tmp}/checksums.txt" | awk '{print $1}')
-    if [ -n "$expected" ]; then
-      if command -v sha256sum >/dev/null 2>&1; then
-        actual=$(sha256sum "${tmp}/${file}" | awk '{print $1}')
-      elif command -v shasum >/dev/null 2>&1; then
-        actual=$(shasum -a 256 "${tmp}/${file}" | awk '{print $1}')
-      else
-        actual=""
-      fi
-      [ -z "$actual" ] || [ "$actual" = "$expected" ] \
-        || die "checksum mismatch for ${file}"
-    fi
+  curl -fsSL "${base}/checksums.txt" -o "${tmp}/checksums.txt" || return 1
+  expected=$(awk -v file="$file" '$2 == file {print $1}' "${tmp}/checksums.txt")
+  [ -n "$expected" ] || die "no published checksum for $file"
+  if command -v sha256sum >/dev/null 2>&1; then
+    actual=$(sha256sum "${tmp}/${file}" | awk '{print $1}')
+  elif command -v shasum >/dev/null 2>&1; then
+    actual=$(shasum -a 256 "${tmp}/${file}" | awk '{print $1}')
+  else
+    die "install sha256sum or shasum before installing a release"
   fi
+  [ "$actual" = "$expected" ] || die "checksum mismatch for $file"
 
   tar xzf "${tmp}/${file}" -C "$tmp" || return 1
+  [ "$("${tmp}/ait" --version)" = "ait $num" ] || die "the downloaded CLI is not $version"
 
-  mkdir -p "$BIN_DIR" 2>/dev/null || true
-  if [ -w "$BIN_DIR" ]; then
-    install -m 0755 "${tmp}/ait" "${BIN_DIR}/ait"
-  else
-    sudo install -m 0755 "${tmp}/ait" "${BIN_DIR}/ait"
+  # Stage both programs before replacing either. An app copy failure must not erase
+  # the working app or leave a newer CLI looking like a successful desktop update.
+  if [ "$os" = darwin ]; then
+    [ -d "${tmp}/ai-team.app" ] || die "the macOS release contains no desktop app"
+    mkdir -p "$(dirname "$APP_DIR")" || return 1
+    app_stage=$(mktemp -d "${APP_DIR}.install.XXXXXX") || return 1
+    cp -R "${tmp}/ai-team.app" "$app_stage/ai-team.app" || return 1
   fi
-  ok "ait installed to ${BIN_DIR}/ait"
-  INSTALLED_AIT="${BIN_DIR}/ait"
+  mkdir -p "$BIN_DIR" 2>/dev/null || bin_command mkdir -p "$BIN_DIR" || return 1
+  [ ! -d "$BIN_DIR/ait" ] || die "$BIN_DIR/ait is a directory"
+  cli_stage=$(bin_command mktemp "$BIN_DIR/.ait.install.XXXXXX") || return 1
+  bin_command install -m 0755 "${tmp}/ait" "$cli_stage" || return 1
 
-  # This marker deliberately outranks stale ~/.cargo install metadata. Without it,
-  # replacing a cargo-installed binary with a release could make a later self-update
-  # rebuild an old clone and silently downgrade the user.
-  mkdir -p "$HOME/.ai-team"
-  printf 'release\n' > "$HOME/.ai-team/install-method"
-
-  # The desktop app, when the archive carries one. `ait ui` works regardless; this is
-  # for people who would rather have it in the Dock.
-  if [ -d "${tmp}/ai-team.app" ]; then
-    rm -rf "/Applications/ai-team.app" 2>/dev/null || true
-    if cp -R "${tmp}/ai-team.app" /Applications/ 2>/dev/null; then
-      ok "ai-team.app installed to /Applications"
-    else
-      warn "could not write /Applications - run 'ait ui' in a browser instead"
+  app_backup=""
+  if [ "$os" = darwin ]; then
+    if [ -e "$APP_DIR" ]; then
+      app_backup=$(mktemp -d "${APP_DIR}.backup.XXXXXX") || return 1
+      mv "$APP_DIR" "$app_backup/ai-team.app" || return 1
+    fi
+    if ! mv "$app_stage/ai-team.app" "$APP_DIR"; then
+      [ -z "$app_backup" ] || mv "$app_backup/ai-team.app" "$APP_DIR" \
+        || die "restore the previous app from $app_backup/ai-team.app"
+      return 1
     fi
   fi
+  if ! bin_command mv -f "$cli_stage" "$BIN_DIR/ait"; then
+    if [ "$os" = darwin ]; then
+      rm -rf "$APP_DIR" || die "the CLI swap failed; previous app is in $app_backup"
+      [ -z "$app_backup" ] || mv "$app_backup/ai-team.app" "$APP_DIR" \
+        || die "restore the previous app from $app_backup/ai-team.app"
+    fi
+    return 1
+  fi
+  cli_stage=""
+  INSTALLED_AIT="${BIN_DIR}/ait"
+  ok "ait installed to $INSTALLED_AIT"
+  if [ "$os" = darwin ]; then
+    ok "ai-team.app installed to $APP_DIR"
+    [ -z "$app_backup" ] || say "Previous app saved in $app_backup"
+  fi
+
+  # Release provenance outranks stale cargo metadata only after both programs land.
+  mkdir -p "$HOME/.ai-team" || return 1
+  printf 'release\n' > "$HOME/.ai-team/install-method" || return 1
   return 0
 }
 
@@ -154,9 +188,7 @@ if [ "$from_source" = yes ]; then
 elif install_release; then
   :
 else
-  # Expected until the first tag is pushed: there is no release to download yet.
-  warn "no prebuilt release for this platform - building from source"
-  install_from_source
+  die "release installation failed; no CLI-only source fallback was attempted. Retry when the release is reachable, or explicitly use --from-source for only the CLI."
 fi
 
 # Prove it runs before claiming success. An installer that reports "done" and leaves an
