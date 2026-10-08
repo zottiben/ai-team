@@ -30,6 +30,7 @@ if (role !== 'verifier') {
   const dir = role === 'frontend' ? 'ui' : 'crates';
   fs.mkdirSync(dir, { recursive: true });
   if (mode !== 'noop') fs.writeFileSync(`${dir}/${key}.txt`, (mode === 'repair' && !args.includes('--session-id')) || (mode === 'siblings' && key === 'S1') ? 'BAD\n' : 'GOOD\n');
+  if (mode === 'review') fs.writeFileSync('crates/review.txt', 'addressed review\n');
   if (mode === 'outside') fs.writeFileSync('outside.txt', 'not approved');
   if (mode === 'staged-only') {
     fs.writeFileSync('crates/staged-only.txt', 'preserve staged-only work\n');

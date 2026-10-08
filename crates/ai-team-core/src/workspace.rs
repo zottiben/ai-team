@@ -65,7 +65,7 @@ fn dirty_reason(worktree: &Path, dirty: &[String]) -> String {
 /// Fetched first, because a local `main` is only as current as the last pull. A fetch
 /// that fails - offline, or a remote asking for credentials nobody is there to type - is
 /// reported rather than fatal: the last fetched copy is still the default branch.
-pub(crate) async fn branch_for_run(worktree: &Path, run_id: i64) -> Result<Branched> {
+pub(crate) async fn branch_for_run(worktree: &Path, run_id: i64, task: &str) -> Result<Branched> {
     let named = git::trunk(worktree).await?;
     let stale = git::fetch(worktree, &named.name)
         .await
@@ -74,7 +74,7 @@ pub(crate) async fn branch_for_run(worktree: &Path, run_id: i64) -> Result<Branc
     // Asked again after the fetch: a repository that had never fetched its default branch
     // has an `origin/main` to start from now.
     let trunk = git::trunk(worktree).await?;
-    let branch = unused_branch(worktree, run_id).await;
+    let branch = unused_branch(worktree, run_id, task).await;
     let sha = git::start_branch(worktree, &branch, &trunk.start_point).await?;
     Ok(Branched {
         branch,
@@ -84,13 +84,13 @@ pub(crate) async fn branch_for_run(worktree: &Path, run_id: i64) -> Result<Branc
     })
 }
 
-/// `ai-team/run-<id>`, or the first free variant of it.
+/// `ai-team/<task>-<id>`, or the first free variant of it.
 ///
 /// A run id is an SQLite rowid, which is reused once the newest row is deleted - so the
 /// branch a deleted run left behind can already have this run's name, and it may hold
 /// somebody's work. Never reset: pick the next name instead.
-async fn unused_branch(worktree: &Path, run_id: i64) -> String {
-    let base = format!("ai-team/run-{run_id}");
+async fn unused_branch(worktree: &Path, run_id: i64, task: &str) -> String {
+    let base = format!("ai-team/{}-{run_id}", crate::util::task_slug(task));
     if !git::branch_exists(worktree, &base).await {
         return base;
     }
@@ -241,21 +241,27 @@ mod tests {
         // Merged on the remote since this checkout last fetched.
         let merged = commit(&origin, "merged-since");
 
-        let branched = branch_for_run(&checkout, 7).await.unwrap();
+        let branched = branch_for_run(&checkout, 7, "Upgrade a dependency")
+            .await
+            .unwrap();
 
-        assert_eq!(branched.branch, "ai-team/run-7");
+        assert_eq!(branched.branch, "ai-team/upgrade-a-dependency-7");
         assert_eq!(branched.from, "origin/main");
         assert_eq!(branched.sha, merged);
         assert_eq!(branched.stale, None);
         assert_eq!(
             git::current_branch(&checkout).await.as_deref(),
-            Some("ai-team/run-7")
+            Some("ai-team/upgrade-a-dependency-7")
         );
         // Nothing of the last plan comes along.
         assert!(!checkout.join("last-plan-work").exists());
         // No upstream, so a bare `git push` from here is not aimed at main.
         let upstream = std::process::Command::new("git")
-            .args(["rev-parse", "--abbrev-ref", "ai-team/run-7@{upstream}"])
+            .args([
+                "rev-parse",
+                "--abbrev-ref",
+                "ai-team/upgrade-a-dependency-7@{upstream}",
+            ])
             .current_dir(&checkout)
             .output()
             .unwrap();
@@ -263,8 +269,10 @@ mod tests {
 
         // A reused run id never resets the branch a deleted run left behind.
         git_in(&checkout, &["checkout", "-q", "ai-team/last-plan"]);
-        let again = branch_for_run(&checkout, 7).await.unwrap();
-        assert_eq!(again.branch, "ai-team/run-7-2");
+        let again = branch_for_run(&checkout, 7, "Upgrade a dependency")
+            .await
+            .unwrap();
+        assert_eq!(again.branch, "ai-team/upgrade-a-dependency-7-2");
     }
 
     #[tokio::test]
@@ -276,7 +284,9 @@ mod tests {
             &["remote", "set-url", "origin", "/nowhere/that/exists"],
         );
 
-        let branched = branch_for_run(&checkout, 3).await.unwrap();
+        let branched = branch_for_run(&checkout, 3, "Upgrade a dependency")
+            .await
+            .unwrap();
 
         assert!(branched.stale.is_some());
         assert_eq!(branched.from, "origin/main");
@@ -291,7 +301,9 @@ mod tests {
         git_in(dir.path(), &["checkout", "-qb", "feature"]);
         commit(dir.path(), "feature-work");
 
-        let branched = branch_for_run(dir.path(), 1).await.unwrap();
+        let branched = branch_for_run(dir.path(), 1, "Upgrade a dependency")
+            .await
+            .unwrap();
 
         assert_eq!(branched.from, "main");
         assert_eq!(branched.sha, first);
@@ -375,7 +387,9 @@ mod tests {
         }
 
         // A new run: a fresh branch, and its plan created by name, based on the trunk.
-        branch_for_run(&checkout, 9).await.unwrap();
+        branch_for_run(&checkout, 9, "Upgrade a dependency")
+            .await
+            .unwrap();
         let trunk = git::trunk(&checkout).await.unwrap();
         let plan = planner
             .create("Export the ledger as CSV", Some(&trunk.name))

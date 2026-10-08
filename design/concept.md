@@ -35,6 +35,9 @@ A chat is a durable user workspace, **not** a run or a Pi session. It survives
 settled turns, retries, completed runs and entry into team execution. Runs and
 agent sessions are execution records beneath it. Returning to a chat restores its
 history and working context; switching projects never silently redirects a reply.
+Archived chats remain hidden by default. A Show archived chats control in the sidebar
+reveals them in their original project, marked Archived. Viewing never restores one;
+an explicit Restore chat action retains its history and starts no work.
 
 Use restrained hierarchy, typography, spacing and semantic light/dark tokens in
 line with the reference app. Inspect working, approval, error and review states,
@@ -56,6 +59,23 @@ During a solo turn, the composer's primary action is a pulsing Stop button. Typi
 replaces it with the send arrow to queue a follow-up; Stop and steer remains an explicit
 choice. Empty Enter never stops a turn. Honour reduced motion and retain exact-attempt
 interrupted recovery rather than silently retrying work.
+
+Completed turns and required human actions stand apart from tool chatter, with a
+persistent outcome beside the composer and a highlighted final assistant response.
+Plain final questions can receive a response cue; that is presentation only, never
+execution, verification or publication authority. Completion does not imply verification.
+Reply focuses the existing draft; review/approval links open the exact chat's controls.
+
+The checkout chooser separates existing checkouts from approved AWT setup, with room
+for readable paths, full-width controls and aligned consent. Switching these views or
+closing the chooser preserves branch drafts and uncertain setup identity; navigation
+alone never acquires a worktree, starts a model or transfers checkout ownership.
+
+New run and approved team-slice branches put a bounded task description before their
+uniqueness suffix, rather than exposing only run/slice IDs. Naming neither commits nor
+publishes work. Existing branches and recorded approval/lease identities are not renamed
+or reset; a setup created before any task is known still needs a user-supplied branch name
+if its default workspace label is unsuitable.
 
 The chat's command panels contain:
 - the plan, questions, approvals and evidence-backed progress;
@@ -104,6 +124,22 @@ Rust supervises execution, routes team work, manages worktrees and enforces poli
 An agent does not become the process supervisor by spawning its own sibling seats.
 Retain trustworthy event streaming, interrupted-turn recovery, budget snapshots,
 verification evidence and human-controlled publishing while changing the UX.
+Model-turn counts are evidence, not execution limits: solo, planner and implementation
+agents can legitimately require long investigations. Retire the old turn cap everywhere,
+including its settings; retain separate configured token/time budgets and Stop.
+
+### Application updates
+
+Desktop checks are read-only and periodic, with a visible offer and a shared CLI/desktop
+installation service. Human approval pins the release and concrete program destinations;
+never install automatically, create a shadow CLI, request background sudo or stop agents.
+Ambiguous CLI copies are not guessed, and a global installer marker does not establish
+ownership of package-managed programs. Legacy broken-app recovery must not bypass approval.
+Stage verified programs, back up both owned databases and configuration/auth state, and
+fence writes across processes. Active or uncertain work refuses the update. Keep recovery
+evidence after an uncertain swap; inspection checks bytes rather than replaying installation.
+Installed files and the running process are different: replacing files requires a restart,
+not a page reload. Package-managed Linux desktops remain with their package distribution.
 
 ### Review and explicit delivery
 
@@ -113,11 +149,36 @@ push and draft-PR creation against exact destinations. Local integration is clea
 fast-forward only; divergent or dirty work is preserved rather than stashed or reset.
 Manual policy remains a veto, and no delivery action implicitly performs the next one.
 
-Retained work stays protected when ownership is uncertain. Inspection and findings do not
-restart models or grant delivery approval. An interrupted delivery is inspected only after
+Submitting an inline Review comment explicitly starts its repair, without copying feedback
+into the composer. Solo feedback reserves that exact checkout for one turn; team feedback
+creates a new attempt on the same owned slice and branch, starting at the reviewed commit.
+The original verification is unchanged. Preserve the original maker and scope, recheck
+policy/anchors/checkout generation, then rerun gates and independent verification against
+the feedback. An older draft without an approved scope receipt requires a new reviewed
+build; do not infer its original scope from a subsequently edited plan. A stopped/failed
+repair is not automatically retried, and lost-response replays never dispatch twice.
+
+Retained work stays protected when ownership is uncertain. Inspection and historical
+recorded-only findings do not restart models; submitting a repair never grants delivery approval. An interrupted delivery is inspected only after
 its command groups drain; a missing remote result may still be delayed. An explicit,
 reasoned acknowledgement can keep the inspected state without certifying success, changing
 files/refs, returning leases or retrying publication.
+
+A direct human message in a chat can itself be the approval to push the branch being
+worked on, in solo and team mode alike, so "commit and push and I'll open the PR" needs no
+second click. Only an authenticated direct send issues it, only when the whole message
+reads as an explicit instruction, and never for quoted, negated, conditional, scheduled,
+queued, reviewed or imported text - anything else is asked about rather than guessed. The
+authority is one chat, one request, one workspace generation, one branch, one origin and
+one supervising process; it is not permission to open a pull request, merge, tag, force,
+or publish a default branch or a reserved protected branch name. A solo agent commits and asks the host to
+publish its exact commit; the host does it after the turn drains, through the same
+journalled executor, and reports the real result in the conversation. A team message
+publishes one exact owned draft and starts no planning. Multiple independent drafts require
+an exact selection in Changes; an older attempt of the same slice cannot silently replace
+a newer one. Stop, archive, mode/checkout changes and later turns durably revoke unused
+permission, and a failed grant admission rolls back the turn too. Nothing is ever pushed unasked,
+replays do not publish twice, and an uncertain outcome is inspected rather than retried.
 
 ### Project onboarding and tooling
 

@@ -223,6 +223,25 @@ impl Harness {
         session
     }
 
+    async fn long_running(&mut self) {
+        self.mode("long-running");
+        let node_id = self
+            .complete(
+                self.first,
+                "Ground, investigate and plan a substantial feature",
+            )
+            .await;
+        let node = self.store.node_run(node_id).unwrap();
+        assert_eq!(node.turns, 65);
+        assert_eq!(node.status, NodeStatus::Done, "{:?}", node.blocked_reason);
+        assert!(self
+            .store
+            .chat(self.first)
+            .unwrap()
+            .active_node_id
+            .is_none());
+    }
+
     async fn cancellation(&mut self) {
         self.mode("slow");
         let slow = self.submit(self.first, "Run a slow check");
@@ -416,6 +435,7 @@ async fn conversations_continue_stop_recover_and_keep_other_chats_and_standalone
         "catalogue config should be temporary"
     );
     let session = harness.continuation().await;
+    harness.long_running().await;
     harness.cancellation().await;
     harness.isolation_and_recovery(&session).await;
     harness.failed_outcomes().await;

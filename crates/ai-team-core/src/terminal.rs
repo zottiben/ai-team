@@ -67,6 +67,9 @@ struct Session {
 struct Ring {
     bytes: Vec<u8>,
     dropped: u64,
+    drained: bool,
+    settled: bool,
+    update_permit: Option<crate::UpdatePermit>,
 }
 
 impl Ring {
@@ -123,6 +126,26 @@ pub struct Listed {
 impl Terminals {
     pub fn new() -> Terminals {
         Terminals::default()
+    }
+
+    /// Keep updates out of a terminal's lifetime, including inherited output pipes.
+    /// Finished sessions may retain scrollback without retaining the permit.
+    pub fn protect_update(&self, id: u64, permit: crate::UpdatePermit) -> Result<()> {
+        let sessions = self
+            .sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let session = sessions
+            .get(&id)
+            .ok_or_else(|| Error::invalid("terminal not found"))?;
+        let mut output = session
+            .output
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !output.drained || !output.settled {
+            output.update_permit = Some(permit);
+        }
+        Ok(())
     }
 
     /// Open a shell in a worktree.
@@ -227,6 +250,7 @@ impl Terminals {
         }
         {
             let done = Arc::clone(&done);
+            let output = Arc::clone(&output);
             std::thread::spawn(move || {
                 let status = child
                     .wait()
@@ -236,6 +260,15 @@ impl Terminals {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner) =
                     Some(status.unwrap_or(-1));
+                if status.is_some() {
+                    let mut output = output
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    output.settled = true;
+                    if output.drained {
+                        output.update_permit.take();
+                    }
+                }
             });
         }
 
@@ -361,7 +394,16 @@ fn pump(mut reader: Box<dyn Read + Send>, output: &Arc<Mutex<Ring>>) {
     let mut buffer = [0u8; 8 * 1024];
     loop {
         match reader.read(&mut buffer) {
-            Ok(0) | Err(_) => return,
+            Ok(0) | Err(_) => {
+                let mut output = output
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                output.drained = true;
+                if output.settled {
+                    output.update_permit.take();
+                }
+                return;
+            }
             Ok(read) => output
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)

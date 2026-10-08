@@ -106,16 +106,33 @@ impl crate::Store {
             {
                 return Err(crate::Error::invalid("awt returned a dirty worktree; keep it for inspection rather than resetting it"));
             }
-            crate::neighbours::git::prepare_new_branch(
-                &path,
-                approved
-                    .branch
-                    .as_deref()
-                    .ok_or_else(|| crate::Error::invalid("this approval has no draft branch"))?,
-                &control.base_sha,
-                watch.clone().wait(),
-            )
-            .await?;
+            let branch = approved
+                .branch
+                .as_deref()
+                .ok_or_else(|| crate::Error::invalid("this approval has no draft branch"))?;
+            if self.chat_build_is_review(approved.run_id)? {
+                let tip = super::execution::git::text(
+                    &path,
+                    &["rev-parse", "--verify", &format!("refs/heads/{branch}")],
+                    &watch,
+                )
+                .await?;
+                if tip != control.base_sha {
+                    return Err(crate::Error::invalid(
+                        "the reviewed draft branch moved; retain this lease without resetting it",
+                    ));
+                }
+                super::execution::git::text(&path, &["checkout", "--quiet", branch], &watch)
+                    .await?;
+            } else {
+                crate::neighbours::git::prepare_new_branch(
+                    &path,
+                    branch,
+                    &control.base_sha,
+                    watch.clone().wait(),
+                )
+                .await?;
+            }
             self.claim_chat_build_slice(control, key)
         };
         let result = result.await;

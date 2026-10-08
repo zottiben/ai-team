@@ -9,6 +9,7 @@ mod import_report;
 mod import_source;
 mod library;
 mod results;
+pub(super) mod review;
 mod writes;
 
 use std::path::{Path, PathBuf};

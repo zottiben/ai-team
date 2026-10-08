@@ -76,6 +76,13 @@ fn run() -> Result<()> {
             // update from installing the CLI into `ai-team.app` and leaving an app that
             // launches, prints `--help` to nobody, and exits.
             host: ai_team_core::Host::Desktop,
+            updates: match ai_team_core::UpdateManager::discover(ai_team_core::Host::Desktop) {
+                Ok(updates) => updates,
+                Err(error) => {
+                    eprintln!("updates unavailable: {error}");
+                    ai_team_core::UpdateManager::default()
+                }
+            },
             ..Default::default()
         };
         match Server::bind(options).await {

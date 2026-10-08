@@ -51,11 +51,14 @@ pub(crate) enum Command {
     /// Reminders, the idea inbox, and runs scheduled for later.
     #[command(subcommand)]
     Remind(RemindCommand),
-    /// Replace this binary with the latest release.
+    /// Update the installed CLI and companion macOS desktop app.
     Update {
         /// Say what is available without installing it.
         #[arg(long)]
         check: bool,
+        /// Inspect an interrupted update without replaying installation.
+        #[arg(long, conflicts_with = "check")]
+        inspect: bool,
     },
     /// Check the install: paths, the machine profile, and the embedded bundle.
     Doctor,
@@ -189,7 +192,7 @@ pub(crate) struct RunArgs {
 
     /// Work on the default branch itself instead of a fresh branch off it.
     ///
-    /// A run normally puts its checkout on a new `ai-team/run-<id>` branch cut from
+    /// A run normally puts its checkout on a task-named `ai-team/<task>-<id>` branch cut from
     /// origin's default branch, and never lands work on main/master. This is the one way
     /// past that, for this run only, from a checkout that has the default branch checked
     /// out.
@@ -269,10 +272,6 @@ pub(crate) struct TeamEditArgs {
     /// Wall-clock ceiling for one seat's turn, in seconds. 0 removes it.
     #[arg(long)]
     pub(crate) budget_seconds_node: Option<i64>,
-
-    /// How many model turns one seat may take. 0 removes the cap.
-    #[arg(long)]
-    pub(crate) max_turns_node: Option<i64>,
 
     /// How many times a failed seat may be repaired before `on-failure` applies.
     #[arg(long)]

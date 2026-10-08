@@ -15,6 +15,7 @@ use crate::{error::Result, state::AppState};
 pub(crate) fn routes() -> Router<AppState> {
     Router::new()
         .route("/chats/{id}/changes", get(changes))
+        .route("/chats/{id}/review-fix", post(review_fix))
         .route("/chats/{id}/checkout", get(checkout))
         .route("/chats/{id}/checkout/preview", post(checkout_preview))
         .route("/chats/{id}/checkout/finding", post(checkout_finding))
@@ -31,6 +32,32 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/chats/{id}/delivery/inspect", post(inspect))
         .route("/chats/{id}/delivery/acknowledge", post(acknowledge))
 }
+async fn review_fix(
+    State(state): State<AppState>,
+    Path(chat): Path<i64>,
+    Json(input): Json<ai_team_core::chat_review::ReviewRequest>,
+) -> Result<Json<ai_team_core::chat_review::ReviewSubmission>> {
+    let db = state.database_path()?;
+    let mut store = Store::open(&db)?;
+    let receipt = ai_team_core::chat_review::submit(
+        &mut store,
+        chat,
+        &input,
+        &ai_team_core::ModelRegistry::load()?,
+    )
+    .await?;
+    if receipt.turn.started {
+        if let Some(start) = receipt.build.clone() {
+            crate::chat_teams::watch(db.clone(), chat, start.run_id, async move {
+                ai_team_core::drive_chat_team_build(&db, start).await
+            });
+        } else {
+            crate::chats::spawn(state, db, chat, receipt.turn.node_id, false);
+        }
+    }
+    Ok(Json(receipt))
+}
+
 async fn checkout(
     State(state): State<AppState>,
     Path(id): Path<i64>,

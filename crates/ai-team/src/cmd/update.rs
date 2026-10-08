@@ -1,70 +1,66 @@
-//! `ait update` - replace this binary with the latest release.
+//! One update service for the CLI and the desktop window.
 
-use ai_team_core::{Host, Method, Result, Step};
+use ai_team_core::{Host, Method, Result, UpdateManager};
 
-pub(crate) async fn run(check_only: bool) -> Result<()> {
-    let available = ai_team_core::check_update().await;
-
-    println!("installed  {}", available.current);
-    match &available.latest {
-        Some(latest) => println!("latest     {latest}"),
-        None => println!("latest     could not check"),
+pub(crate) async fn run(check_only: bool, inspect: bool) -> Result<()> {
+    let updates = UpdateManager::discover(Host::Cli)?;
+    if inspect {
+        let result = updates.inspect().await?;
+        println!("{}\nBackup: {}", result.detail, result.backup.display());
+        return Ok(());
     }
+    let status = updates.check(true).await;
+    println!("running    {}", status.current);
     println!(
-        "installed by {}",
-        match available.method {
-            Method::Release => "the release installer",
-            Method::Source => "cargo, from source",
-            Method::Unknown => "something else",
-        }
+        "latest     {}",
+        status.latest.as_deref().unwrap_or("could not check")
     );
-
-    if let Some(blocked) = &available.blocked {
-        println!("\n{blocked}");
-        return Ok(());
-    }
-    if !available.can_update {
-        println!("\nAlready up to date.");
-        return Ok(());
-    }
-
-    let latest = available.latest.clone().unwrap_or_default();
-    if check_only {
-        println!("\n{latest} is available. Run `ait update` to install it.");
-        return Ok(());
-    }
-
-    if available.method == Method::Source {
-        // Rebuilding a clone is cargo's job and it needs the source tree, which this
-        // binary has no reliable way to find - `cargo install` from the repository is the
-        // honest instruction rather than a guess at where somebody keeps their checkout.
-        println!("\nThis copy was built from source. Update it with:");
-        println!("  cargo install --git https://github.com/zottiben/ai-team ai-team --locked");
-        return Ok(());
-    }
-
-    // The path of the binary actually running, so an update replaces *this* one rather
-    // than whichever `ait` happens to come first on PATH.
-    let binary = std::env::current_exe()
-        .map_err(|error| ai_team_core::Error::invalid(format!("where am I? {error}")))?;
-
-    println!("\nUpdating to {latest}…");
-    // This is the CLI saying so, not a guess from the path: the same updater also runs
-    // inside the desktop app, where installing `ait` would replace the app with it.
-    ai_team_core::apply_update(&latest, &binary, Host::Cli, |step| {
+    for target in &status.targets {
         println!(
-            "  {}",
-            match step {
-                Step::Checking => "checking",
-                Step::Downloading => "downloading",
-                Step::Verifying => "verifying",
-                Step::Replacing => "replacing",
-                Step::Done => "done",
-            }
+            "{}  {}  {}",
+            target.name,
+            target.version.as_deref().unwrap_or("not installed"),
+            target.path.display()
         );
-    })
-    .await?;
-
-    println!("\nUpdated to {latest}. Restart anything already running.");
+    }
+    if let Some(reason) = status.blocked {
+        println!("\n{reason}");
+        return if check_only {
+            Ok(())
+        } else {
+            Err(ai_team_core::Error::invalid(reason))
+        };
+    }
+    if !status.can_update {
+        println!("\nAll listed programs are up to date.");
+        if status.state == ai_team_core::UpdateState::Restart {
+            println!("Restart AI Team to load the updated files.");
+        }
+        return Ok(());
+    }
+    if check_only {
+        println!("\nRun `ait update` to update the listed programs together.");
+        return Ok(());
+    }
+    if status.method == Method::Source {
+        println!("\nReplacing the local build with the published release; no source rebuild.");
+    }
+    let version = status
+        .latest
+        .ok_or_else(|| ai_team_core::Error::invalid("no release was checked"))?;
+    let approval = status
+        .approval
+        .ok_or_else(|| ai_team_core::Error::invalid("no installation was reviewed"))?;
+    println!("\nUpdating listed programs to {version}… Active work will not be stopped.");
+    let result = updates.apply(&version, &approval).await?;
+    println!(
+        "\nUpdated to {}. Backup: {}",
+        result.version,
+        result.backup.display()
+    );
+    for warning in result.warnings {
+        eprintln!("{warning}");
+    }
+    println!("Save unsaved edits, quit and reopen AI Team. Existing windows keep running their old version until restarted.");
     Ok(())
 }

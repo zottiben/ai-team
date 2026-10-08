@@ -19,7 +19,7 @@ default-members = [
 ]
 
 [workspace.package]
-version = "0.7.5"
+version = "0.7.6"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/zottiben/ai-team"
@@ -33,6 +33,7 @@ anyhow = "1"
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+semver = "1"
 toml = "0.9"
 clap = { version = "4", features = ["derive", "env"] }
 axum = "0.8"
@@ -46,7 +47,7 @@ rustix = { version = "1", features = ["process", "fs"] }
 # nothing else, and a system libsqlite3 of unknown vintage is exactly the kind of
 # per-machine difference that produces a bug report nobody can reproduce.
 # Match the pinned planner engine: Cargo permits only one libsqlite3-sys links owner.
-rusqlite = { version = "0.37", features = ["bundled"] }
+rusqlite = { version = "0.37", features = ["bundled", "backup"] }
 ai-planner-core = { git = "https://github.com/zottiben/ai-planner", rev = "de4902eddd0632692dd3678c4bfc556aabcb238e", default-features = false }
 ai-toolbox-core = { git = "https://github.com/zottiben/ai-toolbox", rev = "90659e82f0d040315ff99cfbd765d8798eb3e085" }
 time = { version = "0.3", features = ["formatting", "parsing", "macros"] }

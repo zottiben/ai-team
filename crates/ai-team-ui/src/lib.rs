@@ -23,6 +23,7 @@ mod plan_library;
 pub mod plan_mcp;
 mod state;
 mod toolbox;
+mod updates;
 
 use std::net::{Ipv4Addr, SocketAddr};
 
@@ -79,6 +80,8 @@ pub struct ServeOptions {
     /// is. It defaults to the CLI because that is the safe half: an update that installs
     /// `ait` over the desktop app leaves an app that will not open.
     pub host: ai_team_core::Host,
+    /// Production entry points opt in; fixture servers never discover real installations.
+    pub updates: ai_team_core::UpdateManager,
 }
 
 /// Bound, but not yet serving.
@@ -101,7 +104,7 @@ impl Server {
             Some(t) if !t.trim().is_empty() => t,
             _ => auth::mint_token()?,
         };
-        let mut state = AppState::new(token.as_str())
+        let mut state = AppState::for_server(token.as_str(), options.updates)
             .hosted_by(options.host)
             .watching(
                 options
@@ -118,6 +121,10 @@ impl Server {
             .route_layer(axum::middleware::from_fn_with_state(
                 state.clone(),
                 chats::recover_on_attach,
+            ))
+            .route_layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                updates::admit,
             ))
             .route_layer(axum::middleware::from_fn_with_state(
                 state.clone(),

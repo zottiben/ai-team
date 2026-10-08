@@ -170,6 +170,30 @@ pub async fn drive_chat(db: &Path, chat_id: i64, node_id: i64, recovering: bool)
     result
 }
 
+/// Why this turn should stop, as soon as there is a reason. Its own store connection,
+/// because it is polled beside the running child rather than between its writes.
+async fn stop_reason(observer: Store, chat_id: i64, node_id: i64) -> String {
+    loop {
+        let reason = (|| -> Result<Option<String>> {
+            let current = observer.chat(chat_id)?;
+            if current.active_node_id != Some(node_id) {
+                return Ok(Some("This turn no longer owns the chat.".into()));
+            }
+            if current.stop_requested {
+                return Ok(Some(
+                    "Stopped by you. Your conversation and working files are kept.".into(),
+                ));
+            }
+            Ok(crate::node_may_continue(&observer, node_id)?.map(|limit| limit.reason))
+        })();
+        match reason {
+            Ok(Some(reason)) => return reason,
+            Err(error) => return format!("Stopped because supervision failed: {error}"),
+            Ok(None) => tokio::time::sleep(std::time::Duration::from_millis(200)).await,
+        }
+    }
+}
+
 async fn drive(store: &mut Store, chat_id: i64, node_id: i64, recovering: bool) -> Result<()> {
     let mut chat = store.chat(chat_id)?;
     if let Some(reasoning) = store.scheduled_reasoning(node_id)? {
@@ -228,6 +252,17 @@ async fn drive(store: &mut Store, chat_id: i64, node_id: i64, recovering: bool) 
         run.prompt
     };
     let prompt = format!("{}{prompt}", store.chat_turn_context(chat_id, node_id)?);
+    // Read here rather than carried from the send path: a grant the chat no longer holds
+    // must not reach the seat as a tool, even on a resumed attempt of the same turn.
+    if !recovering || node.session_id.is_none() {
+        if let Some(review) = store.chat_review_for_node(chat_id, node_id)? {
+            if let crate::chat_review::Review::Checkout { finding } = review.review {
+                crate::chat_changes::checkout::validate_finding_snapshot(store, chat_id, &finding)
+                    .await?;
+            }
+        }
+    }
+    let publication = store.chat_push_grant_for_node(chat_id, node_id)?.is_some();
     let turn = crate::pi::conversation_turn(
         &chat,
         &node,
@@ -235,29 +270,9 @@ async fn drive(store: &mut Store, chat_id: i64, node_id: i64, recovering: bool) 
         &registry.context_sources(),
         prompt,
         store.path(),
+        publication,
     )?;
-    let observer = Store::open(store.path())?;
-    let stop = async move {
-        loop {
-            let reason = (|| -> Result<Option<String>> {
-                let current = observer.chat(chat_id)?;
-                if current.active_node_id != Some(node_id) {
-                    return Ok(Some("This turn no longer owns the chat.".into()));
-                }
-                if current.stop_requested {
-                    return Ok(Some(
-                        "Stopped by you. Your conversation and working files are kept.".into(),
-                    ));
-                }
-                Ok(crate::node_may_continue(&observer, node_id)?.map(|limit| limit.reason))
-            })();
-            match reason {
-                Ok(Some(reason)) => return reason,
-                Err(error) => return format!("Stopped because supervision failed: {error}"),
-                Ok(None) => tokio::time::sleep(std::time::Duration::from_millis(200)).await,
-            }
-        }
-    };
+    let stop = stop_reason(Store::open(store.path())?, chat_id, node_id);
     if let Some(limit) = crate::node_may_continue(store, node_id)? {
         return Err(Error::invalid(limit.reason));
     }

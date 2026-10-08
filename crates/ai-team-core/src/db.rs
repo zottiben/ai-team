@@ -147,6 +147,21 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
         "AWT workspace setup",
         include_str!("migrations/034_workspace_setup.sql"),
     ),
+    (
+        35,
+        "installed application update",
+        include_str!("migrations/035_app_update.sql"),
+    ),
+    (
+        36,
+        "explicit chat push authority",
+        include_str!("migrations/036_chat_push_grant.sql"),
+    ),
+    (
+        37,
+        "submitted review repairs",
+        include_str!("migrations/037_chat_review_requests.sql"),
+    ),
 ];
 
 /// The number of `v_` views the schema ships. Asserted in tests, because a view silently
@@ -174,6 +189,7 @@ impl Db {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
+        let _permit = crate::update::fence::shared(path)?;
         let conn = Connection::open(path)?;
         configure(&conn)?;
         let mut db = Db {
@@ -211,9 +227,19 @@ impl Db {
     /// concurrent writer waits on `busy_timeout` instead of failing halfway through a
     /// transaction with `SQLITE_BUSY`.
     pub fn write<T>(&mut self, f: impl FnOnce(&Transaction<'_>) -> Result<T>) -> Result<T> {
+        let _permit = crate::update::fence::shared(&self.path)?;
+        self.write_update(f)
+    }
+
+    /// Only the updater may write while it owns the exclusive installation fence.
+    pub(crate) fn write_update<T>(
+        &mut self,
+        f: impl FnOnce(&Transaction<'_>) -> Result<T>,
+    ) -> Result<T> {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        crate::store::update::check_writer(&tx)?;
         let out = f(&tx)?;
         tx.commit()?;
         Ok(out)

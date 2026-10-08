@@ -17,11 +17,24 @@ use std::{
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Action {
-    Stage { path: String },
-    Unstage { path: String },
-    Commit { message: String },
+    Stage {
+        path: String,
+    },
+    Unstage {
+        path: String,
+    },
+    Commit {
+        message: String,
+    },
     Push,
     PullRequest,
+    /// The person's own explicit instruction in chat, publishing the branch being worked
+    /// on rather than this panel's synthetic checkout-SHA ref. Older `Push` receipts keep
+    /// the destination they were approved against; nothing retargets them.
+    PushBranch {
+        branch: String,
+        commit: String,
+    },
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Snapshot {
@@ -52,6 +65,7 @@ pub struct Operation {
 #[derive(Debug, Serialize)]
 pub struct State {
     pub workspace: String,
+    pub workspace_epoch: i64,
     pub head: Option<String>,
     pub branch: Option<String>,
     pub fingerprint: String,
@@ -82,7 +96,8 @@ pub struct Inspection {
 }
 
 pub async fn state(store: &mut Store, chat: i64) -> Result<State> {
-    let workspace = store.chat(chat)?.workspace_path;
+    let current = store.chat(chat)?;
+    let workspace = current.workspace_path;
     let repo = Path::new(&workspace);
     let head = checkout_head(repo).await?;
     let branch = crate::current_branch(repo).await;
@@ -141,6 +156,7 @@ pub async fn state(store: &mut Store, chat: i64) -> Result<State> {
     hash_untracked(repo, &untracked, &mut hash)?;
     Ok(State {
         workspace,
+        workspace_epoch: current.workspace_epoch,
         head,
         branch,
         fingerprint: format!("{:x}", hash.finalize()),
@@ -237,7 +253,8 @@ fn policy(store: &Store, chat: i64, action: &Action) -> Result<()> {
     let c = store.chat(chat)?;
     if let Some(team) = store.project(c.project_id)?.team_id {
         let d = store.team(team)?.delivery;
-        if matches!(action, Action::Push) && d.push == DeliveryPolicy::Manual
+        if matches!(action, Action::Push | Action::PushBranch { .. })
+            && d.push == DeliveryPolicy::Manual
             || matches!(action, Action::PullRequest) && d.pr == DeliveryPolicy::Manual
         {
             return Err(Error::invalid(
@@ -253,6 +270,11 @@ pub async fn preview(
     fingerprint: &str,
     action: Action,
 ) -> Result<Operation> {
+    if matches!(action, Action::PushBranch { .. }) {
+        return Err(Error::invalid(
+            "a working-branch push is authorised by your own message in this chat, not by this panel",
+        ));
+    }
     store.checkout_available(chat)?;
     policy(store, chat, &action)?;
     let s = state(store, chat).await?;
@@ -300,12 +322,160 @@ pub async fn preview(
         },
     )
 }
+/// Build the operation one explicit human push instruction authorised (`chat_push`).
+///
+/// Everything the grant claimed is resolved again here, against the real checkout, and
+/// `checkout_available` refuses while anything is still working in it - which is why the
+/// solo path waits for its turn's process group to drain before calling this.
+pub(crate) async fn authorized_push(
+    store: &mut Store,
+    grant: &crate::chat_push::PushGrant,
+) -> Result<Operation> {
+    let chat = grant.chat_id;
+    let branch = &grant.branch;
+    let commit = grant
+        .commit_sha
+        .as_deref()
+        .ok_or_else(|| Error::invalid("the push has no pinned commit"))?;
+    let origin_url = &grant.origin_url;
+    let action = Action::PushBranch {
+        branch: branch.clone(),
+        commit: commit.to_string(),
+    };
+    store.checkout_available(chat)?;
+    policy(store, chat, &action)?;
+    let s = state(store, chat).await?;
+    if s.workspace != grant.workspace_path
+        || s.workspace_epoch != grant.workspace_epoch
+        || (grant.mode == crate::ChatMode::Single
+            && (s.branch.as_deref() != Some(branch.as_str()) || s.head.as_deref() != Some(commit)))
+    {
+        return Err(Error::invalid(
+            "the approved working checkout or branch changed; ask again",
+        ));
+    }
+    let remote = publication(Path::new(&s.workspace), chat, s.head.as_deref(), &action).await?;
+    if remote.as_ref().is_none_or(|r| &r.url != origin_url) {
+        return Err(Error::invalid(
+            "origin changed since you asked for this push; ask again",
+        ));
+    }
+    store.record_checkout_preview(
+        chat,
+        &Snapshot {
+            workspace: s.workspace,
+            head: s.head,
+            branch: s.branch,
+            fingerprint: s.fingerprint,
+            action,
+            remote,
+        },
+    )
+}
+
+/// Whether this chat's team allows ai-team to push at all. Manual is a veto, and the
+/// person hears it when they ask rather than after a turn has been spent on it.
+pub(crate) fn push_allowed(store: &Store, chat: i64) -> Result<()> {
+    policy(store, chat, &Action::Push)
+}
+
+/// Branch names an explicit chat push may never resolve to.
+const PROTECTED: &[&str] = &[
+    "main",
+    "master",
+    "trunk",
+    "develop",
+    "development",
+    "production",
+    "prod",
+    "release",
+    "stable",
+];
+
+/// Refuse a default or protected branch rather than deciding what the person meant.
+///
+/// A remote whose default branch cannot be read is refused too: "probably not the default"
+/// is not a thing to publish on.
+pub(crate) async fn publishable_branch(repo: &Path, url: &str, branch: &str) -> Result<()> {
+    if branch.is_empty()
+        || branch.starts_with('-')
+        || branch.contains("..")
+        || branch.chars().any(|c| c.is_whitespace() || c.is_control())
+    {
+        return Err(Error::invalid(
+            "this checkout's branch name cannot be published safely; use your own Git tools",
+        ));
+    }
+    if PROTECTED
+        .iter()
+        .any(|name| branch.eq_ignore_ascii_case(name))
+    {
+        return Err(Error::invalid(format!(
+            "'{branch}' is a protected branch name; an explicit chat push publishes a working branch only"
+        )));
+    }
+    let text = git(repo, &["ls-remote", "--symref", url, "HEAD"]).await?;
+    let default = text
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("ref: refs/heads/"))
+        .and_then(|rest| rest.split('\t').next())
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| {
+            Error::invalid(
+                "the remote does not report a default branch, so this push cannot be shown to be safe; publish it with your own Git tools",
+            )
+        })?;
+    if branch == default {
+        return Err(Error::invalid(format!(
+            "'{branch}' is this repository's default branch; an explicit chat push publishes a working branch only"
+        )));
+    }
+    Ok(())
+}
+
 async fn publication(
     repo: &Path,
     chat: i64,
     head: Option<&str>,
     action: &Action,
 ) -> Result<Option<Remote>> {
+    if let Action::PushBranch { branch, commit } = action {
+        let url = origin(repo).await?;
+        publishable_branch(repo, &url, branch).await?;
+        // The commit may have been made in a lease of this repository. It still has to be
+        // an object this checkout can see, and still be on the branch it was approved
+        // for: a branch reset after the approval is not the work that was approved.
+        git(repo, &["cat-file", "-e", &format!("{commit}^{{commit}}")]).await?;
+        let tip = git(
+            repo,
+            &["rev-parse", "--verify", &format!("refs/heads/{branch}")],
+        )
+        .await?;
+        if tip.trim() != commit {
+            return Err(Error::invalid(
+                "the approved commit is no longer the exact branch tip; ask again",
+            ));
+        }
+        if let Some(found) = remote_head(repo, &url, branch).await? {
+            if &found != commit {
+                git(repo, &["merge-base", "--is-ancestor", &found, commit])
+                    .await
+                    .map_err(|_| {
+                        Error::invalid(
+                            "the remote branch holds work this commit does not contain; it will not be overwritten",
+                        )
+                    })?;
+            }
+        }
+        return Ok(Some(Remote {
+            url,
+            branch: branch.clone(),
+            repository: None,
+            base: None,
+            base_sha: None,
+        }));
+    }
     if !matches!(action, Action::Push | Action::PullRequest) {
         return Ok(None);
     }
@@ -415,7 +585,7 @@ async fn execute(s: &Snapshot) -> Result<String> {
                 git(repo, &["rev-parse", "HEAD"]).await?.trim()
             ))
         }
-        Action::Push | Action::PullRequest => publish(s).await,
+        Action::Push | Action::PullRequest | Action::PushBranch { .. } => publish(s).await,
     }
 }
 async fn publish(s: &Snapshot) -> Result<String> {
@@ -424,10 +594,41 @@ async fn publish(s: &Snapshot) -> Result<String> {
         .remote
         .as_ref()
         .ok_or_else(|| Error::invalid("missing approved destination"))?;
-    let head = s
-        .head
-        .as_deref()
-        .ok_or_else(|| Error::invalid("missing approved commit"))?;
+    let head = match &s.action {
+        // The pinned commit, which for a team draft is not this checkout's HEAD.
+        Action::PushBranch { commit, .. } => commit.as_str(),
+        _ => s
+            .head
+            .as_deref()
+            .ok_or_else(|| Error::invalid("missing approved commit"))?,
+    };
+    if let Action::PushBranch { branch, .. } = &s.action {
+        // No force of any kind: the remote itself refuses anything but a fast-forward, so
+        // a branch that moved since the preview loses the push rather than the work.
+        if remote_head(repo, &r.url, branch).await?.as_deref() != Some(head) {
+            git(
+                repo,
+                &[
+                    "-c",
+                    "core.hooksPath=/dev/null",
+                    "push",
+                    "--no-verify",
+                    "--no-follow-tags",
+                    "--recurse-submodules=no",
+                    &r.url,
+                    &format!("{head}:refs/heads/{branch}"),
+                ],
+            )
+            .await?;
+        }
+        if remote_head(repo, &r.url, branch).await?.as_deref() != Some(head) {
+            return Err(Error::invalid("publication could not be confirmed"));
+        }
+        return Ok(format!(
+            "Pushed {head} to {} · {branch}, as you asked in this chat. No pull request was opened and nothing was merged.",
+            r.url
+        ));
+    }
     if matches!(s.action, Action::Push) {
         if remote_head(repo, &r.url, &r.branch).await?.as_deref() != Some(head) {
             git(
@@ -510,7 +711,20 @@ async fn existing_pr(repo: &Path, r: &Remote, head: &str) -> Result<Option<Strin
     Ok(Some(string(&rows[0], "url")?))
 }
 pub async fn finding(store: &mut Store, chat: i64, input: &Finding) -> Result<()> {
+    validate_finding(store, chat, input).await?;
+    store.record_checkout_finding(chat, input)
+}
+
+pub(crate) async fn validate_finding(store: &mut Store, chat: i64, input: &Finding) -> Result<()> {
     store.checkout_available(chat)?;
+    validate_finding_snapshot(store, chat, input).await
+}
+
+pub(crate) async fn validate_finding_snapshot(
+    store: &mut Store,
+    chat: i64,
+    input: &Finding,
+) -> Result<()> {
     let s = state(store, chat).await?;
     if s.fingerprint != input.fingerprint || s.head != input.head {
         return Err(Error::invalid(
@@ -538,7 +752,7 @@ pub async fn finding(store: &mut Store, chat: i64, input: &Finding) -> Result<()
     if !valid {
         return Err(Error::invalid("that diff line no longer exists"));
     }
-    store.record_checkout_finding(chat, input)
+    Ok(())
 }
 async fn drain(store: &mut Store, owner: &Arc<Ownership>) -> Result<()> {
     let id = owner

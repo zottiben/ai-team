@@ -423,7 +423,6 @@ pub struct Guardrails {
     pub budget_tokens_node: Option<i64>,
     pub budget_seconds_run: Option<i64>,
     pub budget_seconds_node: Option<i64>,
-    pub max_turns_node: Option<i64>,
     pub max_repairs: i64,
     pub on_failure: OnFailure,
 }
@@ -438,7 +437,6 @@ impl Default for Guardrails {
             budget_tokens_node: Some(400_000),
             budget_seconds_run: Some(3_600),
             budget_seconds_node: Some(900),
-            max_turns_node: Some(40),
             max_repairs: 2,
             on_failure: OnFailure::Retry,
         }
@@ -533,6 +531,7 @@ pub struct Run {
     /// What one node may spend, snapshotted like the rest.
     pub budget_tokens_node: Option<i64>,
     pub budget_seconds_node: Option<i64>,
+    /// Historical snapshot only. Turn counts no longer impose an execution limit.
     pub max_turns_node: Option<i64>,
     pub on_failure: OnFailure,
     pub blocked_reason: Option<String>,

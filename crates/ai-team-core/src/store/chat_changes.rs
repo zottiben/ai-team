@@ -20,6 +20,10 @@ impl Store {
         Ok(runs)
     }
 
+    pub(crate) fn chat_draft_superseded(&self, chat: i64, run: i64, key: &str) -> Result<bool> {
+        Ok(self.db().conn().query_row("SELECT EXISTS(SELECT 1 FROM chat_review_request WHERE chat_id=?1 AND parent_run_id=?2 AND slice_key=?3)", params![chat,run,key], |row|row.get(0))?)
+    }
+
     pub(crate) fn chat_draft_findings(
         &self,
         chat: i64,

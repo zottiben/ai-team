@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import { ContextConnect } from "./ContextConnect";
 import { SignIn } from "./SignIn";
+import { UpdateDetails, type Updates } from "./Update";
 import {
   setContext,
   setFallback,
@@ -26,7 +27,9 @@ export function Settings({
   theme,
   onTheme,
   onChanged,
+  updates,
 }: {
+  updates?: Updates;
   theme: Theme;
   onTheme: (theme: Theme) => void;
   onChanged: () => void;
@@ -60,7 +63,7 @@ export function Settings({
   };
 
   if (data === null) {
-    return <p className="empty">{problem ?? "Reading your settings…"}</p>;
+    return <div className="settings">{updates && <UpdateDetails updates={updates} />}<p className="empty">{problem ?? "Reading your settings…"}</p></div>;
   }
 
   return (
@@ -69,6 +72,7 @@ export function Settings({
         <h2>Settings</h2>
       </div>
       {problem !== null && <p className="error">{problem}</p>}
+      {updates && <UpdateDetails updates={updates} />}
 
       <section className="settings__group">
         <h3>Models</h3>

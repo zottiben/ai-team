@@ -453,7 +453,7 @@ async fn clean(repo: &Path) -> Result<()> {
     }
     Ok(())
 }
-pub(super) async fn origin(repo: &Path) -> Result<String> {
+pub(crate) async fn origin(repo: &Path) -> Result<String> {
     let text = git(repo, &["remote", "get-url", "--push", "--all", "origin"]).await?;
     let urls: Vec<_> = text.lines().filter(|s| !s.is_empty()).collect();
     if urls.len() != 1

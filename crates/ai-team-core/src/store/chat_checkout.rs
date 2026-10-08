@@ -54,10 +54,13 @@ impl Store {
         rev: i64,
         recover: bool,
     ) -> Result<Arc<Ownership>> {
-        self.checkout_operation(chat, id)?;
+        let operation = self.checkout_operation(chat, id)?;
         let owner = Ownership::acquire_checkout(self.path(), id)?;
         self.db_mut().write(|tx| {
-            if !recover { available(tx,chat,Some(id))?; }
+            if !recover {
+                available(tx,chat,Some(id))?;
+                if matches!(operation.snapshot.action, crate::chat_changes::checkout::Action::PushBranch { .. }) { super::chat_push::check_operation(tx,chat,id)?; }
+            }
             let state=if recover { "state IN ('running','inspection')" } else { "state='preview'" };
             if tx.execute(&format!("UPDATE chat_checkout_operation SET state='running',child_epoch=child_epoch+1,supervisor_pid=?4,rev=rev+1,updated_at=?5 WHERE id=?1 AND chat_id=?2 AND rev=?3 AND {state}"),params![id,chat,rev,i64::from(std::process::id()),crate::now()])? != 1 { return Err(Error::invalid("checkout approval changed or was already used; refresh")); }
             tick(tx,chat)
@@ -113,7 +116,7 @@ impl Store {
         })
     }
 }
-fn available(conn: &Connection, chat: i64, operation: Option<i64>) -> Result<()> {
+pub(super) fn available(conn: &Connection, chat: i64, operation: Option<i64>) -> Result<()> {
     let (workspace,project):(String,i64)=conn.query_row("SELECT c.workspace_path,c.project_id FROM chat c JOIN project p ON p.id=c.project_id WHERE c.id=?1 AND c.active_node_id IS NULL AND c.archived=0 AND p.status!='archived'",[chat],|r|Ok((r.get(0)?,r.get(1)?))).optional()?.ok_or_else(||Error::invalid("wait for this chat to be idle; archived chats/projects are read-only"))?;
     super::workspace_setup::check_project(conn, project)?;
     match operation {

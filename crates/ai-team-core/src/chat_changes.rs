@@ -6,6 +6,7 @@ mod files;
 mod recovery;
 mod retained;
 pub use delivery::{approve, preview, Delivery, DeliveryAction, DeliverySnapshot};
+pub(crate) use delivery::{available as delivery_available, origin};
 pub use files::{committed_file, committed_tree, CommitEntry, CommitFile, CommitFileRequest};
 pub use recovery::{
     acknowledge, inspect, CheckoutEvidence, DeliveryAcknowledgement, DeliveryInspection,
@@ -42,6 +43,7 @@ pub struct Draft {
 #[derive(Debug, Serialize)]
 pub struct Changes {
     pub workspace_path: String,
+    pub workspace_epoch: i64,
     pub head: Option<String>,
     pub branch: Option<String>,
     pub issues: Vec<String>,
@@ -129,6 +131,7 @@ pub async fn changes(store: &mut Store, chat_id: i64) -> Result<Changes> {
     }
     Ok(Changes {
         workspace_path: chat.workspace_path.clone(),
+        workspace_epoch: chat.workspace_epoch,
         head,
         issues,
         branch: crate::current_branch(repo).await,

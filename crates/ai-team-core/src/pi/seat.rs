@@ -490,6 +490,10 @@ pub(super) fn defer_scoped_mcp(config: &mut Value) -> Result<()> {
 
 /// A solo chat uses the same provider mapping, guard and context configuration as seats,
 /// but is not instructed to work on a planner slice or inside a specialist's zone.
+///
+/// `publication` is on only when the person's own message in this chat explicitly asked
+/// for a push. It adds one scoped tool and the instruction that goes with it; without it
+/// the seat has neither, so there is nothing for an agent to reach for unasked.
 pub(crate) fn conversation_turn(
     chat: &crate::Chat,
     node: &crate::NodeRun,
@@ -497,6 +501,7 @@ pub(crate) fn conversation_turn(
     sources: &[ContextSource],
     prompt: String,
     database: &Path,
+    publication: bool,
 ) -> Result<PiTurn> {
     let worktree = Path::new(&chat.workspace_path);
     let mut turn = PiTurn::new(worktree, prompt);
@@ -506,12 +511,16 @@ pub(crate) fn conversation_turn(
     turn.guard = Some(super::guard::install_at(support)?);
     let mut config = mcp_config(sources, None).unwrap_or_else(|| json!({"mcpServers": {}}));
     merge_safe_project_servers(worktree, &mut config, false)?;
+    let mut tools: Vec<&str> = crate::planning::PlanAccess::Planner.tools().to_vec();
+    if publication {
+        tools.push(crate::chat_push::PUBLICATION_TOOL);
+    }
     config["mcpServers"]["ai-team-planner"] = json!({
         "command": std::env::current_exe()?,
         "args": ["plan", "serve", "--db", database.canonicalize()?.to_string_lossy(),
                  "--chat", chat.id.to_string(), "--node", node.id.to_string()],
         "transport": "stdio", "lifecycle": "eager", "directTools": true,
-        "includeTools": crate::planning::PlanAccess::Planner.tools(),
+        "includeTools": tools,
     });
     defer_scoped_mcp(&mut config)?;
     let path = support.join("mcp-assistant.json");
@@ -536,9 +545,10 @@ pub(crate) fn conversation_turn(
          decisions with open_question; the person answers in Overview. Never answer for them. \
          When editing code, run the relevant project checks and report their actual results. \
          Keep changes in the checkout for the person to inspect; do not commit, publish, \
-         create a pull request, or delete working files without their explicit direction.{}",
+         create a pull request, or delete working files without their explicit direction.{publication}{}",
         crate::house::section(&crate::house::read_for(worktree, &[])),
         bootstrap = super::instructions::CHAT_MCP_BOOTSTRAP,
+        publication = if publication { super::instructions::CHAT_PUBLICATION } else { "" },
     ));
     Ok(turn)
 }

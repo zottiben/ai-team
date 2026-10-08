@@ -42,6 +42,36 @@ pub fn slugify(input: &str) -> String {
     out
 }
 
+/// A bounded, ref-safe description, not an instruction or permission to change Git.
+/// Prefer the task's first sentence over courtesy words or later delivery instructions.
+pub(crate) fn task_slug(input: &str) -> String {
+    let headline = input.trim().lines().next().unwrap_or_default();
+    let mut title = headline
+        .split(". ")
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    while let Some(rest) = ["can you ", "could you ", "would you ", "please "]
+        .iter()
+        .find_map(|prefix| title.strip_prefix(prefix))
+    {
+        title = rest.to_owned();
+    }
+    let title = title.trim_end_matches(|c: char| c.is_ascii_punctuation() || c.is_whitespace());
+    let title = title.strip_suffix(" please").unwrap_or(title);
+    let mut slug = slugify(title);
+    slug.truncate(64); // slugify produces ASCII, so every byte is a character boundary.
+    while slug.ends_with('-') {
+        slug.pop();
+    }
+    if slug.is_empty() {
+        "task".into()
+    } else {
+        slug
+    }
+}
+
 /// Normalise a git remote to a stable, transport-independent key.
 /// `git@github.com:org/repo.git` and `https://github.com/org/repo` both become
 /// `github.com/org/repo`, so the same repo reached two ways is one row.
@@ -273,6 +303,31 @@ mod tests {
             "acme-1234-reusable-date-range-picker"
         );
         assert_eq!(slugify("  ...  "), "");
+    }
+
+    #[test]
+    fn task_names_are_bounded_ref_components_not_delivery_instructions() {
+        assert_eq!(task_slug("Can you upgrade pretty-bytes from v6 to v7 please. do not commit or push i would like to review locally first."), "upgrade-pretty-bytes-from-v6-to-v7");
+        assert_eq!(
+            task_slug("Please fix Widget v1.2.3. Then explain the change."),
+            "fix-widget-v1-2-3"
+        );
+        assert_eq!(
+            task_slug("Could you please fix the parser?\nNever push."),
+            "fix-the-parser"
+        );
+        assert_eq!(task_slug(" .. / @{ ? "), "task");
+        assert_eq!(task_slug(""), "task");
+        for task in [
+            "../unsafe.lock",
+            "@{\"x\"} --orphan",
+            "升级 pretty-bytes 到 v7",
+            &"very-long-task-".repeat(100),
+        ] {
+            let slug = task_slug(task);
+            assert!(!slug.is_empty() && slug.len() <= 64 && !slug.ends_with('-'));
+            assert!(slug.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'));
+        }
     }
 
     #[test]

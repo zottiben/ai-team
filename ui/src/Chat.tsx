@@ -12,11 +12,13 @@ import { BoardMarkdown } from "./BoardMarkdown";
 import { CHAT_PANELS, ChatContext, type ChatPanel } from "./ChatContext";
 import { TEAM_PHASES } from "./ChatTeam";
 import { ChatWorkspace } from "./ChatWorkspace";
+import { ChatOutcome, chatOutcome } from "./ChatOutcome";
 import logo from "../../crates/ai-team-desktop/icons/mark.svg";
 import { setChatMode } from "./team-api";
 import { models, type ModelChoice, type Project, type RunEvent } from "./api";
 import {
   archiveChat,
+  restoreChat,
   chat,
   chatEvents,
   createChat,
@@ -174,6 +176,7 @@ export function ChatView({
   const active = detail?.active_node_id != null;
   const running = detail?.state === "running" || detail?.state === "stopping";
   const latest = detail?.turns.at(-1);
+  const outcome = chatOutcome(detail, events);
   const activeTeam = detail?.turns.find((turn) => turn.team?.control_node_id === detail.active_node_id)?.team;
   const mode = detail?.mode ?? newMode;
   const queued = detail?.followups?.find((item) => item.state === "queued");
@@ -367,12 +370,15 @@ export function ChatView({
               disabled={busy || active || !!queued}
               onClick={() =>
                 void command(async () => {
-                  await archiveChat(detail.id);
-                  if (alive.current) onArchived();
+                  if (detail.archived) await restoreChat(detail.id);
+                  else {
+                    await archiveChat(detail.id);
+                    if (alive.current) onArchived();
+                  }
                 })
               }
             >
-              Archive
+              {detail.archived ? "Restore chat" : "Archive"}
             </button>
           </div>
         )}
@@ -449,7 +455,7 @@ export function ChatView({
             ) : (
               <div className="chat-messages" aria-label="Conversation messages">
                 {events.map((event) => (
-                  <Message key={event.id} event={event} />
+                  <Message key={event.id} event={event} result={event.id === outcome?.response} />
                 ))}
               </div>
             )}
@@ -492,6 +498,10 @@ export function ChatView({
           Jump to latest
         </button>
       )}
+      {tool === null && outcome && <ChatOutcome outcome={outcome} onAction={action => {
+        if (action === "reply") composer.current?.focus();
+        else openPanel(action === "review" ? "review" : "work");
+      }} />}
       {!!detail?.followups?.length && <section className="chat-followups chat-notice" aria-label="Queued instruction receipts">
         {detail.followups.slice(-10).map((item) => <div key={item.id} className="chat-followup">
           <p>{item.body}</p>
@@ -646,7 +656,7 @@ function SelectChevron() {
   return <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m7 10 5 5 5-5" /></svg>;
 }
 
-function Message({ event }: { event: RunEvent }) {
+function Message({ event, result }: { event: RunEvent; result: boolean }) {
   return (
     <>
       {event.thinking.length > 0 && (
@@ -659,7 +669,7 @@ function Message({ event }: { event: RunEvent }) {
       )}
       {event.message !== null ? (
         <article
-          className={`chat-message${event.actor === "human" ? " chat-message--human" : ""}`}
+          className={`chat-message${event.actor === "human" ? " chat-message--human" : ""}${result ? " chat-message--result" : ""}`}
           aria-label={event.actor === "human" ? "You" : "Assistant"}
         >
           <BoardMarkdown source={event.message} />

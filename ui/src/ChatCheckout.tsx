@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
 import { FileView } from "./Review";
-import { checkoutState, checkoutPreview, checkoutApprove, checkoutFinding, checkoutInspect, checkoutAcknowledge, type CheckoutAction, type CheckoutState, type CheckoutOperation, type CheckoutInspection } from "./checkout-api";
-const labels={stage:"Stage file",unstage:"Unstage file",commit:"Manual commit",push:"Push checkout commit",pull_request:"Open checkout draft PR"};
+import { useReviewFix } from "./useReviewFix";
+import { checkoutState, checkoutPreview, checkoutApprove, checkoutInspect, checkoutAcknowledge, type CheckoutAction, type CheckoutState, type CheckoutOperation, type CheckoutInspection } from "./checkout-api";
+const labels={stage:"Stage file",unstage:"Unstage file",commit:"Manual commit",push:"Push checkout commit",pull_request:"Open checkout draft PR",push_branch:"Chat-approved branch push"};
 export function ChatCheckout({chatId,tick,disabled,onChanged,onFeedback}:{chatId:number;tick:number;disabled:boolean;onChanged:()=>void;onFeedback?:(text:string)=>void}) {
+  const submitFix=useReviewFix(chatId);
+  const [submitted,setSubmitted]=useState(false);
   const [data,setData]=useState<CheckoutState|null>(null);
   const [preview,setPreview]=useState<CheckoutOperation|null>(null);
   const [inspection,setInspection]=useState<CheckoutInspection|null>(null);
@@ -21,11 +24,13 @@ export function ChatCheckout({chatId,tick,disabled,onChanged,onFeedback}:{chatId
       <p className="mono">{data.workspace} · {data.branch??"detached"} · {data.head??"unborn HEAD"}</p>
       <p className="faint">These are the checkout's actual files, not attributed to this conversation and not a verified team draft. Each action previews exact state and refuses stale approval. Editor and terminal remain explicit operator tools, not an OS sandbox.</p>
       {disabled&&<p className="notice">Finish the current execution before changing the index or publishing.</p>}
+      <p className="faint">Submitting an inline comment sends it to the solo agent to address in this checkout. No commit or publication is approved.</p>
+      {submitted&&<p role="status">Review submitted to the agent. Follow its new turn in this chat.</p>}
       {(["staged","unstaged"] as const).map(area=><section key={area} aria-label={`${area} checkout files`}><h4>{area==="staged"?"Staged — the next commit's contents":"Unstaged"}</h4>
         {!data[area].length&&<p className="faint">None.</p>}
         {data[area].map(file=><div key={file.path}>
           <FileView file={file} comments={data.findings.filter(f=>f.fingerprint===data.fingerprint&&f.area===area).map(f=>({id:f.id,review_id:0,parent_id:null,file_path:f.path,side:f.side,line_start:f.line,line_end:f.line,author:"you",body:f.body,status:"open",created_at:f.created_at}))}
-            onComment={blocked?undefined:async(body,anchor)=>command(async()=>{await checkoutFinding(chatId,{id:0,fingerprint:data.fingerprint,head:data.head,area,path:anchor.file_path,side:anchor.side,line:anchor.line_start,body,created_at:""});})}/>
+            onComment={blocked?undefined:async(body,anchor)=>command(async()=>{await submitFix({kind:"checkout",finding:{id:0,fingerprint:data.fingerprint,head:data.head,area,path:anchor.file_path,side:anchor.side,line:anchor.line_start,body,created_at:""}},data.workspace_epoch);setSubmitted(true);})}/>
           <button className="button" disabled={blocked} onClick={()=>propose({kind:area==="staged"?"unstage":"stage",path:file.path})}>{area==="staged"?"Unstage":"Stage"} {file.path}</button>
         </div>)}
       </section>)}
@@ -33,7 +38,7 @@ export function ChatCheckout({chatId,tick,disabled,onChanged,onFeedback}:{chatId
       {data.untracked.map(path=><div className="card__row" key={path}><span className="mono">{path}</span><button className="button" disabled={blocked} onClick={()=>propose({kind:"stage",path})}>Stage {path}</button></div>)}
       <form onSubmit={e=>{e.preventDefault();propose({kind:"commit",message});}}><label>Manual commit message<textarea value={message} onChange={e=>setMessage(e.target.value)} maxLength={16000}/></label><p className="faint">Commit the reviewed index only; unstaged/untracked files are kept. Hooks and signing are disabled for this bounded operator action. No verification, push or PR is implied.</p><button className="button" disabled={blocked||!data.staged.length||!message.trim()}>Preview manual commit</button></form>
       <div className="chat-controls"><button className="button" disabled={blocked||!data.head||!data.branch} onClick={()=>propose({kind:"push"})}>Preview checkout push</button><button className="button" disabled={blocked||!data.head||!data.branch} onClick={()=>propose({kind:"pull_request"})}>Preview checkout draft PR</button></div>
-      {data.findings.length>0&&<details><summary>Recorded checkout feedback</summary><p className="faint">Historical lines may have changed. Recording feedback does not send it to an agent or approve work.</p>{data.findings.map(f=><div className="notice" key={f.id}><p className="mono">{f.path} · {f.area} · {f.side} line {f.line} · {f.head??"unborn"}</p><p>{f.body}</p>{onFeedback&&<button className="button" onClick={()=>onFeedback(`Checkout review at ${f.head??"unborn HEAD"} (${f.fingerprint}): ${f.path}, ${f.area}, ${f.side} line ${f.line}:\n${f.body}\n\nInspect the current file before acting; this feedback is not publication approval.`)}>Use feedback in next message</button>}</div>)}</details>}
+      {data.findings.length>0&&<details><summary>Recorded checkout feedback</summary><p className="faint">Historical lines may have changed. New inline submissions start an agent turn; older recorded-only feedback can still be copied to your draft. No publication is approved.</p>{data.findings.map(f=><div className="notice" key={f.id}><p className="mono">{f.path} · {f.area} · {f.side} line {f.line} · {f.head??"unborn"}</p><p>{f.body}</p>{onFeedback&&<button className="button" onClick={()=>onFeedback(`Checkout review at ${f.head??"unborn HEAD"} (${f.fingerprint}): ${f.path}, ${f.area}, ${f.side} line ${f.line}:\n${f.body}\n\nInspect the current file before acting; this feedback is not publication approval.`)}>Use feedback in next message</button>}</div>)}</details>}
       {preview&&<section className="notice" aria-label="Checkout action approval"><h4>{labels[preview.snapshot.action.kind]} — exact approval</h4><p className="mono">{preview.snapshot.workspace} · {preview.snapshot.branch??"detached"} · {preview.snapshot.head??"unborn HEAD"}</p>
         {"path" in preview.snapshot.action&&<p className="mono">{preview.snapshot.action.path}</p>}{"message" in preview.snapshot.action&&<pre>{preview.snapshot.action.message}</pre>}
         {preview.snapshot.remote&&<><p className="mono">{preview.snapshot.remote.url} · {preview.snapshot.remote.branch}</p>{preview.snapshot.remote.base&&<p className="mono">PR base: {preview.snapshot.remote.repository} · {preview.snapshot.remote.base} · {preview.snapshot.remote.base_sha}</p>}<p>Only this committed snapshot is published, never dirty files or your current branch ref. No merge. Push and draft PR need separate approvals.</p></>}

@@ -377,3 +377,188 @@ fn assert_standalone_untouched(home: &Path) {
         assert_eq!(std::fs::read(home.join(path)).unwrap(), SENTINEL);
     }
 }
+
+/// A checkout on a working branch with a bare origin, and a chat that owns it.
+fn publication_fixture(
+    home: &Path,
+) -> (
+    std::path::PathBuf,
+    std::path::PathBuf,
+    Store,
+    ai_team_core::Chat,
+) {
+    std::fs::create_dir_all(home.join("bin")).unwrap();
+    std::env::set_var("GIT_CONFIG_GLOBAL", "/dev/null");
+    std::env::set_var("GIT_CONFIG_NOSYSTEM", "1");
+    let repo = home.join("repo");
+    let remote = home.join("remote.git");
+    std::fs::create_dir(&repo).unwrap();
+    for args in [
+        vec!["init", "-q", "-b", "work"],
+        vec!["config", "user.name", "Fixture"],
+        vec!["config", "user.email", "fixture@invalid"],
+        vec!["config", "core.hooksPath", "/dev/null"],
+    ] {
+        run_git(&repo, &args);
+    }
+    std::fs::write(repo.join("README.md"), "base\n").unwrap();
+    run_git(&repo, &["add", "."]);
+    run_git(&repo, &["commit", "-qm", "base"]);
+    run_git(
+        home,
+        &[
+            "init",
+            "--bare",
+            "-q",
+            "--initial-branch=main",
+            remote.to_str().unwrap(),
+        ],
+    );
+    run_git(
+        &repo,
+        &["remote", "add", "origin", remote.to_str().unwrap()],
+    );
+    run_git(&repo, &["push", "-q", "origin", "work:main"]);
+    let db = home.join("team.db");
+    let mut store = Store::init(&db).unwrap();
+    let project = store
+        .create_project(NewProject {
+            name: "Publication".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    let chat = store
+        .create_chat(NewChat {
+            project_id: project.id,
+            workspace: repo.clone(),
+            provider: Provider::Local,
+            model: "fixture".into(),
+            reasoning: Reasoning::High,
+        })
+        .unwrap();
+    (db, repo, store, chat)
+}
+
+fn head_of(repo: &Path) -> String {
+    String::from_utf8(
+        std::process::Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(repo)
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_owned()
+}
+
+/// The scoped publication tool exists only while the person's own explicit instruction
+/// does, and it pins the exact commit rather than publishing anything itself.
+#[tokio::test]
+async fn request_publication_is_offered_only_to_an_authorised_turn() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().canonicalize().unwrap();
+    let (db, repo, mut store, chat) = publication_fixture(&home);
+
+    // An ordinary turn is never offered the tool, and cannot reach it by naming it.
+    let ordinary = store
+        .begin_chat_turn(chat.id, "add a test", "plain", &ModelRegistry::local_only())
+        .unwrap();
+    let mut client = Client::connect(&db, &home, chat.id, ordinary.node_id).await;
+    assert!(!tool_names(&mut client)
+        .await
+        .contains(&"request_publication".to_string()));
+    let head = head_of(&repo);
+    assert_eq!(
+        client
+            .call("request_publication", json!({"commit": head}))
+            .await["isError"],
+        true
+    );
+    client.close().await;
+    store
+        .finish_chat_turn(chat.id, ordinary.node_id, NodeStatus::Done, None)
+        .unwrap();
+
+    // The person asks, in their own words, and the same seat gains exactly one tool.
+    let message = "commit and push and ill open the PR";
+    let authority = ai_team_core::chat_push::prepare(&mut store, chat.id, message)
+        .await
+        .unwrap();
+    let ai_team_core::chat_push::Authority::Solo(target) = &authority else {
+        panic!("expected solo authority, got {authority:?}");
+    };
+    let turn = store
+        .begin_chat_turn(chat.id, message, "asked", &ModelRegistry::local_only())
+        .unwrap();
+    ai_team_core::chat_push::mint(
+        &mut store,
+        chat.id,
+        "asked",
+        message,
+        Some(turn.node_id),
+        target,
+        None,
+    )
+    .unwrap();
+    let mut client = Client::connect(&db, &home, chat.id, turn.node_id).await;
+    assert!(tool_names(&mut client)
+        .await
+        .contains(&"request_publication".to_string()));
+    std::fs::write(repo.join("feature.txt"), "done\n").unwrap();
+    run_git(&repo, &["add", "."]);
+    run_git(&repo, &["commit", "-qm", "the asked-for work"]);
+    let made = head_of(&repo);
+    // A commit that is not this branch's tip is refused, so a seat cannot pin an earlier
+    // state or somebody else's work.
+    assert_eq!(
+        client
+            .call("request_publication", json!({"commit": head}))
+            .await["isError"],
+        true
+    );
+    let pinned = client
+        .call("request_publication", json!({"commit": made}))
+        .await;
+    assert_ne!(pinned["isError"], true, "{pinned}");
+    assert!(pinned["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("after this turn ends"));
+    client.close().await;
+
+    // Pinning published nothing: the host does that, after the turn.
+    assert!(!home.join("remote.git/refs/heads/work").exists());
+    assert_eq!(
+        store
+            .chat_push_grant_for_request(chat.id, "asked")
+            .unwrap()
+            .unwrap()
+            .commit_sha
+            .as_deref(),
+        Some(made.as_str())
+    );
+}
+
+async fn tool_names(client: &mut Client) -> Vec<String> {
+    client.request("tools/list", json!({})).await["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|tool| tool["name"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+fn run_git(repo: &Path, args: &[&str]) {
+    let out = std::process::Command::new("git")
+        .args(args)
+        .current_dir(repo)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}

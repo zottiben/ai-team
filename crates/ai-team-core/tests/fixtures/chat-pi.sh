@@ -29,6 +29,16 @@ printf '{"type":"turn_start"}\n'
 printf '{"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"Reading the working files…"}}\n'
 printf 'kept\n' >> changed.txt
 mode=$(cat "$CHAT_TEST_ROOT/mode")
+if [ "$mode" = long-running ]; then
+  i=0
+  while [ "$i" -lt 64 ]; do
+    printf '{"type":"turn_end","message":{"role":"assistant","content":[],"stopReason":"toolUse","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0}}}\n'
+    printf '{"type":"turn_start"}\n'
+    i=$((i + 1))
+  done
+  # Leave time for the supervisor to observe the counters before the agent settles.
+  sleep 1
+fi
 if [ "$mode" = slow ]; then
   trap 'exit 0' TERM
   sh -c 'trap "" TERM; while :; do sleep 1; done' &

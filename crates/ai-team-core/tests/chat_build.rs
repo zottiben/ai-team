@@ -20,6 +20,8 @@ mod closure_tests;
 mod continuation_tests;
 #[path = "chat_build/recovery.rs"]
 mod recovery_tests;
+#[path = "chat_build/review.rs"]
+mod review_tests;
 #[path = "chat_build/startup.rs"]
 mod startup_tests;
 use recovery_tests::{
@@ -247,6 +249,7 @@ async fn approvals_and_journaled_leases_preserve_exact_scope_and_files() {
         "PATH",
         format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
     );
+    approved_branches_describe_the_slice_without_moving_or_committing_the_checkout().await;
     retained_leases_exclude_other_chat_and_legacy_writers().await;
     legacy_controls_cannot_reinterpret_a_chat_run().await;
     bare_directories_are_rejected_before_approval().await;
@@ -263,6 +266,7 @@ async fn approvals_and_journaled_leases_preserve_exact_scope_and_files() {
     a_partial_claim_commit_is_reconciled_without_a_second_lease().await;
     a_reused_seat_id_cannot_inherit_approval().await;
     install_worker_runtime(&bin);
+    review_tests::submitted_review_starts_one_new_verified_attempt_on_the_same_slice().await;
     children_tests::killed_closure_withdrawal_is_not_reapproved_on_startup().await;
     startup_tests::startup_does_not_spend_or_cancel_unclaimed_approval().await;
     closure_tests::close_keeps_work_and_releases_only_execution().await;
@@ -326,6 +330,39 @@ async fn retained_leases_exclude_other_chat_and_legacy_writers() {
             .is_err(),
         "a legacy node acquired a recorded team lease"
     );
+}
+
+async fn approved_branches_describe_the_slice_without_moving_or_committing_the_checkout() {
+    let mut f = Fixture::new();
+    f.change(|expect_revision| PlanAction::UpdateSlice {
+        expect_revision,
+        key: "S1".into(),
+        title: "Upgrade pretty-bytes from v6 to v7".into(),
+        scope: "Upgrade the dependency".into(),
+        touches: vec!["crates/**".into()],
+        demo: "Check the upgrade".into(),
+    });
+    f.change(|expect_revision| PlanAction::SetSliceStatus {
+        expect_revision,
+        key: "S1".into(),
+        status: PlanStatus::Ready,
+        reason: None,
+    });
+    let head = git(&f.repo, &["rev-parse", "HEAD"]);
+    let branch = git(&f.repo, &["branch", "--show-current"]);
+    f.approve().await;
+    let slice = f.lease();
+    assert_eq!(
+        slice.branch,
+        Some(format!(
+            "ai-team/upgrade-pretty-bytes-from-v6-to-v7-c{}-r{}-s{}",
+            f.chat.id, f.turn.run_id, slice.planner_slice_id
+        ))
+    );
+    assert_eq!(git(&f.repo, &["rev-parse", "HEAD"]), head);
+    assert_eq!(git(&f.repo, &["branch", "--show-current"]), branch);
+    assert_eq!(git(&f.repo, &["rev-list", "--count", "HEAD"]), "1");
+    assert!(!f.dir.path().join("awt-calls").exists());
 }
 
 async fn bare_directories_are_rejected_before_approval() {

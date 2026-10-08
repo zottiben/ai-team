@@ -24,6 +24,9 @@ mod plan_library;
 mod toolbox;
 #[path = "server/toolbox_operations.rs"]
 mod toolbox_operations;
+#[cfg(unix)]
+#[path = "server/updates.rs"]
+mod updates;
 #[path = "server/workspace_setup.rs"]
 mod workspace_setup;
 
@@ -179,6 +182,43 @@ fn chats_keep_their_history_and_commands_scoped_to_the_exact_active_turn() {
             .len(),
         1
     );
+    assert_archive_discovery_and_restore(&h, &store, first.id);
+}
+
+fn assert_archive_discovery_and_restore(h: &Harness, store: &ai_team_core::Store, id: i64) {
+    let all = h.get("/api/chats?project=widget&include_archived=true");
+    assert_eq!(all.status, 200);
+    assert_eq!(all.json().as_array().unwrap().len(), 2);
+    assert_eq!(
+        h.get_anonymous("/api/chats?project=widget&include_archived=true")
+            .status,
+        401
+    );
+    assert_eq!(
+        h.get("/api/chats?project=widget&include_archived=maybe")
+            .status,
+        400
+    );
+    assert!(store.chat(id).unwrap().archived, "viewing never restores");
+    let before = h.get(&format!("/api/chats/{id}/events")).json();
+    let restored = h.json_method(
+        "PATCH",
+        &format!("/api/chats/{id}"),
+        r#"{"archived":false}"#,
+    );
+    assert_eq!(restored.status, 200);
+    assert_eq!(restored.json()["archived"], false);
+    assert_eq!(
+        h.get("/api/chats?project=widget")
+            .json()
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(h.get(&format!("/api/chats/{id}/events")).json(), before);
+    assert_eq!(store.chat_turns(id).unwrap().len(), 1);
+    assert!(store.chat(id).unwrap().active_node_id.is_none());
 }
 
 #[test]

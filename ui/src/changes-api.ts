@@ -17,7 +17,7 @@ export type Delivery = {
   };
 };
 export type Changes = {
-  workspace_path: string; head: string | null; branch: string | null; issues: string[];
+  workspace_path: string; workspace_epoch: number; head: string | null; branch: string | null; issues: string[];
   staged: FileDiff[]; unstaged: FileDiff[]; untracked: string[];
   drafts: Draft[]; deliveries: Delivery[];
 };

@@ -49,7 +49,7 @@ pub struct Request {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Branching {
-    /// A new `ai-team/run-<id>` cut from origin's default branch.
+    /// A new `ai-team/<task>-<id>` cut from origin's default branch.
     #[default]
     Fresh,
     /// The default branch itself. Nothing lands on main/master unless the operator asks
@@ -505,7 +505,7 @@ where
     let branched = if request.branching == Branching::DefaultBranch {
         crate::workspace::stay_on_default_branch(repo).await?
     } else {
-        crate::workspace::branch_for_run(repo, run_id).await?
+        crate::workspace::branch_for_run(repo, run_id, &store.run(run_id)?.prompt).await?
     };
     let short = &branched.sha[..branched.sha.len().min(7)];
     store.append_event(
@@ -1887,6 +1887,80 @@ fn notify_run(store: &mut Store, run_id: i64, kind: &str, title: &str, body: &st
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_new_run_branch_describes_the_task_without_committing_or_publishing() {
+        let repo = tempfile::tempdir().unwrap();
+        let git = crate::neighbours::git::git;
+        git(repo.path(), &["init", "-q", "-b", "main"])
+            .await
+            .unwrap();
+        git(
+            repo.path(),
+            &[
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@invalid",
+                "-c",
+                "commit.gpgSign=false",
+                "-c",
+                "core.hooksPath=/dev/null",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "base",
+            ],
+        )
+        .await
+        .unwrap();
+        let before = git(repo.path(), &["rev-parse", "HEAD"]).await.unwrap();
+        let mut f = Runs::new();
+        let prompt = "Can you upgrade pretty-bytes from v6 to v7 please. do not commit or push i would like to review locally first.";
+        let run = f
+            .store
+            .create_run(f.project, prompt, RunTrigger::Manual)
+            .unwrap();
+        let request = Request {
+            project: "Widget".into(),
+            prompt: Some(prompt.into()),
+            workspace: Some(repo.path().to_path_buf()),
+            plan: None,
+            width: None,
+            replan: false,
+            plan_only: true,
+            approval_required: false,
+            branching: Branching::Fresh,
+            trigger: None,
+        };
+        branch_workspace(&mut f.store, run.id, repo.path(), &request, &mut |_| {})
+            .await
+            .unwrap();
+        assert_eq!(
+            git(repo.path(), &["branch", "--show-current"])
+                .await
+                .unwrap()
+                .trim(),
+            format!("ai-team/upgrade-pretty-bytes-from-v6-to-v7-{}", run.id)
+        );
+        assert_eq!(
+            git(repo.path(), &["rev-parse", "HEAD"]).await.unwrap(),
+            before
+        );
+        assert_eq!(
+            git(repo.path(), &["rev-list", "--count", "HEAD"])
+                .await
+                .unwrap()
+                .trim(),
+            "1"
+        );
+        assert!(git(repo.path(), &["remote"])
+            .await
+            .unwrap()
+            .trim()
+            .is_empty());
+    }
 
     /// A project with its team, and a way to add a run of a plan whose PRs ended as said.
     struct Runs {

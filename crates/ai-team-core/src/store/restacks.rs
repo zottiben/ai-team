@@ -84,7 +84,7 @@ impl Store {
                     guardrails.max_repairs,
                     guardrails.budget_tokens_node,
                     guardrails.budget_seconds_node,
-                    guardrails.max_turns_node,
+                    None::<i64>,
                     guardrails.on_failure,
                     pid,
                     at

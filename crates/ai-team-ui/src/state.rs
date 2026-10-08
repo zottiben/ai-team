@@ -55,6 +55,7 @@ struct Inner {
     /// Which program is serving. The update route replaces the binary it runs in, and
     /// `ait ui` and the desktop app are two different binaries in one release.
     host: ai_team_core::Host,
+    updates: ai_team_core::UpdateManager,
 }
 
 impl AppState {
@@ -68,6 +69,13 @@ impl AppState {
     }
 
     pub fn new(token: impl Into<String>) -> Self {
+        Self::for_server(token, ai_team_core::UpdateManager::default())
+    }
+
+    pub(crate) fn for_server(
+        token: impl Into<String>,
+        updates: ai_team_core::UpdateManager,
+    ) -> Self {
         Self {
             inner: Arc::new(Inner {
                 token: token.into(),
@@ -78,6 +86,7 @@ impl AppState {
                 terminals: ai_team_core::Terminals::new(),
                 credentials: ai_team_core::CredentialStore::default(),
                 host: ai_team_core::Host::Cli,
+                updates,
                 chat_recovery: tokio::sync::OnceCell::new(),
             }),
         }
@@ -96,6 +105,7 @@ impl AppState {
                 terminals: ai_team_core::Terminals::new(),
                 credentials: self.inner.credentials.clone(),
                 host,
+                updates: self.inner.updates.clone(),
                 chat_recovery: tokio::sync::OnceCell::new(),
             }),
         }
@@ -115,6 +125,7 @@ impl AppState {
                 terminals: ai_team_core::Terminals::new(),
                 credentials: self.inner.credentials.clone(),
                 host: self.inner.host,
+                updates: self.inner.updates.clone(),
             }),
         }
     }
@@ -132,6 +143,7 @@ impl AppState {
                 terminals: ai_team_core::Terminals::new(),
                 credentials: self.inner.credentials.clone(),
                 host: self.inner.host,
+                updates: self.inner.updates.clone(),
             }),
         }
     }
@@ -149,8 +161,13 @@ impl AppState {
                 credentials,
                 chat_recovery: tokio::sync::OnceCell::new(),
                 host: self.inner.host,
+                updates: self.inner.updates.clone(),
             }),
         }
+    }
+
+    pub(crate) fn updates(&self) -> &ai_team_core::UpdateManager {
+        &self.inner.updates
     }
 
     pub(crate) async fn recover_chats(&self) {
@@ -164,6 +181,15 @@ impl AppState {
         self.inner
             .chat_recovery
             .get_or_init(|| async {
+                // A grant belongs to the process the person was talking to. Rows survive a
+                // restart; the permission in them does not.
+                match ai_team_core::Store::open(&db)
+                    .and_then(|mut store| store.expire_stale_chat_push_grants(None))
+                {
+                    Ok(0) => {}
+                    Ok(count) => eprintln!("expired {count} stale chat push authorisations"),
+                    Err(error) => eprintln!("chat push authority sweep: {error}"),
+                }
                 let result = ai_team_core::recover_abandoned_chat_teams(&db)
                     .await
                     .map_err(|error| error.to_string());
@@ -220,10 +246,6 @@ impl AppState {
     }
 
     /// Which program is serving this window.
-    pub(crate) fn host(&self) -> ai_team_core::Host {
-        self.inner.host
-    }
-
     /// The store, or a plain explanation.
     ///
     /// Opens one if there is not one yet, so a database created after the window started -

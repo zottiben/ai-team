@@ -16,11 +16,15 @@ pub(super) fn definition(name: &'static str) -> Tool {
         "open_question" => ("Ask for a human decision. The user answers it in this chat's Overview. Do not answer it yourself.", &["body", "slice"], &["slice"]),
         "append_log" => ("Append progress or verification evidence without rewriting earlier notes.", &["body", "slice"], &["slice"]),
         "add_gotcha" => ("Record a durable planning gotcha for this chat.", &["title", "body"], &[]),
+        "request_publication" => ("Ask ai-team to publish the commit you just made, on this chat's current branch. Offered only because the person's own message in this chat explicitly asked for a push. Commit first, then supply that exact commit SHA and END this turn: ai-team pushes after the turn ends and reports the real result in the conversation. Never run git push, never open a pull request or merge, and never report the work as published yourself.", &["commit"], &[]),
         _ => unreachable!("the server's closed allow-list contains only these tools"),
     };
     let mut properties = Map::new();
     let mut required = Vec::new();
-    if !matches!(name, "get_plan" | "list_worktrees" | "request_worktree") {
+    if !matches!(
+        name,
+        "get_plan" | "list_worktrees" | "request_worktree" | "request_publication"
+    ) {
         properties.insert("expect_revision".into(), json!({"type":"integer","minimum":0,"description":"Revision returned by get_plan or the previous mutation. Re-read after a conflict."}));
         required.push("expect_revision");
     }

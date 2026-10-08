@@ -1,8 +1,8 @@
 //! What a run and its nodes are allowed to spend, and what happens when they stop.
 //!
 //! Every limit here is read off the **run**, never back through the team (D2). A run
-//! started last night under a 40-turn cap did not become a 200-turn run because somebody
-//! raised the team's cap this morning.
+//! started last night under a token budget did not get a larger allowance because
+//! somebody raised the team's budget this morning. Turn counts are evidence, not limits.
 //!
 //! The checks are deliberately boring arithmetic in one place. Spread across call sites
 //! they drift, and a budget that is enforced in three places and forgotten in a fourth is
@@ -115,14 +115,6 @@ fn node_caps(run: &Run, node: &NodeRun) -> Option<Exceeded> {
         if spent >= budget {
             return Some(Exceeded::node(format!(
                 "this node's time budget is spent: {spent}s of {budget}s"
-            )));
-        }
-    }
-    if let Some(cap) = run.max_turns_node {
-        if node.turns >= cap {
-            return Some(Exceeded::node(format!(
-                "this node has taken {} turns, its cap is {cap}",
-                node.turns
             )));
         }
     }
@@ -262,28 +254,36 @@ mod tests {
     }
 
     #[test]
-    fn the_turn_cap_is_counted_in_turns_not_attempts() {
+    fn historical_turn_caps_do_not_stop_any_agent_role() {
         let (mut store, project, team) = seeded();
-        let run = store
-            .create_run(project, "ship it", RunTrigger::Manual)
-            .unwrap();
-        set(&mut store, run.id, "max_turns_node", 3);
-        let node = store
-            .dispatch(
-                run.id,
-                backend(&store, team),
-                Some("PR1"),
-                &crate::ModelRegistry::local_only(),
-            )
-            .unwrap();
-
-        store.record_usage(node.id, Usage::default(), 2).unwrap();
-        assert!(node_may_continue(&store, node.id).unwrap().is_none());
-
-        store.record_usage(node.id, Usage::default(), 1).unwrap();
-        let stopped = node_may_continue(&store, node.id).unwrap().unwrap();
-        assert!(stopped.reason.contains("3 turns"), "{}", stopped.reason);
-        assert!(!stopped.run_wide);
+        for agent in store.agents(team).unwrap() {
+            let run = store
+                .create_run(project, "investigate and implement", RunTrigger::Manual)
+                .unwrap();
+            set(&mut store, run.id, "max_turns_node", 40);
+            let node = store
+                .dispatch(
+                    run.id,
+                    agent.id,
+                    Some("PR1"),
+                    &crate::ModelRegistry::local_only(),
+                )
+                .unwrap();
+            store
+                .record_usage(node.id, Usage::default(), 10_000)
+                .unwrap();
+            assert!(
+                node_may_continue(&store, node.id).unwrap().is_none(),
+                "{} must not have a turn cap",
+                agent.role
+            );
+            assert_eq!(store.node_run(node.id).unwrap().turns, 10_000);
+            assert_eq!(
+                store.run(run.id).unwrap().max_turns_node,
+                Some(40),
+                "historical evidence must not be rewritten"
+            );
+        }
     }
 
     #[test]
@@ -294,19 +294,19 @@ mod tests {
         let run = store
             .create_run(project, "ship it", RunTrigger::Manual)
             .unwrap();
-        assert_eq!(run.max_turns_node, Some(40));
+        assert_eq!(run.max_turns_node, None);
         assert_eq!(run.budget_tokens_node, Some(400_000));
         assert_eq!(run.on_failure, OnFailure::Retry);
 
         let mut guardrails = store.team(team).unwrap().guardrails;
-        guardrails.max_turns_node = Some(9_999);
+        guardrails.budget_tokens_node = Some(9_999_999);
         guardrails.on_failure = OnFailure::Escalate;
         store
             .update_team(team, "Widget team", "", guardrails)
             .unwrap();
 
         let unchanged = store.run(run.id).unwrap();
-        assert_eq!(unchanged.max_turns_node, Some(40));
+        assert_eq!(unchanged.budget_tokens_node, Some(400_000));
         assert_eq!(unchanged.on_failure, OnFailure::Retry);
     }
 

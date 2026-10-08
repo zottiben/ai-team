@@ -1,9 +1,10 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 
 import { TerminalPane } from "./Terminal";
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllGlobals();
 });
 
@@ -83,16 +84,17 @@ it("does not rejoin a session that has already exited", async () => {
 });
 
 it("reads from an absolute cursor rather than replaying everything", async () => {
+  vi.useFakeTimers();
   const calls = stub([], [
     { text: "hello ", cursor: 6, done: false, status: null },
     { text: "world", cursor: 11, done: true, status: 0 },
   ]);
-  render(<TerminalPane project="widget" node={null} />);
-
-  await waitFor(() => {
-    const reads = calls.filter((call) => /^\/terminals\/\d+\?/.test(call.url));
-    expect(reads.some((call) => call.url.includes("cursor=6"))).toBe(true);
-  });
+  await act(async () => { render(<TerminalPane project="widget" node={null} />); });
+  await act(async () => { await vi.advanceTimersByTimeAsync(120); });
+  const reads = () => calls.filter((call) => /^\/terminals\/\d+\?/.test(call.url)).map(call => call.url);
+  expect(reads()).toEqual(["/terminals/42?cursor=0", "/terminals/42?cursor=6"]);
+  await act(async () => { await vi.advanceTimersByTimeAsync(500); });
+  expect(reads()).toHaveLength(2);
 });
 
 it("asks for a project before opening anything", async () => {

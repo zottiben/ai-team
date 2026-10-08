@@ -77,7 +77,7 @@ impl Store {
             let agent = approved_agent(tx, &slice)?;
             if !agent.enabled || agent.read_only { return Err(Error::invalid("the approved maker is no longer enabled for writing")); }
             let (head, dirty) = super::super::planning::build::checkout(std::path::Path::new(&tx.query_row::<String, _, _>("SELECT workspace_path FROM chat WHERE id = ?1", [control.receipt.chat_id], |row| row.get(0))?))?;
-            if head != control.base_sha || !dirty.is_empty() { return Err(Error::invalid("the approved checkout changed; preserve its files and review a new build before leasing")); }
+            if head != super::super::planning::review::source_head(tx, control.receipt.run_id, &control.base_sha)? || !dirty.is_empty() { return Err(Error::invalid("the approved checkout changed; preserve its files and review a new build before leasing")); }
             if tx.execute("UPDATE chat_build_slice SET lease_state = 'acquiring', rev = rev + 1 WHERE run_id = ?1 AND slice_key = ?2 AND lease_state = 'pending'",
                 params![slice.run_id, slice.slice_key])? != 1 {
                 return Err(Error::invalid("this slice already has acquisition or recovery evidence; do not take a second lease"));

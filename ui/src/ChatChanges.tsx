@@ -1,8 +1,9 @@
 import { lazy, Suspense, useEffect, useState } from "react";
 const ChatCheckout = lazy(() => import("./ChatCheckout").then(m => ({ default: m.ChatCheckout })));
 import { FileView } from "./Review";
+import { useReviewFix } from "./useReviewFix";
 import {
-  acknowledgeDelivery, approveDelivery, chatChanges, committedFile, committedTree, inspectDelivery, previewDelivery, recordFinding, reviewDraft,
+  acknowledgeDelivery, approveDelivery, chatChanges, committedFile, committedTree, inspectDelivery, previewDelivery, reviewDraft,
   type Changes, type CommitEntry, type CommitFile, type Delivery, type DeliveryAction, type DeliveryInspection, type DraftReview,
 } from "./changes-api";
 import "./chat-changes.css";
@@ -13,6 +14,8 @@ const ACTIONS: Record<DeliveryAction, string> = {
 export function ChatChanges({ chatId, tick, disabled, onChanged, onFeedback }: {
   chatId: number; tick: number; disabled: boolean; onChanged: () => void; onFeedback?: (text: string) => void;
 }) {
+  const submitFix = useReviewFix(chatId);
+  const [submitted, setSubmitted] = useState(false);
   const [changes, setChanges] = useState<Changes | null>(null);
   const [review, setReview] = useState<DraftReview | null>(null);
   const [preview, setPreview] = useState<Delivery | null>(null);
@@ -35,8 +38,8 @@ export function ChatChanges({ chatId, tick, disabled, onChanged, onFeedback }: {
   }, [chatId, changeTick, disabled, refresh]);
   async function command(work: () => Promise<void>) {
     setBusy(true); setProblem(null);
-    try { await work(); }
-    catch (error: unknown) { setProblem(error instanceof Error ? error.message : String(error)); }
+    try { await work(); return true; }
+    catch (error: unknown) { setProblem(error instanceof Error ? error.message : String(error)); return false; }
     finally { setBusy(false); onChanged(); setRefresh((n) => n + 1); }
   }
   const pending = changes?.deliveries.some((d) => d.state === "running" || d.state === "inspection");
@@ -67,7 +70,12 @@ export function ChatChanges({ chatId, tick, disabled, onChanged, onFeedback }: {
       {review && selected && <section aria-label="Draft review">
         <h4>Review {selected.target.slice_key} · {selected.commit_sha.slice(0, 12)}</h4>
         <p className="mono">{selected.base_sha} → {selected.commit_sha}</p>
-        {review.files.map((file) => <FileView key={file.path} file={file} />)}
+        <p className="faint">Submitting a comment sends it to the maker for repair and independent checks. Only this slice is approved; no push, PR or merge.</p>
+        {submitted && <p role="status">Review submitted to the agent. Follow its new attempt in this chat.</p>}
+        {review.files.map((file) => <FileView key={file.path} file={file} onComment={unavailable || !fresh ? undefined : async (body, anchor) => command(async () => {
+          await submitFix({ kind: "draft", target: selected.target, body, anchor: { path: anchor.file_path, side: anchor.side, line: anchor.line_start } }, changes.workspace_epoch);
+          setSubmitted(true);
+        })} />)}
         <button className="button" disabled={busy} onClick={() => void command(async () => { setTree(await committedTree(chatId, selected.target)); })}>Browse committed tree</button>
         {tree && <div>
           <label>File in reviewed commit<select value={path} onChange={(event) => { setPath(event.target.value); setFile(null); }}>
@@ -79,11 +87,11 @@ export function ChatChanges({ chatId, tick, disabled, onChanged, onFeedback }: {
         </div>}
         {review.findings.map((event) => <p key={event.id} className="notice">{event.summary}</p>)}
         <form onSubmit={(event) => { event.preventDefault(); void command(async () => {
-          await recordFinding(chatId, selected.target, finding); setFinding(""); setReview(await reviewDraft(chatId, selected.target));
+          await submitFix({ kind: "draft", target: selected.target, body: finding, anchor: null }, changes.workspace_epoch); setFinding(""); setSubmitted(true);
         }); }}>
           <label>Review finding<textarea value={finding} onChange={(e) => setFinding(e.target.value)} rows={3} maxLength={32000} /></label>
-          <p className="faint">Saved against this commit in the chat's execution evidence. This does not approve delivery or start a model.</p>
-          <button className="button" disabled={busy || disabled || !fresh || !finding.trim()}>Record finding</button>
+          <p className="faint">Send this finding for repair of this exact slice, without approving publication.</p>
+          <button className="button" disabled={unavailable || !fresh || !finding.trim()}>Send finding for repair</button>
         </form>
         {!fresh && <p className="notice">This draft changed. Review it again before acting.</p>}
         {disabled && <p className="faint">Finish or close the current execution before delivery.</p>}

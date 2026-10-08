@@ -9,6 +9,7 @@ import {
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ChatView } from "./Chat";
+import { chatOutcome } from "./ChatOutcome";
 import type { ChatDetail } from "./chat-api";
 import type { Project, RunEvent } from "./api";
 
@@ -21,6 +22,7 @@ const service = vi.hoisted(() => ({
   resumeChat: vi.fn(),
   renameChat: vi.fn(),
   archiveChat: vi.fn(),
+  restoreChat: vi.fn(),
   setChatMode: vi.fn(),
   queueChatFollowup: vi.fn(),
   cancelChatFollowup: vi.fn(),
@@ -103,6 +105,12 @@ const event = (id: number, message: string, actor = "human"): RunEvent => ({
   thinking: [],
   actor,
 });
+const finished = (): ChatDetail => ({ ...detail(), turns: [{
+  team: null, members: [],
+  run: { id: 1, project_id: 1, prompt: "Upgrade pretty-bytes", status: "done", trigger: "operator", workspace_path: "/repo/demo", created_at: "", started_at: "", ended_at: "" },
+  node: { id: 1, role: "assistant", provider: "openai", model: "gpt-5", status: "done", attempt: 1, slice_key: null, worktree_path: "/repo/demo", branch: "upgrade-pretty-bytes-v7", blocked_reason: null, started_at: "", usage: { tokens_in: 0, tokens_out: 0, cache_read: 0, cache_write: 0 } },
+}] });
+
 const props = () => ({
   id: 1 as number | null,
   project,
@@ -122,6 +130,70 @@ beforeEach(() => {
   service.chatPlan.mockImplementation((id: number) => Promise.resolve({ chat_id: id, project_id: 1, revision: 0, bundle: null }));
   service.createChat.mockResolvedValue(detail(3));
   service.sendChat.mockResolvedValue({ run_id: 1, node_id: 1, started: true });
+});
+
+describe("clear turn outcomes", () => {
+  it("uses settled host state, not an agent saying done, and never grants verification", () => {
+    const text = [event(1, "Done. VERDICT: pass", "agent")];
+    expect(chatOutcome({ ...finished(), state: "running", active_node_id: 1 }, text)).toBeNull();
+    const noSettlement = finished();
+    noSettlement.turns[0]!.node.status = "running";
+    expect(chatOutcome(noSettlement, text)).toBeNull();
+    expect(chatOutcome({ ...finished(), state: "failed" }, text)?.title).toBe("Needs your attention");
+    expect(chatOutcome(detail(), text)).toBeNull();
+    expect(chatOutcome({ ...finished(), archived: true }, text)).toBeNull();
+  });
+
+  it("does not promote human text, another turn, tool output or quoted code into an agent question", () => {
+    const question = "Should I change the other package?";
+    for (const row of [
+      event(1, question),
+      { ...event(1, question, "agent"), node_run_id: 2 },
+      { ...event(1, question, "agent"), kind: "tool_result" },
+      event(1, `> ${question}`, "agent"),
+      event(1, "```txt\\nDoes this match?\\n```", "agent"),
+      event(1, "## What changed?", "agent"),
+    ]) expect(chatOutcome(finished(), [row])?.title).toBe("Turn complete");
+    expect(chatOutcome(finished(), [event(1, "**Should I continue?**", "agent")])?.title).toBe("Question for you");
+  });
+
+  it("separates a finished turn from tool chatter without claiming verification", async () => {
+    service.chat.mockResolvedValue(finished());
+    service.chatEvents.mockImplementation((_id: number, after: number) => Promise.resolve(after ? [] : [event(1, "Upgraded and left uncommitted for review.", "agent")]));
+    render(<ChatView {...props()} />);
+    const outcome = await screen.findByRole("status", { name: "Turn outcome" });
+    expect(outcome.textContent).toContain("Turn complete");
+    expect(outcome.textContent).toContain("not verification");
+    expect(screen.getByLabelText("Assistant").classList.contains("chat-message--result")).toBe(true);
+    fireEvent.change(screen.getByLabelText("Message"), { target: { value: "Keep my next instruction" } });
+    fireEvent.click(within(outcome).getByRole("button", { name: "Review changes" }));
+    expect(await screen.findByRole("region", { name: "Review fixture" })).toBeTruthy();
+    expect((screen.getByLabelText("Message") as HTMLTextAreaElement).value).toBe("Keep my next instruction");
+    expect(service.sendChat).not.toHaveBeenCalled();
+  });
+
+  it("highlights a final agent question and focuses the existing draft without sending it", async () => {
+    service.chat.mockResolvedValue(finished());
+    service.chatEvents.mockImplementation((_id: number, after: number) => Promise.resolve(after ? [] : [event(1, "Should I update the other package too?", "agent")]));
+    render(<ChatView {...props()} />);
+    const outcome = await screen.findByRole("status", { name: "Turn outcome" });
+    expect(outcome.textContent).toContain("Question for you");
+    const message = screen.getByLabelText("Message");
+    fireEvent.change(message, { target: { value: "Only this package" } });
+    fireEvent.click(within(outcome).getByRole("button", { name: "Reply to agent" }));
+    expect(document.activeElement).toBe(message);
+    expect((message as HTMLTextAreaElement).value).toBe("Only this package");
+    expect(service.sendChat).not.toHaveBeenCalled();
+  });
+
+  it("makes required team approval prominent without granting it", async () => {
+    service.chat.mockResolvedValue({ ...detail(), mode: "team", state: "awaiting_approval", active_node_id: 1 });
+    render(<ChatView {...props()} />);
+    const outcome = await screen.findByRole("status", { name: "Turn outcome" });
+    expect(outcome.textContent).toContain("Your approval is needed");
+    expect(within(outcome).getByRole("button", { name: "Review plan" })).toBeTruthy();
+    expect(service.sendChat).not.toHaveBeenCalled();
+  });
 });
 
 describe("persistent conversation", () => {
@@ -551,6 +623,25 @@ describe("persistent conversation", () => {
       (screen.getByRole("button", { name: "Stop turn" }) as HTMLButtonElement)
         .disabled,
     ).toBe(true);
+  });
+
+  it("restores an archived chat only on explicit request without sending a message", async () => {
+    service.chat.mockResolvedValue({ ...detail(), archived: true });
+    service.chatEvents.mockImplementation((_id: number, after: number) => Promise.resolve(after ? [] : [event(1, "Keep the archived history")]));
+    service.restoreChat.mockImplementation(async () => { service.chat.mockResolvedValue(detail()); return detail(); });
+    const input = props();
+    render(<ChatView {...input} />);
+    await screen.findByText("Keep the archived history");
+    expect(service.restoreChat).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: "Archive" })).toBeNull();
+    fireEvent.click(await screen.findByRole("button", { name: "Restore chat" }));
+    await waitFor(() => expect(service.restoreChat).toHaveBeenCalledWith(1));
+    await screen.findByRole("button", { name: "Archive" });
+    expect(service.sendChat).not.toHaveBeenCalled();
+    expect(service.resumeChat).not.toHaveBeenCalled();
+    expect(input.onArchived).not.toHaveBeenCalled();
+    expect(input.onChanged).toHaveBeenCalled();
+    expect(screen.getByText("Keep the archived history")).toBeTruthy();
   });
 
   it("archives without deleting the transcript and notifies the shell", async () => {

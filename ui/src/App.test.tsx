@@ -14,6 +14,7 @@ import type { Chat } from "./chat-api";
 
 const state = vi.hoisted(() => ({
   setup: false,
+  update: false,
   readiness: null as Promise<{needs_setup:boolean}> | null,
   fail: false,
   subscribe: null as (() => void) | null,
@@ -44,6 +45,7 @@ vi.mock("./api", async (original) => ({
           },
         ]),
   doctor: () => state.readiness ?? Promise.resolve({ needs_setup: state.setup }),
+  updateCheck: () => Promise.resolve({current:"0.7.5",latest:state.update ? "0.7.6" : "0.7.5",method:"release",can_update:state.update,blocked:null,targets:[],approval:"fixture",restart_required:false}),
   subscribe: (callback: () => void) => {
     state.subscribe = callback;
     return () => {
@@ -73,7 +75,7 @@ vi.mock("./api", async (original) => ({
     ]),
 }));
 vi.mock("./chat-api", () => ({
-  chats: (slug: string) => Promise.resolve(slug === "demo" ? state.chats : []),
+  chats: (slug: string, includeArchived = false) => Promise.resolve(slug === "demo" ? state.chats.filter(chat => includeArchived || !chat.archived) : []),
 }));
 vi.mock("./Chat", () => ({
   ChatView: ({
@@ -144,6 +146,15 @@ vi.mock("./Workspace", async (original) => ({
   ),
 }));
 
+it("shows available updates in the desktop shell without opening Settings or losing a chat draft", async () => {
+  state.update = true;
+  render(<App />);
+  const draft = await screen.findByLabelText("Fixture draft");
+  fireEvent.change(draft, {target:{value:"keep my conversation"}});
+  expect(await screen.findByText(/0\.7\.6 is available/)).toBeDefined();
+  expect((draft as HTMLInputElement).value).toBe("keep my conversation");
+});
+
 function conversation(id: number, title: string): Chat {
   return {
     id,
@@ -166,6 +177,7 @@ function conversation(id: number, title: string): Chat {
 
 beforeEach(() => {
   state.setup = false;
+  state.update = false;
   state.readiness = null;
   state.fail = false;
   state.run = Promise.resolve({ workspace_path: "/demo-task" });
@@ -189,6 +201,24 @@ it("opens chat-first with real chats beneath their project, not a run list", asy
     within(sidebar).getByRole("button", { name: "First conversation" }),
   ).not.toBeNull();
   expect(screen.queryByRole("heading", { name: "Today content" })).toBeNull();
+});
+
+it("shows archived chats only on request without closing an open chat or discarding its draft", async () => {
+  state.chats.push({ ...conversation(3, "Archived investigation"), archived: true });
+  render(<App />);
+  fireEvent.click(await screen.findByRole("button", { name: "First conversation" }));
+  fireEvent.change(screen.getByLabelText("Fixture draft"), { target: { value: "Keep this draft" } });
+  expect(screen.queryByRole("button", { name: /Archived investigation/ })).toBeNull();
+  fireEvent.click(screen.getByRole("checkbox", { name: "Show archived chats" }));
+  await screen.findByRole("button", { name: /Archived investigation/ });
+  expect((screen.getByLabelText("Fixture draft") as HTMLInputElement).value).toBe("Keep this draft");
+  fireEvent.click(screen.getByRole("checkbox", { name: "Show archived chats" }));
+  expect(screen.queryByRole("button", { name: /Archived investigation/ })).toBeNull();
+  expect((screen.getByLabelText("Fixture draft") as HTMLInputElement).value).toBe("Keep this draft");
+  fireEvent.click(screen.getByRole("checkbox", { name: "Show archived chats" }));
+  fireEvent.click(await screen.findByRole("button", { name: /Archived investigation/ }));
+  await screen.findByRole("heading", { name: "Demo project / 3" });
+  expect(state.chats.find(chat => chat.id === 3)?.archived).toBe(true);
 });
 
 it("collapses to an icon rail without losing the chat or draft, and remembers it", async () => {

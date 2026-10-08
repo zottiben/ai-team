@@ -67,8 +67,8 @@ export type ChatDetail = Chat & {
   recovery_error?: string;
 };
 
-export function chats(project: string): Promise<Chat[]> {
-  return api(`/chats?project=${encodeURIComponent(project)}`);
+export function chats(project: string, includeArchived = false): Promise<Chat[]> {
+  return api(`/chats?project=${encodeURIComponent(project)}${includeArchived ? "&include_archived=true" : ""}`);
 }
 
 export function chat(id: number): Promise<ChatDetail> {
@@ -123,4 +123,8 @@ export function renameChat(id: number, title: string): Promise<Chat> {
 
 export function archiveChat(id: number): Promise<Chat> {
   return request(`/chats/${id}`, "PATCH", { archived: true });
+}
+
+export function restoreChat(id: number): Promise<Chat> {
+  return request(`/chats/${id}`, "PATCH", { archived: false });
 }

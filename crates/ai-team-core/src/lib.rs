@@ -12,6 +12,8 @@
 mod analytics;
 mod chat;
 pub mod chat_changes;
+pub mod chat_push;
+pub mod chat_review;
 mod chat_schedule;
 pub mod chat_today;
 pub mod chat_workspaces;
@@ -167,8 +169,9 @@ pub use today::{
     from_store as today_from_store, rank as rank_today, Item, Urgency,
 };
 pub use update::{
-    apply as apply_update, check as check_update, current_version, is_newer,
-    method as install_method, repair as repair_app, replaced_app, Available, Host, Method, Step,
+    current_version, is_newer, method as install_method, replaced_app, Host, Method,
+    UpdateInspection, UpdateInstallation, UpdateManager, UpdatePermit, UpdateState, UpdateStatus,
+    UpdateTarget, Updated,
 };
 pub use util::{
     mint_token, normalise_remote, now, process_is_alive, rfc3339_in, slugify, zone_matches,

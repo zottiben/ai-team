@@ -277,7 +277,6 @@ fn print_guardrails(guardrails: &Guardrails) {
         budget(guardrails.budget_seconds_run),
         budget(guardrails.budget_seconds_node)
     );
-    println!("  turns per seat     {}", budget(guardrails.max_turns_node));
     println!(
         "  on failure         {} after {} repair(s)",
         guardrails.on_failure, guardrails.max_repairs
@@ -306,9 +305,6 @@ fn apply_guardrails(mut guardrails: Guardrails, args: &TeamEditArgs) -> Result<G
     }
     if let Some(value) = args.budget_seconds_node {
         guardrails.budget_seconds_node = optional(value);
-    }
-    if let Some(value) = args.max_turns_node {
-        guardrails.max_turns_node = optional(value);
     }
     if let Some(value) = args.max_repairs {
         if value < 0 {

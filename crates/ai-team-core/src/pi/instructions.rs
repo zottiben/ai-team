@@ -122,6 +122,22 @@ fn preamble(agent: &Agent, team: &Team) -> String {
     out
 }
 
+/// Added only to a turn the person explicitly asked to push (`chat_push`).
+///
+/// Two things this has to prevent, both of which a model does by default: running
+/// `git push` itself, which the guard refuses anyway and which would lose the host's
+/// receipt; and reporting the push as done before it has happened, which it cannot know.
+pub(super) const CHAT_PUBLICATION: &str =
+    " In this message the person explicitly asked you to push, so ai-team has authorised \
+     one publication of this checkout's current branch. Only make a commit if this message \
+     explicitly asks you to commit; a push-only request must use the existing commit and \
+     leave dirty files untouched. Never amend or reset history. Then call the ai-team-planner \
+     tool request_publication with that exact \
+     commit SHA, and end your turn. ai-team performs the push after your turn ends and \
+     reports the real result in this conversation. Never run git push yourself, never open \
+     a pull request, merge or tag, and never tell the person the work is published - when \
+     your turn ends you do not yet know whether it was.";
+
 pub(super) const CHAT_MCP_BOOTSTRAP: &str =
     "Before using planning tools, call mcp({connect: \"ai-team-planner\"}) to connect this chat's \
      scoped server. Its tools load on demand; use mcp discovery/connect for other permitted \

@@ -39,7 +39,14 @@ async fn stopped(mode: &str) -> Fixture {
         }
     })
     .await
-    .unwrap();
+    .unwrap_or_else(|error| {
+        panic!(
+            "{mode} did not reach {marker}: {error}; build finished={}; slice={:?}; calls={:?}",
+            task.is_finished(),
+            f.lease(),
+            calls(&f)
+        )
+    });
     f.store
         .request_chat_stop(f.chat.id, f.turn.node_id)
         .unwrap();
@@ -265,14 +272,14 @@ async fn refusals_preserve_evidence() {
     refused(&f, "attempt allowance is spent").await;
     f.conn()
         .execute(
-            "UPDATE run SET max_repairs = 2, max_turns_node = 0 WHERE id = ?1",
+            "UPDATE run SET max_repairs = 2, budget_tokens_node = 0 WHERE id = ?1",
             [f.turn.run_id],
         )
         .unwrap();
-    refused(&f, "its cap is 0").await;
+    refused(&f, "node's token budget").await;
     f.conn()
         .execute(
-            "UPDATE run SET max_turns_node = NULL WHERE id = ?1",
+            "UPDATE run SET budget_tokens_node = NULL WHERE id = ?1",
             [f.turn.run_id],
         )
         .unwrap();

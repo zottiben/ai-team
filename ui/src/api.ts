@@ -817,15 +817,25 @@ export type Available = {
   latest: string | null;
   method: "release" | "source" | "unknown";
   can_update: boolean;
+  update_available: boolean;
   blocked: string | null;
+  targets: { name: string; path: string; version: string | null; fingerprint: string }[];
+  approval: string | null;
+  checked_at: string | null;
+  state: "idle" | "updating" | "inspection" | "restart";
+  release_url: string;
 };
 
-export function updateCheck(): Promise<Available> {
-  return api<Available>("/update");
+export function updateCheck(force = false): Promise<Available> {
+  return api<Available>(`/update${force ? "?refresh=true" : ""}`);
 }
 
-export function updateApply(): Promise<{ version: string; restart_required: boolean }> {
-  return post("/update", {});
+export function updateInspect(): Promise<{ installed: boolean; version: string; backup: string; detail: string }> {
+  return post("/update/inspect", {});
+}
+
+export function updateApply(version: string, approval: string): Promise<{ version: string; restart_required: boolean; backup: string; warnings: string[] }> {
+  return post("/update", { version, approval });
 }
 
 export type Check = {

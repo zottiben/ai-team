@@ -52,6 +52,16 @@ it("a select looks like the window's other controls wherever it is", () => {
   expect(base).toMatch(/border-radius:\s*var\(--radius-sm\)/);
 });
 
+it("checkout fields and consent have full-width aligned controls rather than browser defaults", () => {
+  const checkout = readFileSync(join(import.meta.dirname, "chat.css"), "utf8");
+  const fields = checkout.match(/\.chat-checkout__field :is\(input, select\) \{([^}]*)\}/)?.[1] ?? "";
+  expect(fields).toMatch(/width:\s*100%/);
+  expect(fields).toMatch(/min-height:\s*2.5rem/);
+  expect(fields).toMatch(/font:\s*inherit/);
+  expect(fields).toMatch(/background:\s*var\(--surface-canvas-default\)/);
+  expect(checkout).toMatch(/\.workspace-setup-consent\s*\{[^}]*grid-template-columns:\s*auto minmax\(0, 1fr\)/);
+});
+
 // A board card's foot - who holds it, where, which seats, how big - was one row whose
 // chips could each shrink to nothing, so in a board column every one was cut to an
 // ellipsis: "me…  …/1/ai…  backend + …  ~…". It wraps instead, and a chip gives up

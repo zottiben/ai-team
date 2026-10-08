@@ -28,9 +28,8 @@ pub(crate) async fn run(args: UiArgs) -> Result<()> {
         // own setup page, or by `ait init` in another terminal.
         db_path: Some(db),
         credentials: ai_team_core::CredentialStore::default(),
-        // Served by `ait`, so the update route replaces `ait`. The desktop shell says
-        // `Desktop` instead, and gets the app bundle.
         host: ai_team_core::Host::Cli,
+        updates: ai_team_core::UpdateManager::discover(ai_team_core::Host::Cli)?,
     })
     .await
     .context("starting the local server")?;

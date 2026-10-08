@@ -84,17 +84,49 @@ impl PlannerMcp {
         Store::open_planning_host(&self.db)?.planning_access(self.chat, PlanActor::Agent(self.node))
     }
 
+    /// What this seat may call. `request_publication` appears only while the person's own
+    /// explicit push instruction is still live for this exact turn - a tool the model can
+    /// see is one it keeps trying, so an unauthorised turn is not offered it at all.
+    fn tools(&self) -> ai_team_core::Result<Vec<&'static str>> {
+        let store = Store::open_planning_host(&self.db)?;
+        let mut names = store
+            .planning_access(self.chat, PlanActor::Agent(self.node))?
+            .tools()
+            .to_vec();
+        if store
+            .chat_push_grant_for_node(self.chat, self.node)?
+            .is_some()
+        {
+            names.push(ai_team_core::chat_push::PUBLICATION_TOOL);
+        }
+        Ok(names)
+    }
+
     fn invoke(&self, name: &str, mut arguments: Map<String, Value>) -> ai_team_core::Result<Value> {
         let mut store = Store::open_planning_host(&self.db)?;
         let actor = PlanActor::Agent(self.node);
-        if !store
-            .planning_access(self.chat, actor)?
-            .tools()
-            .contains(&name)
-        {
+        if !self.tools()?.contains(&name) {
             return Err(ai_team_core::Error::invalid(
                 "that tool is not allowed for this seat",
             ));
+        }
+        if name == ai_team_core::chat_push::PUBLICATION_TOOL {
+            #[derive(serde::Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct Request {
+                commit: String,
+            }
+            let request: Request = serde_json::from_value(arguments.into())?;
+            // The grant is rechecked inside, against the rows, so a stale tool list
+            // cannot turn into permission.
+            return Ok(Value::String(tokio::runtime::Handle::current().block_on(
+                ai_team_core::chat_push::request_publication(
+                    &self.db,
+                    self.chat,
+                    self.node,
+                    &request.commit,
+                ),
+            )?));
         }
         if matches!(name, "list_worktrees" | "request_worktree") {
             #[derive(serde::Deserialize)]
@@ -158,16 +190,12 @@ impl ServerHandler for PlannerMcp {
         _context: RequestContext<RoleServer>,
     ) -> std::result::Result<ListToolsResult, ErrorData> {
         let server = self.clone();
-        let access = tokio::task::spawn_blocking(move || server.access())
+        let names = tokio::task::spawn_blocking(move || server.tools())
             .await
             .map_err(|error| ErrorData::internal_error(error.to_string(), None))?
             .map_err(|error| ErrorData::invalid_request(error.to_string(), None))?;
         Ok(ListToolsResult::with_all_items(
-            access
-                .tools()
-                .iter()
-                .map(|name| tools::definition(name))
-                .collect(),
+            names.iter().map(|name| tools::definition(name)).collect(),
         ))
     }
 

@@ -118,6 +118,13 @@ jobs:
           fi
           echo "identity=$identity" >> "$GITHUB_OUTPUT"
 
+      - name: Sign and verify the universal CLI
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ steps.signing.outputs.identity }}
+        run: |
+          codesign --force --sign "$APPLE_SIGNING_IDENTITY" dist/ait
+          codesign --verify --strict --all-architectures --verbose=2 dist/ait
+
       - name: Bundle the desktop app
         env:
           APPLE_SIGNING_IDENTITY: ${{ steps.signing.outputs.identity }}

@@ -76,10 +76,10 @@ impl Store {
             if head != approval.expect_head { return Err(Error::invalid("the reviewed checkout HEAD changed; review it again")); }
             if !dirty.is_empty() { return Err(Error::invalid("the checkout is dirty; commit or stash your files explicitly before approving a build")); }
             for (slice, agent) in ready.iter().zip(assignments) {
-                tx.execute("INSERT INTO chat_build_slice (run_id, slice_key, planner_slice_id, approved_rev, assigned_agent_id, assigned_agent_rev, agent_snapshot, branch, lease_holder)
-                    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)", params![run.id, slice.key, slice.id, slice.rev, agent.id, agent.rev,
-                        serde_json::to_string(agent)?, format!("ai-team/chat-{chat_id}/run-{}/slice-{}", run.id, slice.id),
-                        format!("ai-team chat-{chat_id} run-{} slice-{}", run.id, slice.id)])?;
+                tx.execute("INSERT INTO chat_build_slice (run_id, slice_key, planner_slice_id, approved_rev, assigned_agent_id, assigned_agent_rev, agent_snapshot, branch, lease_holder, scope_hash)
+                    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)", params![run.id, slice.key, slice.id, slice.rev, agent.id, agent.rev,
+                        serde_json::to_string(agent)?, format!("ai-team/{}-c{chat_id}-r{}-s{}", crate::util::task_slug(&slice.title), run.id, slice.id),
+                        format!("ai-team chat-{chat_id} run-{} slice-{}", run.id, slice.id), crate::chat_review::scope_hash(slice)])?;
             }
             tx.execute("UPDATE chat_team_run SET phase = 'building', base_sha = ?2, approved_revision = ?3, reason = NULL, quiescent = 0, rev = rev + 1 WHERE run_id = ?1",
                 params![run.id, head, plan.revision])?;

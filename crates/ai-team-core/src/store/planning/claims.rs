@@ -28,7 +28,7 @@ impl Store {
             let branch = approved.branch.as_deref().ok_or_else(|| Error::invalid("this approval has no draft branch"))?;
             if approved.lease_state != "leased" {
                 let (head, dirty) = super::build::checkout(std::path::Path::new(&chat.workspace_path))?;
-                if head != control.base_sha || !dirty.is_empty() {
+                if head != super::review::source_head(tx, control.receipt.run_id, &control.base_sha)? || !dirty.is_empty() {
                     return Err(Error::invalid("the approved checkout changed during leasing; keep its files and inspect the retained lease"));
                 }
                 super::build::prepared(std::path::Path::new(lease), &control.base_sha, branch)?;
@@ -43,10 +43,13 @@ impl Store {
             let owned = slice.claimed_by.as_deref() == Some(&actor)
                 && slice.worktree_path.as_deref().is_some_and(|path| crate::same_worktree(path, lease))
                 && slice.branch.as_deref() == Some(branch);
-            let slice = if owned && (approved.lease_state == "leased" || (slice.rev == approved.approved_rev + 1 && slice.status == ai_planner_core::Status::Active)) {
+            let repair = super::review::is_review(tx, approved.run_id)?;
+            let expected_status = if repair { ai_planner_core::Status::InReview } else { ai_planner_core::Status::Ready };
+            let claimed_status = if repair { ai_planner_core::Status::InReview } else { ai_planner_core::Status::Active };
+            let slice = if owned && (approved.lease_state == "leased" || (slice.rev == approved.approved_rev + 1 && slice.status == claimed_status)) {
                 slice
             } else {
-                if approved.lease_state == "retained" || slice.rev != approved.approved_rev || slice.status != ai_planner_core::Status::Ready || slice.claimed_by.is_some() || slice.branch.is_some() {
+                if approved.lease_state == "retained" || slice.rev != approved.approved_rev || slice.status != expected_status || slice.claimed_by.is_some() || (if repair { slice.branch.as_deref() != Some(branch) } else { slice.branch.is_some() }) {
                     return Err(Error::invalid("the approved slice changed or is held elsewhere; do not steal or rewrite its claim"));
                 }
                 store.set_actor(actor);

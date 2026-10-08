@@ -194,7 +194,6 @@ fn guardrails_are_a_team_setting_and_every_run_takes_its_own_copy() {
         budget_tokens_node: Some(500),
         budget_seconds_run: Some(60),
         budget_seconds_node: Some(30),
-        max_turns_node: Some(3),
         max_repairs: 0,
         on_failure: OnFailure::AbortBranch,
     };
@@ -208,7 +207,7 @@ fn guardrails_are_a_team_setting_and_every_run_takes_its_own_copy() {
     assert_eq!(run.budget_tokens_node, Some(500));
     assert_eq!(run.budget_seconds, Some(60));
     assert_eq!(run.budget_seconds_node, Some(30));
-    assert_eq!(run.max_turns_node, Some(3));
+    assert_eq!(run.max_turns_node, None);
     assert_eq!(run.max_repairs, 0);
     assert_eq!(run.on_failure, OnFailure::AbortBranch);
 
@@ -218,7 +217,7 @@ fn guardrails_are_a_team_setting_and_every_run_takes_its_own_copy() {
         .unwrap();
     let unchanged = store.run(run.id).unwrap();
     assert_eq!(unchanged.budget_tokens_node, Some(500));
-    assert_eq!(unchanged.max_turns_node, Some(3));
+    assert_eq!(unchanged.max_turns_node, None);
     assert_eq!(unchanged.max_repairs, 0);
     assert_eq!(unchanged.on_failure, OnFailure::AbortBranch);
 }

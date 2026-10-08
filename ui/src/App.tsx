@@ -13,6 +13,7 @@ const Schedule = lazy(() => import("./Schedule").then(m => ({ default: m.Schedul
 import { Settings } from "./Settings";
 import { Setup } from "./Setup";
 import { Today } from "./Today";
+import { UpdateBanner, useUpdates } from "./Update";
 import {
   Workspace,
   WORKSPACE_VIEWS,
@@ -45,6 +46,7 @@ type Page =
   | "legacy";
 const LAST_CHAT = "ai-team.last-chat";
 const SIDEBAR_COLLAPSED = "ai-team.sidebar-collapsed";
+const ARCHIVED_CHATS = "ai-team.show-archived-chats";
 
 function restored(): { project: string | null; chat: number | null } {
   try {
@@ -70,6 +72,7 @@ function restored(): { project: string | null; chat: number | null } {
 }
 
 export default function App() {
+  const updates = useUpdates();
   const [initial] = useState(restored);
   const [projects, setProjects] = useState<Project[]>([]);
   const [conversations, setConversations] = useState<Record<string, Chat[]>>(
@@ -96,6 +99,14 @@ export default function App() {
     catch { /* The sidebar still works without persistent storage. */ }
   }, [collapsed]);
   const [filter, setFilter] = useState("");
+  const [includeArchived, setIncludeArchived] = useState(() => {
+    try { return localStorage.getItem(ARCHIVED_CHATS) === "true"; }
+    catch { return false; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem(ARCHIVED_CHATS, String(includeArchived)); }
+    catch { /* Archive visibility remains usable without persistent storage. */ }
+  }, [includeArchived]);
   const [trees, setTrees] = useState<Worktree[]>([]);
   const [workspace, setWorkspace] = useState<string | null>(null);
   const [tool, setTool] = useState<WorkspaceView>("source");
@@ -114,7 +125,7 @@ export default function App() {
       const lists = await Promise.all(
         list.map(
           async (project) =>
-            [project.slug, await fetchChats(project.slug)] as const,
+            [project.slug, await fetchChats(project.slug, includeArchived)] as const,
         ),
       );
       if (request !== generation.current) return;
@@ -130,7 +141,7 @@ export default function App() {
       if (request === generation.current)
         setProblem(error instanceof Error ? error.message : String(error));
     }
-  }, []);
+  }, [includeArchived]);
 
   useEffect(() => {
     void refresh();
@@ -306,6 +317,10 @@ export default function App() {
           value={filter}
           onChange={(event) => setFilter(event.target.value)}
         />
+        <label className="chat-archive-filter">
+          <input type="checkbox" checked={includeArchived} onChange={event => setIncludeArchived(event.target.checked)} />
+          Show archived chats
+        </label>
         <div
           className="chat-projects"
           role="navigation"
@@ -348,7 +363,7 @@ export default function App() {
               >
                 {(conversations[entry.slug] ?? [])
                   .filter((chat) =>
-                    chat.title.toLowerCase().includes(filter.toLowerCase()),
+                    (includeArchived || !chat.archived) && chat.title.toLowerCase().includes(filter.toLowerCase()),
                   )
                   .map((chat) => (
                     <button
@@ -365,6 +380,7 @@ export default function App() {
                       onClick={() => navigate(entry.slug, chat.id)}
                     >
                       <span>{chat.title}</span>
+                      {chat.archived && <span className="faint chat-archive-badge">Archived</span>}
                       {chat.active_node_id !== null && (
                         <span className="chat-pulse" aria-label="Active turn" />
                       )}
@@ -410,6 +426,7 @@ export default function App() {
         </div>
       </aside>
       <div className="chat-main">
+        <UpdateBanner updates={updates} />
         {problem && (
           <p className="error chat-notice" role="alert">
             {problem}
@@ -511,7 +528,7 @@ export default function App() {
           <main className="main">
             {page === "projects" && <Projects onChanged={changed} />}
             {page === "settings" && (
-              <Settings theme={theme} onTheme={setTheme} onChanged={changed} />
+              <Settings theme={theme} onTheme={setTheme} onChanged={changed} updates={updates} />
             )}
             {page === "schedule" && (
               <Suspense fallback={<p>Loading schedules…</p>}><Schedule

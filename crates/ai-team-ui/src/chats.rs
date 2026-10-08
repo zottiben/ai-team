@@ -17,7 +17,9 @@ pub(crate) async fn recover_on_attach(
     request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
-    state.recover_chats().await;
+    if !crate::updates::is_update(&request) {
+        state.recover_chats().await;
+    }
     next.run(request).await
 }
 
@@ -36,8 +38,11 @@ pub(crate) fn routes() -> Router<AppState> {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ProjectQuery {
     project: String,
+    #[serde(default)]
+    include_archived: bool,
 }
 
 async fn today(State(state): State<AppState>) -> Result<Json<ai_team_core::chat_today::ChatToday>> {
@@ -51,7 +56,10 @@ async fn list(
     let store = state.store()?;
     let store = store.lock();
     let project = store.find_project(&query.project)?;
-    Ok(Json(store.chats(project.id)?))
+    Ok(Json(store.chats_including_archived(
+        project.id,
+        query.include_archived,
+    )?))
 }
 
 #[derive(Deserialize)]
@@ -252,15 +260,45 @@ async fn send(
 ) -> Result<Json<ai_team_core::ChatSubmission>> {
     let db = state.database_path()?;
     ai_team_core::recover_abandoned_chat_team(&db, id).await?;
+    // The only place push authority is ever minted. A schedule, a queued instruction, a
+    // recovered prompt or an agent's own text is also a `run.prompt`, and none of them is
+    // a person sending a message here.
+    if let Some(receipt) =
+        ai_team_core::Store::open(&db)?.replay_chat_push(id, &input.request_id, &input.message)?
+    {
+        return Ok(Json(receipt));
+    }
+    let authority = push_authority(&db, id, &input).await?;
+    if let ai_team_core::chat_push::Authority::Team(target, _) = authority {
+        return Ok(Json(publish_team(db, id, input, target).await?));
+    }
     let registry = ModelRegistry::load()?;
-    let receipt = state.store()?.lock().begin_chat_turn_at_epoch(
-        id,
-        &input.message,
-        &input.request_id,
-        &registry,
-        input.workspace_epoch,
-    )?;
+    let receipt = {
+        let store = state.store()?;
+        let mut store = store.lock();
+        if let ai_team_core::chat_push::Authority::Solo(target) = &authority {
+            store.begin_chat_turn_with_push(
+                id,
+                &input.message,
+                &input.request_id,
+                &registry,
+                input.workspace_epoch,
+                target.clone(),
+            )?
+        } else {
+            store.begin_chat_turn_at_epoch(
+                id,
+                &input.message,
+                &input.request_id,
+                &registry,
+                input.workspace_epoch,
+            )?
+        }
+    };
     if receipt.started {
+        // Before the worker: the seat is offered the publication tool only if this is
+        // written down first. A replay already has its own row and must not mint another.
+        record_authority(&db, id, receipt.node_id, &authority)?;
         if state
             .store()?
             .lock()
@@ -278,7 +316,82 @@ async fn send(
     Ok(Json(receipt))
 }
 
-fn spawn(
+/// Resolve what this exact human message authorises, before any row is written.
+///
+/// The prompt the person typed is read once, here, in the authenticated send path. The
+/// checkout generation they were looking at is checked too, so a delayed request cannot
+/// authorise a push against a checkout they never saw.
+async fn push_authority(
+    db: &std::path::Path,
+    id: i64,
+    input: &SendRequest,
+) -> Result<ai_team_core::chat_push::Authority> {
+    let mut store = ai_team_core::Store::open(db)?;
+    let chat = store.chat(id)?;
+    if chat.workspace_epoch != input.workspace_epoch {
+        return Err(Error::Core(ai_team_core::Error::invalid(
+            "this chat's checkout changed since this message was composed; refresh before sending",
+        )));
+    }
+    let authority = ai_team_core::chat_push::prepare(&mut store, id, &input.message).await?;
+    if chat.mode == ai_team_core::ChatMode::Team {
+        if let ai_team_core::chat_push::Authority::Ask(reason) = &authority {
+            return Err(Error::Core(ai_team_core::Error::invalid(format!(
+                "{reason} No team planning was started."
+            ))));
+        }
+    }
+    Ok(authority)
+}
+
+/// Publish the exact draft a team message named, and answer with the turn the receipt was
+/// recorded on. No planning run is started, and nothing new is dispatched.
+///
+/// Kept inside a watched task: dropping the HTTP request does not cancel an approved
+/// publication, and a reopened window must not have to guess whether it happened.
+async fn publish_team(
+    db: std::path::PathBuf,
+    id: i64,
+    input: SendRequest,
+    target: ai_team_core::chat_push::Target,
+) -> Result<ai_team_core::ChatSubmission> {
+    let task = tokio::spawn(async move {
+        let mut store = ai_team_core::Store::open(&db)?;
+        ai_team_core::chat_push::publish_team(
+            &mut store,
+            id,
+            &input.request_id,
+            &input.message,
+            &target,
+        )
+        .await?;
+        store
+            .replay_chat_push(id, &input.request_id, &input.message)?
+            .ok_or_else(|| ai_team_core::Error::invalid("this push has no request receipt"))
+    });
+    Ok(task.await.map_err(|error| {
+        ai_team_core::Error::invalid(format!(
+            "the push was interrupted; inspect its receipt in Changes: {error}"
+        ))
+    })??)
+}
+
+/// Attach the authority to the turn that may use it, or say plainly that none was issued.
+fn record_authority(
+    db: &std::path::Path,
+    id: i64,
+    node_id: i64,
+    authority: &ai_team_core::chat_push::Authority,
+) -> Result<()> {
+    use ai_team_core::chat_push::Authority;
+    let mut store = ai_team_core::Store::open(db)?;
+    if let Authority::Ask(reason) = authority {
+        store.note_chat_push_refusal(id, node_id, reason)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn spawn(
     state: AppState,
     db: std::path::PathBuf,
     chat_id: i64,
@@ -297,6 +410,14 @@ fn spawn(
                 Ok(Err(error)) => Some(error.to_string()),
                 Err(error) => Some(format!("The chat worker stopped unexpectedly: {error}")),
             };
+            // Before anything else is started for this chat: the turn's process group has
+            // drained, so the journalled executor will act, and a queued instruction has
+            // not yet taken the checkout. A turn that asked for nothing settles to nothing.
+            if let Err(error) =
+                ai_team_core::chat_push::settle(&db, chat_id, node_id, failure.is_some()).await
+            {
+                eprintln!("chat {chat_id} turn {node_id}: authorised push: {error}");
+            }
             if let Some(error) = failure {
                 eprintln!("chat {chat_id} turn {node_id}: {error}");
                 let recorded = (|| -> Result<()> {

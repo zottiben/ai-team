@@ -21,6 +21,35 @@ struct TurnOptions {
     followup: Option<i64>,
     settings: Option<(crate::Provider, String, crate::Reasoning)>,
     workspace_epoch: Option<i64>,
+    review: Option<super::planning::review::Prepared>,
+    publication: Option<crate::chat_push::Target>,
+}
+
+impl TurnOptions {
+    fn replay(
+        &self,
+        conn: &rusqlite::Connection,
+        chat: i64,
+        request: &str,
+        message: &str,
+    ) -> Result<Option<ChatSubmission>> {
+        if let Some(review) = &self.review {
+            review.check_replay(conn, chat)?;
+        }
+        let found = conn.query_row("SELECT t.run_id,t.node_id,r.prompt FROM chat_turn t JOIN run r ON r.id=t.run_id WHERE t.chat_id=?1 AND t.request_id=?2", params![chat,request], |r| Ok((r.get(0)?,r.get(1)?,r.get::<_,String>(2)?))).optional()?;
+        found
+            .map(|(run_id, node_id, prompt)| {
+                if prompt != message {
+                    return Err(Error::invalid("that request id belongs to another message"));
+                }
+                Ok(ChatSubmission {
+                    run_id,
+                    node_id,
+                    started: false,
+                })
+            })
+            .transpose()
+    }
 }
 
 pub(super) fn from_row(row: &Row<'_>) -> rusqlite::Result<Chat> {
@@ -78,11 +107,19 @@ impl Store {
     }
 
     pub fn chats(&self, project_id: i64) -> Result<Vec<Chat>> {
+        self.chats_including_archived(project_id, false)
+    }
+
+    pub fn chats_including_archived(
+        &self,
+        project_id: i64,
+        include_archived: bool,
+    ) -> Result<Vec<Chat>> {
         let mut statement = self.db().conn().prepare(&format!(
-            "{SELECT} WHERE project_id = ?1 AND archived = 0 ORDER BY updated_at DESC, id DESC"
+            "{SELECT} WHERE project_id = ?1 AND (archived = 0 OR ?2) ORDER BY updated_at DESC, id DESC"
         ))?;
         let chats = statement
-            .query_map([project_id], from_row)?
+            .query_map(params![project_id, include_archived], from_row)?
             .collect::<rusqlite::Result<_>>()?;
         Ok(chats)
     }
@@ -211,6 +248,11 @@ impl Store {
         registry: &ModelRegistry,
         epoch: i64,
     ) -> Result<ChatSubmission> {
+        if request_id.starts_with("review/") {
+            return Err(Error::invalid(
+                "review request ids belong to the explicit review surface",
+            ));
+        }
         if request_id.starts_with("followup/") {
             return Err(Error::invalid(
                 "followup request ids are reserved for queued instructions",
@@ -284,13 +326,64 @@ impl Store {
         Ok(agent)
     }
 
+    pub fn begin_chat_turn_with_push(
+        &mut self,
+        chat: i64,
+        message: &str,
+        request: &str,
+        registry: &ModelRegistry,
+        workspace_epoch: i64,
+        target: crate::chat_push::Target,
+    ) -> Result<ChatSubmission> {
+        if request.starts_with("review/")
+            || request.starts_with("schedule/")
+            || request.starts_with("followup/")
+        {
+            return Err(Error::invalid(
+                "automated request ids cannot mint human push authority",
+            ));
+        }
+        self.begin_chat_turn_inner(
+            chat,
+            message,
+            request,
+            registry,
+            TurnOptions {
+                workspace_epoch: Some(workspace_epoch),
+                publication: Some(target),
+                ..TurnOptions::default()
+            },
+        )
+    }
+
+    pub(super) fn begin_chat_review_turn(
+        &mut self,
+        chat: i64,
+        prompt: &str,
+        review: super::planning::review::Prepared,
+        registry: &ModelRegistry,
+    ) -> Result<ChatSubmission> {
+        let request = format!("review/{}", review.input.request_id);
+        self.begin_chat_turn_inner(
+            chat,
+            prompt,
+            &request,
+            registry,
+            TurnOptions {
+                workspace_epoch: Some(review.input.workspace_epoch),
+                review: Some(review),
+                ..TurnOptions::default()
+            },
+        )
+    }
+
     fn begin_chat_turn_inner(
         &mut self,
         id: i64,
         message: &str,
         request_id: &str,
         registry: &ModelRegistry,
-        options: TurnOptions,
+        mut options: TurnOptions,
     ) -> Result<ChatSubmission> {
         let message = message.trim();
         validate_message(message, request_id)?;
@@ -298,7 +391,7 @@ impl Store {
             .ok_or_else(|| Error::invalid("could not identify the chat supervisor process"))?;
         let chat = self.chat(id)?;
         let project = self.project(chat.project_id)?;
-        let agent = self.turn_seat(&chat, project.team_id, options.settings)?;
+        let agent = self.turn_seat(&chat, project.team_id, options.settings.take())?;
         let resolution = registry.resolve(&agent)?;
         if request_id.starts_with("schedule/")
             && (resolution.provider != agent.provider || resolution.model != agent.model)
@@ -313,6 +406,10 @@ impl Store {
         let workspace = std::fs::canonicalize(&chat.workspace_path)?
             .to_string_lossy()
             .into_owned();
+        let review_build = options
+            .review
+            .as_ref()
+            .is_some_and(|review| review.parent.is_some());
         let title: String = message
             .split_whitespace()
             .collect::<Vec<_>>()
@@ -321,16 +418,10 @@ impl Store {
             .take(80)
             .collect();
         self.db_mut().write(|tx| {
-            if let Some((run_id, node_id, prompt)) = tx.query_row(
-                "SELECT t.run_id, t.node_id, r.prompt FROM chat_turn t JOIN run r ON r.id = t.run_id
-                 WHERE t.chat_id = ?1 AND t.request_id = ?2", params![id, request_id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get::<_, String>(2)?)),
-            ).optional()? {
-                if prompt != message { return Err(Error::invalid("that request id belongs to another message")); }
-                return Ok(ChatSubmission { run_id, node_id, started: false });
-            }
+            if let Some(receipt) = options.replay(tx, id, request_id, message)? { return Ok(receipt); }
             super::chat_workspaces::check_epoch(tx, id, options.workspace_epoch)?;
             check_chat_admission(tx, &chat, &workspace, false)?;
+            if let Some(review) = &options.review { super::planning::review::validate(tx, &chat, review)?; }
             super::chat_schedules::check_admission(tx, &chat, message, request_id, &agent)?;
             followups::check_admission(tx, id, message, options.followup)?;
             let (session, cursor) = context::previous_session(tx, id, chat.mode == ChatMode::Team, &workspace)?;
@@ -341,7 +432,7 @@ impl Store {
                  VALUES (?1, ?2, ?3, 'manual', 'running', ?4, ?13, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12, ?12)",
                 params![chat.project_id, project.team_id, message, workspace, guard.budget_tokens_run,
                     guard.budget_seconds_run, guard.max_repairs, guard.budget_tokens_node,
-                    guard.budget_seconds_node, guard.max_turns_node, guard.on_failure, at,
+                    guard.budget_seconds_node, None::<i64>, guard.on_failure, at,
                     if chat.mode == ChatMode::Team { guard.parallel_width } else { 1 }],
             )?;
             let run_id = tx.last_insert_rowid();
@@ -351,7 +442,7 @@ impl Store {
                  VALUES (?1, ?9, ?2, ?3, 'running', ?4, ?5, ?6, ?7, ?8, ?8, ?8, ?10)",
                 params![run_id, resolution.provider, resolution.model, workspace, session,
                     if session.is_some() { cursor } else { 0 }, i64::from(std::process::id()), at,
-                    agent.role, (chat.mode == ChatMode::Team).then_some(agent.id)],
+                    if review_build { "review" } else { &agent.role }, (chat.mode == ChatMode::Team && !review_build).then_some(agent.id)],
             )?;
             let node_id = tx.last_insert_rowid();
             if let Some(followup) = options.followup {
@@ -371,7 +462,11 @@ impl Store {
                      VALUES (?1, ?2, ?3, 'grounding', ?4, ?5, 1, 1)",
                     params![run_id, id, node_id, i64::from(std::process::id()), identity],
                 )?;
-                super::chat_teams::register_member(tx, run_id, node_id, &agent, None)?;
+                if !review_build { super::chat_teams::register_member(tx, run_id, node_id, &agent, None)?; }
+            }
+            if let Some(review) = &options.review { super::planning::review::record(tx, id, run_id, node_id, review)?; }
+            if let Some(target) = &options.publication {
+                super::chat_push::mint_solo(tx, &chat, node_id, request_id, message, target, &identity)?;
             }
             let payload = serde_json::to_string(&serde_json::json!({"body": message}))?;
             tx.execute(
@@ -641,6 +736,50 @@ mod tests {
             })
             .unwrap();
         (store, dir, chat)
+    }
+
+    #[test]
+    fn solo_and_team_chat_admission_never_snapshot_a_turn_cap() {
+        for (mode, with_team) in [
+            (ChatMode::Single, false),
+            (ChatMode::Single, true),
+            (ChatMode::Team, true),
+        ] {
+            let (mut store, _dir, chat) = seed();
+            if with_team {
+                let team = store
+                    .seed_default_team(chat.project_id, &crate::RoleModelDefault::local_floor())
+                    .unwrap();
+                // Existing installations still have this obsolete value in their team row.
+                store
+                    .db_mut()
+                    .write(|tx| {
+                        tx.execute("UPDATE team SET max_turns_node=40 WHERE id=?1", [team.id])?;
+                        Ok(())
+                    })
+                    .unwrap();
+            }
+            store.set_chat_mode(chat.id, mode, chat.rev).unwrap();
+            let turn = store
+                .begin_chat_turn(
+                    chat.id,
+                    "Investigate a substantial feature",
+                    "long-work",
+                    &ModelRegistry::local_only(),
+                )
+                .unwrap();
+            assert_eq!(
+                store.run(turn.run_id).unwrap().max_turns_node,
+                None,
+                "{mode:?}, team={with_team}"
+            );
+            store
+                .record_usage(turn.node_id, crate::Usage::default(), 10_000)
+                .unwrap();
+            assert!(crate::node_may_continue(&store, turn.node_id)
+                .unwrap()
+                .is_none());
+        }
     }
 
     #[test]

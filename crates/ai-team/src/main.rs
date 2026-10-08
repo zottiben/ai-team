@@ -55,8 +55,8 @@ fn run() -> Result<()> {
         // Stats is a single query over the database and needs no runtime at all.
         Command::Stats(args) => cmd::stats::run(args).map_err(Into::into),
         // Update shells out to curl and tar, so it needs the runtime.
-        Command::Update { check } => runtime()?
-            .block_on(cmd::update::run(check))
+        Command::Update { check, inspect } => runtime()?
+            .block_on(cmd::update::run(check, inspect))
             .map_err(Into::into),
         // Doctor probes the neighbours by running them, so it needs the runtime too.
         Command::Doctor => {

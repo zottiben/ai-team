@@ -99,6 +99,7 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/doctor", get(doctor))
         .route("/doctor/fix", axum::routing::post(doctor_fix))
         .route("/update", get(update_check).post(update_apply))
+        .route("/update/inspect", axum::routing::post(update_inspect))
         .route("/scm", get(scm))
         .route("/scm/stage", axum::routing::post(scm_stage))
         .route("/scm/commit", axum::routing::post(scm_commit))
@@ -1263,7 +1264,9 @@ async fn start_sign_in(
         ))
     })?;
     let home = ai_team_core::home_dir()?;
+    let permit = state.updates().admit()?;
     let id = state.terminals().open_running(&home, Some(command))?;
+    state.terminals().protect_update(id, permit)?;
     Ok(Json(serde_json::json!({ "id": id, "command": command })))
 }
 
@@ -1290,7 +1293,9 @@ async fn start_context_auth(
 ) -> Result<Json<serde_json::Value>> {
     let config = ai_team_core::write_context_oauth_config(request.source)?;
     let home = ai_team_core::home_dir()?;
+    let permit = state.updates().admit()?;
     let id = state.terminals().open_context_auth(&home, &config)?;
+    state.terminals().protect_update(id, permit)?;
     // The pty queues this line even while Pi is still starting. It is delivered to Pi's
     // editor once it begins reading input, and because `mcp-auth` is an extension command
     // no model turn or model credential is involved.
@@ -1380,8 +1385,18 @@ async fn doctor_fix(
     Ok(Json(serde_json::json!({ "done": outcome })))
 }
 
-async fn update_check() -> Result<Json<ai_team_core::Available>> {
-    Ok(Json(ai_team_core::check_update().await))
+#[derive(Debug, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct UpdateQuery {
+    #[serde(default)]
+    refresh: bool,
+}
+
+async fn update_check(
+    State(state): State<AppState>,
+    Query(query): Query<UpdateQuery>,
+) -> Result<Json<ai_team_core::UpdateStatus>> {
+    Ok(Json(state.updates().check(query.refresh).await))
 }
 
 /// What an update did, reported at the end rather than streamed.
@@ -1390,49 +1405,34 @@ async fn update_check() -> Result<Json<ai_team_core::Available>> {
 /// four of them would be more moving parts than the thing it reports on. The window shows
 /// an indeterminate bar while this request is in flight, which is honest: nobody knows
 /// how long a download takes.
-#[derive(Debug, Serialize)]
-struct Updated {
-    version: String,
-    /// Always true when this returns Ok. The window restarts on it rather than inferring
-    /// success from the absence of an error.
-    restart_required: bool,
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UpdateInspectionRequest {}
+
+async fn update_inspect(
+    State(state): State<AppState>,
+    JsonBody(_): JsonBody<UpdateInspectionRequest>,
+) -> Result<Json<ai_team_core::UpdateInspection>> {
+    Ok(Json(state.updates().inspect().await?))
 }
 
-async fn update_apply(State(state): State<AppState>) -> Result<Json<Updated>> {
-    let available = ai_team_core::check_update().await;
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UpdateApproval {
+    version: String,
+    approval: String,
+}
 
-    if let Some(blocked) = available.blocked {
-        return Err(crate::error::Error::Core(ai_team_core::Error::invalid(
-            blocked,
-        )));
-    }
-    let Some(latest) = available.latest.filter(|_| available.can_update) else {
-        return Err(crate::error::Error::Core(ai_team_core::Error::invalid(
-            "already up to date",
-        )));
-    };
-
-    if available.method == ai_team_core::Method::Source {
-        return Err(crate::error::Error::Core(ai_team_core::Error::invalid(
-            "this copy was built from source - update it with `cargo install --git \
-             https://github.com/zottiben/ai-team ai-team --locked`",
-        )));
-    }
-
-    // The binary actually running, not whichever `ait` is first on PATH: the window is
-    // served by this process and it is this process that has to be replaced.
-    let binary = std::env::current_exe().map_err(|error| {
-        crate::error::Error::Core(ai_team_core::Error::invalid(format!("where am I? {error}")))
-    })?;
-
-    // Which program that is comes from whoever started the server. This route is reached
-    // from `ait ui` and from the desktop app alike, and a release ships both - so an
-    // updater left to guess installs `ait` over the app, which then stops opening.
-    ai_team_core::apply_update(&latest, &binary, state.host(), |_| {}).await?;
-    Ok(Json(Updated {
-        version: latest,
-        restart_required: true,
-    }))
+async fn update_apply(
+    State(state): State<AppState>,
+    JsonBody(request): JsonBody<UpdateApproval>,
+) -> Result<Json<ai_team_core::Updated>> {
+    Ok(Json(
+        state
+            .updates()
+            .apply(&request.version, &request.approval)
+            .await?,
+    ))
 }
 
 #[derive(Debug, Serialize)]
@@ -1630,7 +1630,9 @@ async fn open_terminal(
         request.workspace.as_deref(),
     )
     .await?;
+    let permit = state.updates().admit()?;
     let id = state.terminals().open(&worktree)?;
+    state.terminals().protect_update(id, permit)?;
     Ok(Json(serde_json::json!({ "id": id })))
 }
 

@@ -15,6 +15,24 @@ beforeEach(()=>{
  api.workspaceRequests.mockResolvedValue({requests:[]});
  api.approveWorkspace.mockResolvedValue({...detail,workspace_path:"/linked"});
 });
+it("separates existing checkout selection from setup and preserves its unsent branch draft",async()=>{
+ const input=props();render(<ChatWorkspace {...input}/>);
+ fireEvent.click(screen.getByRole("button",{name:"Choose checkout"}));
+ const existing=await screen.findByRole("button",{name:"Existing checkout"});
+ expect(existing.getAttribute("aria-pressed")).toBe("true");
+ expect(screen.queryByRole("textbox",{name:"New branch (optional)"})).toBeNull();
+ fireEvent.click(screen.getByRole("button",{name:"Set up a new AWT worktree"}));
+ fireEvent.change(await screen.findByRole("textbox",{name:"New branch (optional)"}),{target:{value:"upgrade-pretty-bytes-v7"}});
+ expect(screen.queryByRole("combobox",{name:"Chat worktree"})).toBeNull();
+ fireEvent.click(existing);
+ expect(screen.queryByRole("textbox",{name:"New branch (optional)"})).toBeNull();
+ fireEvent.click(screen.getByRole("button",{name:"Set up a new AWT worktree"}));
+ expect((screen.getByRole("textbox",{name:"New branch (optional)"}) as HTMLInputElement).value).toBe("upgrade-pretty-bytes-v7");
+ expect(api.startWorkspaceSetup).not.toHaveBeenCalled();
+ fireEvent.click(screen.getByRole("button",{name:"Close checkout"}));
+ expect(screen.queryByRole("region",{name:"Chat checkout"})).toBeNull();
+});
+
 it("selects a new chat checkout without dispatching or creating a request",async()=>{
  const input=props();render(<ChatWorkspace {...input}/>);
  fireEvent.click(screen.getByRole("button",{name:"Choose checkout"}));

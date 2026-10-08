@@ -10,6 +10,8 @@ use ai_team_core::{RoleModelDefault, Store};
 use crate::cli::InitArgs;
 
 pub(crate) fn run(args: InitArgs) -> Result<()> {
+    let db_path = ai_team_core::default_db_path()?;
+    let _permit = ai_team_core::UpdatePermit::acquire(&db_path)?;
     let (profile_path, profile_created) = ai_team_core::ensure_machine_profile()?;
     if profile_created {
         println!(
@@ -18,7 +20,6 @@ pub(crate) fn run(args: InitArgs) -> Result<()> {
         );
     }
 
-    let db_path = ai_team_core::default_db_path()?;
     let fresh = !db_path.exists();
     let mut store =
         Store::init(&db_path).with_context(|| format!("opening {}", db_path.display()))?;
