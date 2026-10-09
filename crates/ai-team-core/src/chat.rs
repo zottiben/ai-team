@@ -184,7 +184,7 @@ async fn stop_reason(observer: Store, chat_id: i64, node_id: i64) -> String {
                     "Stopped by you. Your conversation and working files are kept.".into(),
                 ));
             }
-            Ok(crate::node_may_continue(&observer, node_id)?.map(|limit| limit.reason))
+            Ok(None)
         })();
         match reason {
             Ok(Some(reason)) => return reason,
@@ -273,9 +273,6 @@ async fn drive(store: &mut Store, chat_id: i64, node_id: i64, recovering: bool) 
         publication,
     )?;
     let stop = stop_reason(Store::open(store.path())?, chat_id, node_id);
-    if let Some(limit) = crate::node_may_continue(store, node_id)? {
-        return Err(Error::invalid(limit.reason));
-    }
     let (_, outcome) = crate::pi::run_until(store, node_id, &turn, |_| {}, stop).await?;
     let status = crate::outcome_status(&outcome);
     let reason = (status != NodeStatus::Done).then(|| {

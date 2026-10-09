@@ -255,7 +255,7 @@ struct Attempted {
     /// How many repairs it took.
     repairs: i64,
     node: NodeRun,
-    /// True when it stopped because it ran out of budget or repairs rather than because
+    /// True when it stopped because it ran out of repairs rather than because
     /// it finished. Decides how the rejection reads.
     exhausted: bool,
 }
@@ -283,7 +283,7 @@ impl Attempted {
         }
     }
 
-    /// Out of repairs, out of budget, or refused before it started.
+    /// Out of repairs, or refused before it started.
     fn stopped(outcome: TurnOutcome, node: &NodeRun, repairs: i64, reason: String) -> Attempted {
         Attempted {
             outcome,
@@ -361,9 +361,9 @@ async fn build_pr(
 
 /// A PR built again whose branch already carries every task.
 ///
-/// It stopped at its check or after it - rejected out of repairs, interrupted, over a
-/// budget - and may have been fixed by hand since. Refused as having nothing left to build,
-/// such a PR could never be checked again, and a stopped PR is not one to approve (D5). So
+/// It stopped at its check or after it - rejected, interrupted or out of repairs - and
+/// may have been fixed by hand since. Refused as having nothing left to build, such a PR
+/// could never be checked again, and a stopped PR is not one to approve (D5). So
 /// it gets what its check would have given it next: the seat whose work it stopped on takes
 /// one turn with the reason, and then the whole PR is checked.
 async fn check_again(store: &mut Store, pr: &Pr<'_>, rows: &mut Rows) -> Result<Attempted> {
@@ -567,14 +567,6 @@ async fn judge(
             .cloned()
             .unwrap_or_else(|| node.clone());
         record_rejection(store, pr, &faulted, repairs, &reason)?;
-        if let Some(exceeded) = crate::guardrails::node_may_continue(store, faulted.id)? {
-            return Ok(Attempted::stopped(
-                outcome,
-                &faulted,
-                repairs,
-                format!("{}; last rejection: {reason}", exceeded.reason),
-            ));
-        }
         if repairs >= pr.max_repairs {
             return Ok(Attempted::stopped(outcome, &faulted, repairs, reason));
         }
@@ -675,14 +667,6 @@ async fn take_task_turn(
     let mut resolution: Option<crate::ModelResolution> = None;
     loop {
         let node = open_row(store, pr, rows, agent_id, task_key, resolution.as_ref())?;
-        if let Some(exceeded) = crate::guardrails::run_may_continue(store, pr.run_id)? {
-            return Ok(Turned::Stopped(Box::new(Attempted::stopped(
-                TurnOutcome::default(),
-                &node,
-                0,
-                exceeded.reason,
-            ))));
-        }
         store.set_node_status(node.id, NodeStatus::Running)?;
         let mut turn =
             match take_turn(store, pr.rig, agent_id, node.id, pr.worktree, instruction).await {
@@ -2124,6 +2108,18 @@ esac
         // The frontend's gate fails until the frontend has repaired its task. The backend
         // built last, so a rejection sent to "whoever finished last" goes to the wrong seat.
         let mut pr = Fixture::new(TWO_SEATS, "test -f ../repair-T1.txt");
+        // Retired snapshots must not stop legacy task dispatch or its repair loop either.
+        pr.store
+            .db_mut()
+            .write(|tx| {
+                tx.execute(
+                    "UPDATE run SET budget_tokens=0, budget_tokens_node=0,
+                budget_seconds=0, budget_seconds_node=0, max_turns_node=0 WHERE id=?1",
+                    [pr.run_id],
+                )?;
+                Ok(())
+            })
+            .unwrap();
 
         let (attempted, rows) = pr.build(2).await;
 

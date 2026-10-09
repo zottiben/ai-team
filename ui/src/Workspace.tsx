@@ -6,7 +6,7 @@ import { Crew } from "./Crew";
 import { Overview } from "./Overview";
 import { PageLayout } from "./PageLayout";
 import { Prompt, Seats } from "./Console";
-import { Review } from "./Review";
+const Review = lazy(() => import("./Review").then(m => ({ default: m.Review })));
 import { Roster } from "./Roster";
 import { Source } from "./Source";
 import { Talk } from "./Talk";
@@ -317,13 +317,13 @@ export function Workspace({
           <Board project={project.slug} workspace={workspace.path} tick={tick} />
         )}
         {view === "review" && (
-          <Review
+          <Suspense fallback={<p className="empty">Loading review…</p>}><Review
             project={project.slug}
             workspace={workspace.path}
             tick={tick}
             initial={openReview}
             onOpenedInitial={onOpenedReview}
-          />
+          /></Suspense>
         )}
         {view === "source" && (
           <Source project={project.slug} workspace={workspace.path} node={null} />

@@ -173,6 +173,7 @@ pub(super) async fn retained_work_continues_only_with_its_original_authority() {
     stop_during_validation_does_not_grant_model_authority().await;
     for mode in ["slow-maker", "slow-gate", "slow-verifier"] {
         let f = stopped(mode).await;
+        historical_execution_caps(&f);
         let before = f.lease();
         let old = f.store.node_run(before.maker_node_id.unwrap()).unwrap();
         let path = Path::new(before.worktree_path.as_deref().unwrap());
@@ -256,30 +257,17 @@ async fn refusals_preserve_evidence() {
     std::fs::write(path.join("outside.txt"), "outside scope").unwrap();
     refused(&f, "outside the approved slice").await;
     std::fs::remove_file(path.join("outside.txt")).unwrap();
+    historical_execution_caps(&f);
     f.conn()
         .execute(
-            "UPDATE run SET budget_tokens = 0 WHERE id = ?1",
-            [f.turn.run_id],
-        )
-        .unwrap();
-    refused(&f, "run's token budget").await;
-    f.conn()
-        .execute(
-            "UPDATE run SET budget_tokens = NULL, max_repairs = 0 WHERE id = ?1",
+            "UPDATE run SET max_repairs = 0 WHERE id = ?1",
             [f.turn.run_id],
         )
         .unwrap();
     refused(&f, "attempt allowance is spent").await;
     f.conn()
         .execute(
-            "UPDATE run SET max_repairs = 2, budget_tokens_node = 0 WHERE id = ?1",
-            [f.turn.run_id],
-        )
-        .unwrap();
-    refused(&f, "node's token budget").await;
-    f.conn()
-        .execute(
-            "UPDATE run SET budget_tokens_node = NULL WHERE id = ?1",
+            "UPDATE run SET max_repairs = 2 WHERE id = ?1",
             [f.turn.run_id],
         )
         .unwrap();

@@ -162,6 +162,16 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
         "submitted review repairs",
         include_str!("migrations/037_chat_review_requests.sql"),
     ),
+    (
+        38,
+        "explicit new-branch push scope",
+        include_str!("migrations/038_chat_push_branch.sql"),
+    ),
+    (
+        39,
+        "inline untracked review",
+        include_str!("migrations/039_untracked_review.sql"),
+    ),
 ];
 
 /// The number of `v_` views the schema ships. Asserted in tests, because a view silently
@@ -351,6 +361,35 @@ mod tests {
         let error = Db::open(&path).unwrap_err();
         assert!(error.to_string().contains("newer"), "{error}");
         assert!(error.to_string().contains(&format!("v{newer}")), "{error}");
+    }
+
+    #[test]
+    fn untracked_review_migration_preserves_findings_sequences_and_constraints() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys=ON; CREATE TABLE chat(id INTEGER PRIMARY KEY); INSERT INTO chat VALUES(1);").unwrap();
+        let (_, finding) = include_str!("migrations/031_chat_checkout.sql")
+            .split_once("CREATE TABLE chat_checkout_finding ")
+            .unwrap();
+        conn.execute_batch(&format!("CREATE TABLE chat_checkout_finding {finding}"))
+            .unwrap();
+        conn.execute_batch("INSERT INTO chat_checkout_finding VALUES(7,1,'original',NULL,'unstaged','file','new',1,'keep this evidence','then'); INSERT INTO chat_checkout_finding SELECT 99,chat_id,fingerprint,head,area,path,side,line,body,created_at FROM chat_checkout_finding WHERE id=7; DELETE FROM chat_checkout_finding WHERE id=99;").unwrap();
+        let rows = || {
+            conn.query_row("SELECT json_array(id,chat_id,fingerprint,head,area,path,side,line,body,created_at) FROM chat_checkout_finding WHERE id=7", [], |r| r.get::<_, String>(0)).unwrap()
+        };
+        let before = rows();
+        conn.execute_batch(include_str!("migrations/039_untracked_review.sql"))
+            .unwrap();
+        assert_eq!(rows(), before);
+        conn.execute("INSERT INTO chat_checkout_finding(chat_id,fingerprint,area,path,side,line,body,created_at) VALUES(1,'fresh','untracked','new-file','new',1,'new finding','now')", []).unwrap();
+        assert_eq!(conn.last_insert_rowid(), 100);
+        assert!(conn
+            .execute(
+                "UPDATE chat_checkout_finding SET body='rewritten' WHERE id=7",
+                []
+            )
+            .is_err());
+        assert!(conn.execute("INSERT INTO chat_checkout_finding(chat_id,fingerprint,area,path,side,line,body,created_at) VALUES(2,'fresh','untracked','new-file','new',1,'foreign','now')", []).is_err());
+        assert!(conn.execute("INSERT INTO chat_checkout_finding(chat_id,fingerprint,area,path,side,line,body,created_at) VALUES(1,'fresh','invented','new-file','new',1,'bad area','now')", []).is_err());
     }
 
     #[test]

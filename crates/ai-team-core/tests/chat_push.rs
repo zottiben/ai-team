@@ -275,6 +275,161 @@ async fn an_explicit_human_message_publishes_the_working_branch_and_nothing_else
     assert_eq!(grant.state, "spent");
 }
 
+#[tokio::test]
+async fn an_explicit_new_branch_task_binds_and_publishes_only_that_new_branch() {
+    let _env = ENV.lock().await;
+    let mut f = Fixture::new();
+    let chat = f.chat(ChatMode::Single);
+    let base = git(&f.repo, &["rev-parse", "HEAD"]);
+    let message = "create and new branch off of latest main and name is appropriately. The commit and push and I’ll open the PR.";
+    let (authority, node) = f.send(chat, message, "new-branch").await;
+    assert!(matches!(authority, Authority::Solo(_)), "{authority:?}");
+    let node = node.unwrap();
+    git(&f.repo, &["checkout", "-qb", "chore/upgrade-ai"]);
+    let commit = f.agent_commits("feature.txt", "done\n", "upgrade");
+    chat_push::request_publication(&f.db, chat, node, &commit)
+        .await
+        .unwrap();
+    assert_eq!(f.remote_sha("chore/upgrade-ai"), None);
+    f.turn_ends(chat, node);
+    chat_push::settle(&f.db, chat, node, false).await.unwrap();
+    assert_eq!(f.remote_sha("chore/upgrade-ai"), Some(commit));
+    assert_eq!(f.remote_sha("main"), Some(base));
+    assert_eq!(f.store.checkout_operations(chat).unwrap().len(), 1);
+    assert!(f
+        .store
+        .replay_chat_push(chat, "new-branch", message)
+        .unwrap()
+        .is_some());
+    chat_push::settle(&f.db, chat, node, false).await.unwrap();
+    assert_eq!(f.store.checkout_operations(chat).unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn new_branch_permission_does_not_cover_existing_unrelated_or_retargeted_work() {
+    let _env = ENV.lock().await;
+    let mut f = Fixture::new();
+    git(&f.repo, &["branch", "existing"]);
+    git(&f.repo, &["branch", "caf\u{e9}"]);
+    git(&f.repo, &["push", "-q", "origin", "main:remote-only"]);
+    let chat = f.chat(ChatMode::Single);
+    let message = "Create a new branch from main. Commit and push it.";
+    let (_, node) = f.send(chat, message, "new-scope").await;
+    let node = node.unwrap();
+    for branch in ["existing", "main", "remote-only"] {
+        if branch == "remote-only" {
+            git(&f.repo, &["branch", branch, "main"]);
+        }
+        git(&f.repo, &["checkout", "-q", branch]);
+        let head = git(&f.repo, &["rev-parse", "HEAD"]);
+        assert!(chat_push::request_publication(&f.db, chat, node, &head)
+            .await
+            .is_err());
+    }
+    // Git can accept a differently-spelled symbolic HEAD even when its loose ref
+    // aliases an old branch on APFS. Neither case nor Unicode normalisation is new work.
+    for (original, alias) in [("existing", "EXISTING"), ("caf\u{e9}", "cafe\u{301}")] {
+        git(&f.repo, &["checkout", "-qB", alias, "main"]);
+        let refs = f.repo.join(".git/refs/heads");
+        if refs.join(original).canonicalize().unwrap() == refs.join(alias).canonicalize().unwrap() {
+            let head = git(&f.repo, &["rev-parse", "HEAD"]);
+            assert!(
+                chat_push::request_publication(&f.db, chat, node, &head)
+                    .await
+                    .is_err(),
+                "{alias} aliases {original}, not a new branch"
+            );
+        }
+    }
+    git(&f.repo, &["checkout", "-q", "--orphan", "unrelated"]);
+    git(&f.repo, &["commit", "-qm", "unrelated history"]);
+    let unrelated = git(&f.repo, &["rev-parse", "HEAD"]);
+    assert!(
+        chat_push::request_publication(&f.db, chat, node, &unrelated)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("not an ancestor")
+    );
+    git(&f.repo, &["checkout", "-qb", "chore/requested", "main"]);
+    let commit = f.agent_commits("work.txt", "requested\n", "requested");
+    chat_push::request_publication(&f.db, chat, node, &commit)
+        .await
+        .unwrap();
+    let grant = f
+        .store
+        .chat_push_grant_for_node(chat, node)
+        .unwrap()
+        .unwrap();
+    assert_eq!(grant.branch, "main", "original evidence is not rewritten");
+    assert_eq!(grant.pinned_branch.as_deref(), Some("chore/requested"));
+    let conn = rusqlite::Connection::open(&f.db).unwrap();
+    for sql in [
+        "UPDATE chat_push_grant SET new_branch_json=NULL",
+        "UPDATE chat_push_grant SET pinned_branch='other'",
+    ] {
+        assert!(conn.execute(sql, []).is_err());
+    }
+    git(&f.repo, &["checkout", "-qb", "chore/other"]);
+    assert!(chat_push::request_publication(&f.db, chat, node, &commit)
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("already pinned"));
+    f.turn_ends(chat, node);
+    chat_push::settle(&f.db, chat, node, false).await.unwrap();
+    assert_eq!(f.remote_sha("chore/requested"), None);
+    assert_eq!(f.remote_sha("chore/other"), None);
+    assert!(f.notes(chat).contains(&"Push refused".to_string()));
+}
+
+#[tokio::test]
+async fn a_new_branch_push_cannot_win_a_remote_creation_race() {
+    use std::os::unix::fs::PermissionsExt;
+    let _env = ENV.lock().await;
+    let mut f = Fixture::new();
+    let base = git(&f.repo, &["rev-parse", "HEAD"]);
+    let chat = f.chat(ChatMode::Single);
+    let message = "Create a new branch named chore/race from main and commit and push it.";
+    let (_, node) = f.send(chat, message, "new-race").await;
+    let node = node.unwrap();
+    git(&f.repo, &["checkout", "-qb", "chore/wrong-name"]);
+    assert!(chat_push::request_publication(&f.db, chat, node, &base)
+        .await
+        .is_err());
+    git(&f.repo, &["checkout", "-qb", "chore/race"]);
+    let commit = f.agent_commits("work.txt", "ours\n", "ours");
+    chat_push::request_publication(&f.db, chat, node, &commit)
+        .await
+        .unwrap();
+    f.turn_ends(chat, node);
+    let original_path = std::env::var_os("PATH").unwrap();
+    let real_git = std::env::split_paths(&original_path)
+        .map(|p| p.join("git"))
+        .find(|p| p.is_file())
+        .unwrap();
+    let bin = f.repo.parent().unwrap().join("race-bin");
+    std::fs::create_dir(&bin).unwrap();
+    let wrapper = bin.join("git");
+    // Another actor creates this ref after every validation read, immediately before
+    // the actual push. Even a fast-forward to our commit must not take over their ref.
+    std::fs::write(&wrapper, format!("#!/bin/sh\nfor arg in \"$@\"; do\nif [ \"$arg\" = push ]; then\n '{}' --git-dir='{}' update-ref refs/heads/chore/race '{}' || exit 91\nfi\ndone\nexec '{}' \"$@\"\n", real_git.display(), f.remote.display(), base, real_git.display())).unwrap();
+    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let paths =
+        std::env::join_paths(std::iter::once(bin).chain(std::env::split_paths(&original_path)))
+            .unwrap();
+    std::env::set_var("PATH", paths);
+    let result = chat_push::settle(&f.db, chat, node, false).await;
+    std::env::set_var("PATH", original_path);
+    result.unwrap();
+    assert_eq!(f.remote_sha("chore/race"), Some(base));
+    let operations = f.store.checkout_operations(chat).unwrap();
+    assert_eq!(operations.len(), 1);
+    assert_eq!(operations[0].state, "inspection");
+    chat_push::settle(&f.db, chat, node, false).await.unwrap();
+    assert_eq!(f.store.checkout_operations(chat).unwrap().len(), 1);
+}
+
 /// Everything that must not become authority, in the same real chat.
 #[tokio::test]
 async fn authority_is_refused_rather_than_guessed() {
@@ -465,9 +620,9 @@ async fn a_team_push_targets_one_exact_owned_draft() {
     f.store
         .set_run_status(turn.run_id, RunStatus::Done)
         .unwrap();
-    let slice = |key: &str| {
-        conn.execute("INSERT INTO chat_build_slice (run_id,slice_key,planner_slice_id,approved_rev,branch,worktree_path,lease_state,build_status,candidate_sha,commit_sha) VALUES (?1,?2,?5,1,'draft',?3,'released','verified',?4,?4)",
-            rusqlite::params![turn.run_id, key, lease.to_string_lossy(), commit, if key == "S1" { 1 } else { 2 }]).unwrap();
+    let slice = |key: &str, branch: &str| {
+        conn.execute("INSERT INTO chat_build_slice (run_id,slice_key,planner_slice_id,approved_rev,branch,worktree_path,lease_state,build_status,candidate_sha,commit_sha) VALUES (?1,?2,?5,1,?6,?3,'released','verified',?4,?4)",
+            rusqlite::params![turn.run_id, key, lease.to_string_lossy(), commit, if key == "S1" { 1 } else { 2 }, branch]).unwrap();
     };
 
     // With nothing verified, the message is refused rather than turned into planning.
@@ -478,8 +633,8 @@ async fn a_team_push_targets_one_exact_owned_draft() {
     assert!(empty.contains("no verified draft"), "{empty}");
     assert!(empty.contains("no planning was started"), "{empty}");
 
-    slice("S1");
-    let (authority, node) = f.send(chat, ASKED, "ask-team").await;
+    slice("S1", "draft");
+    let (authority, node) = f.send(chat, "I want the branch pushed", "ask-team").await;
     assert!(node.is_none(), "a team push starts no turn of its own");
     assert!(matches!(&authority, Authority::Team(target, draft)
         if target.branch == "draft" && target.head_sha == commit && draft.slice_key == "S1"));
@@ -492,17 +647,38 @@ async fn a_team_push_targets_one_exact_owned_draft() {
     );
 
     // Replaying the same request republishes nothing.
-    f.send(chat, ASKED, "ask-team").await;
+    f.send(chat, "I want the branch pushed", "ask-team").await;
     assert_eq!(f.store.checkout_operations(chat).unwrap().len(), 1);
 
     // A second verified draft makes the target ambiguous, so it is asked about.
-    slice("S2");
+    git(&f.repo, &["branch", "draft-two", &commit]);
+    slice("S2", "draft-two");
     let several = chat_push::prepare(&mut f.store, chat, ASKED)
         .await
         .unwrap_err()
         .to_string();
     assert!(several.contains("2 verified drafts"), "{several}");
     assert!(several.contains("exact one in Changes"), "{several}");
+    let (authority, _) = f
+        .send(chat, "Please push the branch draft-two", "named-team")
+        .await;
+    assert!(matches!(authority, Authority::Team(_, target) if target.slice_key == "S2"));
+    assert_eq!(f.remote_sha("draft-two"), Some(commit));
+    let before = f.store.checkout_operations(chat).unwrap().len();
+    assert!(
+        chat_push::prepare(&mut f.store, chat, "Fix the bug. Commit and push.")
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("new work")
+    );
+    assert!(
+        chat_push::prepare(&mut f.store, chat, "Push the branch not-owned")
+            .await
+            .is_err()
+    );
+    assert_eq!(f.store.checkout_operations(chat).unwrap().len(), before);
+    assert_eq!(f.store.chat_turns(chat).unwrap().len(), 1);
 }
 
 /// A grant belongs to the process the person was talking to, and to the checkout they saw.

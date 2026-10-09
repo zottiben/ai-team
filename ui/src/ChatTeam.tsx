@@ -3,7 +3,7 @@ import { BoardMarkdown } from "./BoardMarkdown";
 import type { ChatDetail } from "./chat-api";
 import { chatPlan } from "./plan-api";
 import { inspectRetained, keepRetained, retainedFile, type RetainedFile, type RetainedInspection } from "./changes-api";
-import { FileView } from "./Review";
+import { FileView } from "./ReviewFile";
 import {
   approveTeam, closeTeam, continueTeam, reviewTeam, teamCommand,
   type BuildReview, type TeamBuild,

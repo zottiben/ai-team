@@ -14,6 +14,11 @@ function rule(selector: string): string {
 // The review is a flex column held to the window's height, and a file card that may
 // shrink - with its overflow hidden - was squeezed to a sliver: every file of a PR but
 // the largest was a few pixels of border.
+it("the Viewed checkbox stays compact and inline despite generic chat form labels", () => {
+  expect(rule(".diff__head .diff__viewed")).toMatch(/display:\s*flex/);
+  expect(rule(".diff__head .diff__viewed")).toMatch(/flex-direction:\s*row/);
+  expect(rule(".diff__head .diff__viewed")).toMatch(/margin:\s*0 0 0 auto/);
+});
 it("a file in a review keeps its height, however many files there are", () => {
   expect(rule(".diff")).toMatch(/flex:\s*none/);
 });

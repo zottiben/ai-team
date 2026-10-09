@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
-import { FileView } from "./Review";
+import { FileView } from "./ReviewFile";
+import type { FileDiff } from "./api";
 import { useReviewFix } from "./useReviewFix";
-import { checkoutState, checkoutPreview, checkoutApprove, checkoutInspect, checkoutAcknowledge, type CheckoutAction, type CheckoutState, type CheckoutOperation, type CheckoutInspection } from "./checkout-api";
+import { checkoutState, checkoutPreview, checkoutApprove, checkoutInspect, checkoutAcknowledge, type CheckoutAction, type CheckoutFinding, type CheckoutState, type CheckoutOperation, type CheckoutInspection } from "./checkout-api";
 const labels={stage:"Stage file",unstage:"Unstage file",commit:"Manual commit",push:"Push checkout commit",pull_request:"Open checkout draft PR",push_branch:"Chat-approved branch push"};
 export function ChatCheckout({chatId,tick,disabled,onChanged,onFeedback}:{chatId:number;tick:number;disabled:boolean;onChanged:()=>void;onFeedback?:(text:string)=>void}) {
   const submitFix=useReviewFix(chatId);
@@ -18,6 +19,15 @@ export function ChatCheckout({chatId,tick,disabled,onChanged,onFeedback}:{chatId
   },[onChanged]);
   const blocked=disabled||busy||data?.operations.some(o=>o.state==="running"||o.state==="inspection");
   const propose=(action:CheckoutAction)=>{if(data)void command(async()=>{setPreview(await checkoutPreview(chatId,data.fingerprint,action));setInspection(null);});};
+  const reviewFile=(file:FileDiff,area:CheckoutFinding["area"],reason?:string|null,revision?:string)=>{
+    if(!data)return null;
+    return <div key={file.path}>
+      <FileView file={file} reason={reason} revision={revision} reviewKey={JSON.stringify(["chat",chatId,data.workspace,data.workspace_epoch,data.branch,area])}
+        comments={data.findings.filter(f=>f.fingerprint===data.fingerprint&&f.area===area).map(f=>({id:f.id,review_id:0,parent_id:null,file_path:f.path,side:f.side,line_start:f.line,line_end:f.line,author:"you",body:f.body,status:"open",created_at:f.created_at}))}
+        onComment={blocked?undefined:async(body,anchor)=>command(async()=>{await submitFix({kind:"checkout",finding:{id:0,fingerprint:data.fingerprint,head:data.head,area,path:anchor.file_path,side:anchor.side,line:anchor.line_start,body,created_at:""}},data.workspace_epoch);setSubmitted(true);})}/>
+      <button className="button" disabled={blocked} onClick={()=>propose({kind:area==="staged"?"unstage":"stage",path:file.path})}>{area==="staged"?"Unstage":"Stage"} {file.path}</button>
+    </div>;
+  };
   return <section aria-label="Working checkout actions">
     {problem&&<p className="error" role="alert">{problem}</p>}
     {!data?<p>Reading working checkout…</p>:<>
@@ -28,14 +38,12 @@ export function ChatCheckout({chatId,tick,disabled,onChanged,onFeedback}:{chatId
       {submitted&&<p role="status">Review submitted to the agent. Follow its new turn in this chat.</p>}
       {(["staged","unstaged"] as const).map(area=><section key={area} aria-label={`${area} checkout files`}><h4>{area==="staged"?"Staged — the next commit's contents":"Unstaged"}</h4>
         {!data[area].length&&<p className="faint">None.</p>}
-        {data[area].map(file=><div key={file.path}>
-          <FileView file={file} comments={data.findings.filter(f=>f.fingerprint===data.fingerprint&&f.area===area).map(f=>({id:f.id,review_id:0,parent_id:null,file_path:f.path,side:f.side,line_start:f.line,line_end:f.line,author:"you",body:f.body,status:"open",created_at:f.created_at}))}
-            onComment={blocked?undefined:async(body,anchor)=>command(async()=>{await submitFix({kind:"checkout",finding:{id:0,fingerprint:data.fingerprint,head:data.head,area,path:anchor.file_path,side:anchor.side,line:anchor.line_start,body,created_at:""}},data.workspace_epoch);setSubmitted(true);})}/>
-          <button className="button" disabled={blocked} onClick={()=>propose({kind:area==="staged"?"unstage":"stage",path:file.path})}>{area==="staged"?"Unstage":"Stage"} {file.path}</button>
-        </div>)}
+        {data[area].map(file=>reviewFile(file,area))}
       </section>)}
-      <h4>Untracked</h4><p className="faint">Inspect new files in Editor before staging. Staging does not commit or publish them.</p>
-      {data.untracked.map(path=><div className="card__row" key={path}><span className="mono">{path}</span><button className="button" disabled={blocked} onClick={()=>propose({kind:"stage",path})}>Stage {path}</button></div>)}
+      <section aria-label="untracked checkout files"><h4>Untracked</h4><p className="faint">New text files can be reviewed and commented on without staging. Reading or marking viewed changes no file or index.</p>
+        {!data.untracked.length&&<p className="faint">None.</p>}
+        {data.untracked_files.map(({file,reason,fingerprint})=>reviewFile(file,"untracked",reason,fingerprint))}
+      </section>
       <form onSubmit={e=>{e.preventDefault();propose({kind:"commit",message});}}><label>Manual commit message<textarea value={message} onChange={e=>setMessage(e.target.value)} maxLength={16000}/></label><p className="faint">Commit the reviewed index only; unstaged/untracked files are kept. Hooks and signing are disabled for this bounded operator action. No verification, push or PR is implied.</p><button className="button" disabled={blocked||!data.staged.length||!message.trim()}>Preview manual commit</button></form>
       <div className="chat-controls"><button className="button" disabled={blocked||!data.head||!data.branch} onClick={()=>propose({kind:"push"})}>Preview checkout push</button><button className="button" disabled={blocked||!data.head||!data.branch} onClick={()=>propose({kind:"pull_request"})}>Preview checkout draft PR</button></div>
       {data.findings.length>0&&<details><summary>Recorded checkout feedback</summary><p className="faint">Historical lines may have changed. New inline submissions start an agent turn; older recorded-only feedback can still be copied to your draft. No publication is approved.</p>{data.findings.map(f=><div className="notice" key={f.id}><p className="mono">{f.path} · {f.area} · {f.side} line {f.line} · {f.head??"unborn"}</p><p>{f.body}</p>{onFeedback&&<button className="button" onClick={()=>onFeedback(`Checkout review at ${f.head??"unborn HEAD"} (${f.fingerprint}): ${f.path}, ${f.area}, ${f.side} line ${f.line}:\n${f.body}\n\nInspect the current file before acting; this feedback is not publication approval.`)}>Use feedback in next message</button>}</div>)}</details>}

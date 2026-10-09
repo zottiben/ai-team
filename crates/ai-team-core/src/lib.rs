@@ -83,7 +83,7 @@ pub use dialog::alert;
 pub use diff::{parse as parse_diff, patch_for, FileDiff, FileStatus, Hunk, Line, LineKind};
 pub use error::{Error, Result};
 pub use gates::{all_passed, discover_gates, evidence, run_gates, Gate, GateKind, GateResult};
-pub use guardrails::{node_may_continue, run_may_continue, Exceeded, Fallout};
+pub use guardrails::Fallout;
 pub use model::TerminalState;
 // The Pi runtime (D20): the only runtime there is.
 pub use chat_schedule::{

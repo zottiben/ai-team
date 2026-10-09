@@ -427,12 +427,10 @@ impl Store {
             let (session, cursor) = context::previous_session(tx, id, chat.mode == ChatMode::Team, &workspace)?;
             tx.execute(
                 "INSERT INTO run (project_id, team_id, prompt, trigger, status, workspace_path,
-                    parallel_width, budget_tokens, budget_seconds, max_repairs, budget_tokens_node,
-                    budget_seconds_node, max_turns_node, on_failure, started_at, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, 'manual', 'running', ?4, ?13, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12, ?12)",
-                params![chat.project_id, project.team_id, message, workspace, guard.budget_tokens_run,
-                    guard.budget_seconds_run, guard.max_repairs, guard.budget_tokens_node,
-                    guard.budget_seconds_node, None::<i64>, guard.on_failure, at,
+                    parallel_width, max_repairs, on_failure, started_at, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, 'manual', 'running', ?4, ?8, ?5, ?6, ?7, ?7, ?7)",
+                params![chat.project_id, project.team_id, message, workspace,
+                    guard.max_repairs, guard.on_failure, at,
                     if chat.mode == ChatMode::Team { guard.parallel_width } else { 1 }],
             )?;
             let run_id = tx.last_insert_rowid();
@@ -739,7 +737,7 @@ mod tests {
     }
 
     #[test]
-    fn solo_and_team_chat_admission_never_snapshot_a_turn_cap() {
+    fn solo_and_team_chat_admission_never_snapshot_execution_caps() {
         for (mode, with_team) in [
             (ChatMode::Single, false),
             (ChatMode::Single, true),
@@ -754,7 +752,12 @@ mod tests {
                 store
                     .db_mut()
                     .write(|tx| {
-                        tx.execute("UPDATE team SET max_turns_node=40 WHERE id=?1", [team.id])?;
+                        tx.execute(
+                            "UPDATE team SET max_turns_node=40, budget_tokens_run=2000000,
+                            budget_tokens_node=400000, budget_seconds_run=3600,
+                            budget_seconds_node=900 WHERE id=?1",
+                            [team.id],
+                        )?;
                         Ok(())
                     })
                     .unwrap();
@@ -768,17 +771,16 @@ mod tests {
                     &ModelRegistry::local_only(),
                 )
                 .unwrap();
-            assert_eq!(
-                store.run(turn.run_id).unwrap().max_turns_node,
-                None,
-                "{mode:?}, team={with_team}"
-            );
+            let run = store.run(turn.run_id).unwrap();
+            assert_eq!(run.max_turns_node, None, "{mode:?}, team={with_team}");
+            assert_eq!(run.budget_tokens, None);
+            assert_eq!(run.budget_tokens_node, None);
+            assert_eq!(run.budget_seconds, None);
+            assert_eq!(run.budget_seconds_node, None);
             store
                 .record_usage(turn.node_id, crate::Usage::default(), 10_000)
                 .unwrap();
-            assert!(crate::node_may_continue(&store, turn.node_id)
-                .unwrap()
-                .is_none());
+            assert_eq!(store.node_run(turn.node_id).unwrap().turns, 10_000);
         }
     }
 

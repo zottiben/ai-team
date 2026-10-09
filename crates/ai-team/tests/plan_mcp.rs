@@ -482,7 +482,7 @@ async fn request_publication_is_offered_only_to_an_authorised_turn() {
         .unwrap();
 
     // The person asks, in their own words, and the same seat gains exactly one tool.
-    let message = "commit and push and ill open the PR";
+    let message = "Create a new branch from main. Then commit and push and I'll open the PR.";
     let authority = ai_team_core::chat_push::prepare(&mut store, chat.id, message)
         .await
         .unwrap();
@@ -506,6 +506,10 @@ async fn request_publication_is_offered_only_to_an_authorised_turn() {
     assert!(tool_names(&mut client)
         .await
         .contains(&"request_publication".to_string()));
+    run_git(
+        &repo,
+        &["checkout", "-qb", "chore/scoped-publication", "origin/main"],
+    );
     std::fs::write(repo.join("feature.txt"), "done\n").unwrap();
     run_git(&repo, &["add", "."]);
     run_git(&repo, &["commit", "-qm", "the asked-for work"]);
@@ -530,6 +534,18 @@ async fn request_publication_is_offered_only_to_an_authorised_turn() {
 
     // Pinning published nothing: the host does that, after the turn.
     assert!(!home.join("remote.git/refs/heads/work").exists());
+    assert!(!home
+        .join("remote.git/refs/heads/chore/scoped-publication")
+        .exists());
+    assert_eq!(
+        store
+            .chat_push_grant_for_request(chat.id, "asked")
+            .unwrap()
+            .unwrap()
+            .pinned_branch
+            .as_deref(),
+        Some("chore/scoped-publication")
+    );
     assert_eq!(
         store
             .chat_push_grant_for_request(chat.id, "asked")

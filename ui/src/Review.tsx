@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { FileView } from "./ReviewFile";
 
 import {
   addComment,
@@ -6,9 +7,6 @@ import {
   review as fetchReview,
   reviews as fetchReviews,
   submitReview,
-  type Comment,
-  type DiffLine,
-  type FileDiff,
   type Review as ReviewSummary,
   type ReviewDetail,
   type Submitted,
@@ -117,8 +115,9 @@ export function Review({
 
         {detail.files.map((file) => (
           <FileView
-            key={file.path}
+            key={`${detail.id}:${file.path}`}
             file={file}
+            reviewKey={`review:${detail.project_id}:${detail.id}`}
             comments={detail.comments}
             onComment={async (body, anchor) => {
               await addComment(detail.id, { body, ...anchor });
@@ -212,173 +211,4 @@ function Outcome({ outcome }: { outcome: Submitted }) {
     );
   }
   return <p className="notice">Approved.</p>;
-}
-
-/** A line longer than this is not for reading: a minified bundle, or generated output. */
-const UNREADABLE_LINE = 1000;
-
-/** The longest line of a file's diff. A reduce, since a spread of a large diff's lines
- * would pass more arguments than a call may take. */
-function longestLine(file: FileDiff): number {
-  return file.hunks.reduce(
-    (longest, hunk) =>
-      hunk.lines.reduce((inHunk, line) => Math.max(inHunk, line.text.length), longest),
-    0,
-  );
-}
-
-export function FileView({
-  file,
-  comments = [],
-  onComment,
-  onResolve,
-}: {
-  file: FileDiff;
-  comments?: Comment[];
-  onComment?: (
-    body: string,
-    anchor: { file_path: string; side: "old" | "new"; line_start: number; line_end: number },
-  ) => Promise<void | boolean>;
-  onResolve?: (id: number) => Promise<void>;
-}) {
-  const [writing, setWriting] = useState<string | null>(null);
-  const [body, setBody] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [problem, setProblem] = useState<string | null>(null);
-
-  const mine = comments.filter((comment) => comment.file_path === file.path);
-  // A minified file starts collapsed: a committed bundle is one line tens of thousands of
-  // characters long, and shown whole it buried the rest of the PR. Open from the start
-  // when it has comments, so no thread is hidden.
-  const longest = longestLine(file);
-  const [shown, setShown] = useState(mine.length > 0);
-  const collapsed = longest > UNREADABLE_LINE && !shown;
-
-  return (
-    <section className="diff">
-      <div className="diff__head">
-        <span className="mono">{file.path}</span>
-        {file.old_path !== null && <span className="faint mono">was {file.old_path}</span>}
-        <span className="status" data-status={file.status === "removed" ? "failed" : "done"}>
-          {file.status}
-        </span>
-        <span className="faint mono">
-          +{file.additions} -{file.deletions}
-        </span>
-      </div>
-
-      {/* git decides what is binary, and rendering its bytes as text is how a review
-          turns into a screenful of noise. */}
-      {file.binary && <p className="faint">Binary file - not shown.</p>}
-
-      {collapsed && (
-        <div className="diff__collapsed">
-          <p className="faint">
-            Collapsed: a minified or generated file - its longest line is{" "}
-            {longest.toLocaleString()} characters.
-          </p>
-          <button type="button" className="button" onClick={() => setShown(true)}>
-            Show diff
-          </button>
-        </div>
-      )}
-
-      {!collapsed && file.hunks.map((hunk) => (
-        <div key={hunk.header} className="diff__hunk">
-          <div className="diff__hunk-head mono">{hunk.header}</div>
-          {hunk.lines.map((line) => {
-            const side = line.kind === "removed" ? "old" : "new";
-            const number = line.kind === "removed" ? line.old : line.new;
-            const key = `${side}:${number}`;
-            const on = mine.filter(
-              (comment) => comment.side === side && comment.line_start === number,
-            );
-            return (
-              <div key={key}>
-                <LineRow line={line} onAdd={onComment ? () => { if (!saving) setWriting(writing === key ? null : key); } : undefined} />
-                {on.map((comment) => (
-                  <Thread key={comment.id} comment={comment} onResolve={onResolve} />
-                ))}
-                {writing === key && number !== null && onComment && (
-                  <form
-                    className="diff__compose"
-                    onSubmit={(event) => {
-                      event.preventDefault();
-                      if (saving || body.trim() === "") return;
-                      setSaving(true); setProblem(null);
-                      void onComment(body, {
-                        file_path: file.path,
-                        side,
-                        line_start: number,
-                        line_end: number,
-                      }).then((saved) => {
-                        if (saved === false) return;
-                        setBody("");
-                        setWriting(null);
-                      }).catch((error: unknown) => setProblem(String(error))).finally(() => setSaving(false));
-                    }}
-                  >
-                    <textarea
-                      aria-label={`comment on ${file.path} ${side} line ${number}`}
-                      value={body}
-                      onChange={(event) => setBody(event.target.value)}
-                      rows={2}
-                    />
-                    {problem && <p className="error" role="alert">{problem}</p>}
-                    <button type="submit" className="button button--primary" disabled={saving}>
-                      Comment
-                    </button>
-                  </form>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      ))}
-    </section>
-  );
-}
-
-function LineRow({ line, onAdd }: { line: DiffLine; onAdd?: () => void }) {
-  return (
-    <div className="diff__line" data-kind={line.kind}>
-      <span className="diff__num mono">{line.old ?? ""}</span>
-      <span className="diff__num mono">{line.new ?? ""}</span>
-      {onAdd ? <button
-        type="button"
-        className="diff__add"
-        aria-label={`comment on ${line.kind === "removed" ? "old" : "new"} line ${
-          line.kind === "removed" ? line.old : line.new
-        }`}
-        onClick={onAdd}
-      >
-        +
-      </button> : <span />}
-      <code className="diff__text">{line.text === "" ? " " : line.text}</code>
-    </div>
-  );
-}
-
-function Thread({
-  comment,
-  onResolve,
-}: {
-  comment: Comment;
-  onResolve?: (id: number) => Promise<void>;
-}) {
-  return (
-    <div className="diff__comment" data-status={comment.status}>
-      <div className="card__row">
-        <span className="faint">{comment.author}</span>
-        {comment.status === "open" && onResolve ? (
-          <button type="button" className="button" onClick={() => void onResolve(comment.id)}>
-            Resolve
-          </button>
-        ) : (
-          <span className="faint">{comment.status}</span>
-        )}
-      </div>
-      <span>{comment.body}</span>
-    </div>
-  );
 }

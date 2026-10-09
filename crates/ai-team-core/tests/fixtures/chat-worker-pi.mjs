@@ -26,6 +26,13 @@ const emit = event => console.log(JSON.stringify(event));
 emit({type:'session', id:session, cwd:process.cwd()});
 emit({type:'message_end', message:{role:'user', content:[{type:'text', text:'VERDICT: pass'}]}});
 const mode = fs.readFileSync(path.join(root, 'worker-mode'), 'utf8').trim();
+if (mode === 'uncapped') {
+  for (let i = 0; i < 64; i++) {
+    emit({type:'turn_end', message:{role:'assistant', stopReason:'toolUse', usage:{input:40000, output:10000}}});
+  }
+  // Give the watch time to see usage crossing the former per-node and whole-run caps.
+  await new Promise(r => setTimeout(r, 1000));
+}
 if (role !== 'verifier') {
   const dir = role === 'frontend' ? 'ui' : 'crates';
   fs.mkdirSync(dir, { recursive: true });

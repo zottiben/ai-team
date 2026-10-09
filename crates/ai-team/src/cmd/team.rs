@@ -262,49 +262,19 @@ fn show(store: &Store, team: &Team) -> Result<()> {
 }
 
 fn print_guardrails(guardrails: &Guardrails) {
-    let budget = |value: Option<i64>| match value {
-        Some(value) => value.to_string(),
-        None => "unlimited".to_string(),
-    };
     println!("  parallel width     {}", guardrails.parallel_width);
-    println!(
-        "  tokens             {} per run, {} per seat",
-        budget(guardrails.budget_tokens_run),
-        budget(guardrails.budget_tokens_node)
-    );
-    println!(
-        "  seconds            {} per run, {} per seat",
-        budget(guardrails.budget_seconds_run),
-        budget(guardrails.budget_seconds_node)
-    );
     println!(
         "  on failure         {} after {} repair(s)",
         guardrails.on_failure, guardrails.max_repairs
     );
 }
 
-/// `0` clears a budget rather than setting one, because a zero-token ceiling would mean
-/// a seat that cannot think, which nobody wants and everybody would type by accident.
 fn apply_guardrails(mut guardrails: Guardrails, args: &TeamEditArgs) -> Result<Guardrails> {
-    let optional = |value: i64| (value > 0).then_some(value);
-
     if let Some(width) = args.parallel_width {
         if width < 1 {
             bail!("parallel width must be at least 1");
         }
         guardrails.parallel_width = width;
-    }
-    if let Some(value) = args.budget_tokens_run {
-        guardrails.budget_tokens_run = optional(value);
-    }
-    if let Some(value) = args.budget_tokens_node {
-        guardrails.budget_tokens_node = optional(value);
-    }
-    if let Some(value) = args.budget_seconds_run {
-        guardrails.budget_seconds_run = optional(value);
-    }
-    if let Some(value) = args.budget_seconds_node {
-        guardrails.budget_seconds_node = optional(value);
     }
     if let Some(value) = args.max_repairs {
         if value < 0 {

@@ -1,125 +1,10 @@
-//! What a run and its nodes are allowed to spend, and what happens when they stop.
+//! Failure policy for work that has exhausted its repair allowance.
 //!
-//! Every limit here is read off the **run**, never back through the team (D2). A run
-//! started last night under a token budget did not get a larger allowance because
-//! somebody raised the team's budget this morning. Turn counts are evidence, not limits.
-//!
-//! The checks are deliberately boring arithmetic in one place. Spread across call sites
-//! they drift, and a budget that is enforced in three places and forgotten in a fourth is
-//! the one that costs somebody a rate limit at 2am.
+//! Policy is snapshotted onto the run, never reread from an edited team. Token usage,
+//! elapsed time and turn counts are evidence, not execution limits (D33, D35). Retired
+//! budget columns remain historical evidence; no execution path enforces them.
 
-use crate::error::Result;
-use crate::model::{NodeRun, OnFailure, Run};
-use crate::store::Store;
-use crate::util::now;
-
-/// Why work stopped, in words a human reads on a blocked row.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Exceeded {
-    pub reason: String,
-    /// True when the whole run is finished, not just this node. A run-wide budget stops
-    /// its siblings too; a node's own cap does not.
-    pub run_wide: bool,
-}
-
-impl Exceeded {
-    fn node(reason: impl Into<String>) -> Exceeded {
-        Exceeded {
-            reason: reason.into(),
-            run_wide: false,
-        }
-    }
-
-    fn run(reason: impl Into<String>) -> Exceeded {
-        Exceeded {
-            reason: reason.into(),
-            run_wide: true,
-        }
-    }
-}
-
-/// How long a run has been going, in seconds, or 0 before it starts.
-fn elapsed(started_at: Option<&str>) -> i64 {
-    let Some(started) = started_at else {
-        return 0;
-    };
-    let parse = |text: &str| {
-        time::PrimitiveDateTime::parse(
-            text,
-            &time::format_description::well_known::Iso8601::DEFAULT,
-        )
-        .ok()
-        .map(|at| at.assume_utc().unix_timestamp())
-    };
-    match (parse(started), parse(&now())) {
-        (Some(from), Some(to)) => (to - from).max(0),
-        _ => 0,
-    }
-}
-
-/// May this run start another node?
-///
-/// Checked before a node is dispatched rather than only after it finishes: the point of
-/// a budget is to not spend the next turn, and noticing afterwards is an audit trail
-/// rather than a limit.
-pub fn run_may_continue(store: &Store, run_id: i64) -> Result<Option<Exceeded>> {
-    let run = store.run(run_id)?;
-    let usage = store.run_usage(run_id)?;
-
-    if let Some(budget) = run.budget_tokens {
-        let spent = usage.billable();
-        if spent >= budget {
-            return Ok(Some(Exceeded::run(format!(
-                "the run's token budget is spent: {spent} of {budget} billable tokens"
-            ))));
-        }
-    }
-    if let Some(budget) = run.budget_seconds {
-        let spent = elapsed(run.started_at.as_deref());
-        if spent >= budget {
-            return Ok(Some(Exceeded::run(format!(
-                "the run's time budget is spent: {spent}s of {budget}s"
-            ))));
-        }
-    }
-    Ok(None)
-}
-
-/// May this node take another turn?
-///
-/// Both the node's own caps and the run-wide ones, because a node that is within its own
-/// budget still cannot spend a run that has none left.
-pub fn node_may_continue(store: &Store, node_run_id: i64) -> Result<Option<Exceeded>> {
-    let node = store.node_run(node_run_id)?;
-    let run = store.run(node.run_id)?;
-
-    if let Some(exceeded) = run_may_continue(store, node.run_id)? {
-        return Ok(Some(exceeded));
-    }
-    Ok(node_caps(&run, &node))
-}
-
-/// The node's own limits, separated so they can be checked against a node that is still
-/// in flight without a second round trip for the run.
-fn node_caps(run: &Run, node: &NodeRun) -> Option<Exceeded> {
-    if let Some(budget) = run.budget_tokens_node {
-        let spent = node.usage.billable();
-        if spent >= budget {
-            return Some(Exceeded::node(format!(
-                "this node's token budget is spent: {spent} of {budget} billable tokens"
-            )));
-        }
-    }
-    if let Some(budget) = run.budget_seconds_node {
-        let spent = elapsed(node.started_at.as_deref());
-        if spent >= budget {
-            return Some(Exceeded::node(format!(
-                "this node's time budget is spent: {spent}s of {budget}s"
-            )));
-        }
-    }
-    None
-}
+use crate::model::OnFailure;
 
 /// What to do about a node that failed and has no repairs left.
 ///
@@ -156,9 +41,10 @@ impl Fallout {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{NewProject, RunTrigger, Usage};
+    use crate::{NewProject, RunTrigger, Store};
 
-    fn seeded() -> (Store, i64, i64) {
+    #[test]
+    fn retired_team_caps_are_not_copied_and_run_policy_is_still_snapshotted() {
         let mut store = Store::memory().unwrap();
         let project = store
             .create_project(NewProject {
@@ -169,194 +55,84 @@ mod tests {
         let team = store
             .seed_default_team(project.id, &crate::RoleModelDefault::local_floor())
             .unwrap();
-        (store, project.id, team.id)
-    }
-
-    fn backend(store: &Store, team: i64) -> i64 {
-        store
-            .agents(team)
-            .unwrap()
-            .into_iter()
-            .find(|agent| agent.role == "backend")
-            .unwrap()
-            .id
-    }
-
-    fn set(store: &mut Store, run_id: i64, column: &str, value: i64) {
         store
             .db_mut()
             .write(|tx| {
                 tx.execute(
-                    &format!("UPDATE run SET {column} = ?2 WHERE id = ?1"),
-                    rusqlite::params![run_id, value],
+                    "UPDATE team SET budget_tokens_run=2000000, budget_tokens_node=400000,
+                budget_seconds_run=3600, budget_seconds_node=900, max_turns_node=40 WHERE id=?1",
+                    [team.id],
                 )?;
                 Ok(())
             })
             .unwrap();
-    }
-
-    #[test]
-    fn the_run_budget_stops_the_whole_run_and_a_node_cap_does_not() {
-        let (mut store, project, team) = seeded();
         let run = store
-            .create_run(project, "ship it", RunTrigger::Manual)
+            .create_run(project.id, "ship it", RunTrigger::Manual)
             .unwrap();
-        set(&mut store, run.id, "budget_tokens", 5_000);
-        set(&mut store, run.id, "budget_tokens_node", 1_000);
-
-        let node = store
-            .dispatch(
-                run.id,
-                backend(&store, team),
-                Some("PR1"),
-                &crate::ModelRegistry::local_only(),
-            )
-            .unwrap();
-        assert!(node_may_continue(&store, node.id).unwrap().is_none());
-
-        // Past the node's budget but not the run's: this node stops, the run does not.
-        store
-            .record_usage(
-                node.id,
-                Usage {
-                    tokens_in: 1_000,
-                    tokens_out: 0,
-                    cache_read: 500_000,
-                    cache_write: 0,
-                },
-                1,
-            )
-            .unwrap();
-        let stopped = node_may_continue(&store, node.id).unwrap().unwrap();
-        assert!(!stopped.run_wide, "a node's own cap is its own");
-        assert!(stopped.reason.contains("this node's token budget"));
-        assert!(
-            run_may_continue(&store, run.id).unwrap().is_none(),
-            "the run still has budget for its other nodes"
-        );
-
-        // Past the run's budget: everything stops.
-        store
-            .record_usage(
-                node.id,
-                Usage {
-                    tokens_in: 4_000,
-                    tokens_out: 0,
-                    cache_read: 0,
-                    cache_write: 0,
-                },
-                1,
-            )
-            .unwrap();
-        let stopped = run_may_continue(&store, run.id).unwrap().unwrap();
-        assert!(stopped.run_wide);
-        assert!(stopped.reason.contains("the run's token budget"));
-    }
-
-    #[test]
-    fn historical_turn_caps_do_not_stop_any_agent_role() {
-        let (mut store, project, team) = seeded();
-        for agent in store.agents(team).unwrap() {
-            let run = store
-                .create_run(project, "investigate and implement", RunTrigger::Manual)
-                .unwrap();
-            set(&mut store, run.id, "max_turns_node", 40);
-            let node = store
-                .dispatch(
-                    run.id,
-                    agent.id,
-                    Some("PR1"),
-                    &crate::ModelRegistry::local_only(),
-                )
-                .unwrap();
-            store
-                .record_usage(node.id, Usage::default(), 10_000)
-                .unwrap();
-            assert!(
-                node_may_continue(&store, node.id).unwrap().is_none(),
-                "{} must not have a turn cap",
-                agent.role
-            );
-            assert_eq!(store.node_run(node.id).unwrap().turns, 10_000);
-            assert_eq!(
-                store.run(run.id).unwrap().max_turns_node,
-                Some(40),
-                "historical evidence must not be rewritten"
-            );
-        }
-    }
-
-    #[test]
-    fn a_run_snapshots_the_node_caps_too() {
-        // The whole point of snapshotting: raising the team's cap must not raise it for
-        // a run that is already going.
-        let (mut store, project, team) = seeded();
-        let run = store
-            .create_run(project, "ship it", RunTrigger::Manual)
-            .unwrap();
+        assert_eq!(run.budget_tokens, None);
+        assert_eq!(run.budget_tokens_node, None);
+        assert_eq!(run.budget_seconds, None);
+        assert_eq!(run.budget_seconds_node, None);
         assert_eq!(run.max_turns_node, None);
-        assert_eq!(run.budget_tokens_node, Some(400_000));
+        assert_eq!(run.max_repairs, 2);
         assert_eq!(run.on_failure, OnFailure::Retry);
 
-        let mut guardrails = store.team(team).unwrap().guardrails;
-        guardrails.budget_tokens_node = Some(9_999_999);
+        // Retained budget evidence is not cleared when a team is edited, nor presented
+        // as active configuration. New policy still cannot rewrite a run's repair limit.
+        store
+            .db_mut()
+            .write(|tx| {
+                tx.execute(
+                    "UPDATE run SET budget_tokens=2000000, budget_tokens_node=400000,
+                budget_seconds=3600, budget_seconds_node=900, max_turns_node=40 WHERE id=?1",
+                    [run.id],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        let mut guardrails = store.team(team.id).unwrap().guardrails;
+        guardrails.max_repairs = 10;
         guardrails.on_failure = OnFailure::Escalate;
         store
-            .update_team(team, "Widget team", "", guardrails)
+            .update_team(team.id, "Widget team", "", guardrails)
             .unwrap();
-
         let unchanged = store.run(run.id).unwrap();
+        assert_eq!(unchanged.budget_tokens, Some(2_000_000));
         assert_eq!(unchanged.budget_tokens_node, Some(400_000));
+        assert_eq!(unchanged.budget_seconds, Some(3_600));
+        assert_eq!(unchanged.budget_seconds_node, Some(900));
+        assert_eq!(unchanged.max_turns_node, Some(40));
+        assert_eq!(unchanged.max_repairs, 2);
         assert_eq!(unchanged.on_failure, OnFailure::Retry);
+        let retired: (i64, i64, i64, i64, i64) = store
+            .db()
+            .conn()
+            .query_row(
+                "SELECT budget_tokens_run, budget_tokens_node, budget_seconds_run,
+                budget_seconds_node, max_turns_node FROM team WHERE id=?1",
+                [team.id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(retired, (2_000_000, 400_000, 3_600, 900, 40));
+        let policy = serde_json::to_value(guardrails).unwrap();
+        assert_eq!(policy.as_object().unwrap().len(), 3);
+        assert!(policy.get("budget_tokens_run").is_none());
     }
 
     #[test]
     fn every_failure_policy_leaves_the_siblings_alone() {
-        // The one property all three share, and the one this slice exists to guarantee:
-        // a node failing is its branch's problem, not the run's.
         assert_eq!(Fallout::of(OnFailure::Escalate), Fallout::Escalate);
         assert_eq!(Fallout::of(OnFailure::AbortBranch), Fallout::AbortBranch);
         // Retry has already been spent by the repair loop by the time this is asked.
         assert_eq!(Fallout::of(OnFailure::Retry), Fallout::AbortBranch);
-    }
-
-    #[test]
-    fn a_budget_of_none_is_unlimited_rather_than_zero() {
-        let (mut store, project, team) = seeded();
-        let run = store
-            .create_run(project, "ship it", RunTrigger::Manual)
-            .unwrap();
-        store
-            .db_mut()
-            .write(|tx| {
-                tx.execute(
-                    "UPDATE run SET budget_tokens = NULL, budget_tokens_node = NULL,
-                        budget_seconds = NULL, max_turns_node = NULL WHERE id = ?1",
-                    rusqlite::params![run.id],
-                )?;
-                Ok(())
-            })
-            .unwrap();
-        let node = store
-            .dispatch(
-                run.id,
-                backend(&store, team),
-                Some("PR1"),
-                &crate::ModelRegistry::local_only(),
-            )
-            .unwrap();
-        store
-            .record_usage(
-                node.id,
-                Usage {
-                    tokens_in: 10_000_000,
-                    tokens_out: 0,
-                    cache_read: 0,
-                    cache_write: 0,
-                },
-                500,
-            )
-            .unwrap();
-        assert!(node_may_continue(&store, node.id).unwrap().is_none());
     }
 }

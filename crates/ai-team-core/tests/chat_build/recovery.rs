@@ -111,8 +111,10 @@ async fn pending_acquisition_is_not_an_unknown_acquisition() {
 async fn recover_never_acquired_work_and_retry_board_settlement() {
     let mut f = worker_fixture("success");
     let start = f.approve().await;
-    f.conn()
-        .execute("UPDATE run SET budget_tokens = 0", [])
+    // Revoke the maker after approval: fail before acquisition without relying on
+    // retired execution budgets to inject a failure.
+    f.store
+        .set_agent_enabled(f.lease().assigned_agent_id.unwrap(), false)
         .unwrap();
     let planner = rusqlite::Connection::open(f.store.planning_path().unwrap()).unwrap();
     planner.execute_batch("CREATE TRIGGER fail_recovery_board BEFORE UPDATE OF status ON slice BEGIN SELECT RAISE(ABORT, 'injected board update failure'); END;").unwrap();

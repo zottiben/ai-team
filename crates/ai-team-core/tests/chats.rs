@@ -225,15 +225,50 @@ impl Harness {
 
     async fn long_running(&mut self) {
         self.mode("long-running");
-        let node_id = self
-            .complete(
-                self.first,
-                "Ground, investigate and plan a substantial feature",
+        for (column, budget) in [
+            ("budget_tokens_node", 400_000),
+            ("budget_tokens", 2_000_000),
+            ("budget_seconds_node", 900),
+            ("budget_seconds", 3_600),
+        ] {
+            let turn = self.submit(self.first, column);
+            let conn = rusqlite::Connection::open(&self.db).unwrap();
+            conn.execute(
+                &format!(
+                    "UPDATE run SET budget_tokens = NULL, budget_tokens_node = NULL,
+                    budget_seconds = NULL, budget_seconds_node = NULL, max_turns_node = 40,
+                    {column} = ?1, started_at = '2000-01-01T00:00:00' WHERE id = ?2"
+                ),
+                rusqlite::params![budget, turn.run_id],
             )
-            .await;
-        let node = self.store.node_run(node_id).unwrap();
-        assert_eq!(node.turns, 65);
-        assert_eq!(node.status, NodeStatus::Done, "{:?}", node.blocked_reason);
+            .unwrap();
+            conn.execute(
+                "UPDATE node_run SET started_at = '2000-01-01T00:00:00' WHERE id = ?1",
+                [turn.node_id],
+            )
+            .unwrap();
+            drive_chat(&self.db, self.first, turn.node_id, false)
+                .await
+                .unwrap();
+            let node = self.store.node_run(turn.node_id).unwrap();
+            assert_eq!(
+                node.status,
+                NodeStatus::Done,
+                "{column}: {:?}",
+                node.blocked_reason
+            );
+            assert_eq!(node.turns, 65);
+            assert_eq!(node.usage.billable(), 3_200_120);
+            assert_eq!(self.store.run_usage(turn.run_id).unwrap(), node.usage);
+            let recorded: i64 = conn
+                .query_row(
+                    &format!("SELECT {column} FROM run WHERE id = ?1"),
+                    [turn.run_id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(recorded, budget, "historical policy must not be rewritten");
+        }
         assert!(self
             .store
             .chat(self.first)
@@ -253,7 +288,7 @@ impl Harness {
             !self.store.chat(first).unwrap().live_text.is_empty()
                 && self
                     .store
-                    .chat_events(first, 0, 500)
+                    .node_events(slow.node_id, 500)
                     .unwrap()
                     .iter()
                     .any(|event| event.summary == "bash")

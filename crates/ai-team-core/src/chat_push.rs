@@ -1,7 +1,7 @@
 //! A direct human message is the only thing that can authorise a push.
 //!
 //! Nothing here ever publishes on its own initiative. One authenticated human send, whose
-//! whole text parses as an explicit instruction (`grammar`), mints one grant: one chat,
+//! text includes a direct push instruction (`grammar`), mints one grant: one chat,
 //! one request id, one workspace generation, one branch, one origin, one supervising
 //! process. A solo turn may then pin the commit it just made through the scoped
 //! `request_publication` tool, and the host publishes it after the turn's process has
@@ -13,10 +13,13 @@
 //! authority over a default or protected branch. Everything a grant claims is rechecked
 //! immediately before the push, and the push itself is fast-forward only.
 
+mod branch;
 mod grammar;
+pub use branch::NewBranchScope;
 
 use std::path::Path;
 
+pub(crate) use grammar::request as request_scope;
 pub use grammar::{classify, Intent};
 
 use serde::Serialize;
@@ -38,6 +41,8 @@ pub struct PushGrant {
     pub workspace_path: String,
     pub workspace_epoch: i64,
     pub branch: String,
+    pub new_branch: Option<NewBranchScope>,
+    pub pinned_branch: Option<String>,
     pub origin_url: String,
     pub head_sha: String,
     pub allow_commit: bool,
@@ -52,6 +57,10 @@ pub struct PushGrant {
 }
 
 impl PushGrant {
+    pub(crate) fn publication_branch(&self) -> &str {
+        self.pinned_branch.as_deref().unwrap_or(&self.branch)
+    }
+
     /// The process the person was talking to is still that process. A restart leaves the
     /// rows behind; it does not leave the permission behind, because the pid is either
     /// gone or belongs to something that started later.
@@ -84,12 +93,14 @@ pub(crate) struct NewPushGrant {
     pub supervisor_pid: i64,
     pub supervisor_identity: String,
     pub commit_sha: Option<String>,
+    pub new_branch: Option<NewBranchScope>,
 }
 
 /// The exact destination an instruction resolved to, before anything is written down.
 #[derive(Debug, Clone)]
 pub struct Target {
     pub draft: Option<DraftTarget>,
+    pub new_branch: Option<NewBranchScope>,
     pub workspace_path: String,
     pub workspace_epoch: i64,
     pub branch: String,
@@ -118,13 +129,13 @@ pub enum Authority {
 /// instruction, a recovered turn's prompt and an agent's own text never reach it: they are
 /// `run.prompt` too, and `run.prompt` is not a person speaking.
 pub async fn prepare(store: &mut Store, chat_id: i64, message: &str) -> Result<Authority> {
+    let request = grammar::request(message);
     let commit =
-        match classify(message) {
+        match request.intent {
             Intent::None => return Ok(Authority::None),
             Intent::Ambiguous => return Ok(Authority::Ask(
                 "This message mentions publishing but does not read as an explicit instruction, \
-                 so no push was authorised. Say exactly what you want pushed - for example \
-                 \"commit and push\" - or use Changes."
+                 so no push was authorised. Clarify the branch you want pushed, or use Changes."
                     .into(),
             )),
             Intent::Authorize { commit } => commit,
@@ -144,6 +155,7 @@ pub async fn prepare(store: &mut Store, chat_id: i64, message: &str) -> Result<A
     let origin_url = crate::chat_changes::origin(repo).await?;
     let target = Target {
         draft: None,
+        new_branch: None,
         workspace_path: chat.workspace_path.clone(),
         workspace_epoch: chat.workspace_epoch,
         branch,
@@ -153,21 +165,28 @@ pub async fn prepare(store: &mut Store, chat_id: i64, message: &str) -> Result<A
     };
     match chat.mode {
         ChatMode::Single => {
-            let head = crate::chat_changes::git(repo, &["rev-parse", "--verify", "HEAD"])
-                .await
-                .map_err(|_| {
-                    Error::invalid("this checkout has no commit yet; there is nothing to publish")
-                })?
-                .trim()
-                .to_ascii_lowercase();
-            checkout::publishable_branch(repo, &target.origin_url, &target.branch).await?;
+            let (head, new_branch) = branch::prepare(repo, &target.origin_url, &request).await?;
+            if new_branch.is_none() {
+                if request
+                    .branch
+                    .as_deref()
+                    .is_some_and(|name| name != target.branch)
+                {
+                    return Err(Error::invalid("the named branch is not this chat's working branch; select its checkout before asking to push"));
+                }
+                checkout::publishable_branch(repo, &target.origin_url, &target.branch).await?;
+            }
             Ok(Authority::Solo(Target {
                 head_sha: head,
+                new_branch,
                 ..target
             }))
         }
         ChatMode::Team => {
-            let draft = sole_draft(store, chat_id)?;
+            if request.work {
+                return Err(Error::invalid("this message requests new work as well as a push; approve and finish that team work first, then ask to push its exact draft. No existing draft was pushed and no planning was started"));
+            }
+            let draft = sole_draft(store, chat_id, request.branch.as_deref())?;
             let found = crate::chat_changes::draft(store, chat_id, &draft)?;
             crate::chat_changes::delivery_available(store, chat_id, &draft, DeliveryAction::Push)?;
             checkout::publishable_branch(repo, &target.origin_url, &found.branch).await?;
@@ -187,14 +206,17 @@ pub async fn prepare(store: &mut Store, chat_id: i64, message: &str) -> Result<A
 /// The one verified draft this chat owns. Never the project's latest, never a choice
 /// between several: a push message names work the person has in mind, and guessing which
 /// one is how the wrong commit reaches a shared branch.
-fn sole_draft(store: &Store, chat_id: i64) -> Result<DraftTarget> {
+fn sole_draft(store: &Store, chat_id: i64, branch: Option<&str>) -> Result<DraftTarget> {
     let mut found = Vec::new();
     for run in store.chat_draft_runs(chat_id)? {
         for slice in store.chat_build_slices(run)? {
             if store.chat_draft_superseded(chat_id, run, &slice.slice_key)? {
                 continue;
             }
-            if slice.build_status == "verified" && slice.commit_sha.is_some() {
+            if slice.build_status == "verified"
+                && slice.commit_sha.is_some()
+                && branch.is_none_or(|name| slice.branch.as_deref() == Some(name))
+            {
                 found.push(DraftTarget {
                     run_id: run,
                     slice_key: slice.slice_key,
@@ -244,6 +266,7 @@ pub fn mint(
         supervisor_pid: pid,
         supervisor_identity,
         commit_sha: commit_sha.map(str::to_string),
+        new_branch: target.new_branch.clone(),
     })
 }
 
@@ -271,11 +294,10 @@ pub async fn request_publication(
     }
     let commit = commit.to_ascii_lowercase();
     let repo = Path::new(&grant.workspace_path);
-    if crate::current_branch(repo).await.as_deref() != Some(grant.branch.as_str()) {
-        return Err(Error::invalid(
-            "this checkout is no longer on the branch the person authorised; nothing was pinned",
-        ));
-    }
+    let branch = crate::current_branch(repo)
+        .await
+        .ok_or_else(|| Error::invalid("this checkout has no branch to publish"))?;
+    branch::validate(&grant, repo, &branch).await?;
     let head = crate::chat_changes::git(repo, &["rev-parse", "--verify", "HEAD"])
         .await?
         .trim()
@@ -300,12 +322,12 @@ pub async fn request_publication(
             "the authorised starting commit is not an ancestor; rewritten history was not approved",
         )
     })?;
-    let grant = store.arm_chat_push_grant(chat_id, node, &commit)?;
+    let grant = store.arm_chat_push_grant(chat_id, node, &branch, &commit)?;
     Ok(format!(
         "Publication requested for {} at {commit}. ai-team pushes it after this turn ends and \
          reports the real result in this conversation. Do not run git push, and do not tell the \
          person it is published: you do not know yet.",
-        grant.branch
+        grant.publication_branch()
     ))
 }
 

@@ -62,9 +62,8 @@ impl Store {
             tx.execute(
                 "INSERT INTO run
                    (project_id, team_id, prompt, trigger, workspace_path, parallel_width,
-                    budget_tokens, budget_seconds, max_repairs, budget_tokens_node,
-                    budget_seconds_node, max_turns_node, on_failure, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?14)",
+                    max_repairs, on_failure, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)",
                 params![
                     project_id,
                     project.team_id,
@@ -72,12 +71,7 @@ impl Store {
                     trigger,
                     workspace_path,
                     guardrails.parallel_width,
-                    guardrails.budget_tokens_run,
-                    guardrails.budget_seconds_run,
                     guardrails.max_repairs,
-                    guardrails.budget_tokens_node,
-                    guardrails.budget_seconds_node,
-                    None::<i64>,
                     guardrails.on_failure,
                     at
                 ],
@@ -1487,16 +1481,6 @@ impl Store {
             )
             .map_err(Into::into)
     }
-
-    /// Has this run spent past what it was allowed? Checked before dispatching the next
-    /// node rather than after the fact, which is the only point at which stopping helps.
-    pub fn run_over_budget(&self, run_id: i64) -> Result<bool> {
-        let run = self.run(run_id)?;
-        let Some(budget) = run.budget_tokens else {
-            return Ok(false);
-        };
-        Ok(self.run_usage(run_id)?.billable() >= budget)
-    }
 }
 
 /// A checkout path as the filesystem resolves it, or as written when it does not exist.
@@ -1784,20 +1768,21 @@ mod tests {
             .unwrap();
 
         assert_eq!(run.parallel_width, 2);
-        assert_eq!(run.budget_tokens, Some(2_000_000));
+        assert_eq!(run.max_repairs, 2);
+        assert_eq!(run.budget_tokens, None);
         assert_eq!(run.status, RunStatus::Queued);
 
-        // Raising the team's budget afterwards must not change what this run may spend.
+        // Raising the team's repair allowance must not change this run's policy.
         s.db_mut()
             .write(|tx| {
                 tx.execute(
-                    "UPDATE team SET budget_tokens_run = 99 WHERE id = ?1",
+                    "UPDATE team SET max_repairs = 99 WHERE id = ?1",
                     params![team],
                 )?;
                 Ok(())
             })
             .unwrap();
-        assert_eq!(s.run(run.id).unwrap().budget_tokens, Some(2_000_000));
+        assert_eq!(s.run(run.id).unwrap().max_repairs, 2);
     }
 
     #[test]
@@ -2388,7 +2373,7 @@ mod tests {
     }
 
     #[test]
-    fn a_run_reports_when_it_is_past_its_budget() {
+    fn usage_and_historical_budgets_remain_evidence() {
         let (mut s, project, team) = seeded();
         let run = s
             .create_run(project, "ship it", RunTrigger::Manual)
@@ -2411,7 +2396,7 @@ mod tests {
             )
             .unwrap();
 
-        assert!(!s.run_over_budget(run.id).unwrap());
+        assert_eq!(s.run_usage(run.id).unwrap().billable(), 0);
         s.record_usage(
             node.id,
             Usage {
@@ -2423,8 +2408,9 @@ mod tests {
             1,
         )
         .unwrap();
-        // Exactly at the budget counts as spent; the enormous cache read does not.
-        assert!(s.run_over_budget(run.id).unwrap());
+        assert_eq!(s.run_usage(run.id).unwrap().billable(), 5_000);
+        assert_eq!(s.run_usage(run.id).unwrap().cache_read, 900_000);
+        assert_eq!(s.run(run.id).unwrap().budget_tokens, Some(5_000));
     }
 
     #[test]

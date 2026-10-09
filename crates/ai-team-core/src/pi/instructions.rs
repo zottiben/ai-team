@@ -129,7 +129,9 @@ fn preamble(agent: &Agent, team: &Team) -> String {
 /// receipt; and reporting the push as done before it has happened, which it cannot know.
 pub(super) const CHAT_PUBLICATION: &str =
     " In this message the person explicitly asked you to push, so ai-team has authorised \
-     one publication of this checkout's current branch. Only make a commit if this message \
+     one publication in this checkout. If the message explicitly requests a new branch, \
+     create that branch from the requested base first; otherwise stay on the current branch. \
+     This permission does not cover other existing branches. Only make a commit if this message \
      explicitly asks you to commit; a push-only request must use the existing commit and \
      leave dirty files untouched. Never amend or reset history. Then call the ai-team-planner \
      tool request_publication with that exact \

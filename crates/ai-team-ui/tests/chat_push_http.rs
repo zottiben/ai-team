@@ -2,8 +2,8 @@
 //!
 //! Over the real socket, because what breaks here is the wiring: which handler reads the
 //! person's own words, what it does with a team chat, and what it writes down. This
-//! binary owns its environment, like the other server fixtures. No model turn succeeds
-//! here and no remote is published: the grant row is the evidence.
+//! binary owns its environment. Offline Pi-shaped turns and disposable bare remotes
+//! prove admission, pinning, drain and publication without models or live accounts.
 #![cfg(unix)]
 
 use ai_team_core::{
@@ -39,7 +39,7 @@ impl Drop for AbortServer {
     }
 }
 
-fn git(repo: &Path, args: &[&str]) {
+fn git(repo: &Path, args: &[&str]) -> String {
     let out = std::process::Command::new("git")
         .args(args)
         .current_dir(repo)
@@ -50,6 +50,7 @@ fn git(repo: &Path, args: &[&str]) {
         "git {args:?}: {}",
         String::from_utf8_lossy(&out.stderr)
     );
+    String::from_utf8(out.stdout).unwrap().trim().into()
 }
 
 async fn call(
@@ -335,14 +336,15 @@ async fn team_push_success(
         .unwrap();
     conn.execute("INSERT INTO chat_build_slice(run_id,slice_key,planner_slice_id,approved_rev,branch,lease_state,build_status,candidate_sha,commit_sha) VALUES(?1,'S1',1,1,'ai-team/http-reviewed-work','released','verified',?2,?2)",rusqlite::params![turn.run_id,commit]).unwrap();
     let path = format!("/api/chats/{chat}/messages");
-    let ambiguous = serde_json::json!({"message":"can you push it?","request_id":"ambiguous-team","workspace_epoch":0});
+    let ambiguous = serde_json::json!({"message":"did you push it?","request_id":"ambiguous-team","workspace_epoch":0});
     let (status, refused) = call(address, token, &path, &ambiguous.to_string()).await;
     assert_eq!(status, 400, "{refused}");
     assert!(refused["error"]
         .as_str()
         .unwrap()
         .contains("No team planning was started"));
-    let body = serde_json::json!({"message":format!("  {ASKED}\n"),"request_id":"team-http-push","workspace_epoch":0});
+    fenced_destinations(&store, remote, address, token, chat).await;
+    let body = serde_json::json!({"message":"  The checks passed. Please push the branch ai-team/http-reviewed-work.\n","request_id":"team-http-push","workspace_epoch":0});
     let (status, receipt) = call(address, token, &path, &body.to_string()).await;
     assert_eq!(status, 200, "{receipt}");
     assert_eq!(receipt["started"], false);
@@ -368,6 +370,38 @@ async fn team_push_success(
     assert_eq!(store.checkout_operations(chat).unwrap().len(), 1);
 }
 
+async fn fenced_destinations(
+    store: &Store,
+    remote: &Path,
+    address: std::net::SocketAddr,
+    token: &str,
+    chat: i64,
+) {
+    let path = format!("/api/chats/{chat}/messages");
+    for (request, message) in [
+        (
+            "fenced-destination-after",
+            "Push it.\n```text\nto main\n```",
+        ),
+        (
+            "fenced-destination-before",
+            "```text\nto main\n```\nPush it.",
+        ),
+    ] {
+        let input = serde_json::json!({"message":message,"request_id":request,"workspace_epoch":0});
+        let (status, refused) = call(address, token, &path, &input.to_string()).await;
+        assert_eq!(status, 400, "{refused}");
+        assert!(store
+            .chat_push_grant_for_request(chat, request)
+            .unwrap()
+            .is_none());
+        assert!(!remote
+            .join("refs/heads/ai-team/http-reviewed-work")
+            .exists());
+        assert_eq!(store.chat_turns(chat).unwrap().len(), 1);
+    }
+}
+
 async fn review_and_push_success(
     db: &Path,
     repo: &Path,
@@ -381,12 +415,22 @@ async fn review_and_push_success(
         r#"#!/bin/sh
 case "$*" in *--list-models*) printf '%s\n' 'provider model context max-out thinking images' 'ailocal fixture-model 200k 32k yes yes'; exit ;; esac
 if [ -f '{root}/push-mode' ]; then
+    previous=''
+    for arg in "$@"; do
+        if [ "$previous" = --mcp-config ]; then config="$arg"; fi
+        previous="$arg"
+    done
+    grep -q 'request_publication' "$config" || exit 92
+    printf '%s\n' "$@" > '{root}/push-arguments'
+    git checkout -qb chore/http-approved origin/main || exit 1
     printf 'asked-for feature\n' > feature.txt
     git add README.md feature.txt || exit 2
     git -c core.hooksPath=/dev/null -c commit.gpgSign=false commit -qm 'explicit requested commit' || exit 3
     git rev-parse HEAD > '{root}/pinned.tmp'
     mv '{root}/pinned.tmp' '{root}/pinned'
     while [ ! -f '{root}/finish-push' ]; do sleep 0.05; done
+elif [ -f review-new.rs ]; then
+    printf 'untracked repaired\n' > review-new.rs
 else
     printf 'review repaired\n' > README.md
 fi
@@ -434,7 +478,45 @@ printf '%s\n' '{{"type":"session","id":"offline-request"}}' '{{"type":"message_e
         call(address, token, &path, &changed.to_string()).await.0,
         400
     );
+    untracked_review(db, repo, address, token, chat).await;
     push_success(db, repo, remote, address, token, chat).await;
+}
+
+async fn untracked_review(
+    db: &Path,
+    repo: &Path,
+    address: std::net::SocketAddr,
+    token: &str,
+    chat: i64,
+) {
+    std::fs::write(repo.join("review-new.rs"), "new source\n").unwrap();
+    let mut store = Store::open(db).unwrap();
+    let head = git(repo, &["rev-parse", "HEAD"]);
+    let index = git(repo, &["ls-files", "--stage"]);
+    let snapshot = ai_team_core::chat_changes::checkout::state(&mut store, chat)
+        .await
+        .unwrap();
+    let input = serde_json::json!({"request_id":"untracked-review-http","workspace_epoch":0,"review":{"kind":"checkout","finding":{"fingerprint":snapshot.fingerprint,"head":snapshot.head,"area":"untracked","path":"review-new.rs","side":"new","line":1,"body":"Repair this new file without staging it"}}});
+    let path = format!("/api/chats/{chat}/review-fix");
+    let (status, receipt) = call(address, token, &path, &input.to_string()).await;
+    assert_eq!(status, 200, "{receipt}");
+    assert_eq!(receipt["turn"]["started"], true);
+    idle(db, chat).await;
+    assert_eq!(
+        std::fs::read_to_string(repo.join("review-new.rs")).unwrap(),
+        "untracked repaired\n"
+    );
+    assert_eq!(git(repo, &["ls-files", "--stage"]), index);
+    assert_eq!(git(repo, &["rev-parse", "HEAD"]), head);
+    assert!(store.live_chat_push_grant(chat).unwrap().is_none());
+    let (status, replay) = call(address, token, &path, &input.to_string()).await;
+    assert_eq!(status, 200, "{replay}");
+    assert_eq!(replay["turn"]["started"], false);
+    assert!(store
+        .checkout_findings(chat)
+        .unwrap()
+        .iter()
+        .any(|f| f.path == "review-new.rs" && f.area == "untracked"));
 }
 
 async fn push_success(
@@ -448,8 +530,7 @@ async fn push_success(
     let root = db.parent().unwrap();
     let store = Store::open(db).unwrap();
     std::fs::write(root.join("push-mode"), "").unwrap();
-    let request =
-        serde_json::json!({"message":ASKED,"request_id":"successful-push","workspace_epoch":0});
+    let request = serde_json::json!({"message":"create and new branch off of latest main and name is appropriately. The commit and push and I’ll open the PR.","request_id":"successful-push","workspace_epoch":0});
     let (status, receipt) = call(
         address,
         token,
@@ -471,7 +552,7 @@ async fn push_success(
         .await
         .unwrap();
     assert!(
-        !remote.join("refs/heads/work").exists(),
+        !remote.join("refs/heads/chore/http-approved").exists(),
         "the active process cannot publish"
     );
     std::fs::write(root.join("finish-push"), "").unwrap();
@@ -489,11 +570,21 @@ async fn push_success(
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     assert_eq!(
-        std::fs::read_to_string(remote.join("refs/heads/work"))
+        std::fs::read_to_string(remote.join("refs/heads/chore/http-approved"))
             .unwrap()
             .trim(),
         commit.trim()
     );
+    assert!(!remote.join("refs/heads/work").exists());
+    let arguments = std::fs::read_to_string(root.join("push-arguments")).unwrap();
+    assert!(arguments.contains("request_publication"));
+    assert!(arguments.contains("new branch"));
+    let grant = store
+        .chat_push_grant_for_request(chat, "successful-push")
+        .unwrap()
+        .unwrap();
+    assert_eq!(grant.branch, "work");
+    assert_eq!(grant.pinned_branch.as_deref(), Some("chore/http-approved"));
     assert_eq!(
         std::fs::read_to_string(repo.join("unrelated.txt")).unwrap(),
         "keep my unsaved file\n"

@@ -18,7 +18,6 @@ use tokio::{sync::Semaphore, task::JoinHandle};
 pub(super) struct Watch {
     db: PathBuf,
     pub(super) control: ChatBuildControl,
-    node: Option<i64>,
     pub(super) cleanup: bool,
 }
 impl Watch {
@@ -26,7 +25,6 @@ impl Watch {
         Self {
             db: db.to_owned(),
             control: control.clone(),
-            node: None,
             cleanup: false,
         }
     }
@@ -43,13 +41,6 @@ impl Watch {
             store.check_chat_build_cleanup(&self.control)?;
         } else {
             store.check_chat_build(&self.control)?;
-        }
-        let exceeded = match self.node {
-            Some(node) => crate::node_may_continue(store, node)?,
-            None => crate::run_may_continue(store, self.control.receipt.run_id)?,
-        };
-        if let Some(exceeded) = exceeded {
-            return Err(Error::invalid(exceeded.reason));
         }
         Ok(())
     }

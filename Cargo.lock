@@ -32,7 +32,7 @@ dependencies = [
 
 [[package]]
 name = "ai-team"
-version = "0.7.6"
+version = "0.7.7"
 dependencies = [
  "ai-team-core",
  "ai-team-ui",
@@ -45,7 +45,7 @@ dependencies = [
 
 [[package]]
 name = "ai-team-core"
-version = "0.7.6"
+version = "0.7.7"
 dependencies = [
  "ai-planner-core",
  "ai-toolbox-core",
@@ -65,7 +65,7 @@ dependencies = [
 
 [[package]]
 name = "ai-team-desktop"
-version = "0.7.6"
+version = "0.7.7"
 dependencies = [
  "ai-team-core",
  "ai-team-ui",
@@ -78,7 +78,7 @@ dependencies = [
 
 [[package]]
 name = "ai-team-ui"
-version = "0.7.6"
+version = "0.7.7"
 dependencies = [
  "ai-planner-core",
  "ai-team-core",

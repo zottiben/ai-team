@@ -259,7 +259,7 @@ async fn approvals_and_journaled_leases_preserve_exact_scope_and_files() {
     approval_cancellation_and_single_start().await;
     approval_and_definition_writes_serialize().await;
     approval_rows_commit_atomically().await;
-    stopped_denied_and_capped_preparations_do_not_spend().await;
+    stopped_and_denied_preparations_do_not_spend().await;
     stop_during_acquisition_retains_the_returned_lease().await;
     leased_work_keeps_its_approval_and_exact_worker_scope().await;
     failed_preparations_retain_evidence_and_never_reset_files().await;
@@ -921,8 +921,8 @@ async fn approval_rows_commit_atomically() {
     assert_eq!(f.store.chat_build_slices(f.turn.run_id).unwrap().len(), 2);
 }
 
-async fn stopped_denied_and_capped_preparations_do_not_spend() {
-    for case in ["stop", "policy", "budget"] {
+async fn stopped_and_denied_preparations_do_not_spend() {
+    for case in ["stop", "policy"] {
         let mut f = Fixture::new();
         let start = f.approve().await;
         let control = f.store.claim_chat_build(&start).unwrap();
@@ -936,11 +936,6 @@ async fn stopped_denied_and_capped_preparations_do_not_spend() {
             "policy" => {
                 f.registry =
                     ModelRegistry::new(MachineProfile::parse(DEFAULT_MACHINE_PROFILE).unwrap());
-            }
-            "budget" => {
-                f.conn()
-                    .execute("UPDATE run SET budget_tokens = 0", [])
-                    .unwrap();
             }
             _ => unreachable!(),
         }
@@ -1037,8 +1032,19 @@ fn calls(f: &Fixture) -> Vec<serde_json::Value> {
         .collect()
 }
 
+fn historical_execution_caps(f: &Fixture) {
+    f.conn()
+        .execute(
+            "UPDATE run SET budget_tokens = 0, budget_tokens_node = 0,
+        budget_seconds = 0, budget_seconds_node = 0, max_turns_node = 40 WHERE id = ?1",
+            [f.turn.run_id],
+        )
+        .unwrap();
+}
+
 async fn parallel_workers_commit_and_return_without_touching_solo() {
-    let mut f = worker_fixture("success");
+    let mut f = worker_fixture("uncapped");
+    historical_execution_caps(&f);
     f.add_slice("S2", vec!["crates/**"]);
     f.add_slice("S3", vec!["ui/**"]);
     let base = git(&f.repo, &["rev-parse", "HEAD"]);
@@ -1063,6 +1069,18 @@ async fn parallel_workers_commit_and_return_without_touching_solo() {
     assert!(git(&f.repo, &["status", "--porcelain"]).is_empty());
     let records = calls(&f);
     assert_eq!(records.len(), 6, "three makers and three scoped verifiers");
+    for call in &records {
+        let id = call["id"].as_str().unwrap().parse().unwrap();
+        let node = f.store.node_run(id).unwrap();
+        assert_eq!(node.turns, 65, "{}", node.role);
+        assert_eq!(node.usage.billable(), 3_200_030, "{}", node.role);
+    }
+    assert!(f.store.run_usage(run.id).unwrap().billable() > 19_000_000);
+    assert_eq!(run.budget_tokens, Some(0));
+    assert_eq!(run.budget_tokens_node, Some(0));
+    assert_eq!(run.budget_seconds, Some(0));
+    assert_eq!(run.budget_seconds_node, Some(0));
+    assert_eq!(run.max_turns_node, Some(40));
     let makers: Vec<_> = records
         .iter()
         .filter(|call| call["role"] != "verifier")
@@ -1200,7 +1218,6 @@ async fn failed_work_is_retained_and_does_not_poison_siblings() {
         "return-fail",
         "board-fail",
         "staged-only",
-        "node-cap",
     ] {
         let mut f = worker_fixture(mode);
         f.conn()
@@ -1208,11 +1225,6 @@ async fn failed_work_is_retained_and_does_not_poison_siblings() {
             .unwrap();
         if mode == "siblings" {
             f.add_slice("S3", vec!["ui/**"]);
-        }
-        if mode == "node-cap" {
-            f.conn()
-                .execute("UPDATE run SET budget_tokens_node = 1", [])
-                .unwrap();
         }
         if mode == "settle-fail" {
             f.conn().execute_batch("CREATE TRIGGER reject_worker_settlement BEFORE UPDATE ON node_run WHEN NEW.role = 'backend' AND NEW.status = 'failed' BEGIN SELECT RAISE(ABORT, 'injected member settlement failure'); END;").unwrap();
@@ -1277,10 +1289,6 @@ async fn failed_work_is_retained_and_does_not_poison_siblings() {
                 &["show", ":crates/staged-only.txt"]
             )
             .contains("preserve staged-only work"));
-        }
-        if mode == "node-cap" {
-            assert!(calls(&f).iter().all(|call| call["role"] != "verifier"));
-            assert!(!f.dir.path().join("gate-calls").exists());
         }
         assert_eq!(f.lease().lease_state, "retained", "{mode}");
         assert_eq!(f.lease().build_status, "failed", "{mode}");

@@ -42,7 +42,7 @@ async fn plan(store: &mut Store, control: &mut TeamControl) -> Result<()> {
     let workspace = crate::Worktrees::at(repo)
         .resolve_until(
             Path::new(&chat.workspace_path),
-            until_stopped(Store::open(store.path())?, *control, control.node_id),
+            until_stopped(Store::open(store.path())?, *control),
         )
         .await?;
     if !crate::same_worktree(&workspace.to_string_lossy(), &chat.workspace_path) {
@@ -58,9 +58,6 @@ async fn plan(store: &mut Store, control: &mut TeamControl) -> Result<()> {
         ));
     }
     store.start_chat_team_planner(control)?;
-    if let Some(limit) = crate::run_may_continue(store, run.id)? {
-        return Err(Error::invalid(limit.reason));
-    }
     let planner = store
         .agents(
             run.team_id
@@ -90,7 +87,7 @@ async fn take_turn(
     node: i64,
     prompt: String,
 ) -> Result<String> {
-    if let Some(reason) = stop_reason(store, control, node)? {
+    if let Some(reason) = stop_reason(store, control)? {
         return Err(Error::invalid(reason));
     }
     let turn = crate::pi::chat_team_planning_turn(
@@ -100,7 +97,7 @@ async fn take_turn(
         &ModelRegistry::load()?,
         prompt,
     )?;
-    let stop = until_stopped(Store::open(store.path())?, *control, node);
+    let stop = until_stopped(Store::open(store.path())?, *control);
     let mut said = String::new();
     let mut context_failure = None;
     let result = crate::pi::run_until(
@@ -168,9 +165,9 @@ fn settle_attempt(
         })
 }
 
-async fn until_stopped(observer: Store, control: TeamControl, node: i64) -> String {
+async fn until_stopped(observer: Store, control: TeamControl) -> String {
     loop {
-        match stop_reason(&observer, &control, node) {
+        match stop_reason(&observer, &control) {
             Ok(Some(reason)) => return reason,
             Err(error) => return format!("Stopped because team supervision failed: {error}"),
             Ok(None) => tokio::time::sleep(Duration::from_millis(100)).await,
@@ -178,7 +175,7 @@ async fn until_stopped(observer: Store, control: TeamControl, node: i64) -> Stri
     }
 }
 
-fn stop_reason(store: &Store, control: &TeamControl, node: i64) -> Result<Option<String>> {
+fn stop_reason(store: &Store, control: &TeamControl) -> Result<Option<String>> {
     store.check_chat_team_control(control)?;
     if store.chat(control.chat_id)?.stop_requested {
         return Ok(Some(
@@ -188,5 +185,5 @@ fn stop_reason(store: &Store, control: &TeamControl, node: i64) -> Result<Option
     if store.run(control.run_id)?.status != RunStatus::Running {
         return Ok(Some("This team run is no longer running.".into()));
     }
-    Ok(crate::node_may_continue(store, node)?.map(|limit| limit.reason))
+    Ok(None)
 }

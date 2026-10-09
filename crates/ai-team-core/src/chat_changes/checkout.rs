@@ -1,4 +1,5 @@
 //! Explicit operator review/Git commands over the persistent checkout. Not verified drafts.
+mod untracked;
 use super::{
     delivery::{origin, remote_head, string},
     git,
@@ -13,6 +14,7 @@ use std::{
     path::{Component, Path},
     sync::Arc,
 };
+pub use untracked::Preview as UntrackedPreview;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -72,6 +74,7 @@ pub struct State {
     pub staged: Vec<FileDiff>,
     pub unstaged: Vec<FileDiff>,
     pub untracked: Vec<String>,
+    pub untracked_files: Vec<UntrackedPreview>,
     pub findings: Vec<Finding>,
     pub operations: Vec<Operation>,
 }
@@ -153,7 +156,7 @@ pub async fn state(store: &mut Store, chat: i64) -> Result<State> {
         hash.update(value.as_bytes());
         hash.update([0]);
     }
-    hash_untracked(repo, &untracked, &mut hash)?;
+    let untracked_files = untracked::inspect(repo, &untracked, &mut hash)?;
     Ok(State {
         workspace,
         workspace_epoch: current.workspace_epoch,
@@ -163,6 +166,7 @@ pub async fn state(store: &mut Store, chat: i64) -> Result<State> {
         staged: crate::parse_diff(&staged),
         unstaged: crate::parse_diff(&unstaged),
         untracked,
+        untracked_files,
         findings: store.checkout_findings(chat)?,
         operations: store.checkout_operations(chat)?,
     })
@@ -187,55 +191,6 @@ async fn checkout_head(repo: &Path) -> Result<Option<String>> {
     }
 }
 
-fn hash_untracked(repo: &Path, paths: &[String], hash: &mut Sha256) -> Result<()> {
-    const LIMIT: u64 = 32 * 1024 * 1024;
-    let too_large = || {
-        Error::invalid("Untracked files exceed the exact-review limit (10000 files / 32 MiB). Ignore build output or review it with your own Git tools.")
-    };
-    if paths.len() > 10_000 {
-        return Err(too_large());
-    }
-    let mut bytes = 0;
-    for path in paths {
-        validate_path(path)?;
-        let full = repo.join(path);
-        let meta = std::fs::symlink_metadata(&full)?;
-        hash.update(path.as_bytes());
-        hash.update([0]);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            hash.update(meta.permissions().mode().to_le_bytes());
-        }
-        if meta.file_type().is_symlink() {
-            hash.update(std::fs::read_link(&full)?.as_os_str().as_encoded_bytes());
-        } else if meta.is_file() {
-            use std::io::Read;
-            if meta.len() > LIMIT - bytes {
-                return Err(too_large());
-            }
-            let mut file = std::fs::File::open(&full)?.take(LIMIT - bytes + 1);
-            let mut buffer = [0; 8192];
-            loop {
-                let n = file.read(&mut buffer)?;
-                if n == 0 {
-                    break;
-                }
-                bytes += n as u64;
-                if bytes > LIMIT {
-                    return Err(too_large());
-                }
-                hash.update(&buffer[..n]);
-            }
-        } else {
-            return Err(Error::invalid(
-                "inspect nested repositories and special files with your own Git tools",
-            ));
-        }
-        hash.update([0]);
-    }
-    Ok(())
-}
 fn validate_path(path: &str) -> Result<()> {
     if path.is_empty()
         || Path::new(path)
@@ -332,14 +287,14 @@ pub(crate) async fn authorized_push(
     grant: &crate::chat_push::PushGrant,
 ) -> Result<Operation> {
     let chat = grant.chat_id;
-    let branch = &grant.branch;
+    let branch = grant.publication_branch();
     let commit = grant
         .commit_sha
         .as_deref()
         .ok_or_else(|| Error::invalid("the push has no pinned commit"))?;
     let origin_url = &grant.origin_url;
     let action = Action::PushBranch {
-        branch: branch.clone(),
+        branch: branch.to_string(),
         commit: commit.to_string(),
     };
     store.checkout_available(chat)?;
@@ -348,7 +303,7 @@ pub(crate) async fn authorized_push(
     if s.workspace != grant.workspace_path
         || s.workspace_epoch != grant.workspace_epoch
         || (grant.mode == crate::ChatMode::Single
-            && (s.branch.as_deref() != Some(branch.as_str()) || s.head.as_deref() != Some(commit)))
+            && (s.branch.as_deref() != Some(branch) || s.head.as_deref() != Some(commit)))
     {
         return Err(Error::invalid(
             "the approved working checkout or branch changed; ask again",
@@ -527,6 +482,8 @@ pub async fn approve(store: &mut Store, chat: i64, id: i64, rev: i64) -> Result<
     if op.state == "done" {
         return Ok(op);
     }
+    let creation_only = matches!(op.snapshot.action, Action::PushBranch { .. })
+        && store.chat_push_creates_branch(chat, id)?;
     let owner = store.claim_checkout_operation(chat, id, rev, false)?;
     owner.track(async {
         let validation=async {
@@ -537,7 +494,7 @@ pub async fn approve(store: &mut Store, chat: i64, id: i64, rev: i64) -> Result<
         }.await;
         if let Err(e)=validation {return store.settle_checkout_operation(chat,id,if owner.quiescent(){"refused"}else{"inspection"},&e.to_string());}
         store.attempt_checkout_operation(chat,id)?;
-        let result=execute(&op.snapshot).await;
+        let result=execute(&op.snapshot, creation_only).await;
         match result {
             Ok(result) if owner.quiescent()=>store.settle_checkout_operation(chat,id,"done",&result),
             Ok(result)=>store.settle_checkout_operation(chat,id,"inspection",&format!("{result}; command groups may still be alive. Drain and inspect; no retry.")),
@@ -545,7 +502,7 @@ pub async fn approve(store: &mut Store, chat: i64, id: i64, rev: i64) -> Result<
         }
     }).await
 }
-async fn execute(s: &Snapshot) -> Result<String> {
+async fn execute(s: &Snapshot, creation_only: bool) -> Result<String> {
     let repo = Path::new(&s.workspace);
     match &s.action {
         Action::Stage { path } => {
@@ -585,10 +542,12 @@ async fn execute(s: &Snapshot) -> Result<String> {
                 git(repo, &["rev-parse", "HEAD"]).await?.trim()
             ))
         }
-        Action::Push | Action::PullRequest | Action::PushBranch { .. } => publish(s).await,
+        Action::Push | Action::PullRequest | Action::PushBranch { .. } => {
+            publish(s, creation_only).await
+        }
     }
 }
-async fn publish(s: &Snapshot) -> Result<String> {
+async fn publish(s: &Snapshot, creation_only: bool) -> Result<String> {
     let repo = Path::new(&s.workspace);
     let r = s
         .remote
@@ -603,23 +562,30 @@ async fn publish(s: &Snapshot) -> Result<String> {
             .ok_or_else(|| Error::invalid("missing approved commit"))?,
     };
     if let Action::PushBranch { branch, .. } = &s.action {
-        // No force of any kind: the remote itself refuses anything but a fast-forward, so
-        // a branch that moved since the preview loses the push rather than the work.
-        if remote_head(repo, &r.url, branch).await?.as_deref() != Some(head) {
-            git(
-                repo,
-                &[
-                    "-c",
-                    "core.hooksPath=/dev/null",
-                    "push",
-                    "--no-verify",
-                    "--no-follow-tags",
-                    "--recurse-submodules=no",
-                    &r.url,
-                    &format!("{head}:refs/heads/{branch}"),
-                ],
-            )
-            .await?;
+        let remote = remote_head(repo, &r.url, branch).await?;
+        if creation_only && remote.is_some() {
+            return Err(Error::invalid(
+                "the requested new branch now exists on origin; it will not be overwritten",
+            ));
+        }
+        if remote.as_deref() != Some(head) {
+            let destination = format!("{head}:refs/heads/{branch}");
+            let absent = format!("--force-with-lease=refs/heads/{branch}:");
+            let mut args = vec![
+                "-c",
+                "core.hooksPath=/dev/null",
+                "push",
+                "--no-verify",
+                "--no-follow-tags",
+                "--recurse-submodules=no",
+            ];
+            // Existing branches remain fast-forward only. Explicit creation requires
+            // absence atomically at the remote; the empty lease cannot overwrite a ref.
+            if creation_only {
+                args.push(&absent);
+            }
+            args.extend([r.url.as_str(), destination.as_str()]);
+            git(repo, &args).await?;
         }
         if remote_head(repo, &r.url, branch).await?.as_deref() != Some(head) {
             return Err(Error::invalid("publication could not be confirmed"));
@@ -737,7 +703,12 @@ pub(crate) async fn validate_finding_snapshot(
     let files = match input.area.as_str() {
         "staged" => s.staged,
         "unstaged" => s.unstaged,
-        _ => return Err(Error::invalid("choose staged or unstaged diff")),
+        "untracked" => s
+            .untracked_files
+            .into_iter()
+            .map(|preview| preview.file)
+            .collect(),
+        _ => return Err(Error::invalid("choose staged, unstaged or untracked diff")),
     };
     let valid = files
         .iter()

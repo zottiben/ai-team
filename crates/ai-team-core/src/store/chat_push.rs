@@ -15,7 +15,7 @@ use crate::{Error, Result, Store};
 
 const SELECT: &str = "SELECT id,chat_id,request_id,node_id,mode,workspace_path,workspace_epoch,
     branch,origin_url,head_sha,allow_commit,supervisor_pid,supervisor_identity,commit_sha,
-    operation_id,state,result,draft_json FROM chat_push_grant";
+    operation_id,state,result,draft_json,new_branch_json,pinned_branch FROM chat_push_grant";
 
 fn from_row(row: &Row<'_>) -> rusqlite::Result<PushGrant> {
     Ok(PushGrant {
@@ -38,6 +38,18 @@ fn from_row(row: &Row<'_>) -> rusqlite::Result<PushGrant> {
         workspace_path: row.get(5)?,
         workspace_epoch: row.get(6)?,
         branch: row.get(7)?,
+        new_branch: row
+            .get::<_, Option<String>>(18)?
+            .map(|json| serde_json::from_str(&json))
+            .transpose()
+            .map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    18,
+                    rusqlite::types::Type::Text,
+                    Box::new(error),
+                )
+            })?,
+        pinned_branch: row.get(19)?,
         origin_url: row.get(8)?,
         head_sha: row.get(9)?,
         allow_commit: row.get(10)?,
@@ -65,6 +77,10 @@ const STILL_HOLDS: &str = "state IN ('pending','armed') AND EXISTS(
             WHERE w.chat_id=c.id AND w.state='applied'),0)=chat_push_grant.workspace_epoch)";
 
 impl Store {
+    pub(crate) fn chat_push_creates_branch(&self, chat: i64, operation: i64) -> Result<bool> {
+        admission::check_operation(self.db().conn(), chat, operation)
+    }
+
     pub fn chat_push_grant(&self, chat: i64, id: i64) -> Result<PushGrant> {
         self.db()
             .conn()
@@ -198,13 +214,14 @@ impl Store {
         &mut self,
         chat: i64,
         node: i64,
+        branch: &str,
         commit: &str,
     ) -> Result<PushGrant> {
         let grant = self.chat_push_grant_for_node(chat, node)?.ok_or_else(|| {
             Error::invalid("this turn has no push authority from the person in this chat")
         })?;
         if let Some(pinned) = &grant.commit_sha {
-            if pinned != commit {
+            if pinned != commit || grant.publication_branch() != branch {
                 return Err(Error::invalid(
                     "a different commit is already pinned for this push; it will not be retargeted",
                 ));
@@ -215,11 +232,11 @@ impl Store {
         self.db_mut().write(|tx| {
             if tx.execute(
                 &format!(
-                    "UPDATE chat_push_grant SET commit_sha=?2,state='armed',updated_at=?3
+                    "UPDATE chat_push_grant SET commit_sha=?2,pinned_branch=?6,state='armed',updated_at=?3
                  WHERE id=?1 AND state='pending' AND commit_sha IS NULL AND {STILL_HOLDS}
                  AND EXISTS(SELECT 1 FROM chat WHERE id=?4 AND active_node_id=?5)"
                 ),
-                params![id, commit, crate::now(), chat, node],
+                params![id, commit, crate::now(), chat, node, branch],
             )? != 1
             {
                 return Err(Error::invalid("this push authority is no longer pending"));

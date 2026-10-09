@@ -67,11 +67,9 @@ impl Store {
             tx.execute(
                 "INSERT INTO run
                    (project_id, team_id, prompt, status, trigger, plan_slug, workspace_path,
-                    parallel_width, budget_tokens, budget_seconds, max_repairs,
-                    budget_tokens_node, budget_seconds_node, max_turns_node, on_failure,
+                    parallel_width, max_repairs, on_failure,
                     supervisor_pid, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, 'queued', ?4, ?5, ?6, 1, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
-                         ?14, ?15, ?15)",
+                 VALUES (?1, ?2, ?3, 'queued', ?4, ?5, ?6, 1, ?7, ?8, ?9, ?10, ?10)",
                 params![
                     restack.project_id,
                     team_id,
@@ -79,12 +77,7 @@ impl Store {
                     RunTrigger::Review,
                     restack.plan,
                     workspace,
-                    guardrails.budget_tokens_run,
-                    guardrails.budget_seconds_run,
                     guardrails.max_repairs,
-                    guardrails.budget_tokens_node,
-                    guardrails.budget_seconds_node,
-                    None::<i64>,
                     guardrails.on_failure,
                     pid,
                     at

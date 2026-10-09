@@ -1,6 +1,6 @@
 use super::{check_epoch, from_row, tick, SELECT, STILL_HOLDS};
 use crate::chat_push::NewPushGrant;
-use crate::chat_push::{classify, Intent};
+use crate::chat_push::{request_scope, Intent};
 use crate::{ChatMode, Error, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 
@@ -31,6 +31,7 @@ pub(in crate::store) fn mint_solo(
             supervisor_pid: i64::from(std::process::id()),
             supervisor_identity: identity.into(),
             commit_sha: None,
+            new_branch: target.new_branch.clone(),
         },
     )?;
     Ok(())
@@ -53,10 +54,25 @@ pub(in crate::store) fn mint(tx: &Connection, new: &NewPushGrant) -> Result<i64>
         }
         return Ok(id);
     }
-    if classify(input_message)
-        != (Intent::Authorize {
-            commit: new.allow_commit,
-        })
+    let request = request_scope(input_message);
+    let branch_scope_matches = match (&request.new_branch, &new.new_branch) {
+        (None, None) => request
+            .branch
+            .as_deref()
+            .is_none_or(|name| name == new.branch),
+        (Some(asked), Some(scope)) => {
+            asked.base == scope.base
+                && asked.name == scope.name
+                && scope.existing.contains(&new.branch)
+        }
+        _ => false,
+    };
+    if !branch_scope_matches
+        || (new.mode == ChatMode::Team && request.work)
+        || request.intent
+            != (Intent::Authorize {
+                commit: new.allow_commit,
+            })
         || new.request_id.is_empty()
         || new.request_id.len() > 128
     {
@@ -93,7 +109,7 @@ pub(in crate::store) fn mint(tx: &Connection, new: &NewPushGrant) -> Result<i64>
             ))
         }
     }
-    tx.execute("INSERT INTO chat_push_grant(chat_id,request_id,node_id,draft_json,mode,message,workspace_path,workspace_epoch,branch,origin_url,head_sha,allow_commit,supervisor_pid,supervisor_identity,commit_sha,state,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?17)",params![new.chat_id,new.request_id,new.node_id,new.draft.as_ref().map(serde_json::to_string).transpose()?,new.mode,input_message,new.workspace_path,new.workspace_epoch,new.branch,new.origin_url,new.head_sha,new.allow_commit,new.supervisor_pid,new.supervisor_identity,new.commit_sha,if new.commit_sha.is_some(){"armed"}else{"pending"},crate::now()])?;
+    tx.execute("INSERT INTO chat_push_grant(chat_id,request_id,node_id,draft_json,mode,message,workspace_path,workspace_epoch,branch,origin_url,head_sha,allow_commit,supervisor_pid,supervisor_identity,commit_sha,state,created_at,updated_at,new_branch_json) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?17,?18)",params![new.chat_id,new.request_id,new.node_id,new.draft.as_ref().map(serde_json::to_string).transpose()?,new.mode,input_message,new.workspace_path,new.workspace_epoch,new.branch,new.origin_url,new.head_sha,new.allow_commit,new.supervisor_pid,new.supervisor_identity,new.commit_sha,if new.commit_sha.is_some(){"armed"}else{"pending"},crate::now(),new.new_branch.as_ref().map(serde_json::to_string).transpose()?])?;
     let id = tx.last_insert_rowid();
     tick(tx, new.chat_id)?;
     Ok(id)
@@ -117,7 +133,7 @@ pub(in crate::store) fn check_operation(
     conn: &Connection,
     chat: i64,
     operation: i64,
-) -> Result<()> {
+) -> Result<bool> {
     let grant = conn
         .query_row(
             &format!("{SELECT} WHERE chat_id=?1 AND operation_id=?2 AND {STILL_HOLDS}"),
@@ -134,5 +150,5 @@ pub(in crate::store) fn check_operation(
     if let Some(target) = &grant.draft {
         draft_matches(conn, chat, target, &grant.branch, &grant.head_sha)?;
     }
-    Ok(())
+    Ok(grant.new_branch.is_some())
 }

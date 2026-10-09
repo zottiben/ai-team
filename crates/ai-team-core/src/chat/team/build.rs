@@ -64,9 +64,6 @@ impl crate::Store {
         key: &str,
         registry: &crate::ModelRegistry,
     ) -> crate::Result<ai_planner_core::Slice> {
-        if let Some(limit) = crate::run_may_continue(self, control.receipt.run_id)? {
-            return Err(crate::Error::invalid(limit.reason));
-        }
         registry.resolve(&self.chat_build_agent(control, key)?)?;
         let chat = self.chat(control.receipt.chat_id)?;
         let repo = self

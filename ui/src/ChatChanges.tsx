@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useState } from "react";
 const ChatCheckout = lazy(() => import("./ChatCheckout").then(m => ({ default: m.ChatCheckout })));
-import { FileView } from "./Review";
+import { FileView } from "./ReviewFile";
 import { useReviewFix } from "./useReviewFix";
 import {
   acknowledgeDelivery, approveDelivery, chatChanges, committedFile, committedTree, inspectDelivery, previewDelivery, reviewDraft,
@@ -52,7 +52,7 @@ export function ChatChanges({ chatId, tick, disabled, onChanged, onFeedback }: {
     {problem && <p role="alert" className="error">{problem}</p>}
     {!changes ? <p className="faint">Reading actual Git changes…</p> : <>
       {changes.issues.length > 0 && <div className="notice"><strong>Checkout or draft inspection is incomplete</strong><ul>{changes.issues.map((issue, n) => <li key={n}>{issue}</li>)}</ul></div>}
-      <details>
+      <details open>
         <summary>Working checkout · {changes.branch ?? "detached"} · {changes.staged.length} staged · {changes.unstaged.length} unstaged · {changes.untracked.length} untracked</summary>
         <Suspense fallback={<p>Loading checkout actions…</p>}><ChatCheckout chatId={chatId} tick={tick+refresh} disabled={disabled||!!pending} onChanged={onChanged} onFeedback={onFeedback}/></Suspense>
       </details>
@@ -72,7 +72,7 @@ export function ChatChanges({ chatId, tick, disabled, onChanged, onFeedback }: {
         <p className="mono">{selected.base_sha} → {selected.commit_sha}</p>
         <p className="faint">Submitting a comment sends it to the maker for repair and independent checks. Only this slice is approved; no push, PR or merge.</p>
         {submitted && <p role="status">Review submitted to the agent. Follow its new attempt in this chat.</p>}
-        {review.files.map((file) => <FileView key={file.path} file={file} onComment={unavailable || !fresh ? undefined : async (body, anchor) => command(async () => {
+        {review.files.map((file) => <FileView key={file.path} file={file} reviewKey={`chat:${chatId}:draft:${selected.target.run_id}:${selected.target.slice_key}`} onComment={unavailable || !fresh ? undefined : async (body, anchor) => command(async () => {
           await submitFix({ kind: "draft", target: selected.target, body, anchor: { path: anchor.file_path, side: anchor.side, line: anchor.line_start } }, changes.workspace_epoch);
           setSubmitted(true);
         })} />)}

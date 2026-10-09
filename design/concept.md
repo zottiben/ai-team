@@ -122,11 +122,14 @@ question or small edit.
 
 Rust supervises execution, routes team work, manages worktrees and enforces policy.
 An agent does not become the process supervisor by spawning its own sibling seats.
-Retain trustworthy event streaming, interrupted-turn recovery, budget snapshots,
-verification evidence and human-controlled publishing while changing the UX.
-Model-turn counts are evidence, not execution limits: solo, planner and implementation
-agents can legitimately require long investigations. Retire the old turn cap everywhere,
-including its settings; retain separate configured token/time budgets and Stop.
+Retain trustworthy event streaming, interrupted-turn recovery, snapshotted repair/failure
+policy, verification evidence and human-controlled publishing while changing the UX.
+Token usage, elapsed time and model-turn counts are evidence, not execution limits:
+solo, planner, maker and verifier agents can legitimately require long investigations.
+Retire automatic run/node token, time and turn caps everywhere, including their settings.
+Historical budget snapshots remain unchanged but unenforced; new runs have no such caps.
+Retain Stop, repair limits, ownership/drain/recovery and publication safeguards, including
+bounded operational I/O and cleanup timeouts. Removing caps never resumes stopped work.
 
 ### Application updates
 
@@ -149,6 +152,14 @@ push and draft-PR creation against exact destinations. Local integration is clea
 fast-forward only; divergent or dirty work is preserved rather than stashed or reset.
 Manual policy remains a veto, and no delivery action implicitly performs the next one.
 
+Review opens the working checkout expanded. Individual files can be collapsed or marked
+Viewed; marking Viewed collapses the file without discarding its comment draft. Viewed is
+local reading progress, never approval or verification, scoped to this review and displayed
+file content (including byte identity for untracked files). Changed content is unviewed.
+Untracked text is reviewable on its own new-side lines without staging. Preview and hash the
+same bounded read, never follow symlinks, and explain binary/oversize omissions rather than
+inventing anchors. Feedback still requires the exact checkout fingerprint and generation.
+
 Submitting an inline Review comment explicitly starts its repair, without copying feedback
 into the composer. Solo feedback reserves that exact checkout for one turn; team feedback
 creates a new attempt on the same owned slice and branch, starting at the reviewed commit.
@@ -166,16 +177,23 @@ files/refs, returning leases or retrying publication.
 
 A direct human message in a chat can itself be the approval to push the branch being
 worked on, in solo and team mode alike, so "commit and push and I'll open the PR" needs no
-second click. Only an authenticated direct send issues it, only when the whole message
-reads as an explicit instruction, and never for quoted, negated, conditional, scheduled,
-queued, reviewed or imported text - anything else is asked about rather than guessed. The
-authority is one chat, one request, one workspace generation, one branch, one origin and
-one supervising process; it is not permission to open a pull request, merge, tag, force,
-or publish a default branch or a reserved protected branch name. A solo agent commits and asks the host to
-publish its exact commit; the host does it after the turn drains, through the same
-journalled executor, and reports the real result in the conversation. A team message
-publishes one exact owned draft and starts no planning. Multiple independent drafts require
-an exact selection in Changes; an older attempt of the same slice cannot silently replace
+second click. Only an authenticated direct send issues it. A direct, unquoted push
+instruction can accompany a larger task; it is not restricted to a short magic phrase.
+Preserve sentence context: describing a script that will "test, and push" is not approval.
+Quoted, negated, conditional, scheduled, queued, reviewed or imported text grants nothing.
+The authority is one chat, one request, one workspace generation, one publication branch,
+one origin and one supervising process; it is not permission to open a pull request,
+merge, tag, overwrite existing history, or publish a default/protected branch.
+If a solo task explicitly requests a new branch, record its requested base/name and the
+initial local/origin branch inventory. The scoped tool binds that new branch and its exact
+commit once; it cannot select an existing or unrelated branch or retarget a pin. Creating
+the remote ref uses an absent-ref compare-and-swap; it cannot overwrite a concurrent
+creation. Ordinary branch pushes remain fast-forward only. The host publishes after the
+turn drains, through the same journalled executor, and reports the real result in chat.
+A team push instruction publishes one exact verified owned draft and starts no planning.
+A branch named in the message may select that draft; otherwise multiple independent drafts
+require an exact selection in Changes. New work plus publication must not be silently
+reinterpreted as a push of an old draft. An older attempt of the same slice cannot replace
 a newer one. Stop, archive, mode/checkout changes and later turns durably revoke unused
 permission, and a failed grant admission rolls back the turn too. Nothing is ever pushed unasked,
 replays do not publish twice, and an uncertain outcome is inspected rather than retried.

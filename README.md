@@ -69,10 +69,15 @@ ait ui        # open the window in a browser
 
 The UI starts with persistent Pi chats and chat-local **Overview, Review, Board and Work**
 panels. **Show archived chats** in the sidebar reveals archived conversations; **Restore
-chat** preserves history and starts no work. Agents have no model-turn cap, in either
-solo or team mode; configured token/time budgets and Stop remain separate controls.
+chat** preserves history and starts no work. Agents have no automatic token, time or
+model-turn execution caps, in either solo or team mode. Usage remains recorded; Stop,
+repair limits, recovery and publication safeguards remain in place.
 Ordinary conversations need no plan. Optional team work requires explicit approval
 of the exact ready slices; planning status and answers do not execute work or prove verification.
+
+An explicit chat request can authorise a branch push, including “create a new branch,
+then commit and push.” In team mode, name the verified draft's branch when several exist.
+Agents never publish unasked; push approval does not authorise a PR, merge or force-update.
 
 **Plans** groups plans by project with editable Board/Plan views. Archived-chat plans are
 hidden by default and can be shown read-only. **Today** shows chat-owned activity and exact

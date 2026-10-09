@@ -485,7 +485,7 @@ impl Harness {
         std::fs::remove_file(self.dir.path().join("tool.pid")).unwrap();
     }
 
-    async fn policy_and_budget_are_checked_before_spending(&mut self) {
+    async fn policy_is_enforced_but_historical_budgets_are_not(&mut self) {
         self.mode("normal");
         let before = self.calls();
         let turn = self.submit("Policy changed after reservation");
@@ -502,20 +502,30 @@ impl Harness {
             .stop_chat_team_planning(self.chat, turn.node_id, execution.rev)
             .unwrap();
 
-        let capped = self.submit("No budget remains");
+        let capped = self.submit("Historical budgets do not stop planning");
         rusqlite::Connection::open(&self.db)
             .unwrap()
             .execute(
-                "UPDATE run SET budget_tokens = 0 WHERE id = ?1",
+                "UPDATE run SET budget_tokens = 0, budget_tokens_node = 0,
+                    budget_seconds = 0, budget_seconds_node = 0, max_turns_node = 40 WHERE id = ?1",
                 [capped.run_id],
             )
             .unwrap();
-        let error = drive_chat_team_planning(&self.db, self.chat, capped.node_id)
+        drive_chat_team_planning(&self.db, self.chat, capped.node_id)
             .await
-            .unwrap_err();
-        assert!(error.to_string().contains("token budget"), "{error}");
-        assert_eq!(self.calls(), before, "spent budget must not launch Pi");
+            .unwrap();
+        assert_eq!(
+            self.calls(),
+            before + 2,
+            "coordinator and planner must both finish"
+        );
+        assert!(self.store.run_usage(capped.run_id).unwrap().billable() > 0);
+        assert_eq!(
+            self.store.run(capped.run_id).unwrap().budget_tokens,
+            Some(0)
+        );
         let execution = self.store.chat_team_run(capped.run_id).unwrap().unwrap();
+        assert_eq!(execution.phase, ChatTeamPhase::AwaitingApproval);
         self.store
             .stop_chat_team_planning(self.chat, capped.node_id, execution.rev)
             .unwrap();
@@ -654,7 +664,7 @@ async fn team_planning_runs_real_children_then_pauses_and_stops_without_legacy_d
     h.aborted_planning_task_is_recoverable("orchestrator").await;
     h.aborted_planning_task_is_recoverable("planner").await;
     h.failures_block_without_false_approval().await;
-    h.policy_and_budget_are_checked_before_spending().await;
+    h.policy_is_enforced_but_historical_budgets_are_not().await;
     h.missing_plan_is_not_an_approval_pause().await;
     h.settlement_failure_keeps_the_original_context_error()
         .await;

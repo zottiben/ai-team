@@ -32,7 +32,7 @@ mode=$(cat "$CHAT_TEST_ROOT/mode")
 if [ "$mode" = long-running ]; then
   i=0
   while [ "$i" -lt 64 ]; do
-    printf '{"type":"turn_end","message":{"role":"assistant","content":[],"stopReason":"toolUse","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0}}}\n'
+    printf '{"type":"turn_end","message":{"role":"assistant","content":[],"stopReason":"toolUse","usage":{"input":40000,"output":10000,"cacheRead":0,"cacheWrite":0}}}\n'
     printf '{"type":"turn_start"}\n'
     i=$((i + 1))
   done

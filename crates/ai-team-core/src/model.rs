@@ -419,24 +419,14 @@ impl Default for DeliverySettings {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Guardrails {
     pub parallel_width: i64,
-    pub budget_tokens_run: Option<i64>,
-    pub budget_tokens_node: Option<i64>,
-    pub budget_seconds_run: Option<i64>,
-    pub budget_seconds_node: Option<i64>,
     pub max_repairs: i64,
     pub on_failure: OnFailure,
 }
 
 impl Default for Guardrails {
     fn default() -> Self {
-        // Deliberately finite. An unbounded default is the setting nobody changes until
-        // the night it costs them a rate limit.
         Guardrails {
             parallel_width: 2,
-            budget_tokens_run: Some(2_000_000),
-            budget_tokens_node: Some(400_000),
-            budget_seconds_run: Some(3_600),
-            budget_seconds_node: Some(900),
             max_repairs: 2,
             on_failure: OnFailure::Retry,
         }
@@ -524,11 +514,12 @@ pub struct Run {
     /// worktrees without moving the run out of its initiating workspace.
     pub workspace_path: Option<String>,
     pub parallel_width: i64,
+    /// Historical snapshot only. Token/time budgets no longer impose execution limits.
     pub budget_tokens: Option<i64>,
     pub budget_seconds: Option<i64>,
     /// How many times a failing node may be repaired before `on_failure` applies.
     pub max_repairs: i64,
-    /// What one node may spend, snapshotted like the rest.
+    /// Historical node budgets, retained without enforcement.
     pub budget_tokens_node: Option<i64>,
     pub budget_seconds_node: Option<i64>,
     /// Historical snapshot only. Turn counts no longer impose an execution limit.

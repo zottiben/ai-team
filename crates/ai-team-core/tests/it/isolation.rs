@@ -190,10 +190,6 @@ fn guardrails_are_a_team_setting_and_every_run_takes_its_own_copy() {
     let (mut store, project, team) = seeded();
     let tight = Guardrails {
         parallel_width: 1,
-        budget_tokens_run: Some(1_000),
-        budget_tokens_node: Some(500),
-        budget_seconds_run: Some(60),
-        budget_seconds_node: Some(30),
         max_repairs: 0,
         on_failure: OnFailure::AbortBranch,
     };
@@ -203,10 +199,10 @@ fn guardrails_are_a_team_setting_and_every_run_takes_its_own_copy() {
         .create_run(project, "ship it", RunTrigger::Manual)
         .unwrap();
     assert_eq!(run.parallel_width, 1);
-    assert_eq!(run.budget_tokens, Some(1_000));
-    assert_eq!(run.budget_tokens_node, Some(500));
-    assert_eq!(run.budget_seconds, Some(60));
-    assert_eq!(run.budget_seconds_node, Some(30));
+    assert_eq!(run.budget_tokens, None);
+    assert_eq!(run.budget_tokens_node, None);
+    assert_eq!(run.budget_seconds, None);
+    assert_eq!(run.budget_seconds_node, None);
     assert_eq!(run.max_turns_node, None);
     assert_eq!(run.max_repairs, 0);
     assert_eq!(run.on_failure, OnFailure::AbortBranch);
@@ -216,7 +212,7 @@ fn guardrails_are_a_team_setting_and_every_run_takes_its_own_copy() {
         .update_team(team, "Widget team", "", Guardrails::default())
         .unwrap();
     let unchanged = store.run(run.id).unwrap();
-    assert_eq!(unchanged.budget_tokens_node, Some(500));
+    assert_eq!(unchanged.parallel_width, 1);
     assert_eq!(unchanged.max_turns_node, None);
     assert_eq!(unchanged.max_repairs, 0);
     assert_eq!(unchanged.on_failure, OnFailure::AbortBranch);

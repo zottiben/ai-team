@@ -39,20 +39,14 @@ impl Store {
         let id = self.db_mut().write(|tx| {
             tx.execute(
                 "INSERT INTO team
-                   (project_id, slug, name, parallel_width, budget_tokens_run, budget_tokens_node,
-                    budget_seconds_run, budget_seconds_node, max_turns_node, max_repairs,
+                   (project_id, slug, name, parallel_width, max_repairs,
                     on_failure, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12)",
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
                 params![
                     project_id,
                     slug,
                     name,
                     guardrails.parallel_width,
-                    guardrails.budget_tokens_run,
-                    guardrails.budget_tokens_node,
-                    guardrails.budget_seconds_run,
-                    guardrails.budget_seconds_node,
-                    None::<i64>,
                     guardrails.max_repairs,
                     guardrails.on_failure,
                     at
@@ -229,10 +223,8 @@ impl Store {
                 .execute(
                     "UPDATE team
                         SET slug = ?2, name = ?3, description = ?4, parallel_width = ?5,
-                            budget_tokens_run = ?6, budget_tokens_node = ?7,
-                            budget_seconds_run = ?8, budget_seconds_node = ?9,
-                            max_turns_node = ?10, max_repairs = ?11, on_failure = ?12,
-                            rev = rev + 1, updated_at = ?13
+                            max_repairs = ?6, on_failure = ?7,
+                            rev = rev + 1, updated_at = ?8
                       WHERE id = ?1",
                     params![
                         team_id,
@@ -240,11 +232,6 @@ impl Store {
                         name,
                         description.trim(),
                         guardrails.parallel_width,
-                        guardrails.budget_tokens_run,
-                        guardrails.budget_tokens_node,
-                        guardrails.budget_seconds_run,
-                        guardrails.budget_seconds_node,
-                        None::<i64>,
                         guardrails.max_repairs,
                         guardrails.on_failure,
                         at,
@@ -705,10 +692,6 @@ fn team_from_row(r: &Row<'_>) -> rusqlite::Result<Team> {
         description: r.get(4)?,
         guardrails: Guardrails {
             parallel_width: r.get(5)?,
-            budget_tokens_run: r.get(6)?,
-            budget_tokens_node: r.get(7)?,
-            budget_seconds_run: r.get(8)?,
-            budget_seconds_node: r.get(9)?,
             max_repairs: r.get(11)?,
             on_failure: r.get(12)?,
         },

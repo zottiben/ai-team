@@ -1,14 +1,8 @@
-//! Does this whole message instruct a push?
-//!
-//! The parse is deliberately small and closed. Every word of the message has to be in a
-//! fixed vocabulary and the whole sequence has to parse as an instruction - so a message
-//! that quotes, negates, conditions, reports or pastes the same words fails, because the
-//! words around them are not in the vocabulary. Nothing here does substring matching:
-//! "do not push" and "they pushed it" are whole-word parses that end in a refusal, not a
-//! search for "push" inside a sentence.
-//!
-//! A failed parse is never authority. At most it is `Ambiguous`, which asks the person to
-//! say it exactly rather than guessing on their behalf.
+//! Explicit direct push clauses can accompany ordinary task instructions. Approval is
+//! never inferred from a keyword in quoted, reported, conditional or negative text.
+
+mod clauses;
+pub(crate) use clauses::{read as request, Request};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Intent {
@@ -20,10 +14,6 @@ pub enum Intent {
     /// commit, which is what lets the agent pin a commit it has not made yet.
     Authorize { commit: bool },
 }
-
-/// Longer than this is a paste, a specification or a quotation, not an instruction.
-const MAX_CHARS: usize = 160;
-const MAX_WORDS: usize = 24;
 
 /// The two imperatives. Only the bare imperative form: "pushed" and "pushing" report
 /// something, they do not ask for it.
@@ -39,8 +29,10 @@ const CONJ: &[&str] = &["and", "then", "also", "plus"];
 /// one fails to parse and is asked about instead.
 const FILLER: &[&str] = &[
     "a",
+    "again",
     "ahead",
     "all",
+    "already",
     "both",
     "branch",
     "change",
@@ -70,6 +62,7 @@ const FILLER: &[&str] = &[
     "this",
     "those",
     "to",
+    "too",
     "up",
     "us",
     "work",
@@ -151,58 +144,7 @@ const MENTION: &[&str] = &[
 ];
 
 pub fn classify(message: &str) -> Intent {
-    // One keyboard's right single quote is another's apostrophe. Everything else outside
-    // the allowed set stays outside it.
-    let normalized = message.replace('\u{2019}', "'");
-    let text = normalized.trim();
-    // A negative constraint remains an ordinary task instruction, with no grant. This
-    // scan can only withhold authority; granting still requires the whole-message parse.
-    let tokens: Vec<_> = text
-        .split(|c: char| !c.is_ascii_alphanumeric() && c != '\'')
-        .filter(|w| !w.is_empty())
-        .map(str::to_ascii_lowercase)
-        .collect();
-    if tokens
-        .windows(2)
-        .any(|w| matches!(w[0].as_str(), "not" | "never" | "don't" | "dont") && w[1] == "push")
-        || tokens.windows(4).any(|w| {
-            matches!(w[0].as_str(), "not" | "never" | "don't" | "dont")
-                && w[1] == "commit"
-                && w[2] == "or"
-                && w[3] == "push"
-        })
-    {
-        return Intent::None;
-    }
-    match words(text).as_deref().and_then(parse) {
-        Some((true, commit)) => Intent::Authorize { commit },
-        Some((false, _)) => Intent::None,
-        None => mention(text),
-    }
-}
-
-/// The message, as lower-case words - or `None` when a size or character guard refuses it.
-///
-/// The character guard is what keeps quotations, code, paths, URLs, blockquoted review
-/// text and anything multi-line out: none of them can be written with letters, digits and
-/// four pieces of sentence punctuation.
-fn words(text: &str) -> Option<Vec<String>> {
-    if text.is_empty() || text.chars().count() > MAX_CHARS {
-        return None;
-    }
-    if !text
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || matches!(c, ' ' | '\'' | ',' | '.' | '!'))
-    {
-        return None;
-    }
-    let found: Vec<String> = text
-        .split(' ')
-        .map(|raw| raw.trim_matches(|c| matches!(c, ',' | '.' | '!' | '-')))
-        .filter(|word| !word.is_empty())
-        .map(str::to_ascii_lowercase)
-        .collect();
-    (!found.is_empty() && found.len() <= MAX_WORDS).then_some(found)
+    request(message).intent
 }
 
 enum State {
@@ -276,10 +218,28 @@ fn mention(text: &str) -> Intent {
         .filter(|word| !word.is_empty())
         .map(str::to_ascii_lowercase)
         .collect();
+    if tokens.windows(2).any(|pair| {
+        MENTION.contains(&pair[0].as_str())
+            && matches!(
+                pair[1].as_str(),
+                "notifications"
+                    | "notification"
+                    | "button"
+                    | "buttons"
+                    | "step"
+                    | "steps"
+                    | "handler"
+                    | "service"
+                    | "fails"
+                    | "failed"
+            )
+    }) {
+        return Intent::None;
+    }
     let mentioned = tokens.iter().any(|word| MENTION.contains(&word.as_str()));
     // Only an apparent delivery request needs clarification instead of team planning.
-    // This test can withhold authority, never grant it: the whole-message parser above
-    // still owns that decision. "Add a Publish button" is ordinary coding work.
+    // This test can withhold authority, never grant it: direct instruction parsing owns
+    // that decision. "Add a Publish button" is ordinary coding work.
     let head = tokens.iter().find(|word| {
         !matches!(
             word.as_str(),
@@ -355,16 +315,79 @@ mod tests {
     }
 
     #[test]
+    fn direct_approval_is_not_lost_inside_a_branch_task_or_natural_request() {
+        for message in [
+            "create and new branch off of latest master and name is appropriately. The commit and push and I’ll open the PR.",
+            "Create a new branch from main. Commit and push it; I'll open the PR.",
+            "Fix the bug, then commit and push the changes. I'll open the PR.",
+            "Create a new branch from main and commit and push it.",
+            "Fix the flaky test but do not change the snapshot. Then commit and push and I'll open the PR.",
+        ] {
+            assert_eq!(classify(message), PUSH_AND_COMMIT, "{message}");
+        }
+        for message in [
+            "I want the branch pushed",
+            "I'd like you to push the branch please",
+            "Can you push it?",
+            "Please push the branch draft",
+            "The checks passed. Push the branch please.",
+            "Create a new branch from main and push it.",
+            "No PRs please. Push the branch.",
+            "Push the branch again",
+            "Push the branch too",
+            "Great, push it please",
+            "This looks good. Please push the branch.",
+            "Looks good, and push the branch",
+            "Push the branch, no PR please.",
+            "Push it, don't open a PR.",
+        ] {
+            assert_eq!(classify(message), PUSH_ONLY, "{message}");
+        }
+    }
+
+    #[test]
+    fn branch_scope_distinguishes_names_from_adverbs_and_keeps_case() {
+        assert_eq!(super::request("push the branch again").branch, None);
+        assert_eq!(
+            super::request("Please push the branch draft")
+                .branch
+                .as_deref(),
+            Some("draft")
+        );
+        assert_eq!(super::request("push the branch too").branch, None);
+        assert_eq!(
+            super::request("push the branch Feature/Fix")
+                .branch
+                .as_deref(),
+            Some("Feature/Fix")
+        );
+        assert_eq!(
+            super::request("push the branch named work")
+                .branch
+                .as_deref(),
+            Some("work")
+        );
+        let request = super::request("Create a new branch from main and commit and push it.");
+        let new = request
+            .new_branch
+            .expect("approval retains the requested creation scope");
+        assert_eq!(new.base.as_deref(), Some("main"));
+        assert!(new.name.is_none());
+    }
+
+    #[test]
     fn ordinary_tasks_can_discuss_publishing_without_becoming_delivery_requests() {
         for message in [
             "Add a Publish button to the settings page and wire it to the export service.",
             "Explain how git push works.",
             "Can you implement push notifications in the mobile app?",
+            "When the publish step fails, retry it.",
+            "Push notifications are broken; fix the retry logic.",
             "Update the publishing documentation. Include the release checklist, all the supported platforms, troubleshooting for interrupted uploads, and a clear description of the review process before anything is published.",
         ] {
             assert_eq!(classify(message), Intent::None, "{message}");
         }
-        assert_eq!(classify("can you push it?"), Intent::Ambiguous);
+        assert_eq!(classify("can you push it?"), PUSH_ONLY);
     }
 
     #[test]
@@ -392,6 +415,36 @@ mod tests {
             "why did you push",
             "`commit and push`",
             "commit and push and ill open the PR\nalso delete the branch",
+            "Do not, under any circumstances, push",
+            "Do not commit, or push",
+            "Commit and push. Please don't publish it.",
+            "The ticket asked for the following:\ncommit and push",
+            "Add documentation with this example:\ncommit and push",
+            "Add a function to commit and push the branch",
+            "The label reads, push",
+            "Add a CI script that will lint, test, and push",
+            "Write a helper to stage, commit, and push",
+            "Update the release docs to cover tag, and push",
+            "Commit and push, and merge it",
+            "Commit and push, and then push to main.",
+            "Commit and push. Then open the PR.",
+            "Build the docker image and push it.",
+            "Build the container and push it",
+            "Run the release script and push it",
+            "Build the docker image. Push it.",
+            "Commit and push. Then create a new branch called docs-cleanup for the follow-up.",
+            "Push the branch. Create a new branch and open a PR for it.",
+            "Commit and push the branch.\n- Do not push until I have reviewed the diff.",
+            "Commit and push the branch.\n    Do not push until I have reviewed the diff.",
+            "Push it.\n- to main",
+            "Push it. To another remote.",
+            "Push it.\n```text\nto main\n```",
+            "```text\nto main\n```\nPush it.",
+            "- to main\nPush it.",
+            "Commit and push.\n```text\nDo not push until I approve the diff.\n```",
+            "```text\nDo not push until I approve the diff.\n```\nCommit and push.",
+            "```text\ncommit and push\n```",
+            "> commit and push",
         ] {
             assert!(
                 !matches!(classify(message), Intent::Authorize { .. }),

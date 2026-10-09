@@ -86,6 +86,34 @@ async fn staging(store: &mut Store, repo: &Path, chat: i64, other: i64) {
     std::fs::write(repo.join("README.md"), "first\n").unwrap();
     let before = c::state(store, chat).await.unwrap();
     assert!(before.head.is_none());
+    let finding = c::Finding {
+        id: 0,
+        fingerprint: before.fingerprint.clone(),
+        head: None,
+        area: "untracked".into(),
+        path: "README.md".into(),
+        side: "new".into(),
+        line: 1,
+        body: "Review this before staging".into(),
+        created_at: String::new(),
+    };
+    assert_eq!(
+        before.untracked_files[0].file.hunks[0].lines[0].text,
+        "first"
+    );
+    for (side, line) in [("old", 1), ("new", 2), ("new", 0)] {
+        let invalid = c::Finding {
+            side: side.into(),
+            line,
+            ..finding.clone()
+        };
+        assert!(c::finding(store, chat, &invalid).await.is_err());
+    }
+    c::finding(store, chat, &finding).await.unwrap();
+    assert!(
+        git(repo, &["ls-files"]).is_empty(),
+        "review must not stage a file"
+    );
     let preview = c::preview(
         store,
         chat,
@@ -98,6 +126,10 @@ async fn staging(store: &mut Store, repo: &Path, chat: i64, other: i64) {
     .unwrap();
     assert!(store.checkout_operation(other, preview.id).is_err());
     std::fs::write(repo.join("README.md"), "new bytes\n").unwrap();
+    assert!(
+        c::finding(store, chat, &finding).await.is_err(),
+        "changed untracked bytes invalidate the anchor"
+    );
     assert_eq!(
         c::approve(store, chat, preview.id, preview.rev)
             .await
@@ -158,7 +190,7 @@ async fn feedback(store: &mut Store, repo: &Path, chat: i64, other: i64) {
         created_at: String::new(),
     };
     c::finding(store, chat, &finding).await.unwrap();
-    assert_eq!(store.checkout_findings(chat).unwrap().len(), 1);
+    assert_eq!(store.checkout_findings(chat).unwrap().len(), 2);
     assert!(store.checkout_findings(other).unwrap().is_empty());
     std::fs::write(repo.join("README.md"), "different line\n").unwrap();
     assert!(c::finding(store, chat, &finding).await.is_err());

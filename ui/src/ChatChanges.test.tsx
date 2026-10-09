@@ -6,7 +6,7 @@ import type { Changes, Delivery, DraftReview, DeliveryInspection } from "./chang
 const service = vi.hoisted(() => ({ chatChanges: vi.fn(), reviewDraft: vi.fn(), submitReviewFix: vi.fn(), previewDelivery: vi.fn(), approveDelivery: vi.fn(), inspectDelivery: vi.fn(), acknowledgeDelivery: vi.fn(), committedTree: vi.fn(), committedFile: vi.fn() }));
 vi.mock("./changes-api", () => service);
 vi.mock("./review-api", () => service);
-vi.mock("./checkout-api", () => ({ checkoutState: vi.fn(async () => ({ workspace: "/repo", head: "base-sha", branch: "main", fingerprint: "working", staged: [], unstaged: [], untracked: ["solo.txt"], findings: [], operations: [] })) }));
+vi.mock("./checkout-api", () => ({ checkoutState: vi.fn(async () => ({ workspace: "/repo", head: "base-sha", branch: "main", fingerprint: "working", staged: [], unstaged: [], untracked: ["solo.txt"], untracked_files: [{ file: { path: "solo.txt", old_path: null, status: "added", binary: false, hunks: [], additions: 0, deletions: 0 }, reason: "Empty file.", fingerprint: "new-file" }], findings: [], operations: [] })) }));
 const target = { run_id: 14, slice_key: "S1", revision: 7 };
 const draft = { target, base_sha: "base-sha", commit_sha: "commit-sha", branch: "draft", lease_state: "released", worktree_path: "/pool/returned" };
 const changes = (): Changes => ({ workspace_path: "/repo", workspace_epoch: 9, head: "base-sha", branch: "main", issues: [], staged: [], unstaged: [], untracked: ["solo.txt"], drafts: [draft], deliveries: [] });
@@ -29,6 +29,7 @@ async function openReview() {
 it("shows real working changes separately from a chat's returned-worktree draft", async () => {
   render(<ChatChanges {...props} />);
   await screen.findByText("solo.txt");
+  expect(screen.getByText(/Working checkout ·/).closest("details")?.open).toBe(true);
   await openReview();
   expect(service.reviewDraft).toHaveBeenCalledWith(4, target);
   expect(screen.getByText(/not attributed to this conversation/)).toBeTruthy();

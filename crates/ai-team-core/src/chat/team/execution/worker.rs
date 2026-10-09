@@ -136,9 +136,6 @@ impl Worker {
             ));
         }
         if let Some(node) = previous {
-            if let Some(limit) = crate::node_may_continue(&self.store, node.id)? {
-                return Err(Error::invalid(limit.reason));
-            }
             if node.session_retired_at.is_some()
                 || (node.session_id.is_some()
                     && (node.provider != resolution.provider || node.model != resolution.model))
@@ -234,9 +231,6 @@ impl Worker {
             let (node, _) = self
                 .take_turn(self.maker.id, false, previous, prompt)
                 .await?;
-            if let Some(limit) = crate::node_may_continue(&self.store, node)? {
-                return Err(Error::invalid(limit.reason));
-            }
             let candidate = self.check(node).await;
             match candidate {
                 Ok(tree) => {
@@ -271,9 +265,6 @@ impl Worker {
                     )?;
                     if repair == max_repairs {
                         return Err(error);
-                    }
-                    if let Some(limit) = crate::node_may_continue(&self.store, node)? {
-                        return Err(Error::invalid(limit.reason));
                     }
                     // If an infrastructure failure left a live reader, do not start a repair beside it.
                     if self
@@ -505,8 +496,7 @@ impl Worker {
                 reader,
             )?;
             self.store.set_node_status(node.id, NodeStatus::Running)?;
-            let mut watch = self.watch.clone();
-            watch.node = Some(node.id);
+            let watch = self.watch.clone();
             watch.check()?;
             let turn = crate::pi::chat_team_worker_turn(
                 &self.store,

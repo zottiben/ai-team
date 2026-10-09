@@ -257,22 +257,6 @@ pub(crate) struct TeamEditArgs {
     #[arg(long)]
     pub(crate) parallel_width: Option<i64>,
 
-    /// Token ceiling for a whole run. 0 removes it.
-    #[arg(long)]
-    pub(crate) budget_tokens_run: Option<i64>,
-
-    /// Token ceiling for one seat's turn. 0 removes it.
-    #[arg(long)]
-    pub(crate) budget_tokens_node: Option<i64>,
-
-    /// Wall-clock ceiling for a whole run, in seconds. 0 removes it.
-    #[arg(long)]
-    pub(crate) budget_seconds_run: Option<i64>,
-
-    /// Wall-clock ceiling for one seat's turn, in seconds. 0 removes it.
-    #[arg(long)]
-    pub(crate) budget_seconds_node: Option<i64>,
-
     /// How many times a failed seat may be repaired before `on-failure` applies.
     #[arg(long)]
     pub(crate) max_repairs: Option<i64>,
