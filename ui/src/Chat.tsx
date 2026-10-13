@@ -612,6 +612,7 @@ export function ChatView({
           }}
         />
         <div className="chat-composer-bottom">
+          <div className="chat-composer-options">
           <input ref={imagePicker} type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden aria-label="Choose images" onChange={event => { const files = Array.from(event.target.files ?? []); event.target.value = ""; void attach(files); }}/>
           <button type="button" className="button" disabled={busy || readingImages || detail?.archived} onClick={() => imagePicker.current?.click()} title="Drop or paste images, or choose files. Up to 4 images, 5 MiB each.">Attach image</button>
           <span
@@ -665,6 +666,8 @@ export function ChatView({
               }}
             />
           </Suspense> : <span className="faint">Team thinking · per-seat settings</span>}
+          </div>
+          <div className="chat-composer-actions">
           {soloActive && running && hasDraft && <button type="button" className="button" disabled={busy || !canQueue} onClick={() => void queue("steer")}>Stop and steer</button>}
           <button
             type={showStop ? "button" : "submit"}
@@ -690,6 +693,7 @@ export function ChatView({
               ? <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1" fill="currentColor" /></svg>
               : <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M5 12h14m-6-6 6 6-6 6" /></svg>}
           </button>
+          </div>
         </div>
         {(queuedSubmission.current || submission.current) && problem && <small className="faint">
           {queuedSubmission.current ? `This draft still targets turn #${queuedSubmission.current.node}.` : "This message still targets the checkout selected for its original send."} Clearing it does not cancel work already accepted by the server; inspect this chat's history and receipts first.

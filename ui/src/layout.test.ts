@@ -57,6 +57,16 @@ it("a select looks like the window's other controls wherever it is", () => {
   expect(base).toMatch(/border-radius:\s*var\(--radius-sm\)/);
 });
 
+it("the composer reserves the trailing action column independently of hidden inputs and wrapping options", () => {
+  const chat = readFileSync(join(import.meta.dirname, "chat.css"), "utf8");
+  const bottom = chat.match(/\.chat-composer-bottom \{([^}]*)\}/)?.[1] ?? "";
+  expect(bottom).toMatch(/display:\s*grid/);
+  expect(bottom).toMatch(/grid-template-columns:\s*minmax\(0, 1fr\) auto/);
+  expect(chat).not.toContain(".chat-composer-bottom > :first-child");
+  expect(chat).toMatch(/\.chat-composer-options\s*\{[^}]*flex-wrap:\s*wrap/);
+  expect(chat).toMatch(/\.chat-composer-options\s*\{[^}]*min-width:\s*0/);
+});
+
 it("checkout fields and consent have full-width aligned controls rather than browser defaults", () => {
   const checkout = readFileSync(join(import.meta.dirname, "chat.css"), "utf8");
   const fields = checkout.match(/\.chat-checkout__field :is\(input, select\) \{([^}]*)\}/)?.[1] ?? "";

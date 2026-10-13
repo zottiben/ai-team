@@ -604,14 +604,27 @@
   border-color: var(--border-focus-default);
 }
 .chat-composer-bottom {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
   gap: 0.6rem;
   font-size: var(--text-xs);
 }
-.chat-composer-bottom > :first-child {
-  margin-right: auto;
+.chat-composer-options {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  min-width: 0;
+  gap: 0.6rem;
+}
+.chat-composer-options > small {
+  flex-basis: 100%;
+  overflow-wrap: anywhere;
+}
+.chat-composer-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
 }
 .chat-model-select {
   flex: 0 1 20rem;

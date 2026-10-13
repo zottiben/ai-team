@@ -161,6 +161,23 @@ it("moves acknowledged queue messages into the transcript once, with formatted r
   expect(screen.getAllByText("Received by agent · Turn finished")).toHaveLength(1);
 });
 
+it("keeps attachments and thinking notices out of the primary action column", async () => {
+  thinking.mockRejectedValue(new Error("Fixture capability lookup unavailable"));
+  render(<ChatView {...props()}/>);
+  const notice = await screen.findByText(/Supported levels are unavailable/);
+  const options = notice.closest(".chat-composer-options");
+  expect(options).not.toBeNull();
+  expect(screen.getByRole("button", { name: "Attach image" }).closest(".chat-composer-options")).toBe(options);
+  expect(screen.getByLabelText("Choose images").closest(".chat-composer-options")).toBe(options);
+  expect(screen.getByRole("combobox", { name: "Thinking effort" }).closest(".chat-composer-options")).toBe(options);
+  const send = screen.getByRole("button", { name: "Send message" });
+  expect(send.closest(".chat-composer-actions")).not.toBeNull();
+  expect(send.closest(".chat-composer-options")).toBeNull();
+  fireEvent.change(screen.getByRole("textbox", { name: "Message" }), { target: { value: "Keep my draft" } });
+  expect((send as HTMLButtonElement).disabled).toBe(false);
+  expect(service.sendChat).not.toHaveBeenCalled();
+});
+
 it("offers explicit thinking for new chats and revision-checked changes for an existing chat", async () => {
   const options = props();
   const view = render(<ChatView {...options} id={null}/>);
@@ -395,6 +412,9 @@ describe("persistent conversation", () => {
     fireEvent.change(message, { target: { value: "Check the error path too" } });
     expect(screen.queryByRole("button", { name: "Stop turn" })).toBeNull();
     const queue = screen.getByRole("button", { name: "Queue follow-up" });
+    expect(queue.closest(".chat-composer-actions")).toBe(stop.closest(".chat-composer-actions"));
+    expect(queue.closest(".chat-composer-actions")).not.toBeNull();
+    expect(screen.getByRole("button", { name: "Stop and steer" }).closest(".chat-composer-actions")).toBe(queue.closest(".chat-composer-actions"));
     expect(queue.closest(".chat-composer")).not.toBeNull();
     expect((queue as HTMLButtonElement).disabled).toBe(false);
     fireEvent.change(message, { target: { value: "   " } });
