@@ -37,7 +37,7 @@ pub(crate) fn exclusive(root: &Path) -> Result<Lock> {
             Ok(()) => return Ok(Lock(file)),
             Err(error) if started.elapsed() >= std::time::Duration::from_secs(5) => {
                 return Err(Error::invalid(format!(
-                    "AI Team state is busy; finish active work and close app terminals or sign-in sessions before updating; no work was stopped ({error})"
+                    "AI Team state is busy; another request or an unreviewed app session may still hold the update lock. Let it finish or review sessions in the owning app; no programs were replaced ({error})"
                 )));
             }
             Err(_) => std::thread::sleep(std::time::Duration::from_millis(25)),

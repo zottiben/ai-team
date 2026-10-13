@@ -19,8 +19,11 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use portable_pty::{CommandBuilder, MasterPty, NativePtySystem, PtySize, PtySystem};
+use portable_pty::{Child, CommandBuilder, MasterPty, NativePtySystem, PtySize, PtySystem};
+
+mod update;
 use serde::Serialize;
+pub use update::TerminalUpdate;
 
 use crate::error::{Error, Result};
 
@@ -51,6 +54,9 @@ struct Session {
     /// Kept so the pane can be resized; dropping it closes the terminal.
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
+    child: Arc<Mutex<Box<dyn Child + Send + Sync>>>,
+    closing: bool,
+    label: String,
     /// Everything the process has written, capped.
     output: Arc<Mutex<Ring>>,
     done: Arc<Mutex<Option<i32>>>,
@@ -69,6 +75,7 @@ struct Ring {
     dropped: u64,
     drained: bool,
     settled: bool,
+    problem: Option<String>,
     update_permit: Option<crate::UpdatePermit>,
 }
 
@@ -100,10 +107,21 @@ impl Ring {
 }
 
 /// Every terminal this process has open.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Terminals {
     sessions: Mutex<HashMap<u64, Session>>,
     next_id: AtomicU64,
+    scope: String,
+}
+
+impl Default for Terminals {
+    fn default() -> Self {
+        Self {
+            sessions: Mutex::default(),
+            next_id: AtomicU64::default(),
+            scope: crate::mint_token(),
+        }
+    }
 }
 
 impl std::fmt::Debug for Session {
@@ -174,7 +192,15 @@ impl Terminals {
         if let Some(line) = command {
             spawn.args(["-l", "-c", line]);
         }
-        self.open_builder(worktree, spawn, "shell")
+        self.open_builder(
+            worktree,
+            spawn,
+            if command.is_some() {
+                "Provider sign-in"
+            } else {
+                "Shell"
+            },
+        )
     }
 
     /// Open one program with exact arguments, without putting them through a shell.
@@ -223,7 +249,7 @@ impl Terminals {
         // Told what it is, or programs guess "dumb" and stop colouring anything.
         spawn.env("TERM", "xterm-256color");
 
-        let mut child = pair.slave.spawn_command(spawn).map_err(|error| {
+        let child = pair.slave.spawn_command(spawn).map_err(|error| {
             Error::invalid(format!("could not start {label} in a terminal: {error}"))
         })?;
         // Dropped immediately: while this end is open the terminal never reports EOF, so
@@ -239,6 +265,9 @@ impl Terminals {
             .take_writer()
             .map_err(|error| Error::invalid(format!("could not write to the terminal: {error}")))?;
 
+        #[cfg(unix)]
+        let group = child.process_id();
+        let child = Arc::new(Mutex::new(child));
         let output = Arc::new(Mutex::new(Ring::default()));
         let done = Arc::new(Mutex::new(None));
 
@@ -251,16 +280,38 @@ impl Terminals {
         {
             let done = Arc::clone(&done);
             let output = Arc::clone(&output);
+            let child = Arc::clone(&child);
             std::thread::spawn(move || {
-                let status = child
-                    .wait()
-                    .ok()
-                    .map(|status| status.exit_code().cast_signed());
+                // Reaping and signalling share this handle/lock. A copied PID could
+                // otherwise be reused between wait completing and a close request.
+                let status = loop {
+                    let result = child
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .try_wait();
+                    match result {
+                        Ok(Some(status)) => break Some(status.exit_code().cast_signed()),
+                        Ok(None) => std::thread::sleep(std::time::Duration::from_millis(25)),
+                        Err(error) => {
+                            output
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .problem = Some(format!("waiting for the terminal: {error}"));
+                            break None;
+                        }
+                    }
+                };
                 *done
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner) =
                     Some(status.unwrap_or(-1));
                 if status.is_some() {
+                    // macOS can revoke the PTY when its leader exits even while a
+                    // descendant still owns the group. EOF alone is not its drain.
+                    #[cfg(unix)]
+                    while !update::group_drained(group) {
+                        std::thread::sleep(std::time::Duration::from_millis(25));
+                    }
                     let mut output = output
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -281,6 +332,9 @@ impl Terminals {
                 Session {
                     master: pair.master,
                     writer,
+                    child,
+                    closing: false,
+                    label: label.into(),
                     output,
                     done,
                     worktree: worktree.to_string_lossy().into_owned(),
@@ -296,6 +350,11 @@ impl Terminals {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let session = sessions.get_mut(&id).ok_or_else(no_such)?;
+        if session.closing {
+            return Err(Error::invalid(
+                "this terminal is closing; input was not sent",
+            ));
+        }
         session
             .writer
             .write_all(text.as_bytes())
@@ -376,12 +435,26 @@ impl Terminals {
         listed
     }
 
-    /// Close one. Dropping the master hangs up the terminal, which ends the shell.
-    pub fn close(&self, id: u64) {
+    /// Signal, wait and drain before dropping the writer: portable-pty's writer Drop
+    /// sends Enter/EOF, which must never execute an unfinished command on close.
+    pub fn close(&self, id: u64) -> Result<()> {
+        let output = {
+            let mut sessions = self
+                .sessions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let Some(session) = sessions.get_mut(&id) else {
+                return Ok(());
+            };
+            update::stop(session)?;
+            Arc::clone(&session.output)
+        };
+        update::drain(&[output])?;
         self.sessions
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&id);
+        Ok(())
     }
 }
 
@@ -394,6 +467,15 @@ fn pump(mut reader: Box<dyn Read + Send>, output: &Arc<Mutex<Ring>>) {
     let mut buffer = [0u8; 8 * 1024];
     loop {
         match reader.read(&mut buffer) {
+            // Retry interruptions; they neither drain nor fail the terminal.
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) if !pty_hangup(&error) => {
+                output
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .problem = Some(format!("reading the terminal: {error}"));
+                return;
+            }
             Ok(0) | Err(_) => {
                 let mut output = output
                     .lock()
@@ -412,9 +494,61 @@ fn pump(mut reader: Box<dyn Read + Send>, output: &Arc<Mutex<Ring>>) {
     }
 }
 
+fn pty_hangup(error: &std::io::Error) -> bool {
+    #[cfg(unix)]
+    {
+        error.raw_os_error() == Some(rustix::io::Errno::IO.raw_os_error())
+    }
+    #[cfg(not(unix))]
+    {
+        error.kind() == std::io::ErrorKind::BrokenPipe
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_unexpected_read_error_is_not_proof_of_terminal_drain() {
+        struct Broken;
+        impl Read for Broken {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("fixture read failure"))
+            }
+        }
+        let output = Arc::new(Mutex::new(Ring::default()));
+        pump(Box::new(Broken), &output);
+        assert!(!output.lock().unwrap().drained);
+    }
+
+    #[test]
+    fn closing_a_terminal_does_not_execute_its_pending_input() {
+        let root = tempfile::tempdir().unwrap();
+        let terminals = Terminals::new();
+        let id = terminals
+            .open_program(
+                root.path(),
+                "/bin/sh",
+                &[
+                    "-c".into(),
+                    "printf 'ready\\n'; IFS= read -r line; printf '%s' \"$line\" > executed".into(),
+                ],
+            )
+            .unwrap();
+        let started = std::time::Instant::now();
+        while !terminals.read(id, 0).unwrap().text.contains("ready") {
+            assert!(started.elapsed() < std::time::Duration::from_secs(5));
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        terminals.write(id, "this must remain unexecuted").unwrap();
+        terminals.close(id).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert!(
+            !root.path().join("executed").exists(),
+            "closing must not send Enter to a terminal"
+        );
+    }
 
     #[test]
     fn a_cursor_reads_only_what_is_new() {
@@ -599,7 +733,7 @@ mod tests {
         assert_eq!(mine.len(), 1);
         assert_eq!(mine[0].id, a);
 
-        terminals.close(a);
+        terminals.close(a).unwrap();
         assert_eq!(terminals.list(Some(one.path())).len(), 0);
     }
 }

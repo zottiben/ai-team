@@ -42,6 +42,15 @@ impl UpdatePermit {
 }
 
 impl UpdateManager {
+    /// Freeze terminal creation/input during preparation, not Stop. A stale update
+    /// click may spend time checking releases while a newly started turn is live.
+    pub fn admit_terminal(&self) -> Result<UpdatePermit> {
+        let _preparing = self.0.applying.try_lock().map_err(|_| {
+            Error::invalid("AI Team is preparing an update; wait before opening or typing into an app terminal")
+        })?;
+        self.admit()
+    }
+
     pub fn admit(&self) -> Result<UpdatePermit> {
         let Some(installation) = &self.0.installation else {
             return Ok(UpdatePermit { _file: None });

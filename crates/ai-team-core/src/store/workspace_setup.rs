@@ -12,7 +12,7 @@ use crate::{
 #[cfg(test)]
 mod tests;
 
-const SELECT: &str = "SELECT id,project_id,repo_path,request_id,branch,workspace_path,state,detail,rev FROM workspace_setup";
+const SELECT: &str = "SELECT id,project_id,repo_path,request_id,branch,workspace_path,state,detail,rev,child_epoch FROM workspace_setup";
 fn row(r: &Row<'_>) -> rusqlite::Result<Setup> {
     Ok(Setup {
         id: r.get(0)?,
@@ -24,6 +24,7 @@ fn row(r: &Row<'_>) -> rusqlite::Result<Setup> {
         state: r.get(6)?,
         detail: r.get(7)?,
         rev: r.get(8)?,
+        attempted: r.get::<_, i64>(9)? != 0,
         steps: Vec::new(),
     })
 }
@@ -96,6 +97,8 @@ impl Store {
             .map(|id| self.workspace_setup(project, id))
             .collect()
     }
+    /// Known refusals are terminal, unattempted receipts. The boolean authorizes
+    /// execution only for a newly admitted request, never a replay or refusal.
     pub fn request_workspace_setup(
         &mut self,
         project: i64,
@@ -114,13 +117,16 @@ impl Store {
                 if previous.repo_path!=repo || previous.branch!=branch { return Err(Error::invalid("this setup request already names a different checkout or branch")); }
                 return Ok((previous.id, false));
             }
-            let allowed:bool=tx.query_row("SELECT status!='archived' FROM project WHERE id=?1",[project],|r|r.get(0))?;
-            if !allowed { return Err(Error::invalid("restore this project before setting up a checkout")); }
-            check_project_idle(tx,project)?;
-            let unfinished:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM workspace_setup WHERE repo_path=?1 AND state IN ('pending','running','inspection'))",[&repo],|r|r.get(0))?;
-            if unfinished { return Err(Error::invalid("inspect or finish the existing AWT setup before requesting another")); }
-            tx.execute("INSERT INTO workspace_setup(project_id,repo_path,request_id,branch,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?5)",params![project,repo,request,branch,crate::now()])?;
-            Ok((tx.last_insert_rowid(), true))
+            // A known refusal is a terminal receipt, not an uncertain network error.
+            // Persist its key so delayed/replayed requests can never acquire later.
+            let refusal = match check_admission(tx, project, &repo) {
+                Ok(()) => None,
+                Err(Error::Invalid(reason)) => Some(format!("Setup not started: {reason}")),
+                Err(error) => return Err(error),
+            };
+            let state = if refusal.is_some() { "failed" } else { "pending" };
+            tx.execute("INSERT INTO workspace_setup(project_id,repo_path,request_id,branch,state,detail,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?7)",params![project,repo,request,branch,state,refusal.as_deref().unwrap_or_default(),crate::now()])?;
+            Ok((tx.last_insert_rowid(), refusal.is_none()))
         })?;
         Ok((self.workspace_setup(project, id)?, started))
     }
@@ -131,12 +137,17 @@ impl Store {
         revision: i64,
         recover: bool,
     ) -> Result<Arc<Ownership>> {
-        self.workspace_setup(project, id)?;
+        let setup = self.workspace_setup(project, id)?;
+        if setup.state == "failed" && !setup.attempted {
+            return Err(Error::invalid(
+                "this setup was refused before execution; submit a new explicitly approved request",
+            ));
+        }
         let owner = Ownership::acquire_setup(self.path(), id)?;
         self.db_mut().write(|tx| {
             check_project_idle(tx,project)?;
             let states=if recover { "('pending','running','inspection','failed')" } else { "('pending')" };
-            if tx.execute(&format!("UPDATE workspace_setup SET state='running',child_epoch=child_epoch+1,supervisor_pid=?4,rev=rev+1,updated_at=?5 WHERE id=?1 AND project_id=?2 AND rev=?3 AND state IN {states}"),params![id,project,revision,i64::from(std::process::id()),crate::now()])?!=1 { return Err(Error::invalid("setup changed or already started; refresh its receipt")); }
+            if tx.execute(&format!("UPDATE workspace_setup SET state='running',child_epoch=child_epoch+1,supervisor_pid=?4,rev=rev+1,updated_at=?5 WHERE id=?1 AND project_id=?2 AND rev=?3 AND state IN {states} AND NOT(state='failed' AND child_epoch=0)"),params![id,project,revision,i64::from(std::process::id()),crate::now()])?!=1 { return Err(Error::invalid("setup changed or already started; refresh its receipt")); }
             Ok(())
         })?;
         owner.bind(self)?;
@@ -249,6 +260,27 @@ pub(super) fn check_project(conn: &Connection, project: i64) -> Result<()> {
     }
     Ok(())
 }
+fn check_admission(conn: &Connection, project: i64, repo: &str) -> Result<()> {
+    let allowed: bool = conn.query_row(
+        "SELECT status!='archived' FROM project WHERE id=?1",
+        [project],
+        |r| r.get(0),
+    )?;
+    if !allowed {
+        return Err(Error::invalid(
+            "restore this project before setting up a checkout",
+        ));
+    }
+    check_project_idle(conn, project)?;
+    let unfinished: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM workspace_setup WHERE repo_path=?1 AND state IN ('pending','running','inspection'))", [repo], |r| r.get(0))?;
+    if unfinished {
+        return Err(Error::invalid(
+            "inspect or finish the existing AWT setup before requesting another",
+        ));
+    }
+    Ok(())
+}
+
 fn check_project_idle(conn: &Connection, project: i64) -> Result<()> {
     super::chat_teams::kept::check_unlocated(conn, project, None, None)?;
     let busy:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM chat WHERE project_id=?1 AND active_node_id IS NOT NULL) OR EXISTS(SELECT 1 FROM run WHERE project_id=?1 AND status IN ('queued','planning','running') AND supervisor_pid IS NOT NULL) OR EXISTS(SELECT 1 FROM node_run n JOIN run r ON r.id=n.run_id WHERE r.project_id=?1 AND n.status NOT IN ('done','failed','cancelled')) OR EXISTS(SELECT 1 FROM chat_delivery d JOIN chat c ON c.id=d.chat_id WHERE c.project_id=?1 AND d.state IN ('running','inspection')) OR EXISTS(SELECT 1 FROM chat_checkout_operation o JOIN chat c ON c.id=o.chat_id WHERE c.project_id=?1 AND o.state IN ('running','inspection'))",[project],|r|r.get(0))?;

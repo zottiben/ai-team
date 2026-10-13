@@ -7,7 +7,7 @@
 
 use std::path::{Path, PathBuf};
 
-use rusqlite::{Connection, Transaction, TransactionBehavior};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior};
 
 use crate::error::{Error, Result};
 use crate::util::now;
@@ -172,7 +172,37 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
         "inline untracked review",
         include_str!("migrations/039_untracked_review.sql"),
     ),
+    (
+        40,
+        "app-owned MCP servers",
+        include_str!("migrations/040_mcp_servers.sql"),
+    ),
+    (
+        41,
+        "chat image input",
+        include_str!("migrations/041_chat_images.sql"),
+    ),
+    (
+        42,
+        "turn thinking snapshots",
+        include_str!("migrations/042_turn_reasoning.sql"),
+    ),
+    (
+        43,
+        "full thinking range",
+        include_str!("migrations/043_thinking_levels.sql"),
+    ),
 ];
+
+/// Migrations that rebuild a table other tables point at.
+///
+/// SQLite cannot alter a CHECK in place, so widening one means the documented
+/// create-copy-drop-rename procedure - and dropping a parent table with foreign keys on
+/// would either fail or cascade rows away. These run with enforcement off, which
+/// `PRAGMA` refuses to change inside a transaction, so the switch has to happen out here
+/// rather than in the script. `foreign_key_check` then has to pass before the commit, or
+/// the migration is rolled back with enforcement still intact.
+const REBUILDS: &[i64] = &[43];
 
 /// The number of `v_` views the schema ships. Asserted in tests, because a view silently
 /// dropped from a migration is a demo that quietly stops working.
@@ -288,6 +318,10 @@ impl Db {
             if *version <= applied {
                 continue;
             }
+            if REBUILDS.contains(version) {
+                self.rebuild(*version, name, sql)?;
+                continue;
+            }
             let tx = self
                 .conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -298,6 +332,54 @@ impl Db {
             )?;
             tx.commit()?;
         }
+        Ok(())
+    }
+
+    /// Apply one table-rebuilding migration, with foreign keys off for its transaction
+    /// only.
+    ///
+    /// The pragmas are restored on every path, including a failed migration and a failed
+    /// integrity check, because a connection left with enforcement off is one that
+    /// accepts orphan rows for as long as the process lives. `legacy_alter_table` keeps
+    /// `ALTER TABLE ... RENAME` from reparsing views and triggers that name a table while
+    /// it is mid-rebuild; the script drops and recreates those itself.
+    fn rebuild(&mut self, version: i64, name: &str, sql: &str) -> Result<()> {
+        self.conn.pragma_update(None, "foreign_keys", false)?;
+        let out = self
+            .conn
+            .pragma_update(None, "legacy_alter_table", true)
+            .map_err(Error::from)
+            .and_then(|()| self.rebuild_inner(version, name, sql));
+        // Attempt both restorations even if either pragma itself fails.
+        let legacy = self.conn.pragma_update(None, "legacy_alter_table", false);
+        let foreign_keys = self.conn.pragma_update(None, "foreign_keys", true);
+        out?;
+        legacy?;
+        Ok(foreign_keys?)
+    }
+
+    fn rebuild_inner(&mut self, version: i64, name: &str, sql: &str) -> Result<()> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        tx.execute_batch(sql)?;
+        tx.execute(
+            "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?1, ?2, ?3)",
+            rusqlite::params![version, name, now()],
+        )?;
+        // Nothing may be left pointing at a row that is no longer there. Reported with
+        // the offending table rather than a bare count, because the useful question
+        // after this fails is which rebuild dropped what.
+        let orphan: Option<String> = tx
+            .query_row("PRAGMA foreign_key_check", [], |row| row.get(0))
+            .optional()?;
+        if let Some(table) = orphan {
+            return Err(Error::invalid(format!(
+                "migration v{version} ({name}) left {table} referencing rows that are gone; \
+                 the database is unchanged"
+            )));
+        }
+        tx.commit()?;
         Ok(())
     }
 
@@ -390,6 +472,303 @@ mod tests {
             .is_err());
         assert!(conn.execute("INSERT INTO chat_checkout_finding(chat_id,fingerprint,area,path,side,line,body,created_at) VALUES(2,'fresh','untracked','new-file','new',1,'foreign','now')", []).is_err());
         assert!(conn.execute("INSERT INTO chat_checkout_finding(chat_id,fingerprint,area,path,side,line,body,created_at) VALUES(1,'fresh','invented','new-file','new',1,'bad area','now')", []).is_err());
+    }
+
+    /// A v42 database with a row in every table the thinking-level rebuild touches, and
+    /// in enough of their dependents to prove the rebuild kept what pointed at them.
+    fn seed_v42(path: &Path) {
+        let conn = Connection::open(path).unwrap();
+        configure(&conn).unwrap();
+        conn.execute_batch("CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL)").unwrap();
+        for (version, name, sql) in MIGRATIONS.iter().filter(|(v, _, _)| *v <= 42) {
+            conn.execute_batch(sql).unwrap();
+            conn.execute(
+                "INSERT INTO schema_migrations VALUES (?1, ?2, 'fixture')",
+                rusqlite::params![version, name],
+            )
+            .unwrap();
+        }
+        conn.execute_batch(
+            "INSERT INTO project (id, slug, name, created_at, updated_at) VALUES (1,'p','P','t','t');
+             INSERT INTO team (id, project_id, slug, name, created_at, updated_at) VALUES (1,1,'t','T','t','t');
+             UPDATE project SET team_id = 1 WHERE id = 1;
+             INSERT INTO agent (id, team_id, role, name, model, prompt_preset, reasoning, zone, created_at, updated_at)
+             VALUES (5,1,'backend','B','glm-4.6','backend','high','crates/**','t','t');
+             INSERT INTO run (id, project_id, prompt, created_at, updated_at) VALUES (1,1,'do it','t','t');
+             -- One turn that recorded its level, and one from before 042 that could not.
+             INSERT INTO node_run (id, run_id, agent_id, role, provider, model, reasoning, tokens_in, created_at, updated_at)
+             VALUES (9,1,5,'backend','zai','glm-4.6','high',1234,'t','t'),
+                    (10,1,5,'backend','zai','glm-4.6',NULL,7,'t','t');
+             INSERT INTO chat (id, project_id, title, workspace_path, provider, model, reasoning, active_node_id, created_at, updated_at)
+             VALUES (3,1,'C','/w','zai','glm-4.6','medium',9,'t','t');
+             INSERT INTO chat_turn (chat_id, run_id, node_id, request_id) VALUES (3,1,9,'req');
+             INSERT INTO event (id, run_id, node_run_id, at, kind, summary) VALUES (50,1,9,'t','step','evidence');
+             INSERT INTO chat_push_grant (id, chat_id, request_id, node_id, mode, message, workspace_path,
+                 workspace_epoch, branch, origin_url, head_sha, supervisor_pid, supervisor_identity, state, created_at, updated_at)
+             VALUES (4,3,'req',9,'single','m','/w',1,'b','u','sha',111,'ident','armed','t','t');
+             -- An AUTOINCREMENT high-water mark that must survive untouched.
+             INSERT INTO chat_checkout_finding VALUES (77,3,'fp',NULL,'staged','f','new',1,'body','t');
+             DELETE FROM chat_checkout_finding WHERE id = 77;",
+        )
+        .unwrap();
+    }
+
+    fn snapshot(conn: &Connection, sql: &str) -> String {
+        conn.query_row(sql, [], |r| r.get::<_, String>(0)).unwrap()
+    }
+
+    /// Every schema object, as `type|name|tbl_name` paired with its DDL. A rename leaves
+    /// the new name quoted, which is cosmetic, so quotes come out before comparing.
+    fn objects(conn: &Connection) -> Vec<(String, String)> {
+        let mut q = conn
+            .prepare(
+                "SELECT type||'|'||name||'|'||tbl_name, COALESCE(sql,'') FROM sqlite_master
+                 WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name",
+            )
+            .unwrap();
+        let rows = q
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?.replace('"', ""),
+                ))
+            })
+            .unwrap();
+        rows.collect::<rusqlite::Result<_>>().unwrap()
+    }
+
+    #[test]
+    fn thinking_levels_widen_the_checks_without_disturbing_a_row_id_or_schema_object() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("v42.db");
+        seed_v42(&path);
+
+        let agents = "SELECT json_group_array(json_array(id,team_id,ord,role,name,purpose,provider,model,
+            reasoning,zone,prompt_preset,prompt_md,read_only,enabled,rev,created_at,updated_at,context_window))
+            FROM (SELECT * FROM agent ORDER BY id)";
+        let nodes = "SELECT json_group_array(json_array(id,run_id,agent_id,role,provider,model,status,attempt,
+            slice_key,worktree_path,branch,lease_id,session_id,tokens_in,tokens_out,tokens_cache_read,
+            tokens_cache_write,turns,blocked_reason,started_at,ended_at,rev,created_at,updated_at,stream_cursor,
+            eve_port,eve_token,context_tokens,session_retired_at,session_resetting_at,pushed_at,pr_url,
+            merge_requested_at,delivery_claim,delivery_claimed_at,delivery_error,supervisor_pid,task_key,
+            push_replaces,pi_pid,reasoning)) FROM (SELECT * FROM node_run ORDER BY id)";
+        let chats = "SELECT json_group_array(json_array(id,project_id,title,workspace_path,provider,model,
+            reasoning,active_node_id,live_text,supervisor_identity,pi_identity,stop_requested,archived,rev,
+            created_at,updated_at,mode)) FROM (SELECT * FROM chat ORDER BY id)";
+        let sequences =
+            "SELECT json_group_array(json_array(name,seq)) FROM (SELECT * FROM sqlite_sequence ORDER BY name)";
+
+        let (before, before_objects) = {
+            let conn = Connection::open(&path).unwrap();
+            let taken = [agents, nodes, chats, sequences].map(|q| snapshot(&conn, q));
+            // The old CHECK is the thing this migration exists to replace.
+            assert!(
+                conn.execute("UPDATE agent SET reasoning='xhigh' WHERE id=5", [])
+                    .is_err(),
+                "fixture must start on the narrow CHECK"
+            );
+            (taken, objects(&conn))
+        };
+
+        let db = Db::open(&path).unwrap();
+        assert_eq!(db.schema_version().unwrap(), latest_schema());
+        let conn = db.conn();
+
+        let after = [agents, nodes, chats, sequences].map(|q| snapshot(conn, q));
+        for (label, (before, after)) in ["agent", "node_run", "chat", "sequences"]
+            .iter()
+            .zip(before.iter().zip(after.iter()))
+        {
+            assert_eq!(before, after, "{label} rows changed across the rebuild");
+        }
+
+        // The whole migration, stated as an assertion: every schema object is the one
+        // that was there, and the only text that changed anywhere is the three widened
+        // CHECKs. Indexes, triggers and views have to match byte for byte, so one quietly
+        // dropped or recreated differently fails here rather than in a demo.
+        let widened = |sql: &str| {
+            sql.replace(
+                "'none','low','medium','high'",
+                "'none','minimal','low','medium','high','xhigh','max'",
+            )
+            .replace(
+                "'none', 'low', 'medium', 'high'",
+                "'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'",
+            )
+        };
+        let after_objects = objects(conn);
+        assert_eq!(
+            before_objects.len(),
+            after_objects.len(),
+            "a schema object was added or lost"
+        );
+        for (before, after) in before_objects.iter().zip(after_objects.iter()) {
+            assert_eq!(before.0, after.0, "schema object identity changed");
+            assert_eq!(
+                widened(&before.1),
+                after.1,
+                "{} changed by more than its thinking CHECK",
+                before.0
+            );
+        }
+        assert_eq!(
+            before_objects
+                .iter()
+                .filter(|(_, sql)| widened(sql) != *sql)
+                .count(),
+            3,
+            "exactly agent, chat and node_run carry a thinking CHECK"
+        );
+
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='view' AND name LIKE 'v_%'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            VIEW_COUNT
+        );
+    }
+
+    #[test]
+    fn a_widened_thinking_check_takes_every_level_and_still_refuses_an_alias() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("v42.db");
+        seed_v42(&path);
+        let db = Db::open(&path).unwrap();
+        let conn = db.conn();
+
+        // Every new level is storable, in both tables that take one from a person.
+        for level in crate::Reasoning::ALL {
+            conn.execute("UPDATE agent SET reasoning=?1 WHERE id=5", [level])
+                .unwrap_or_else(|e| panic!("agent rejected {level}: {e}"));
+            conn.execute("UPDATE chat SET reasoning=?1 WHERE id=3", [level])
+                .unwrap_or_else(|e| panic!("chat rejected {level}: {e}"));
+        }
+        // Aliases are an input spelling, never a stored one, so the column still refuses
+        // them - otherwise one level would have two spellings and the CHECK could not say
+        // which was real.
+        for alias in ["off", "min", "", "ultra"] {
+            assert!(
+                conn.execute("UPDATE agent SET reasoning=?1 WHERE id=5", [alias])
+                    .is_err(),
+                "agent.reasoning accepted {alias:?}"
+            );
+            assert!(
+                conn.execute("UPDATE chat SET reasoning=?1 WHERE id=3", [alias])
+                    .is_err(),
+                "chat.reasoning accepted {alias:?}"
+            );
+        }
+
+        // A turn's recorded level is still evidence: immutable, and unknown when the turn
+        // predates 042 rather than silently becoming the chat's current preference.
+        assert!(conn
+            .execute("UPDATE node_run SET reasoning='max' WHERE id=9", [])
+            .unwrap_err()
+            .to_string()
+            .contains("immutable"));
+        let historical: Option<String> = conn
+            .query_row("SELECT reasoning FROM node_run WHERE id=10", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(historical, None);
+
+        // What pointed at the rebuilt tables still points at them, and is still enforced.
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM event e JOIN node_run n ON n.id=e.node_run_id
+                 JOIN chat_turn t ON t.node_id=n.id JOIN chat c ON c.id=t.chat_id
+                 JOIN agent a ON a.id=n.agent_id WHERE e.id=50 AND a.id=5",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            conn.query_row("PRAGMA foreign_keys", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            1,
+            "the rebuild must hand foreign keys back on"
+        );
+        assert!(conn
+            .execute(
+                "INSERT INTO chat_turn (chat_id,run_id,node_id,request_id) VALUES (3,1,404,'x')",
+                []
+            )
+            .is_err());
+        assert_eq!(
+            conn.query_row("PRAGMA foreign_key_check", [], |r| r.get::<_, String>(0))
+                .optional()
+                .unwrap(),
+            None
+        );
+
+        // The triggers that rode on these tables came back with them.
+        conn.execute("UPDATE chat SET archived=1, updated_at='t2' WHERE id=3", [])
+            .unwrap();
+        assert_eq!(
+            snapshot(conn, "SELECT state FROM chat_push_grant WHERE id=4"),
+            "expired"
+        );
+    }
+
+    #[test]
+    fn a_rebuild_that_fails_changes_nothing_and_hands_foreign_keys_back() {
+        // Turning enforcement off is the dangerous part of a rebuild. A connection left
+        // that way accepts orphan rows for as long as the process lives, so both exits
+        // from `rebuild` have to restore it - the one where the script fails outright,
+        // and the one where it succeeds but leaves something pointing at nothing.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("v42.db");
+        seed_v42(&path);
+        let mut db = Db::open(&path).unwrap();
+        let settled = db.schema_version().unwrap();
+        let before = objects(db.conn());
+
+        for (sql, expected) in [
+            // Drops a parent, then fails before it can put anything back.
+            (
+                "DROP TABLE node_run; DROP TABLE no_such_table;",
+                "no_such_table",
+            ),
+            // Succeeds as a script, but strands every row that referenced the turn.
+            // Which table `foreign_key_check` names first is its business; that it named
+            // one, and that the migration stopped, is the contract.
+            ("DELETE FROM node_run;", "referencing rows that are gone"),
+        ] {
+            let error = db.rebuild(999, "deliberate", sql).unwrap_err().to_string();
+            assert!(error.contains(expected), "{error}");
+            assert_eq!(
+                db.conn()
+                    .query_row("PRAGMA foreign_keys", [], |r| r.get::<_, i64>(0))
+                    .unwrap(),
+                1,
+                "foreign keys were left off after: {error}"
+            );
+            assert_eq!(
+                db.conn()
+                    .query_row("PRAGMA legacy_alter_table", [], |r| r.get::<_, i64>(0))
+                    .unwrap(),
+                0
+            );
+            assert_eq!(db.schema_version().unwrap(), settled);
+            assert_eq!(
+                objects(db.conn()),
+                before,
+                "a failed rebuild changed the schema"
+            );
+            assert_eq!(
+                db.conn()
+                    .query_row("SELECT COUNT(*) FROM node_run", [], |r| r.get::<_, i64>(0))
+                    .unwrap(),
+                2,
+                "a failed rebuild kept its rows"
+            );
+        }
     }
 
     #[test]

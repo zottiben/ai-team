@@ -60,8 +60,12 @@ export function useUpdates() {
     };
   }, [check]);
 
-  const install = async () => {
+  const install = async (closeTerminals?: string) => {
     if (busy.current || !available?.can_update || !available.latest || !available.approval) return;
+    if (available.terminals?.sessions.length && closeTerminals !== available.terminals.approval) {
+      setActionProblem("Review and approve closing the listed app sessions first.");
+      return;
+    }
     // Pin the exact review, even if a later read resolves after this click.
     const { latest, approval } = available;
     busy.current = true;
@@ -71,7 +75,7 @@ export function useUpdates() {
     setWorking(true);
     setActionProblem(null);
     try {
-      const result = await updateApply(latest, approval);
+      const result = await updateApply(latest, approval, closeTerminals);
       if (alive.current) {
         setInstalled(result.version);
         setNotice([`Recovery backup: ${result.backup}`, ...(result.warnings ?? [])].join(" · "));

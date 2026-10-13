@@ -18,7 +18,7 @@ if (process.env.ANTHROPIC_API_KEY || process.env.OPENAI_API_KEY || process.env.P
 if (config.mcpServers['ai-planner'] || server.args[server.args.indexOf('--chat') + 1] !== '1') throw Error('wrong embedded scope');
 if (path.dirname(configPath).startsWith(process.cwd())) throw Error('support is writable by the seat');
 if (role === 'verifier') {
-  if (!excluded.includes('write') || !excluded.includes('edit') || server.includeTools.join(',') !== 'get_plan') throw Error('reader permissions widened');
+  if (!excluded.includes('write') || !excluded.includes('edit') || server.includeTools.join(',') !== 'get_plan,read_plan,list_chat_images,read_chat_image') throw Error('reader permissions widened');
 } else if (role !== 'assistant' && (excluded.includes('write') || server.includeTools.includes('add_slice'))) throw Error('maker permissions wrong');
 fs.writeFileSync(path.join(root, `worker-${id}.prompt`), prompt);
 fs.appendFileSync(path.join(root, 'worker-calls'), JSON.stringify({ role, key, id, session, configPath, cwd: process.cwd(), pid: process.pid }) + '\n');

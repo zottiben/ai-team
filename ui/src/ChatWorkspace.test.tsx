@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { useState } from "react";
 import { beforeEach, expect, it, vi } from "vitest";
 import { ChatWorkspace } from "./ChatWorkspace";
 import type { ChatDetail } from "./chat-api";
@@ -70,6 +71,47 @@ it("retains an uncertain setup request across closing the popover instead of acq
  expect((screen.getByLabelText("New branch (optional)") as HTMLInputElement).value).toBe("feature/pinned");
  fireEvent.click(screen.getByRole("button",{name:"Retry the same setup request"}));await waitFor(()=>expect(api.startWorkspaceSetup).toHaveBeenCalledTimes(2));expect(api.startWorkspaceSetup.mock.calls[1]).toEqual(first);expect(input.onPending).toHaveBeenLastCalledWith(true);
 });
+function DraftComposer({ input }: { input: ReturnType<typeof props> }) {
+ const [blocked, setBlocked] = useState(false);
+ return <><textarea aria-label="Unsent message" defaultValue="Clone the plan and pick up the next deferred task"/><ChatWorkspace {...input} onPending={setBlocked}/><button disabled={blocked}>Send fixture</button></>;
+}
+
+it("unblocks the composer after a recorded refusal and requires a new request to try again",async()=>{
+ const refused={id:5,project_id:2,request_id:"",repo_path:"/repo",branch:"feature/pinned",workspace_path:null,state:"failed",attempted:false,detail:"Setup not started: wait for this project's execution",rev:1,steps:[]};
+ api.startWorkspaceSetup.mockImplementation(async(_project:string,key:string)=>{const receipt={...refused,request_id:key};api.workspaceSetups.mockResolvedValue([receipt]);return receipt;});
+ render(<DraftComposer input={props()}/>);
+ fireEvent.click(screen.getByRole("button",{name:"Choose checkout"}));fireEvent.click(await screen.findByText("Set up a new AWT worktree"));
+ fireEvent.change(screen.getByLabelText("New branch (optional)"),{target:{value:"feature/pinned"}});fireEvent.click(screen.getByRole("checkbox"));
+ const start=screen.getByRole("button",{name:"Acquire and set up worktree"});await waitFor(()=>expect(start).toHaveProperty("disabled",false));fireEvent.click(start);
+ await screen.findByText("Setup 5 · not started");
+ await waitFor(()=>expect(screen.getByRole("button",{name:"Send fixture"})).toHaveProperty("disabled",false));
+ expect(screen.getByRole("textbox",{name:"Unsent message"})).toHaveProperty("value","Clone the plan and pick up the next deferred task");
+ expect(screen.queryByText("Worktree setup in progress")).toBeNull();
+ expect(screen.queryByText(/The response is uncertain/)).toBeNull();
+ expect(api.startWorkspaceSetup).toHaveBeenCalledTimes(1);
+ expect(api.commandWorkspaceSetup).not.toHaveBeenCalled();
+ fireEvent.click(start);await waitFor(()=>expect(api.startWorkspaceSetup).toHaveBeenCalledTimes(2));
+ expect(api.startWorkspaceSetup.mock.calls[1]?.[1]).not.toBe(api.startWorkspaceSetup.mock.calls[0]?.[1]);
+ expect(api.startWorkspaceSetup.mock.calls[1]?.[2]).toBe("feature/pinned");
+});
+
+it("reconciles a lost refusal response without replaying acquisition or discarding the message",async()=>{
+ api.startWorkspaceSetup.mockRejectedValue(new Error("response lost"));
+ const input=props();const view=render(<DraftComposer input={input}/>);
+ fireEvent.click(screen.getByRole("button",{name:"Choose checkout"}));fireEvent.click(await screen.findByText("Set up a new AWT worktree"));
+ fireEvent.change(screen.getByLabelText("New branch (optional)"),{target:{value:"feature/kept"}});fireEvent.click(screen.getByRole("checkbox"));
+ const start=screen.getByRole("button",{name:"Acquire and set up worktree"});await waitFor(()=>expect(start).toHaveProperty("disabled",false));fireEvent.click(start);
+ await screen.findByText("response lost");expect(screen.getByRole("button",{name:"Send fixture"})).toHaveProperty("disabled",true);
+ const key=api.startWorkspaceSetup.mock.calls[0]?.[1];
+ api.workspaceSetups.mockResolvedValue([{id:5,project_id:2,request_id:key,repo_path:"/repo",branch:"feature/kept",workspace_path:null,state:"failed",attempted:false,detail:"Setup not started: another turn was active",rev:1,steps:[]}]);
+ view.rerender(<DraftComposer input={{...input,tick:1}}/>);
+ await screen.findByText("Setup 5 · not started");
+ await waitFor(()=>expect(screen.getByRole("button",{name:"Send fixture"})).toHaveProperty("disabled",false));
+ expect(screen.getByRole("textbox",{name:"Unsent message"})).toHaveProperty("value","Clone the plan and pick up the next deferred task");
+ expect(api.startWorkspaceSetup).toHaveBeenCalledTimes(1);
+ expect(api.commandWorkspaceSetup).not.toHaveBeenCalled();
+});
+
 it("proposes an existing chat switch without treating it as approval",async()=>{
  api.requestWorkspace.mockImplementation(async()=>{api.workspaceRequests.mockResolvedValue({requests:[pending]});return pending;});
  render(<ChatWorkspace {...props()} detail={detail}/>);

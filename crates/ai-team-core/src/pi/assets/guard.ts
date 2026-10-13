@@ -20,7 +20,7 @@ import { holdOn } from "./lifeline.ts";
 import { judgePlan, PLAN_ENV } from "./plan.ts";
 import { isInside, worktreeRoot } from "./worktree.ts";
 import { dirname, isAbsolute, resolve } from "node:path";
-import { realpathSync } from "node:fs";
+import { realpathSync, writeSync } from "node:fs";
 
 /** Tools whose path arguments must land inside the lease. */
 const PATH_TOOLS: Record<string, readonly string[]> = {
@@ -101,13 +101,35 @@ export function decide(
 }
 
 export default function aiTeamGuard(pi: {
-  on: (
-    event: "tool_call",
-    handler: (
-      event: { toolName: string; input: Record<string, unknown> },
-    ) => { block: true; reason: string } | undefined,
-  ) => void;
+  on(event: "tool_call", handler: (event: { toolName: string; input: Record<string, unknown> }) => { block: true; reason: string } | undefined): void;
+  on(event: "before_agent_start" | "before_provider_request", handler: () => void): void;
+  getThinkingLevel?: () => string;
 }) {
+  const requested = process.env.AI_TEAM_THINKING;
+  const checkThinking = () => {
+    // Low-level callers may intentionally omit an override. App-owned turns always
+    // supply their admitted setting; do not invent one for an unspecified request.
+    if (requested === undefined) return;
+    let actual: string | undefined;
+    try {
+      actual = pi.getThinkingLevel?.();
+    } catch {
+      // Unknown is a refusal below, not an exception Pi can log and ignore.
+      actual = undefined;
+    }
+    if (requested && ["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(requested) && actual === requested) return;
+    // Pi clamps unsupported levels before this hook, including when resuming. Hook
+    // exceptions are logged and ignored, so throwing would still spend a model call.
+    // The supervisor reaps this process's whole group and records its failure.
+    try {
+      const action = actual === undefined ? "Pi could not report its thinking level; check or update Pi." : "Choose a level supported by this model.";
+      writeSync(2, `Error: requested ${requested || "unrecorded"} thinking, but Pi selected ${actual || "unknown"}; the request was not sent. ${action}\n`);
+    } finally {
+      process.exit(1);
+    }
+  };
+  pi.on("before_agent_start", checkThinking);
+  pi.on("before_provider_request", checkThinking);
   pi.on("tool_call", (event) => decide(event.toolName, event.input));
   // Here rather than at import, so loading this file to test `decide` watches nothing.
   holdOn();

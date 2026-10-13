@@ -19,6 +19,7 @@ mod chat_workspaces;
 mod chats;
 mod error;
 mod health;
+mod mcp;
 mod plan_library;
 pub mod plan_mcp;
 mod state;
@@ -82,6 +83,9 @@ pub struct ServeOptions {
     pub host: ai_team_core::Host,
     /// Production entry points opt in; fixture servers never discover real installations.
     pub updates: ai_team_core::UpdateManager,
+    /// Explicit, read-only discovery sources. Empty by default so fixture servers
+    /// never inspect the operator's personal MCP definitions.
+    pub mcp_import_sources: Vec<std::path::PathBuf>,
 }
 
 /// Bound, but not yet serving.
@@ -129,7 +133,8 @@ impl Server {
             .route_layer(axum::middleware::from_fn_with_state(
                 state.clone(),
                 auth::require_token,
-            ));
+            ))
+            .layer(axum::Extension(mcp::Sources(options.mcp_import_sources)));
 
         let router = Router::new()
             .nest("/api", api)

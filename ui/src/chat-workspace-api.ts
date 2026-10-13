@@ -5,6 +5,7 @@ export type WorkspaceChoice = { path: string; name: string; branch: string | nul
 export type WorkspaceSetupReceipt = {
   id: number; project_id: number; request_id: string; repo_path: string; branch: string; workspace_path: string | null;
   state: "pending" | "running" | "ready" | "failed" | "inspection"; detail: string; rev: number;
+  attempted?: boolean;
   steps: { command: string; passed: boolean; output: string; at: string }[];
 };
 export const workspaceSetups = (project: string) => api<WorkspaceSetupReceipt[]>(`/chat-workspace-setups?project=${encodeURIComponent(project)}`);

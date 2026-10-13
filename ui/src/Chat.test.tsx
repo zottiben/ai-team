@@ -24,6 +24,7 @@ const service = vi.hoisted(() => ({
   archiveChat: vi.fn(),
   restoreChat: vi.fn(),
   setChatMode: vi.fn(),
+  setChatThinking: vi.fn(),
   queueChatFollowup: vi.fn(),
   cancelChatFollowup: vi.fn(),
   sendChatFollowup: vi.fn(),
@@ -31,6 +32,7 @@ const service = vi.hoisted(() => ({
   workspaceRequests: vi.fn(),
   chatWorkspaces: vi.fn(),
 }));
+const thinking = vi.hoisted(() => vi.fn());
 vi.mock("./Editor", () => ({ Editor: ({ project, workspace, visible }: { project: string; workspace: string; visible: boolean }) => <div><p>Editor {project}: {workspace} ({String(visible)})</p><input aria-label="Unsaved fixture file" defaultValue="kept" /></div> }));
 vi.mock("./Terminal", () => ({ TerminalPane: ({ project, workspace }: { project: string; workspace: string }) => <p>Terminal {project}: {workspace}</p> }));
 vi.mock("./ChatChanges", () => ({ ChatChanges: ({ chatId, onFeedback }: { chatId: number; onFeedback: (text: string) => void }) => <section aria-label="Review fixture"><p>Review chat {chatId}</p><input aria-label="Unsaved review finding" /><button onClick={() => onFeedback("Recorded feedback")}>Use feedback</button></section> }));
@@ -46,6 +48,7 @@ vi.mock("./plan-api", async (original) => ({
 }));
 vi.mock("./api", async (original) => ({
   ...(await original<typeof import("./api")>()),
+  getModelThinking: thinking,
   models: () =>
     Promise.resolve({
       models: [
@@ -130,6 +133,150 @@ beforeEach(() => {
   service.chatPlan.mockImplementation((id: number) => Promise.resolve({ chat_id: id, project_id: 1, revision: 0, bundle: null }));
   service.createChat.mockResolvedValue(detail(3));
   service.sendChat.mockResolvedValue({ run_id: 1, node_id: 1, started: true });
+  thinking.mockResolvedValue({ provider: "openai", model: "gpt-5", fallback_reason: null, levels: ["none", "minimal", "low", "medium", "high", "xhigh", "max"] });
+});
+
+it("moves acknowledged queue messages into the transcript once, with formatted receipt status", async () => {
+  const item = { id: 8, chat_id: 1, after_node_id: 41, body: "**Check** the error path\n\n- Keep the original work", kind: "follow_up" as const, state: "queued" as const, node_id: null, created_at: "2026-01-01", delivered_at: null };
+  service.chat.mockResolvedValue({ ...detail(), followups: [item] });
+  const options = props();
+  const view = render(<ChatView {...options}/>);
+  const tray = await screen.findByRole("region", { name: "Queued instruction receipts" });
+  expect(tray.querySelector("strong")?.textContent).toBe("Check");
+  expect(within(tray).getByRole("listitem").textContent).toBe("Keep the original work");
+  const delivered = { ...item, state: "delivered", node_id: 1, delivered_at: "2026-01-02" };
+  service.chat.mockResolvedValue({ ...finished(), followups: [delivered] });
+  // The receipt can arrive one poll before its human event.
+  view.rerender(<ChatView {...options} tick={1}/>);
+  await screen.findByText("Received by agent · Turn finished");
+  expect(screen.queryByRole("region", { name: "Queued instruction receipts" })).toBeNull();
+  const bubble = screen.getByRole("article", { name: "You" });
+  expect(bubble.querySelector("strong")?.textContent).toBe("Check");
+  expect(screen.getAllByRole("article", { name: "You" })).toHaveLength(1);
+  await waitFor(() => expect(bubble.classList.contains("chat-message--arriving")).toBe(true));
+  service.chatEvents.mockImplementation((_id: number, after: number) => Promise.resolve(after < 1 ? [event(1,item.body)] : []));
+  view.rerender(<ChatView {...options} tick={2}/>);
+  await waitFor(() => expect(service.chat).toHaveBeenCalledTimes(3));
+  expect(screen.getByRole("article", { name: "You" })).toBe(bubble);
+  expect(screen.getAllByText("Received by agent · Turn finished")).toHaveLength(1);
+});
+
+it("offers explicit thinking for new chats and revision-checked changes for an existing chat", async () => {
+  const options = props();
+  const view = render(<ChatView {...options} id={null}/>);
+  const select = await screen.findByRole("combobox", { name: "Thinking effort" });
+  await waitFor(() => expect((select as HTMLSelectElement).disabled).toBe(false));
+  fireEvent.change(select, { target: { value: "low" } });
+  fireEvent.change(screen.getByRole("textbox", { name: "Message" }), { target: { value: "Check this" } });
+  fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+  await waitFor(() => expect(service.createChat).toHaveBeenCalledWith(expect.objectContaining({ reasoning: "low" })));
+  view.unmount();
+  service.setChatThinking.mockResolvedValue({ ...detail(), reasoning: "medium", rev: 1 });
+  service.chat.mockResolvedValue({ ...detail(), reasoning: "medium", rev: 1 });
+  render(<ChatView {...options}/>);
+  const existing = await screen.findByRole("combobox", { name: "Thinking effort" });
+  await waitFor(() => expect((existing as HTMLSelectElement).value).toBe("medium"));
+  await waitFor(() => expect((existing as HTMLSelectElement).disabled).toBe(false));
+  fireEvent.change(existing, { target: { value: "none" } });
+  await waitFor(() => expect(service.setChatThinking).toHaveBeenCalledWith(1,"none",1));
+});
+
+it("offers the whole thinking range, scoped to what the chosen model supports", async () => {
+  thinking.mockResolvedValue({ provider: "openai", model: "gpt-5", fallback_reason: null, levels: ["none", "low", "medium", "high", "xhigh", "max"] });
+  render(<ChatView {...props()} id={null}/>);
+  const select = await screen.findByRole("combobox", { name: "Thinking effort" });
+  await waitFor(() => expect(thinking).toHaveBeenCalledWith("openai", "gpt-5"));
+  expect([...(select as HTMLSelectElement).options].map(o => o.value))
+    .toEqual(["none", "minimal", "low", "medium", "high", "xhigh", "max"]);
+  // `minimal` is the one this model cannot do, so it is the one that is refused.
+  await waitFor(() => expect(within(select).getByRole("option", { name: "Minimal" }).hasAttribute("disabled")).toBe(true));
+  expect(within(select).getByRole("option", { name: "Max" }).hasAttribute("disabled")).toBe(false);
+  fireEvent.change(select, { target: { value: "xhigh" } });
+  fireEvent.change(screen.getByRole("textbox", { name: "Message" }), { target: { value: "Think hard" } });
+  fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+  await waitFor(() => expect(service.createChat).toHaveBeenCalledWith(expect.objectContaining({ reasoning: "xhigh" })));
+});
+
+it("keeps a preference the model cannot do rather than quietly moving it", async () => {
+  // The chat was set to `max` on another model. Nothing here may change that on its own:
+  // the only thing that rewrites a preference is the person, through the same revision
+  // -checked call as before.
+  thinking.mockResolvedValue({ provider: "openai", model: "gpt-5", fallback_reason: null, levels: ["low", "medium"] });
+  service.chat.mockResolvedValue({ ...detail(), reasoning: "max" });
+  render(<ChatView {...props()}/>);
+  const select = await screen.findByRole("combobox", { name: "Thinking effort" });
+  await waitFor(() => expect((select as HTMLSelectElement).value).toBe("max"));
+  expect(await screen.findByText(/Max is not supported by this model/i)).not.toBeNull();
+  expect(service.setChatThinking).not.toHaveBeenCalled();
+});
+
+it("sends while the capability lookup is still outstanding", async () => {
+  // The runtime refuses an unsupported level before the first provider request, so
+  // metadata is never the thing that decides whether a message may leave.
+  thinking.mockReturnValue(new Promise(() => {}));
+  render(<ChatView {...props()}/>);
+  fireEvent.change(await screen.findByRole("textbox", { name: "Message" }), { target: { value: "Go now" } });
+  fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+  await waitFor(() => expect(service.sendChat).toHaveBeenCalled());
+});
+
+it("shows a running turn's recorded thinking, not its chat's next-turn preference", async () => {
+  const state = finished();
+  state.active_node_id = 1;
+  state.state = "running";
+  state.turns[0]!.node.status = "running";
+  state.turns[0]!.node.reasoning = "low";
+  service.chat.mockResolvedValue(state);
+  render(<ChatView {...props()}/>);
+  await waitFor(() => expect((screen.getByRole("combobox", { name: "Thinking effort" }) as HTMLSelectElement).value).toBe("low"));
+  expect((screen.getByRole("combobox", { name: "Thinking effort" }) as HTMLSelectElement).disabled).toBe(true);
+  expect(screen.getByText(/Queued follow-ups use this chat's high thinking preference/)).not.toBeNull();
+  expect(service.setChatThinking).not.toHaveBeenCalled();
+});
+
+it("keeps the draft and previous thinking when a preference update is refused", async () => {
+  service.setChatThinking.mockRejectedValueOnce(new Error("chat changed; refresh"));
+  render(<ChatView {...props()}/>);
+  await waitFor(() => expect((screen.getByRole("combobox", { name: "Thinking effort" }) as HTMLSelectElement).disabled).toBe(false));
+  fireEvent.change(screen.getByRole("textbox", { name: "Message" }), { target: { value: "Keep my draft" } });
+  fireEvent.change(screen.getByRole("combobox", { name: "Thinking effort" }), { target: { value: "low" } });
+  await screen.findByText("chat changed; refresh");
+  expect((screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement).value).toBe("Keep my draft");
+  expect((screen.getByRole("combobox", { name: "Thinking effort" }) as HTMLSelectElement).value).toBe("high");
+  expect(service.sendChat).not.toHaveBeenCalled();
+});
+
+it("attaches a dropped image to a prompt and preserves it after a failed send", async () => {
+  service.sendChat.mockRejectedValueOnce(new Error("connection lost"));
+  const view = render(<ChatView {...props()} />);
+  await screen.findByText("Chat 1");
+  fireEvent.change(screen.getByLabelText("Message"), { target: { value: "Inspect this screenshot" } });
+  fireEvent.drop(view.container.querySelector(".chat-composer")!, { dataTransfer: { files: [new File([new Uint8Array([137,80,78,71])], "screenshot.png", { type: "image/png" })], types: ["Files"] } });
+  expect(await screen.findByAltText("Attached screenshot.png")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+  await screen.findByText("connection lost");
+  expect(screen.getByAltText("Attached screenshot.png")).toBeTruthy();
+  expect(screen.getByLabelText("Message")).toHaveProperty("value", "Inspect this screenshot");
+  expect(service.sendChat.mock.calls[0]?.[4]).toEqual([{ name: "screenshot.png", media_type: "image/png", data: "iVBORw==" }]);
+  fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+  await waitFor(() => expect(service.sendChat).toHaveBeenCalledTimes(2));
+  expect(service.sendChat.mock.calls[1]).toEqual(service.sendChat.mock.calls[0]);
+});
+
+it("accepts pasted images without requiring text and allows removing them", async () => {
+  render(<ChatView {...props()} />);
+  await screen.findByText("Chat 1");
+  const file = new File(["image"], "clipboard.png", { type: "image/png" });
+  fireEvent.paste(screen.getByLabelText("Message"), { clipboardData: { files: [file] } });
+  expect(await screen.findByAltText("Attached clipboard.png")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Remove image 1: clipboard.png" }));
+  expect(screen.queryByAltText("Attached clipboard.png")).toBeNull();
+  fireEvent.change(screen.getByLabelText("Choose images"), { target: { files: [file] } });
+  expect(await screen.findByAltText("Attached clipboard.png")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+  await waitFor(() => expect(service.sendChat).toHaveBeenCalled());
+  expect(service.sendChat.mock.calls[0]?.[1]).toBe("Please inspect the attached images.");
+  expect(service.sendChat.mock.calls[0]?.[4]).toHaveLength(1);
 });
 
 describe("clear turn outcomes", () => {
@@ -484,6 +631,8 @@ describe("persistent conversation", () => {
       "Explain the app",
       expect.any(String),
       0,
+      undefined,
+      "high",
     );
     expect(screen.queryByRole("button", { name: /Start team/ })).toBeNull();
   });

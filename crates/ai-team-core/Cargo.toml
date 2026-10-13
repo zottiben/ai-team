@@ -8,6 +8,8 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+base64 = "0.22"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 ai-planner-core.workspace = true
 ai-toolbox-core.workspace = true
 sha2 = "0.10"

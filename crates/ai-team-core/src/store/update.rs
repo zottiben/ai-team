@@ -19,25 +19,27 @@ pub(crate) fn check_writer(conn: &Connection) -> Result<()> {
 }
 
 fn idle(conn: &Connection) -> Result<()> {
-    let busy: bool = conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM chat WHERE active_node_id IS NOT NULL)
-         OR EXISTS(SELECT 1 FROM run WHERE status IN ('queued','planning','running'))
-         OR EXISTS(SELECT 1 FROM node_run WHERE status IN ('queued','running','parked'))
-         OR EXISTS(SELECT 1 FROM chat_child WHERE state != 'drained')
-         OR EXISTS(SELECT 1 FROM checkout_child WHERE state != 'drained')
-         OR EXISTS(SELECT 1 FROM workspace_setup_child WHERE state != 'drained')
-         OR EXISTS(SELECT 1 FROM workspace_setup WHERE state IN ('pending','running','inspection'))
-         OR EXISTS(SELECT 1 FROM chat_delivery WHERE state IN ('running','inspection'))
-         OR EXISTS(SELECT 1 FROM chat_checkout_operation WHERE state IN ('running','inspection'))
-         OR EXISTS(SELECT 1 FROM toolbox_operation WHERE state IN ('applying','partial'))
-         OR EXISTS(SELECT 1 FROM chat_followup WHERE state IN ('queued','starting'))
-         OR EXISTS(SELECT 1 FROM chat_push_grant WHERE state IN ('pending','armed'))
-         OR EXISTS(SELECT 1 FROM chat_schedule_occurrence WHERE outcome='claimed')",
-        [],
-        |r| r.get(0),
+    let mut query = conn.prepare(
+        "SELECT 'chat ' || id || ': active turn' FROM chat WHERE active_node_id IS NOT NULL
+         UNION ALL SELECT 'run ' || id || ': ' || status FROM run WHERE status IN ('queued','planning','running')
+         UNION ALL SELECT 'agent turn ' || id || ': ' || status FROM node_run WHERE status IN ('queued','running','parked')
+         UNION ALL SELECT 'undrained chat children' WHERE EXISTS(SELECT 1 FROM chat_child WHERE state != 'drained')
+         UNION ALL SELECT 'undrained checkout children' WHERE EXISTS(SELECT 1 FROM checkout_child WHERE state != 'drained')
+         UNION ALL SELECT 'undrained workspace setup children' WHERE EXISTS(SELECT 1 FROM workspace_setup_child WHERE state != 'drained')
+         UNION ALL SELECT 'workspace setup ' || id || ': ' || state FROM workspace_setup WHERE state IN ('pending','running','inspection')
+         UNION ALL SELECT 'unfinished delivery' WHERE EXISTS(SELECT 1 FROM chat_delivery WHERE state IN ('running','inspection'))
+         UNION ALL SELECT 'unfinished checkout operation' WHERE EXISTS(SELECT 1 FROM chat_checkout_operation WHERE state IN ('running','inspection'))
+         UNION ALL SELECT 'unfinished toolbox setup' WHERE EXISTS(SELECT 1 FROM toolbox_operation WHERE state IN ('applying','partial'))
+         UNION ALL SELECT 'queued follow-ups' WHERE EXISTS(SELECT 1 FROM chat_followup WHERE state IN ('queued','starting'))
+         UNION ALL SELECT 'pending publication' WHERE EXISTS(SELECT 1 FROM chat_push_grant WHERE state IN ('pending','armed'))
+         UNION ALL SELECT 'claimed schedule' WHERE EXISTS(SELECT 1 FROM chat_schedule_occurrence WHERE outcome='claimed')
+         LIMIT 20",
     )?;
-    if busy {
-        return Err(Error::invalid("finish or inspect active work, queued follow-ups and workspace setup before updating; no work was stopped"));
+    let blockers = query
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    if !blockers.is_empty() {
+        return Err(Error::invalid(format!("finish or inspect active work, queued follow-ups and workspace setup before updating; no unreviewed work was stopped. Waiting for: {}", blockers.join("; "))));
     }
     Ok(())
 }
@@ -59,6 +61,12 @@ impl Store {
 
     pub fn check_update_idle(&self) -> Result<()> {
         idle(self.db().conn())
+    }
+
+    /// Preflight must not migrate, recover or otherwise mutate live state.
+    pub fn check_update_idle_at(path: &Path) -> Result<()> {
+        let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        idle(&conn)
     }
 
     pub fn installed_application_version(path: &Path) -> Result<Option<String>> {

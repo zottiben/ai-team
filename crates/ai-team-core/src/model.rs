@@ -18,13 +18,13 @@ use crate::error::Error;
 macro_rules! sql_enum {
     (
         $(#[$meta:meta])*
-        $name:ident { $($(#[$vmeta:meta])* $variant:ident => $text:literal),+ $(,)? }
+        $name:ident { $($(#[$vmeta:meta])* $variant:ident => $text:literal $(| $alias:literal)*),+ $(,)? }
     ) => {
         $(#[$meta])*
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
         #[serde(rename_all = "snake_case")]
         pub enum $name {
-            $($(#[$vmeta])* $variant),+
+            $($(#[$vmeta])* $(#[serde(alias = $alias)])* $variant),+
         }
 
         impl $name {
@@ -45,7 +45,10 @@ macro_rules! sql_enum {
             type Err = Error;
             fn from_str(s: &str) -> Result<Self, Error> {
                 match s {
-                    $($text => Ok($name::$variant),)+
+                    // Aliases are accepted here and nowhere else: `as_str` and `ToSql`
+                    // only ever produce the canonical spelling, so an alias cannot reach
+                    // a column and give one value two names.
+                    $($text $(| $alias)* => Ok($name::$variant),)+
                     other => Err(Error::invalid(format!(
                         "{other:?} is not a valid {}: expected one of {}",
                         stringify!($name),
@@ -144,11 +147,22 @@ sql_enum! {
 }
 
 sql_enum! {
+    /// How hard a seat is asked to think, in Pi's full range.
+    ///
+    /// The column spelling is the one this schema has used since 001, which is why the
+    /// level Pi calls `off` is stored as `none`. Pi's own words are accepted as aliases
+    /// so a profile or a request written in Pi's vocabulary parses, but only the
+    /// canonical spelling is ever written back - `pi::seat::thinking` translates on the
+    /// way out, and a second spelling in the column would make the CHECK meaningless.
     Reasoning {
-        None => "none",
+        None => "none" | "off",
+        Minimal => "minimal" | "min",
         Low => "low",
         Medium => "medium",
         High => "high",
+        #[serde(rename = "xhigh")]
+        XHigh => "xhigh",
+        Max => "max",
     }
 }
 
@@ -543,6 +557,9 @@ pub struct Run {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeRun {
+    /// Requested Pi thinking level, frozen on admission. Older rows remain unknown.
+    #[serde(default)]
+    pub reasoning: Option<Reasoning>,
     pub id: i64,
     pub run_id: i64,
     pub agent_id: Option<i64>,
@@ -834,6 +851,53 @@ mod tests {
         let err = "sprint".parse::<ProjectKind>().unwrap_err().to_string();
         assert!(err.contains("sprint"), "{err}");
         assert!(err.contains("quickfix"), "{err}");
+    }
+
+    #[test]
+    fn every_pi_thinking_level_round_trips_through_its_canonical_column_spelling() {
+        // Pi's own range. `none` rather than `off` is this schema's spelling, and has
+        // been since 001 - the column keeps it, so no stored row has to be rewritten.
+        assert_eq!(
+            Reasoning::ALL
+                .iter()
+                .map(|level| level.as_str())
+                .collect::<Vec<_>>(),
+            ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
+        );
+        for level in Reasoning::ALL {
+            assert_eq!(level.as_str().parse::<Reasoning>().unwrap(), *level);
+            let json = serde_json::to_string(level).unwrap();
+            assert_eq!(json, format!("\"{}\"", level.as_str()));
+            assert_eq!(
+                serde_json::from_str::<Reasoning>(&json).unwrap(),
+                *level,
+                "serde and the column must agree on {level}"
+            );
+        }
+    }
+
+    #[test]
+    fn thinking_aliases_are_accepted_and_normalised_to_the_canonical_value() {
+        // Pi says `off` and `min`; the database has always said `none` and now `minimal`.
+        // Accepting both on the way in costs nothing; storing both would mean two
+        // spellings of one level in the column and a CHECK that cannot say which is real.
+        for (alias, canonical) in [("off", Reasoning::None), ("min", Reasoning::Minimal)] {
+            assert_eq!(alias.parse::<Reasoning>().unwrap(), canonical);
+            assert_eq!(
+                serde_json::from_str::<Reasoning>(&format!("\"{alias}\"")).unwrap(),
+                canonical
+            );
+            assert_ne!(canonical.as_str(), alias, "an alias is never written back");
+        }
+    }
+
+    #[test]
+    fn an_unknown_thinking_level_is_refused_with_the_canonical_alternatives() {
+        let err = "ultra".parse::<Reasoning>().unwrap_err().to_string();
+        assert!(err.contains("ultra"), "{err}");
+        assert!(err.contains("xhigh") && err.contains("minimal"), "{err}");
+        // The alternatives are what may be stored, so an alias must not be offered.
+        assert!(!err.contains("\"off\"") && !err.contains(", off"), "{err}");
     }
 
     #[test]

@@ -87,8 +87,8 @@ impl Store {
             tx.execute(
                 "INSERT INTO node_run
                    (run_id, agent_id, role, provider, model, status, attempt, slice_key,
-                    worktree_path, branch, supervisor_pid, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, 'queued', 1, ?6, ?7, ?8, ?9, ?10, ?10)",
+                    worktree_path, branch, supervisor_pid, created_at, updated_at, reasoning)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 'queued', 1, ?6, ?7, ?8, ?9, ?10, ?10, ?11)",
                 params![
                     run_id,
                     restack.agent_id,
@@ -99,7 +99,8 @@ impl Store {
                     worktree,
                     restack.branch,
                     pid,
-                    at
+                    at,
+                    agent.reasoning
                 ],
             )?;
             let node_id = tx.last_insert_rowid();

@@ -80,6 +80,104 @@ fn planning_before_the_first_node_still_protects_a_pool_slot() {
     assert!(store.check_setup_pool(&[slot]).is_err());
 }
 
+#[tokio::test]
+async fn a_refused_setup_is_terminal_and_cannot_start_when_replayed_later() {
+    let (dir, mut store, project, _slot) = fixture();
+    let run = store
+        .create_run(project, "planning", RunTrigger::Manual)
+        .unwrap();
+    store.set_run_status(run.id, RunStatus::Planning).unwrap();
+    store
+        .set_run_supervisor(run.id, i64::from(std::process::id()))
+        .unwrap();
+    let (refused, started) = store
+        .request_workspace_setup(project, &dir.path().join("main"), "refused", "feature/one")
+        .expect(
+            "a known refusal must return a durable terminal receipt, not leave the UI uncertain",
+        );
+    assert!(!started);
+    assert_eq!(refused.state, "failed");
+    assert!(!refused.attempted);
+    assert!(refused.workspace_path.is_none());
+    assert!(refused.steps.is_empty());
+    assert!(refused.detail.contains("execution"));
+    store.set_run_status(run.id, RunStatus::Done).unwrap();
+    let (replay, started) = store
+        .request_workspace_setup(project, &dir.path().join("main"), "refused", "feature/one")
+        .unwrap();
+    assert!(!started);
+    assert_eq!(replay.id, refused.id);
+    assert_eq!(replay.state, "failed");
+    assert!(store
+        .request_workspace_setup(project, &dir.path().join("main"), "refused", "different")
+        .is_err());
+    assert!(store
+        .claim_workspace_setup(project, refused.id, refused.rev, true)
+        .is_err());
+    let observed = crate::workspace_setup::run(store.path(), project, refused.id)
+        .await
+        .unwrap();
+    assert_eq!(observed.rev, refused.rev);
+    let inspected = crate::workspace_setup::inspect(store.path(), project, refused.id, refused.rev)
+        .await
+        .unwrap();
+    assert_eq!(inspected.rev, refused.rev);
+    assert!(store
+        .workspace_setup_children(refused.id)
+        .unwrap()
+        .is_empty());
+    let (fresh, started) = store
+        .request_workspace_setup(
+            project,
+            &dir.path().join("main"),
+            "fresh-explicit-approval",
+            "feature/one",
+        )
+        .unwrap();
+    assert!(started);
+    assert_ne!(fresh.id, refused.id);
+    assert_eq!(fresh.state, "pending");
+}
+
+#[test]
+fn another_setup_refusal_does_not_replace_or_extend_the_existing_reservation() {
+    let (dir, mut store, project, _slot) = fixture();
+    let repo = dir.path().join("main");
+    let (first, _) = store
+        .request_workspace_setup(project, &repo, "first", "")
+        .unwrap();
+    let (refused, started) = store
+        .request_workspace_setup(project, &repo, "second", "")
+        .unwrap();
+    assert!(!started);
+    assert_eq!(refused.state, "failed");
+    assert!(!refused.attempted);
+    assert!(refused.detail.contains("existing AWT setup"));
+    assert_eq!(
+        store.workspace_setup(project, first.id).unwrap().state,
+        "pending"
+    );
+    let owner = store
+        .claim_workspace_setup(project, first.id, first.rev, false)
+        .unwrap();
+    store
+        .finish_workspace_setup(&owner, "failed", "fixture ended before acquisition")
+        .unwrap();
+    let (replay, started) = store
+        .request_workspace_setup(project, &repo, "second", "")
+        .unwrap();
+    assert!(!started);
+    assert_eq!(replay.id, refused.id);
+    assert!(!replay.attempted);
+    assert_eq!(store.workspace_setups(project).unwrap().len(), 2);
+    assert!(
+        store
+            .request_workspace_setup(project, &repo, "third", "")
+            .unwrap()
+            .1
+    );
+}
+
 #[test]
 fn a_planning_supervisor_blocks_setup_admission_before_any_node_exists() {
     let (dir, mut store, project, _slot) = fixture();
@@ -90,10 +188,17 @@ fn a_planning_supervisor_blocks_setup_admission_before_any_node_exists() {
     store
         .set_run_supervisor(run.id, i64::from(std::process::id()))
         .unwrap();
-    assert!(store
+    let (refused, started) = store
         .request_workspace_setup(project, &dir.path().join("main"), "must-wait", "")
-        .is_err());
-    assert!(store.workspace_setups(project).unwrap().is_empty());
+        .unwrap();
+    assert!(!started);
+    assert_eq!(refused.state, "failed");
+    assert!(!refused.attempted);
+    assert!(store
+        .workspace_setup_children(refused.id)
+        .unwrap()
+        .is_empty());
+    assert!(store.node_runs(run.id).unwrap().is_empty());
 }
 
 #[test]
@@ -111,7 +216,15 @@ fn a_blocked_node_keeps_its_pool_slot_and_project_reservation() {
         .unwrap();
     store.set_node_status(node.id, NodeStatus::Blocked).unwrap();
     assert!(store.check_setup_pool(&[slot]).is_err());
-    assert!(store
+    let (refused, started) = store
         .request_workspace_setup(project, &dir.path().join("main"), "must-wait", "")
-        .is_err());
+        .unwrap();
+    assert!(!started);
+    assert_eq!(refused.state, "failed");
+    assert!(!refused.attempted);
+    assert!(store
+        .workspace_setup_children(refused.id)
+        .unwrap()
+        .is_empty());
+    assert_eq!(store.node_run(node.id).unwrap().status, NodeStatus::Blocked);
 }

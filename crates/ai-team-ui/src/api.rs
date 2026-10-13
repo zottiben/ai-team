@@ -47,6 +47,7 @@ pub(crate) fn routes() -> Router<AppState> {
         .merge(crate::chat_teams::routes())
         .merge(crate::chat_changes::routes())
         .merge(crate::toolbox::routes())
+        .merge(crate::mcp::routes())
         .route("/events", get(stream))
         .route("/runs/{id}/approve-plan", axum::routing::post(approve_plan))
         .route("/runs/{id}/approvals", get(approvals))
@@ -78,6 +79,7 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/crew/{agent}/say", axum::routing::post(say))
         .route("/roster", get(roster))
         .route("/models", get(models))
+        .route("/models/thinking", get(model_thinking))
         .route(
             "/roster/ownership/detect",
             axum::routing::post(detect_ownership),
@@ -685,6 +687,24 @@ async fn models() -> Json<ModelCatalog> {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ThinkingQuery {
+    provider: ai_team_core::Provider,
+    model: String,
+}
+
+async fn model_thinking(
+    Query(query): Query<ThinkingQuery>,
+) -> Result<Json<ai_team_core::ThinkingCapabilities>> {
+    let levels = tokio::task::spawn_blocking(move || {
+        ai_team_core::ModelRegistry::load()?.thinking_levels(query.provider, &query.model)
+    })
+    .await
+    .map_err(|_| ai_team_core::Error::invalid("the thinking capability probe did not finish"))??;
+    Ok(Json(levels))
+}
+
+#[derive(Debug, Deserialize)]
 struct RosterQuery {
     /// Omitted asks what a new project would get.
     #[serde(default)]
@@ -1264,7 +1284,7 @@ async fn start_sign_in(
         ))
     })?;
     let home = ai_team_core::home_dir()?;
-    let permit = state.updates().admit()?;
+    let permit = state.updates().admit_terminal()?;
     let id = state.terminals().open_running(&home, Some(command))?;
     state.terminals().protect_update(id, permit)?;
     Ok(Json(serde_json::json!({ "id": id, "command": command })))
@@ -1293,7 +1313,7 @@ async fn start_context_auth(
 ) -> Result<Json<serde_json::Value>> {
     let config = ai_team_core::write_context_oauth_config(request.source)?;
     let home = ai_team_core::home_dir()?;
-    let permit = state.updates().admit()?;
+    let permit = state.updates().admit_terminal()?;
     let id = state.terminals().open_context_auth(&home, &config)?;
     state.terminals().protect_update(id, permit)?;
     // The pty queues this line even while Pi is still starting. It is delivered to Pi's
@@ -1396,7 +1416,9 @@ async fn update_check(
     State(state): State<AppState>,
     Query(query): Query<UpdateQuery>,
 ) -> Result<Json<ai_team_core::UpdateStatus>> {
-    Ok(Json(state.updates().check(query.refresh).await))
+    let mut status = state.updates().check(query.refresh).await;
+    status.terminals = Some(state.terminals().review_update());
+    Ok(Json(status))
 }
 
 /// What an update did, reported at the end rather than streamed.
@@ -1421,6 +1443,7 @@ async fn update_inspect(
 struct UpdateApproval {
     version: String,
     approval: String,
+    close_terminals: Option<String>,
 }
 
 async fn update_apply(
@@ -1430,7 +1453,12 @@ async fn update_apply(
     Ok(Json(
         state
             .updates()
-            .apply(&request.version, &request.approval)
+            .apply_with_terminals(
+                &request.version,
+                &request.approval,
+                state.terminals().clone(),
+                request.close_terminals,
+            )
             .await?,
     ))
 }
@@ -1630,7 +1658,7 @@ async fn open_terminal(
         request.workspace.as_deref(),
     )
     .await?;
-    let permit = state.updates().admit()?;
+    let permit = state.updates().admit_terminal()?;
     let id = state.terminals().open(&worktree)?;
     state.terminals().protect_update(id, permit)?;
     Ok(Json(serde_json::json!({ "id": id })))
@@ -1662,6 +1690,7 @@ async fn write_terminal(
     Path(id): Path<u64>,
     JsonBody(keys): JsonBody<Keys>,
 ) -> Result<Json<serde_json::Value>> {
+    let _permit = state.updates().admit_terminal()?;
     state.terminals().write(id, &keys.text)?;
     Ok(Json(serde_json::json!({ "sent": keys.text.len() })))
 }
@@ -1687,7 +1716,12 @@ async fn close_terminal(
     State(state): State<AppState>,
     Path(id): Path<u64>,
 ) -> Result<Json<serde_json::Value>> {
-    state.terminals().close(id);
+    let terminals = state.terminals().clone();
+    tokio::task::spawn_blocking(move || terminals.close(id))
+        .await
+        .map_err(|error| {
+            ai_team_core::Error::invalid(format!("terminal close failed: {error}"))
+        })??;
     Ok(Json(serde_json::json!({ "closed": id })))
 }
 

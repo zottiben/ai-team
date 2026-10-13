@@ -118,5 +118,11 @@ mod tests {
         assert!(GUARD.contains("tool_call"));
         assert!(WORKTREE.contains("AI_TEAM_WORKTREE"));
         assert!(IRREVERSIBLE.contains("git\\s+push"));
+        for level in crate::Reasoning::ALL {
+            assert!(
+                GUARD.contains(&format!("\"{}\"", crate::pi::thinking(*level))),
+                "the guard omitted {level}"
+            );
+        }
     }
 }

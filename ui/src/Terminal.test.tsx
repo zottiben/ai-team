@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 
 import { TerminalPane } from "./Terminal";
@@ -10,7 +10,7 @@ afterEach(() => {
 
 type Call = { url: string; method: string; body: unknown };
 
-function stub(sessions: unknown[], chunks: unknown[]) {
+function stub(sessions: unknown[], chunks: unknown[], closeError?: string) {
   const calls: Call[] = [];
   let next = 0;
   vi.stubGlobal(
@@ -32,6 +32,7 @@ function stub(sessions: unknown[], chunks: unknown[]) {
         const chunk = chunks[Math.min(next++, chunks.length - 1)];
         return Promise.resolve({ ok: true, json: async () => chunk });
       }
+      if (url.endsWith("/close") && closeError) return Promise.resolve({ ok: false, status: 400, json: async () => ({ error: closeError }) });
       return Promise.resolve({ ok: true, json: async () => ({}) });
     }),
   );
@@ -61,6 +62,18 @@ it("names its session under the heading, as other pages name their checkout", as
   const session = await screen.findByText("session 7");
   expect(session.parentElement).toBe(screen.getByRole("heading", { name: "Terminal" }).parentElement);
   expect(session.parentElement?.classList.contains("main__header")).toBe(false);
+});
+
+it("keeps the terminal mounted and explains a close that has not drained", async () => {
+  const calls = stub([{ id: 7, worktree: "/w", done: false, status: null }], [
+    { text: "", cursor: 0, done: false, status: null },
+  ], "terminal has not drained; protection retained");
+  render(<TerminalPane project="widget" node={null} />);
+  await screen.findByText("session 7");
+  fireEvent.click(screen.getByRole("button", { name: "Restart" }));
+  await screen.findByText(/protection retained/);
+  expect(screen.getByText("session 7")).toBeTruthy();
+  expect(calls.some(call => call.url === "/terminals" && call.method === "POST")).toBe(false);
 });
 
 it("opens one when there is none to rejoin", async () => {

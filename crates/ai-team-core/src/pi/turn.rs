@@ -62,6 +62,9 @@ where
     // the prompt with none of the conversation that produced the work being repaired.
     let mut turn = turn.clone();
     let node = store.node_run(node_run_id)?;
+    if let Some(reasoning) = node.reasoning {
+        turn.thinking = Some(super::thinking(reasoning).into());
+    }
     let resuming = node
         .session_retired_at
         .is_none()
@@ -75,7 +78,7 @@ where
         turn.session_id = None;
     }
 
-    store.prepare_chat_followup_prompt(node_run_id, &turn.full_prompt())?;
+    store.prepare_chat_followup_prompt(node_run_id, &turn.echoed_prompt())?;
     let mut process = PiProcess::start(&turn)?;
     if let Err(error) = store.attach_pi_process(node_run_id, process.pid()) {
         // The process already exists, even though its identity could not be persisted.

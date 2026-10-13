@@ -3,6 +3,7 @@ import {
   post,
   request,
   type NodeRun,
+  type Reasoning,
   type Run,
   type RunEvent,
   type Usage,
@@ -19,7 +20,7 @@ export type Chat = {
   workspace_epoch?: number;
   provider: string;
   model: string;
-  reasoning: "none" | "low" | "medium" | "high";
+  reasoning: Reasoning;
   active_node_id: number | null;
   live_text: string;
   stop_requested: boolean;
@@ -29,13 +30,18 @@ export type Chat = {
   updated_at: string;
 };
 
+export type ImageInput = { name: string; media_type: string; data: string };
+export type ImageInfo = { index: number; name: string; media_type: string; bytes: number };
+
 export type ChatTurn = {
+  images?: ImageInfo[];
   team: TeamRun | null;
   members: TeamMember[];
   run: Run;
   node: NodeRun & { usage: Usage; started_at: string | null };
 };
 export type ChatFollowup = {
+  image_count?: number;
   id: number;
   chat_id: number;
   after_node_id: number;
@@ -86,6 +92,10 @@ export function createChat(input: {
   return post("/chats", input);
 }
 
+export function setChatThinking(id: number, reasoning: Chat["reasoning"], expectRevision: number): Promise<Chat> {
+  return post(`/chats/${id}/thinking`, { reasoning, expect_revision: expectRevision });
+}
+
 export function chatEvents(id: number, after = 0): Promise<RunEvent[]> {
   return api(`/chats/${id}/events?after=${after}`);
 }
@@ -95,12 +105,14 @@ export function sendChat(
   message: string,
   requestId: string,
   workspaceEpoch = 0,
+  images?: ImageInput[],
+  expectedReasoning?: Chat["reasoning"],
 ): Promise<{ run_id: number; node_id: number; started: boolean }> {
-  return post(`/chats/${id}/messages`, { message, request_id: requestId, workspace_epoch: workspaceEpoch });
+  return post(`/chats/${id}/messages`, { message, request_id: requestId, workspace_epoch: workspaceEpoch, ...(images?.length ? { images } : {}), ...(expectedReasoning ? { expected_reasoning: expectedReasoning } : {}) });
 }
 
-export function queueChatFollowup(id: number, nodeId: number, message: string, requestId: string, kind: ChatFollowup["kind"]): Promise<ChatFollowup> {
-  return post(`/chats/${id}/followups`, { node_id: nodeId, message, request_id: requestId, kind });
+export function queueChatFollowup(id: number, nodeId: number, message: string, requestId: string, kind: ChatFollowup["kind"], images?: ImageInput[]): Promise<ChatFollowup> {
+  return post(`/chats/${id}/followups`, { node_id: nodeId, message, request_id: requestId, kind, ...(images?.length ? { images } : {}) });
 }
 export function cancelChatFollowup(id: number, followupId: number): Promise<unknown> {
   return post(`/chats/${id}/followups/cancel`, { followup_id: followupId });

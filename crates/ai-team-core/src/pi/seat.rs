@@ -43,12 +43,19 @@ pub fn provider_name(provider: Provider) -> &'static str {
 }
 
 /// A seat's effort, in Pi's vocabulary.
+///
+/// One word differs from the column: the level stored as `none` is the one Pi calls
+/// `off`. Everything else is spelled the same on both sides, and this stays exhaustive
+/// so a level added to [`Reasoning`] cannot reach Pi as somebody else's effort.
 pub fn thinking(reasoning: Reasoning) -> &'static str {
     match reasoning {
         Reasoning::None => "off",
+        Reasoning::Minimal => "minimal",
         Reasoning::Low => "low",
         Reasoning::Medium => "medium",
         Reasoning::High => "high",
+        Reasoning::XHigh => "xhigh",
+        Reasoning::Max => "max",
     }
 }
 
@@ -360,8 +367,7 @@ pub(super) fn merge_safe_project_servers(
                     command.eq_ignore_ascii_case("aip")
                         || command.eq_ignore_ascii_case("ai-planner")
                 });
-            let browser =
-                exclude_browsers && matches!(name.as_str(), "playwright" | "chrome-devtools");
+            let browser = exclude_browsers && crate::mcp::is_browser_value(name, &server);
             if standalone || browser {
                 target.remove(name);
             } else {
@@ -494,23 +500,39 @@ pub(super) fn defer_scoped_mcp(config: &mut Value) -> Result<()> {
 /// `publication` is on only when the person's own message in this chat explicitly asked
 /// for a push. It adds one scoped tool and the instruction that goes with it; without it
 /// the seat has neither, so there is nothing for an agent to reach for unasked.
+/// The MCP a conversation's seat is given: the read-only context sources it is scoped to,
+/// and the operator's own configured servers.
+///
+/// One parameter rather than two, because they are the same decision - what this turn can
+/// reach that is not a built-in tool - and they are composed into one file together.
+#[derive(Clone, Copy)]
+pub(crate) struct ChatContext<'a> {
+    pub(crate) sources: &'a [ContextSource],
+    pub(crate) servers: &'a crate::mcp::Composed,
+}
+
 pub(crate) fn conversation_turn(
     chat: &crate::Chat,
     node: &crate::NodeRun,
     support: &Path,
-    sources: &[ContextSource],
+    context: ChatContext<'_>,
     prompt: String,
     database: &Path,
     publication: bool,
 ) -> Result<PiTurn> {
+    let ChatContext { sources, servers } = context;
     let worktree = Path::new(&chat.workspace_path);
     let mut turn = PiTurn::new(worktree, prompt);
     turn.provider = Some(provider_name(node.provider).into());
     turn.model = Some(node.model.clone());
-    turn.thinking = Some(thinking(chat.reasoning).into());
+    turn.thinking = Some(thinking(node.reasoning.unwrap_or(chat.reasoning)).into());
     turn.guard = Some(super::guard::install_at(support)?);
     let mut config = mcp_config(sources, None).unwrap_or_else(|| json!({"mcpServers": {}}));
     merge_safe_project_servers(worktree, &mut config, false)?;
+    // After the checkout's own servers and before ai-team's generated ones: an app-owned
+    // row is the operator's deliberate choice, and the reserved names it cannot take are
+    // what the generated definitions keep.
+    crate::mcp::apply(&mut config, servers)?;
     let mut tools: Vec<&str> = crate::planning::PlanAccess::Planner.tools().to_vec();
     if publication {
         tools.push(crate::chat_push::PUBLICATION_TOOL);
@@ -524,14 +546,12 @@ pub(crate) fn conversation_turn(
     });
     defer_scoped_mcp(&mut config)?;
     let path = support.join("mcp-assistant.json");
-    std::fs::write(&path, serde_json::to_string_pretty(&config)?).map_err(|error| {
-        Error::UnusablePath {
-            path: path.clone(),
-            reason: error.to_string(),
-        }
-    })?;
+    crate::mcp::write_private(&path, &serde_json::to_string_pretty(&config)?)?;
     turn.mcp_config = Some(path);
     turn.environment = context_environment(sources);
+    // The values the placeholders above resolve from. In the child's environment rather
+    // than the file, so a credential does not outlive the turn beside the guard.
+    turn.environment.extend(servers.environment.iter().cloned());
     turn.environment
         .push(("AI_TEAM_PLAN".into(), "embedded".into()));
     turn.environment
@@ -558,6 +578,28 @@ mod tests {
     use super::*;
     use crate::model::NewProject;
     use crate::store::Store;
+
+    #[test]
+    fn every_stored_thinking_level_maps_to_a_word_pi_accepts() {
+        // Pi's vocabulary, which differs from the column's in exactly one place: the
+        // level this schema stores as `none` is the one Pi calls `off`.
+        assert_eq!(
+            Reasoning::ALL
+                .iter()
+                .map(|level| thinking(*level))
+                .collect::<Vec<_>>(),
+            ["off", "minimal", "low", "medium", "high", "xhigh", "max"]
+        );
+        // A level that silently became another level is a seat thinking less than the
+        // person asked for, so the mapping has to stay injective.
+        let mut mapped = Reasoning::ALL
+            .iter()
+            .map(|l| thinking(*l))
+            .collect::<Vec<_>>();
+        mapped.sort_unstable();
+        mapped.dedup();
+        assert_eq!(mapped.len(), Reasoning::ALL.len());
+    }
 
     fn team_of() -> (crate::model::Team, Vec<Agent>) {
         let mut store = Store::memory().unwrap();
@@ -1173,6 +1215,143 @@ mod tests {
         let planner = serde_json::to_string(&config["mcpServers"]["ai-planner"]).unwrap();
         assert!(!planner.contains("add_slice"), "{planner}");
         assert!(planner.contains("write_handoff"), "{planner}");
+    }
+
+    /// A chat, its first turn's node, and a store to read them back from.
+    fn chat_fixture() -> (tempfile::TempDir, Store, crate::Chat, crate::NodeRun) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::init(&dir.path().join("team.db")).unwrap();
+        let project = store
+            .create_project(NewProject {
+                name: "Widget".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        let chat = store
+            .create_chat(crate::NewChat {
+                project_id: project.id,
+                workspace: dir.path().into(),
+                provider: Provider::Local,
+                model: "fixture".into(),
+                reasoning: crate::Reasoning::High,
+            })
+            .unwrap();
+        let submission = store
+            .begin_chat_turn(
+                chat.id,
+                "hello",
+                "hello",
+                &crate::ModelRegistry::local_only(),
+            )
+            .unwrap();
+        let node = store.node_run(submission.node_id).unwrap();
+        (dir, store, chat, node)
+    }
+
+    #[test]
+    fn a_solo_chat_is_given_the_app_owned_servers_and_still_inherits_nothing_global() {
+        // The operator's global Pi registrations are deliberately not inherited - a chat
+        // runs exclusive so a checkout cannot replace the generated allow-lists. These
+        // rows are how a server gets back in, and they are the only way it does.
+        let (dir, mut store, chat, node) = chat_fixture();
+        store
+            .add_mcp_server(crate::NewMcpServer {
+                project_id: None,
+                name: "chrome-devtools".into(),
+                enabled: true,
+                transport: crate::McpTransport::Stdio,
+                command: Some("npx".into()),
+                args: vec!["chrome-devtools-mcp@latest".into()],
+                url: None,
+                env: [("DEVTOOLS_KEY".to_string(), "secret-value".to_string())]
+                    .into_iter()
+                    .collect(),
+                headers: std::collections::BTreeMap::new(),
+                include_tools: None,
+            })
+            .unwrap();
+        let support = dir.path().join("support");
+        let servers = crate::mcp::compose(&store, chat.project_id, false).unwrap();
+
+        let turn = conversation_turn(
+            &chat,
+            &node,
+            &support,
+            ChatContext {
+                sources: &[],
+                servers: &servers,
+            },
+            "go".into(),
+            store.path(),
+            false,
+        )
+        .unwrap();
+
+        let path = turn.mcp_config.expect("a generated config");
+        let body = std::fs::read_to_string(&path).unwrap();
+        let config: Value = serde_json::from_str(&body).unwrap();
+        assert!(
+            config["mcpServers"]["chrome-devtools"].is_object(),
+            "{body}"
+        );
+        // The generated planning server is still ai-team's, beside it rather than under it.
+        assert!(
+            config["mcpServers"]["ai-team-planner"].is_object(),
+            "{body}"
+        );
+        // A stdio server's env is interpolated by the adapter the same way a header is,
+        // so a credential never has to be written into the file to reach the server.
+        assert!(!body.contains("secret-value"), "{body}");
+        assert!(turn
+            .environment
+            .iter()
+            .any(|(_, value)| value == "secret-value"));
+        // Exclusive is what keeps the global registrations out, and it stays.
+        assert!(turn
+            .environment
+            .contains(&("PI_MCP_CONFIG_MODE".into(), "exclusive".into())));
+    }
+
+    #[test]
+    fn an_app_owned_server_cannot_displace_the_generated_planning_or_context_definitions() {
+        // The store refuses the reserved names, so this asserts the end of that: the
+        // definitions a seat is held to are still ai-team's after composition.
+        let (dir, mut store, chat, node) = chat_fixture();
+        assert!(store
+            .add_mcp_server(crate::NewMcpServer {
+                project_id: None,
+                name: "ai-team-planner".into(),
+                enabled: true,
+                transport: crate::McpTransport::Stdio,
+                command: Some("somewhere-else".into()),
+                args: Vec::new(),
+                url: None,
+                env: std::collections::BTreeMap::new(),
+                headers: std::collections::BTreeMap::new(),
+                include_tools: None,
+            })
+            .is_err());
+        let servers = crate::mcp::compose(&store, chat.project_id, false).unwrap();
+        let turn = conversation_turn(
+            &chat,
+            &node,
+            &dir.path().join("support"),
+            ChatContext {
+                sources: &[],
+                servers: &servers,
+            },
+            "go".into(),
+            store.path(),
+            false,
+        )
+        .unwrap();
+        let config: Value = serde_json::from_str(
+            &std::fs::read_to_string(turn.mcp_config.expect("a config")).unwrap(),
+        )
+        .unwrap();
+        let planner = &config["mcpServers"]["ai-team-planner"];
+        assert_ne!(planner["command"], "somewhere-else");
+        assert!(planner["includeTools"].is_array());
     }
 
     #[test]

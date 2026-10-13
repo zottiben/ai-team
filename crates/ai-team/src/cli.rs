@@ -361,7 +361,7 @@ pub(crate) struct AgentAddArgs {
     #[arg(long)]
     pub(crate) model: Option<String>,
 
-    /// One of: none, low, medium, high.
+    /// One of: none (off), minimal (min), low, medium, high, xhigh, max.
     #[arg(long, value_parser = parse_reasoning)]
     pub(crate) reasoning: Option<Reasoning>,
 

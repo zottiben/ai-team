@@ -1,4 +1,5 @@
 import {
+  Fragment,
   lazy,
   Suspense,
   useCallback,
@@ -13,9 +14,11 @@ import { CHAT_PANELS, ChatContext, type ChatPanel } from "./ChatContext";
 import { TEAM_PHASES } from "./ChatTeam";
 import { ChatWorkspace } from "./ChatWorkspace";
 import { ChatOutcome, chatOutcome } from "./ChatOutcome";
+import { CancelledInstructions, FollowupReceipt, QueuedInstructions, followupEvent, useFollowupArrivals } from "./ChatFollowups";
 import logo from "../../crates/ai-team-desktop/icons/mark.svg";
 import { setChatMode } from "./team-api";
-import { models, type ModelChoice, type Project, type RunEvent } from "./api";
+import { models, type ModelChoice, type Project, type Reasoning, type RunEvent } from "./api";
+import { SelectChevron } from "./SelectChevron";
 import {
   archiveChat,
   restoreChat,
@@ -27,14 +30,19 @@ import {
   sendChat,
   stopChat,
   queueChatFollowup,
-  cancelChatFollowup,
-  sendChatFollowup,
+  setChatThinking,
   type ChatDetail,
   type ChatFollowup,
+  type ImageInput,
 } from "./chat-api";
+
+const ImageDrafts = lazy(() => import("./ChatImages").then(m => ({ default: m.ImageDrafts })));
+const SentImages = lazy(() => import("./ChatImages").then(m => ({ default: m.SentImages })));
 
 const Editor = lazy(() => import("./Editor").then((module) => ({ default: module.Editor })));
 const Terminal = lazy(() => import("./Terminal").then((module) => ({ default: module.TerminalPane })));
+// Lazy so the capability lookup and the seven labels stay out of the eager bundle.
+const ThinkingSelect = lazy(() => import("./ThinkingSelect").then(m => ({ default: m.ThinkingSelect })));
 
 const LABELS = {
   empty: "Ready",
@@ -78,9 +86,15 @@ export function ChatView({
   const [workspacePending, setWorkspacePending] = useState(false);
   const [catalogue, setCatalogue] = useState<ModelChoice[]>([]);
   const [modelKey, setModelKey] = useState("");
+  const modelPicked = useRef(false);
   const [newMode, setNewMode] = useState<"single" | "team">("single");
+  const [newReasoning, setNewReasoning] = useState<ChatDetail["reasoning"]>("high");
   const [modelError, setModelError] = useState<string | null>(null);
   const [message, setMessage] = useState("");
+  const [images, setImages] = useState<ImageInput[]>([]);
+  const [readingImages, setReadingImages] = useState(false);
+  const reading = useRef(false);
+  const imagePicker = useRef<HTMLInputElement | null>(null);
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState(false);
@@ -92,8 +106,8 @@ export function ChatView({
   const pending = useRef(false);
   const cursor = useRef(0);
   const created = useRef<number | null>(null);
-  const submission = useRef<{ body: string; key: string; workspaceEpoch: number } | null>(null);
-  const queuedSubmission = useRef<{ body: string; key: string; node: number; kind: ChatFollowup["kind"] } | null>(null);
+  const submission = useRef<{ body: string; images: ImageInput[]; key: string; workspaceEpoch: number; reasoning?: ChatDetail["reasoning"] } | null>(null);
+  const queuedSubmission = useRef<{ body: string; images: ImageInput[]; key: string; node: number; kind: ChatFollowup["kind"] } | null>(null);
   const feed = useRef<HTMLDivElement | null>(null);
   const composer = useRef<HTMLTextAreaElement | null>(null);
   const openPanel = (next: ChatPanel) => {
@@ -135,7 +149,7 @@ export function ChatView({
         if (!alive.current) return;
         cursor.current = after;
         setEvents((previous) => [...previous, ...added]);
-        setDetail(found);
+        setDetail(previous => previous && previous.rev > found.rev ? previous : found);
       } while (pending.current && alive.current);
     } catch (error: unknown) {
       if (alive.current)
@@ -156,6 +170,10 @@ export function ChatView({
         if (!current) return;
         setCatalogue(found.models);
         setModelError(found.error);
+        if (!modelPicked.current && found.models[0]) {
+          modelPicked.current = true;
+          if (!found.models[0].thinking) setNewReasoning("none");
+        }
         setModelKey(
           (previous) =>
             previous ||
@@ -180,9 +198,21 @@ export function ChatView({
   const activeTeam = detail?.turns.find((turn) => turn.team?.control_node_id === detail.active_node_id)?.team;
   const mode = detail?.mode ?? newMode;
   const queued = detail?.followups?.find((item) => item.state === "queued");
+  const arriving = useFollowupArrivals(detail?.followups);
+  const messageEvents = [...events, ...(detail?.followups ?? []).filter(item => item.node_id !== null && (item.state === "starting" || item.state === "delivered") && !events.some(event => event.actor === "human" && event.node_run_id === item.node_id)).map(followupEvent)];
+  const activeTurn = detail?.turns.find(turn => turn.node.id === detail.active_node_id);
+  const thinkingValue: Reasoning | "" = active ? activeTurn?.node.reasoning ?? "" : detail?.reasoning ?? newReasoning;
+  // Which model's limits apply. An existing chat's are its own; a new one's come from the
+  // picker, split on the first `/` because a model id may contain more of them.
+  const thinkingModel = detail
+    ? { provider: detail.provider, model: detail.model }
+    : modelKey
+      ? { provider: modelKey.slice(0, modelKey.indexOf("/")), model: modelKey.slice(modelKey.indexOf("/") + 1) }
+      : null;
   const canQueue = detail?.state === "running" && !activeTeam && mode === "single" && !detail.stop_requested && !queued && !workspacePending;
   const soloActive = active && !activeTeam && mode === "single";
-  const showStop = soloActive && (!message.trim() || !running);
+  const hasDraft = !!message.trim() || images.length > 0;
+  const showStop = soloActive && (!hasDraft || !running);
   const stopping = !!detail?.stop_requested && detail.state !== "interrupted";
   const actionLabel = showStop ? stopping ? "Stopping…" : "Stop turn" : soloActive ? "Queue follow-up" : "Send message";
   const started = latest?.node.started_at;
@@ -206,10 +236,27 @@ export function ChatView({
   useLayoutEffect(() => {
     if (following && feed.current)
       feed.current.scrollTop = feed.current.scrollHeight;
-  }, [following, events.length, detail?.live_text, tool]);
+  }, [following, events.length, detail?.live_text, detail?.followups, tool]);
+
+  const attach = async (files: File[]) => {
+    if (!files.length || busy || reading.current || detail?.archived) return;
+    reading.current = true;
+    setReadingImages(true);
+    setProblem(null);
+    try {
+      const { readImages } = await import("./ChatImages");
+      const added = await readImages(files, images.length);
+      if (alive.current) setImages(previous => [...previous, ...added]);
+    } catch (error: unknown) {
+      if (alive.current) setProblem(error instanceof Error ? error.message : String(error));
+    } finally {
+      reading.current = false;
+      if (alive.current) setReadingImages(false);
+    }
+  };
 
   const send = async () => {
-    if (busy || active || queued || workspacePending || !message.trim() || (id !== null && detail === null))
+    if (busy || readingImages || active || queued || workspacePending || !hasDraft || (id !== null && detail === null))
       return;
     const chosen = catalogue.find(
       (choice) => `${choice.provider}/${choice.model}` === modelKey,
@@ -217,9 +264,9 @@ export function ChatView({
     if (id === null && !chosen) return;
     setBusy(true);
     setProblem(null);
-    const body = message.trim();
-    if (submission.current?.body !== body)
-      submission.current = { body, key: crypto.randomUUID(), workspaceEpoch: detail?.workspace_epoch ?? 0 };
+    const body = message.trim() || "Please inspect the attached images.";
+    if (submission.current?.body !== body || submission.current.images !== images)
+      submission.current = { body, images, key: crypto.randomUUID(), workspaceEpoch: detail?.workspace_epoch ?? 0, reasoning: mode === "single" ? detail?.reasoning ?? newReasoning : undefined };
     try {
       let target = id ?? created.current;
       if (target === null && chosen) {
@@ -228,16 +275,17 @@ export function ChatView({
           ...(newWorkspace ? { workspace: newWorkspace } : {}),
           provider: chosen.provider,
           model: chosen.model,
-          reasoning: "high",
+          reasoning: newReasoning,
           ...(newMode === "team" ? { mode: newMode } : {}),
         });
         target = draft.id;
         created.current = target;
       }
       if (target === null) return;
-      await sendChat(target, body, submission.current.key, submission.current.workspaceEpoch);
+      await sendChat(target, body, submission.current.key, submission.current.workspaceEpoch, images.length ? images : undefined, submission.current.reasoning);
       if (!alive.current) return;
       setMessage("");
+      setImages([]);
       submission.current = null;
       setFollowing(true);
       onChanged();
@@ -252,17 +300,19 @@ export function ChatView({
   };
 
   const queue = async (kind: ChatFollowup["kind"]) => {
-    if (busy || !canQueue || detail?.active_node_id == null || !message.trim()) return;
-    const body = message.trim();
-    if (queuedSubmission.current?.body !== body || queuedSubmission.current.kind !== kind)
-      queuedSubmission.current = { body, key: crypto.randomUUID(), node: detail.active_node_id, kind };
+    if (busy || readingImages || !canQueue || detail?.active_node_id == null || !hasDraft) return;
+    const body = message.trim() || "Please inspect the attached images.";
+    if (queuedSubmission.current?.body !== body || queuedSubmission.current.kind !== kind || queuedSubmission.current.images !== images)
+      queuedSubmission.current = { body, images, key: crypto.randomUUID(), node: detail.active_node_id, kind };
     const request = queuedSubmission.current;
     setBusy(true);
     setProblem(null);
     try {
-      await queueChatFollowup(detail.id, request.node, request.body, request.key, request.kind);
+      if (images.length) await queueChatFollowup(detail.id, request.node, request.body, request.key, request.kind, images);
+      else await queueChatFollowup(detail.id, request.node, request.body, request.key, request.kind);
       if (!alive.current) return;
       setMessage("");
+      setImages([]);
       queuedSubmission.current = null;
       onChanged();
       await load();
@@ -312,6 +362,8 @@ export function ChatView({
     <main
       className="chat-workspace"
       aria-label={`${project.name} conversation`}
+      onDragOver={event => { if (event.dataTransfer.types.includes("Files")) event.preventDefault(); }}
+      onDrop={event => { if (event.dataTransfer.types.includes("Files")) { event.preventDefault(); void attach(Array.from(event.dataTransfer.files)); } }}
     >
       <header className="chat-header">
         <div className="chat-heading">
@@ -444,7 +496,7 @@ export function ChatView({
                 );
             }}
           >
-            {events.length === 0 ? (
+            {messageEvents.length === 0 ? (
               <div className="chat-empty">
                 <img className="chat-empty-mark" src={logo} alt="" width="64" height="64" />
                 <h2>What should we build in {project.name}?</h2>
@@ -454,11 +506,17 @@ export function ChatView({
               </div>
             ) : (
               <div className="chat-messages" aria-label="Conversation messages">
-                {events.map((event) => (
-                  <Message key={event.id} event={event} result={event.id === outcome?.response} />
-                ))}
+                {messageEvents.map(event => {
+                  const turn = detail?.turns.find(turn => turn.node.id === event.node_run_id);
+                  const followup = event.actor === "human" ? detail?.followups?.find(item => item.node_id === event.node_run_id && (item.state === "starting" || item.state === "delivered")) : undefined;
+                  return <Fragment key={followup ? `followup:${followup.id}` : event.id}>
+                    <Message event={event} result={event.id === outcome?.response} followup={followup} status={turn?.node.status} arriving={arriving} />
+                    {detail && turn && event.actor === "human" && !!turn.images?.length && <Suspense fallback={<p>Loading images…</p>}><SentImages chat={detail.id} node={turn.node.id} images={turn.images}/></Suspense>}
+                  </Fragment>;
+                })}
               </div>
             )}
+            <CancelledInstructions items={detail?.followups}/>
             {active && detail?.live_text && (
               <article
                 className="chat-message"
@@ -502,17 +560,7 @@ export function ChatView({
         if (action === "reply") composer.current?.focus();
         else openPanel(action === "review" ? "review" : "work");
       }} />}
-      {!!detail?.followups?.length && <section className="chat-followups chat-notice" aria-label="Queued instruction receipts">
-        {detail.followups.slice(-10).map((item) => <div key={item.id} className="chat-followup">
-          <p>{item.body}</p>
-          <small className="faint">{item.state === "queued" ? "Queued · not delivered" : item.state === "starting" ? "Delivery unconfirmed · inspect the turn; not automatically retried" : item.state === "delivered" ? "Delivered to Pi · prompt acknowledged, not a completion verdict" : "Cancelled · not delivered"} · after turn #{item.after_node_id}{item.node_id !== null ? ` · follow-up #${item.node_id}` : ""}</small>
-          {item.state === "queued" && <div className="chat-controls">
-            {!active && <button className="button" disabled={busy || detail.archived} onClick={() => void command(() => sendChatFollowup(detail.id, item.id))}>Send queued message</button>}
-            <button className="button" disabled={busy} onClick={() => void command(() => cancelChatFollowup(detail.id, item.id))}>Cancel queued message</button>
-          </div>}
-        </div>)}
-        {queued && !active && <p className="faint">This instruction is held. Send it explicitly or cancel it; restarting the app does not send it.</p>}
-      </section>}
+      <QueuedInstructions detail={detail} active={active} busy={busy} command={command}/>
       <form
         className="chat-composer"
         onSubmit={(event) => {
@@ -537,8 +585,11 @@ export function ChatView({
           <SelectChevron />
           </span>
         </div>
+        {!!images.length && <Suspense fallback={<p>Loading image previews…</p>}><ImageDrafts images={images} disabled={busy || readingImages} onRemove={index => setImages(previous => previous.filter((_, i) => i !== index))}/></Suspense>}
+        {readingImages && <p role="status">Reading images…</p>}
         <textarea
           ref={composer}
+          onPaste={event => { const files = Array.from(event.clipboardData.files); if (files.length) { event.preventDefault(); void attach(files); } }}
           aria-label="Message"
           placeholder={
             active
@@ -561,6 +612,8 @@ export function ChatView({
           }}
         />
         <div className="chat-composer-bottom">
+          <input ref={imagePicker} type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden aria-label="Choose images" onChange={event => { const files = Array.from(event.target.files ?? []); event.target.value = ""; void attach(files); }}/>
+          <button type="button" className="button" disabled={busy || readingImages || detail?.archived} onClick={() => imagePicker.current?.click()} title="Drop or paste images, or choose files. Up to 4 images, 5 MiB each.">Attach image</button>
           <span
             className="faint"
             title="Tools are guarded to the checkout; this is not an OS sandbox. Publishing is controlled separately."
@@ -572,7 +625,11 @@ export function ChatView({
             <select
               aria-label="Model"
               value={modelKey}
-              onChange={(event) => setModelKey(event.target.value)}
+              onChange={(event) => {
+                modelPicked.current = true;
+                setModelKey(event.target.value);
+                if (catalogue.find(choice => `${choice.provider}/${choice.model}` === event.target.value)?.thinking === false) setNewReasoning("none");
+              }}
               disabled={busy || created.current !== null}
             >
               {!catalogue.length && (
@@ -592,7 +649,23 @@ export function ChatView({
           ) : (
             <span className="chat-model-name faint" title={detail?.model}>{detail?.model}</span>
           )}
-          {soloActive && running && !!message.trim() && <button type="button" className="button" disabled={busy || !canQueue} onClick={() => void queue("steer")}>Stop and steer</button>}
+          {mode === "single" ? <Suspense fallback={<span className="faint">Thinking…</span>}>
+            <ThinkingSelect
+              provider={thinkingModel?.provider ?? null}
+              model={thinkingModel?.model ?? null}
+              value={thinkingValue}
+              title="Requested thinking passed to Pi. Provider/model support can constrain it. Change while idle for the next turn; running and queued work keep their settings."
+              disabled={busy || active || !!queued || !!detail?.archived || !!submission.current || (id !== null && !detail) || (id === null && (created.current !== null || !catalogue.find(choice => `${choice.provider}/${choice.model}` === modelKey)?.thinking))}
+              onChange={value => {
+                if (!detail) setNewReasoning(value);
+                else void command(async () => {
+                  const changed = await setChatThinking(detail.id,value,detail.rev);
+                  if (alive.current) setDetail(previous => previous && previous.rev <= changed.rev ? { ...previous, ...changed } : previous);
+                });
+              }}
+            />
+          </Suspense> : <span className="faint">Team thinking · per-seat settings</span>}
+          {soloActive && running && hasDraft && <button type="button" className="button" disabled={busy || !canQueue} onClick={() => void queue("steer")}>Stop and steer</button>}
           <button
             type={showStop ? "button" : "submit"}
             className="chat-send"
@@ -604,12 +677,12 @@ export function ChatView({
                 void command(() => stopChat(detail.id, detail.active_node_id!));
             }}
             disabled={showStop ? busy || stopping || detail?.orphan_running :
-              busy ||
+              busy || readingImages ||
               (active && !canQueue) ||
               !!queued ||
               workspacePending ||
               detail?.archived ||
-              !message.trim() ||
+              !hasDraft ||
               (id === null ? !modelKey : detail === null)
             }
           >
@@ -620,8 +693,9 @@ export function ChatView({
         </div>
         {(queuedSubmission.current || submission.current) && problem && <small className="faint">
           {queuedSubmission.current ? `This draft still targets turn #${queuedSubmission.current.node}.` : "This message still targets the checkout selected for its original send."} Clearing it does not cancel work already accepted by the server; inspect this chat's history and receipts first.
-          <button className="button" type="button" disabled={busy} onClick={() => { queuedSubmission.current = null; submission.current = null; setMessage(""); setProblem(null); }}>Clear this draft</button>
+          <button className="button" type="button" disabled={busy} onClick={() => { queuedSubmission.current = null; submission.current = null; setMessage(""); setImages([]); setProblem(null); }}>Clear this draft</button>
         </small>}
+        {soloActive && activeTurn?.node.reasoning !== detail?.reasoning && <small className="faint">Queued follow-ups use this chat's {detail?.reasoning === "none" ? "off" : detail?.reasoning} thinking preference.</small>}
         {mode === "team" && !active && <small className="faint">The configured project team plans first. Review and explicitly approve before building. Your solo model and history are kept.</small>}
         {active && (
           <small className="faint">
@@ -652,11 +726,7 @@ export function ChatView({
   );
 }
 
-function SelectChevron() {
-  return <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m7 10 5 5 5-5" /></svg>;
-}
-
-function Message({ event, result }: { event: RunEvent; result: boolean }) {
+function Message({ event, result, followup, status, arriving }: { event: RunEvent; result: boolean; followup?: ChatFollowup; status?: string; arriving: ReadonlySet<number> }) {
   return (
     <>
       {event.thinking.length > 0 && (
@@ -669,10 +739,11 @@ function Message({ event, result }: { event: RunEvent; result: boolean }) {
       )}
       {event.message !== null ? (
         <article
-          className={`chat-message${event.actor === "human" ? " chat-message--human" : ""}${result ? " chat-message--result" : ""}`}
+          className={`chat-message${event.actor === "human" ? " chat-message--human" : ""}${result ? " chat-message--result" : ""}${followup && arriving.has(followup.id) ? " chat-message--arriving" : ""}`}
           aria-label={event.actor === "human" ? "You" : "Assistant"}
         >
           <BoardMarkdown source={event.message} />
+          {followup && <FollowupReceipt item={followup} status={status}/>}
         </article>
       ) : (
         ["tool_call", "tool_result", "failed", "note", "done"].includes(

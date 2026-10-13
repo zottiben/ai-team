@@ -10,14 +10,20 @@ use std::net::{SocketAddr, TcpStream};
 
 use ai_team_ui::{ServeOptions, Server, TOKEN_HEADER, TOKEN_QUERY};
 
+#[path = "server/chat_images.rs"]
+mod chat_images;
 #[path = "server/chat_overview.rs"]
 mod chat_overview;
 #[path = "server/chat_recovery.rs"]
 mod chat_recovery;
 #[path = "server/chat_teams.rs"]
 mod chat_teams;
+#[path = "server/chat_thinking.rs"]
+mod chat_thinking;
 #[path = "server/chat_today.rs"]
 mod chat_today;
+#[path = "server/mcp.rs"]
+mod mcp;
 #[path = "server/plan_library.rs"]
 mod plan_library;
 #[path = "server/toolbox.rs"]

@@ -56,6 +56,7 @@ pub struct NewChat {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ChatTurn {
+    pub images: Vec<crate::chat_images::ImageInfo>,
     pub run: Run,
     pub node: NodeRun,
     pub team: Option<ChatTeamRun>,
@@ -79,6 +80,7 @@ pub enum FollowupKind {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ChatFollowup {
+    pub image_count: usize,
     pub id: i64,
     pub chat_id: i64,
     pub after_node_id: i64,
@@ -263,15 +265,22 @@ async fn drive(store: &mut Store, chat_id: i64, node_id: i64, recovering: bool) 
         }
     }
     let publication = store.chat_push_grant_for_node(chat_id, node_id)?.is_some();
-    let turn = crate::pi::conversation_turn(
+    // A solo chat builds, so it keeps a browser-driving server; only a planning seat is
+    // refused one, and this is not one.
+    let servers = crate::mcp::compose(store, project.id, false)?;
+    let mut turn = crate::pi::conversation_turn(
         &chat,
         &node,
         &support,
-        &registry.context_sources(),
+        crate::pi::ChatContext {
+            sources: &registry.context_sources(),
+            servers: &servers,
+        },
         prompt,
         store.path(),
         publication,
     )?;
+    crate::chat_images::attach(store, chat_id, &node, &registry, &mut turn)?;
     let stop = stop_reason(Store::open(store.path())?, chat_id, node_id);
     let (_, outcome) = crate::pi::run_until(store, node_id, &turn, |_| {}, stop).await?;
     let status = crate::outcome_status(&outcome);

@@ -1,6 +1,7 @@
 //! The embedded planner's stdio surface. Both binaries host it themselves, so a new
 //! desktop build never shells out to an older installed `ait` (or to standalone aip).
 
+mod response;
 mod tools;
 
 use std::path::PathBuf;
@@ -156,13 +157,40 @@ impl PlannerMcp {
                 store.request_chat_workspace(self.chat, actor, &target)?,
             )?);
         }
+        if name == "list_chat_images" {
+            if !arguments.is_empty() {
+                return Err(ai_team_core::Error::invalid(
+                    "list_chat_images accepts no scope overrides",
+                ));
+            }
+            return Ok(serde_json::to_value(store.chat_turns(self.chat)?.into_iter().filter(|turn| !turn.images.is_empty()).map(|turn| serde_json::json!({"node":turn.node.id,"at":turn.run.created_at,"caption":turn.run.prompt.chars().take(160).collect::<String>(),"images":turn.images})).collect::<Vec<_>>())?);
+        }
+        if name == "read_chat_image" {
+            #[derive(serde::Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct Image {
+                node: i64,
+                index: usize,
+            }
+            let request: Image = serde_json::from_value(arguments.into())?;
+            return Ok(serde_json::to_value(store.chat_image(
+                self.chat,
+                request.node,
+                request.index,
+            )?)?);
+        }
         if name == "get_plan" {
             if !arguments.is_empty() {
                 return Err(ai_team_core::Error::invalid(
                     "get_plan accepts no scope overrides",
                 ));
             }
-            return Ok(serde_json::to_value(store.chat_plan(self.chat, actor)?)?);
+            return response::snapshot(&store.chat_plan(self.chat, actor)?);
+        }
+        if name == "read_plan" {
+            // Scope overrides are rejected by the request's own unknown fields.
+            let request: response::Page = serde_json::from_value(arguments.into())?;
+            return response::page(&store.chat_plan(self.chat, actor)?, request);
         }
         if arguments.contains_key("action") {
             return Err(ai_team_core::Error::invalid(
@@ -171,9 +199,7 @@ impl PlannerMcp {
         }
         arguments.insert("action".into(), name.into());
         let action: PlanAction = serde_json::from_value(arguments.into())?;
-        Ok(serde_json::to_value(
-            store.change_chat_plan(self.chat, actor, action)?,
-        )?)
+        response::snapshot(&store.change_chat_plan(self.chat, actor, action)?)
     }
 }
 
@@ -181,7 +207,7 @@ impl ServerHandler for PlannerMcp {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("ai-team-planner", env!("CARGO_PKG_VERSION")))
-            .with_instructions("Planning belongs only to the bound ai-team chat. Call get_plan first; each mutation requires its expect_revision and returns the updated snapshot. Human questions must be answered in the chat's Board, never by the agent. If the user asks to use another worktree, call list_worktrees and request_worktree with its exact path, then end this turn. The request needs human approval in chat after this turn settles; do not change directories or continue work in another checkout yourself. Do not invoke standalone aip.")
+            .with_instructions("Planning belongs only to the bound ai-team chat. Call get_plan first; each mutation requires its expect_revision and returns the updated snapshot. A plan too large for one response answers with partial:true instead: it is whole and unchanged, and nothing has been removed from it. That answer still carries the revision every mutation needs, so you can write straight away; to read the plan itself, call read_plan from offset 0 and follow each next_offset once until it is null, then join the pages in order. Human questions must be answered in the chat's Board, never by the agent. If the user asks to use another worktree, call list_worktrees and request_worktree with its exact path, then end this turn. The request needs human approval in chat after this turn settles; do not change directories or continue work in another checkout yourself. Do not invoke standalone aip.")
     }
 
     async fn list_tools(
@@ -205,17 +231,25 @@ impl ServerHandler for PlannerMcp {
         _context: RequestContext<RoleServer>,
     ) -> std::result::Result<CallToolResult, ErrorData> {
         let server = self.clone();
+        let image = request.name == "read_chat_image";
         let result = tokio::task::spawn_blocking(move || {
             server.invoke(&request.name, request.arguments.unwrap_or_default())
         })
         .await;
         let result = match result {
-            Ok(Ok(snapshot)) => serde_json::to_string(&snapshot).map_err(|error| error.to_string()),
+            Ok(Ok(snapshot)) if image => {
+                serde_json::from_value::<ai_team_core::chat_images::ImageInput>(snapshot)
+                    .map(|input| ContentBlock::image(input.data, input.media_type))
+                    .map_err(|error| error.to_string())
+            }
+            Ok(Ok(snapshot)) => serde_json::to_string(&snapshot)
+                .map(ContentBlock::text)
+                .map_err(|error| error.to_string()),
             Ok(Err(error)) => Err(error.to_string()),
             Err(error) => Err(format!("planning request failed: {error}")),
         };
         Ok(match result {
-            Ok(json) => CallToolResult::success(vec![ContentBlock::text(json)]),
+            Ok(content) => CallToolResult::success(vec![content]),
             Err(error) => CallToolResult::error(vec![ContentBlock::text(error)]),
         })
     }

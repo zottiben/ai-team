@@ -61,6 +61,9 @@ pub struct PiTurn {
     pub worktree: PathBuf,
     /// What to do this turn.
     pub prompt: String,
+    /// Private native image inputs, retained until this invocation has drained.
+    image_directory: Option<std::sync::Arc<tempfile::TempDir>>,
+    image_paths: Vec<PathBuf>,
     /// The provider as the registry resolved it, already checked against the machine
     /// profile (D8). `None` leaves Pi on its own default, which only a test wants.
     pub provider: Option<String>,
@@ -109,6 +112,8 @@ impl PiTurn {
         PiTurn {
             worktree: worktree.into(),
             prompt: prompt.into(),
+            image_directory: None,
+            image_paths: Vec::new(),
             provider: None,
             model: None,
             thinking: None,
@@ -120,6 +125,23 @@ impl PiTurn {
             program: None,
             environment: Vec::new(),
         }
+    }
+
+    pub(crate) fn attach_images(
+        &mut self,
+        images: &[crate::chat_images::ImageInput],
+    ) -> Result<()> {
+        self.image_directory = crate::chat_images::materialize(images)?.map(std::sync::Arc::new);
+        self.image_paths = if let Some(directory) = &self.image_directory {
+            let mut paths = std::fs::read_dir(directory.path())?
+                .map(|entry| entry.map(|entry| entry.path()))
+                .collect::<std::io::Result<Vec<_>>>()?;
+            paths.sort();
+            paths
+        } else {
+            Vec::new()
+        };
+        Ok(())
     }
 
     /// The argument list, in one place so it can be asserted on without spawning.
@@ -156,9 +178,27 @@ impl PiTurn {
 
         // `--` ends option parsing, so a prompt that happens to begin with a dash is a
         // prompt rather than an unknown flag.
+        args.extend(
+            self.image_paths
+                .iter()
+                .map(|path| format!("@{}", path.display())),
+        );
         args.push("--".into());
         args.push(self.full_prompt());
         args
+    }
+
+    /// Pi's @image CLI transport prepends these exact references. Resizing or other
+    /// runtime transformations must not be mistaken for an exact delivery receipt.
+    pub(crate) fn echoed_prompt(&self) -> String {
+        use std::fmt::Write as _;
+        let mut text = String::new();
+        for path in &self.image_paths {
+            writeln!(text, "<file name=\"{}\"></file>", path.display())
+                .expect("writing to a String cannot fail");
+        }
+        text.push_str(&self.full_prompt());
+        text
     }
 
     pub(crate) fn full_prompt(&self) -> String {
@@ -213,10 +253,16 @@ impl PiProcess {
                     .iter()
                     .map(|(k, v)| (k.as_str(), v.as_str())),
             )
+            // Capture the immutable requested setting outside Pi's session state: Pi
+            // clamps unsupported levels, and the guard must refuse that substitution.
+            .env_remove("AI_TEAM_THINKING")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
+        if let Some(thinking) = &turn.thinking {
+            command.env("AI_TEAM_THINKING", thinking);
+        }
         // Its own group, so the group can be signalled without killing ai-team. Pi starts
         // MCP servers and tool subprocesses; signalling only the direct child leaves
         // those running.
@@ -434,6 +480,38 @@ pub struct TurnOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn images_use_native_file_arguments_and_outlive_cloned_turns() {
+        let root = tempfile::tempdir().unwrap();
+        let mut turn = PiTurn::new(root.path(), "inspect this");
+        turn.attach_images(&[crate::chat_images::ImageInput {
+            name: "../../not-a-path.png".into(),
+            media_type: "image/png".into(),
+            data: "aW1hZ2U=".into(),
+        }])
+        .unwrap();
+        let path = turn.image_paths[0].clone();
+        let args = turn.args();
+        assert_eq!(
+            &args[args.len() - 3..],
+            &[
+                format!("@{}", path.display()),
+                "--".into(),
+                "inspect this".into()
+            ]
+        );
+        assert_eq!(
+            turn.echoed_prompt(),
+            format!("<file name=\"{}\"></file>\ninspect this", path.display())
+        );
+        assert!(!path.starts_with(root.path()));
+        let cloned = turn.clone();
+        drop(turn);
+        assert!(path.exists());
+        drop(cloned);
+        assert!(!path.exists());
+    }
 
     #[test]
     fn a_turn_names_its_mode_and_ends_option_parsing() {

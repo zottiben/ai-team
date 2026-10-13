@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 
 import { ContextConnect } from "./ContextConnect";
+const McpServers = lazy(() => import("./McpServers").then(m => ({ default: m.McpServers })));
 import { SignIn } from "./SignIn";
 import { UpdateDetails, type Updates } from "./Update";
 import {
@@ -210,6 +211,8 @@ export function Settings({
           </div>
         ))}
       </section>
+
+      <Suspense fallback={<p>Loading MCP settings…</p>}><McpServers /></Suspense>
 
       <section className="settings__group">
         <h3>Appearance</h3>

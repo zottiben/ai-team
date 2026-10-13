@@ -10,7 +10,7 @@ import { Popover } from "./Popover";
 import { Projects } from "./Projects";
 import { Roster } from "./Roster";
 const Schedule = lazy(() => import("./Schedule").then(m => ({ default: m.Schedule })));
-import { Settings } from "./Settings";
+const Settings = lazy(() => import("./Settings").then(m => ({ default: m.Settings })));
 import { Setup } from "./Setup";
 import { Today } from "./Today";
 import { UpdateBanner, useUpdates } from "./Update";
@@ -528,7 +528,7 @@ export default function App() {
           <main className="main">
             {page === "projects" && <Projects onChanged={changed} />}
             {page === "settings" && (
-              <Settings theme={theme} onTheme={setTheme} onChanged={changed} updates={updates} />
+              <Suspense fallback={<p>Loading settings…</p>}><Settings theme={theme} onTheme={setTheme} onChanged={changed} updates={updates} /></Suspense>
             )}
             {page === "schedule" && (
               <Suspense fallback={<p>Loading schedules…</p>}><Schedule

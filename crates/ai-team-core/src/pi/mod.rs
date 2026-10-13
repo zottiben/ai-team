@@ -28,7 +28,7 @@ pub use guard::{install as install_guard, install_at as install_guard_at};
 pub use ingest::PiIngested;
 pub(crate) use process::{strip_metered_env, strip_metered_std_env, METERED_MODEL_ENV};
 pub use process::{PiProcess, PiTurn, TurnOutcome as PiOutcome};
-pub(crate) use seat::conversation_turn;
+pub(crate) use seat::{conversation_turn, ChatContext};
 pub use seat::{
     provider_name, thinking, write_context_oauth_config, PlanAccess as PiPlanAccess, Seat as PiSeat,
 };

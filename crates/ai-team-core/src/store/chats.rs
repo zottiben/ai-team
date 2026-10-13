@@ -18,6 +18,8 @@ pub(super) const SELECT: &str =
 
 #[derive(Default)]
 struct TurnOptions {
+    expected_reasoning: Option<crate::Reasoning>,
+    images_json: Option<String>,
     followup: Option<i64>,
     settings: Option<(crate::Provider, String, crate::Reasoning)>,
     workspace_epoch: Option<i64>,
@@ -42,6 +44,23 @@ impl TurnOptions {
                 if prompt != message {
                     return Err(Error::invalid("that request id belongs to another message"));
                 }
+                if let Some(expected) = self.expected_reasoning {
+                    let recorded: Option<crate::Reasoning> = conn.query_row(
+                        "SELECT reasoning FROM node_run WHERE id=?1",
+                        [node_id],
+                        |row| row.get(0),
+                    )?;
+                    if recorded != Some(expected) {
+                        return Err(Error::invalid(
+                            "that request id belongs to different or unrecorded thinking settings",
+                        ));
+                    }
+                }
+                super::chat_images::check_replay(
+                    conn,
+                    node_id,
+                    self.images_json.as_deref().unwrap_or("[]"),
+                )?;
                 Ok(ChatSubmission {
                     run_id,
                     node_id,
@@ -186,6 +205,22 @@ impl Store {
         self.chat(id)
     }
 
+    /// A preference for the next solo turn. Never change running, queued or archived work.
+    pub fn set_chat_reasoning(
+        &mut self,
+        id: i64,
+        reasoning: crate::Reasoning,
+        expect_revision: i64,
+    ) -> Result<Chat> {
+        self.db_mut().write(|tx| {
+            if tx.execute("UPDATE chat SET reasoning=?2,rev=rev+1,updated_at=?3 WHERE id=?1 AND rev=?4 AND mode='single' AND archived=0 AND active_node_id IS NULL AND NOT EXISTS(SELECT 1 FROM chat_followup WHERE chat_id=?1 AND state='queued')", params![id,reasoning,crate::now(),expect_revision])? != 1 {
+                return Err(Error::invalid("wait for or stop the current turn, resolve queued messages and refresh before changing solo thinking; archived chats are read-only and team seats keep their own settings"));
+            }
+            Ok(())
+        })?;
+        self.chat(id)
+    }
+
     pub fn chat_turns(&self, id: i64) -> Result<Vec<ChatTurn>> {
         self.chat(id)?;
         let mut statement = self.db().conn().prepare(
@@ -205,6 +240,7 @@ impl Store {
         ids.into_iter()
             .map(|(run, node, is_team)| {
                 Ok(ChatTurn {
+                    images: super::chat_images::metadata(self.db().conn(), node, false)?,
                     run: self.run(run)?,
                     node: self.node_run(node)?,
                     team: if is_team {
@@ -270,6 +306,41 @@ impl Store {
             registry,
             TurnOptions {
                 workspace_epoch: Some(epoch),
+                ..TurnOptions::default()
+            },
+        )
+    }
+
+    /// Human input with validated images, atomically bound to this exact receipt.
+    pub fn begin_chat_prompt(
+        &mut self,
+        id: i64,
+        message: &str,
+        request_id: &str,
+        registry: &ModelRegistry,
+        input: crate::chat_images::Prompt,
+    ) -> Result<ChatSubmission> {
+        if ["review/", "schedule/", "followup/"]
+            .iter()
+            .any(|prefix| request_id.starts_with(prefix))
+        {
+            return Err(Error::invalid(
+                "automated request ids cannot submit human image input",
+            ));
+        }
+        if !input.images.is_empty() && input.publication.is_some() {
+            return Err(Error::invalid("send images as a work request; approve publication separately after reviewing the result"));
+        }
+        self.begin_chat_turn_inner(
+            id,
+            message,
+            request_id,
+            registry,
+            TurnOptions {
+                workspace_epoch: Some(input.workspace_epoch),
+                expected_reasoning: input.expected_reasoning,
+                images_json: Some(input.images.json()?),
+                publication: input.publication,
                 ..TurnOptions::default()
             },
         )
@@ -419,6 +490,9 @@ impl Store {
             .collect();
         self.db_mut().write(|tx| {
             if let Some(receipt) = options.replay(tx, id, request_id, message)? { return Ok(receipt); }
+            if options.expected_reasoning.is_some_and(|expected| chat.mode != ChatMode::Single || expected != agent.reasoning) {
+                return Err(Error::invalid("this chat's thinking setting changed; refresh before sending"));
+            }
             super::chat_workspaces::check_epoch(tx, id, options.workspace_epoch)?;
             check_chat_admission(tx, &chat, &workspace, false)?;
             if let Some(review) = &options.review { super::planning::review::validate(tx, &chat, review)?; }
@@ -436,18 +510,19 @@ impl Store {
             let run_id = tx.last_insert_rowid();
             tx.execute(
                 "INSERT INTO node_run (run_id, role, provider, model, status, worktree_path,
-                    session_id, stream_cursor, supervisor_pid, started_at, created_at, updated_at, agent_id)
-                 VALUES (?1, ?9, ?2, ?3, 'running', ?4, ?5, ?6, ?7, ?8, ?8, ?8, ?10)",
+                    session_id, stream_cursor, supervisor_pid, started_at, created_at, updated_at, agent_id, reasoning)
+                 VALUES (?1, ?9, ?2, ?3, 'running', ?4, ?5, ?6, ?7, ?8, ?8, ?8, ?10, ?11)",
                 params![run_id, resolution.provider, resolution.model, workspace, session,
                     if session.is_some() { cursor } else { 0 }, i64::from(std::process::id()), at,
-                    if review_build { "review" } else { &agent.role }, (chat.mode == ChatMode::Team && !review_build).then_some(agent.id)],
+                    if review_build { "review" } else { &agent.role }, (chat.mode == ChatMode::Team && !review_build).then_some(agent.id), agent.reasoning],
             )?;
             let node_id = tx.last_insert_rowid();
             if let Some(followup) = options.followup {
                 tx.execute("UPDATE chat_followup SET state='starting',node_id=?2 WHERE id=?1 AND state='queued'", params![followup,node_id])?;
             }
-            tx.execute("INSERT INTO chat_turn (chat_id, run_id, node_id, request_id) VALUES (?1, ?2, ?3, ?4)",
-                params![id, run_id, node_id, request_id])?;
+            let images = options.images_json.as_deref().unwrap_or("[]");
+            tx.execute("INSERT INTO chat_turn (chat_id, run_id, node_id, request_id, images_json, images_meta) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![id, run_id, node_id, request_id, images, super::chat_images::describe(images)?])?;
             tx.execute(
                 "UPDATE chat SET active_node_id = ?2, stop_requested = 0, live_text = '', workspace_path = ?3,
                     title = CASE WHEN title = 'New chat' THEN ?4 ELSE title END,
@@ -681,6 +756,11 @@ pub(super) fn check_chat_admission(
     if !switching {
         super::chat_workspaces::pending(tx, current.id)?;
     }
+    if current.reasoning != expected.reasoning {
+        return Err(Error::invalid(
+            "this chat's thinking setting changed; refresh before sending",
+        ));
+    }
     if current.mode != expected.mode {
         return Err(Error::invalid(
             "this chat's mode changed; refresh before sending",
@@ -734,6 +814,88 @@ mod tests {
             })
             .unwrap();
         (store, dir, chat)
+    }
+
+    #[test]
+    fn thinking_snapshots_are_immutable_and_preferences_cannot_rewrite_queued_work() {
+        let (mut store, _dir, chat) = seed();
+        let registry = ModelRegistry::local_only();
+        store
+            .set_chat_reasoning(chat.id, Reasoning::Low, chat.rev)
+            .unwrap();
+        let turn = store
+            .begin_chat_turn(chat.id, "work", "thinking", &registry)
+            .unwrap();
+        assert_eq!(
+            store.node_run(turn.node_id).unwrap().reasoning,
+            Some(Reasoning::Low)
+        );
+        let error = store
+            .db_mut()
+            .write(|tx| {
+                tx.execute(
+                    "UPDATE node_run SET reasoning='high' WHERE id=?1",
+                    [turn.node_id],
+                )?;
+                Ok(())
+            })
+            .unwrap_err();
+        assert!(error.to_string().contains("turn thinking is immutable"));
+        let queued = store
+            .queue_chat_followup(
+                chat.id,
+                turn.node_id,
+                "next",
+                "thinking-queued",
+                crate::FollowupKind::FollowUp,
+            )
+            .unwrap();
+        store
+            .finish_chat_turn(chat.id, turn.node_id, NodeStatus::Done, None)
+            .unwrap();
+        assert!(store
+            .set_chat_reasoning(chat.id, Reasoning::High, store.chat(chat.id).unwrap().rev)
+            .is_err());
+        store.cancel_chat_followup(chat.id, queued.id).unwrap();
+        store
+            .set_chat_reasoning(chat.id, Reasoning::High, store.chat(chat.id).unwrap().rev)
+            .unwrap();
+        assert_eq!(
+            store.node_run(turn.node_id).unwrap().reasoning,
+            Some(Reasoning::Low)
+        );
+        let prompt = |expected_reasoning| crate::chat_images::Prompt {
+            expected_reasoning,
+            workspace_epoch: 0,
+            images: crate::chat_images::Images::default(),
+            publication: None,
+        };
+        let replay = store
+            .begin_chat_prompt(
+                chat.id,
+                "work",
+                "thinking",
+                &registry,
+                prompt(Some(Reasoning::Low)),
+            )
+            .unwrap();
+        assert!(!replay.started);
+        assert_eq!(replay.node_id, turn.node_id);
+        assert!(store
+            .begin_chat_prompt(
+                chat.id,
+                "work",
+                "thinking",
+                &registry,
+                prompt(Some(Reasoning::High))
+            )
+            .is_err());
+        store
+            .set_chat_mode(chat.id, ChatMode::Team, store.chat(chat.id).unwrap().rev)
+            .unwrap();
+        assert!(store
+            .set_chat_reasoning(chat.id, Reasoning::Low, store.chat(chat.id).unwrap().rev)
+            .is_err());
     }
 
     #[test]

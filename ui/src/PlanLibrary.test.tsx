@@ -307,6 +307,9 @@ function stub(routes: {
           json: async () => structuredClone(plan),
         });
       }
+      if (path.startsWith("/models/thinking?")) {
+        return Promise.resolve({ ok: true, json: async () => ({ provider: "local", model: "fixture-model", fallback_reason: null, levels: ["none", "minimal", "low", "medium", "high", "xhigh", "max"] }) });
+      }
       if (path === "/models") {
         return Promise.resolve({
           ok: true,
@@ -761,7 +764,19 @@ it("can create an empty destination even when another exists, without starting a
     screen.getByLabelText("Model"),
     "local|fixture-model",
   );
-  await user.selectOptions(screen.getByLabelText("Reasoning"), "high");
+  // The same seven levels the composer offers, under the same names. A second
+  // vocabulary here is how `xhigh` ends up reachable from one screen and not the other.
+  const thinking = screen.getByLabelText("Thinking effort") as HTMLSelectElement;
+  expect([...thinking.options].map((option) => option.value)).toEqual([
+    "none",
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max",
+  ]);
+  await user.selectOptions(thinking, "high");
   await user.click(screen.getByRole("button", { name: "Create the chat" }));
 
   await waitFor(() =>

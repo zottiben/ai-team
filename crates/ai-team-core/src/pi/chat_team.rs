@@ -91,6 +91,10 @@ fn seat_turn(
     let mut config =
         super::seat::mcp_config(&sources, None).unwrap_or_else(|| json!({"mcpServers":{}}));
     super::seat::merge_safe_project_servers(&worktree, &mut config, planning)?;
+    // A planning seat is refused a browser for the same reason a checkout's one is: a
+    // coordinator whose required context failed says so rather than browsing for it.
+    let servers = crate::mcp::compose(store, chat.project_id, planning)?;
+    crate::mcp::apply(&mut config, &servers)?;
     config["mcpServers"]["ai-team-planner"] = json!({
         "command": std::env::current_exe()?,
         "args": ["plan", "serve", "--db", database, "--chat", chat_id.to_string(), "--node", node_id.to_string()],
@@ -99,11 +103,11 @@ fn seat_turn(
     });
     super::seat::defer_scoped_mcp(&mut config)?;
     let mcp = support.join("mcp.json");
-    std::fs::write(&mcp, serde_json::to_string_pretty(&config)?)?;
+    crate::mcp::write_private(&mcp, &serde_json::to_string_pretty(&config)?)?;
     let instructions = seat_instructions(store, &agent, &node, chat_id, access, &worktree)?;
     let mut turn = PiTurn::new(&worktree, prompt);
     turn.provider = Some(super::seat::provider_name(node.provider).into());
-    turn.model = Some(node.model);
+    turn.model = Some(node.model.clone());
     turn.thinking = Some(super::seat::thinking(agent.reasoning).into());
     // Use the immutable capability, not a mutable read_only team preference.
     turn.exclude_tools = [
@@ -121,11 +125,14 @@ fn seat_turn(
     turn.guard = Some(super::guard::install_at(&support)?);
     turn.mcp_config = Some(mcp);
     turn.environment = super::seat::context_environment(&sources);
+    // What the placeholders in the generated config resolve from, kept out of the file.
+    turn.environment.extend(servers.environment);
     turn.environment
         .push(("AI_TEAM_PLAN".into(), "embedded".into()));
     turn.environment
         .push(("PI_MCP_CONFIG_MODE".into(), "exclusive".into()));
     turn.instructions = Some(instructions);
+    crate::chat_images::attach(store, chat_id, &node, registry, &mut turn)?;
     Ok(turn)
 }
 
@@ -145,6 +152,7 @@ fn resolved_agent(
     }
     agent.provider = node.provider;
     agent.model.clone_from(&node.model);
+    agent.reasoning = node.reasoning.unwrap_or(agent.reasoning);
     let resolved = registry.resolve(&agent)?;
     if resolved.provider != node.provider || resolved.model != node.model {
         return Err(Error::invalid(
@@ -185,4 +193,118 @@ fn seat_instructions(
             super::instructions::for_chat_worker(agent, access, &slice, worktree)
         },
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{
+        ChatMode, McpTransport, ModelRegistry, NewChat, NewMcpServer, NewProject, Provider,
+        Reasoning, Store,
+    };
+
+    /// A team chat whose first turn has started, which is the coordinator's planning seat.
+    fn planning_seat() -> (tempfile::TempDir, Store, i64, i64) {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().join("checkout");
+        std::fs::create_dir(&workspace).unwrap();
+        let mut store = Store::init(&dir.path().join("team.db")).unwrap();
+        let project = store
+            .create_project(NewProject {
+                name: "Widget".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        store
+            .seed_default_team(project.id, &crate::RoleModelDefault::local_floor())
+            .unwrap();
+        let chat = store
+            .create_chat_in_mode(
+                NewChat {
+                    project_id: project.id,
+                    workspace,
+                    provider: Provider::Local,
+                    model: "fixture".into(),
+                    reasoning: Reasoning::High,
+                },
+                ChatMode::Team,
+            )
+            .unwrap();
+        let turn = store
+            .begin_chat_turn(chat.id, "plan it", "one", &ModelRegistry::local_only())
+            .unwrap();
+        (dir, store, chat.id, turn.node_id)
+    }
+
+    fn browser(enabled: bool) -> NewMcpServer {
+        NewMcpServer {
+            project_id: None,
+            name: "devtools".into(),
+            enabled,
+            transport: McpTransport::Stdio,
+            command: Some("npx".into()),
+            args: vec!["chrome-devtools-mcp@latest".into()],
+            url: None,
+            env: std::collections::BTreeMap::new(),
+            headers: std::collections::BTreeMap::new(),
+            include_tools: None,
+        }
+    }
+
+    fn context7(enabled: bool) -> NewMcpServer {
+        NewMcpServer {
+            name: "context7".into(),
+            command: Some("context7-mcp".into()),
+            args: Vec::new(),
+            enabled,
+            ..browser(enabled)
+        }
+    }
+
+    #[test]
+    fn a_team_planning_seat_gets_the_app_owned_servers_but_still_no_browser() {
+        // Rule 10's companion survives the new surface: a coordinator whose required
+        // context failed must say so rather than open a browser and guess.
+        let (_dir, mut store, chat, node) = planning_seat();
+        store.add_mcp_server(browser(true)).unwrap();
+        store.add_mcp_server(context7(true)).unwrap();
+
+        let turn = super::planning_turn(
+            &store,
+            chat,
+            node,
+            &ModelRegistry::local_only(),
+            "plan it".into(),
+        )
+        .unwrap();
+        let config: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(turn.mcp_config.expect("a config")).unwrap(),
+        )
+        .unwrap();
+        let servers = config["mcpServers"].as_object().unwrap();
+        assert!(servers.contains_key("context7"), "{config}");
+        assert!(!servers.contains_key("devtools"), "{config}");
+        assert!(servers.contains_key("ai-team-planner"), "{config}");
+        assert!(turn
+            .environment
+            .contains(&("PI_MCP_CONFIG_MODE".into(), "exclusive".into())));
+    }
+
+    #[test]
+    fn a_disabled_server_reaches_no_team_seat() {
+        let (_dir, mut store, chat, node) = planning_seat();
+        store.add_mcp_server(context7(false)).unwrap();
+        let turn = super::planning_turn(
+            &store,
+            chat,
+            node,
+            &ModelRegistry::local_only(),
+            "plan it".into(),
+        )
+        .unwrap();
+        let config: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(turn.mcp_config.expect("a config")).unwrap(),
+        )
+        .unwrap();
+        assert!(config["mcpServers"].get("context7").is_none(), "{config}");
+    }
 }

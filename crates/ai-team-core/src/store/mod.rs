@@ -8,6 +8,7 @@
 mod agents;
 mod chat_changes;
 mod chat_checkout;
+mod chat_images;
 mod chat_push;
 mod chat_schedules;
 mod chat_teams;
@@ -19,6 +20,7 @@ mod workspace_setup;
 pub(crate) use chats::followups::acknowledge as acknowledge_chat_followup;
 mod events;
 mod interrupted;
+mod mcp;
 pub use interrupted::{Abandoned, INTERRUPTED_REASON};
 mod notifications;
 mod planning;

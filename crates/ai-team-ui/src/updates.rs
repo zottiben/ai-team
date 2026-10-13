@@ -1,5 +1,8 @@
 //! Update checks/recovery stay reachable while ordinary mutations are fenced.
 use crate::{error::Result, state::AppState};
+
+#[cfg(all(test, unix))]
+mod tests;
 use axum::{
     extract::{Request, State},
     middleware::Next,

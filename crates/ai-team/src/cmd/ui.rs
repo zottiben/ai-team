@@ -30,6 +30,7 @@ pub(crate) async fn run(args: UiArgs) -> Result<()> {
         credentials: ai_team_core::CredentialStore::default(),
         host: ai_team_core::Host::Cli,
         updates: ai_team_core::UpdateManager::discover(ai_team_core::Host::Cli)?,
+        mcp_import_sources: ai_team_core::mcp_user_sources()?,
     })
     .await
     .context("starting the local server")?;

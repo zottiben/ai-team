@@ -46,7 +46,7 @@ struct Inner {
     lsp: ai_team_core::Pool,
     /// The terminals this process has open. A session outlives the window, so it lives
     /// here rather than in a request.
-    terminals: ai_team_core::Terminals,
+    terminals: Arc<ai_team_core::Terminals>,
     /// Which credential store this surface may inspect or change.
     ///
     /// Production uses the operating-system store. Integration tests inject an isolated
@@ -64,7 +64,7 @@ impl AppState {
         &self.inner.lsp
     }
 
-    pub fn terminals(&self) -> &ai_team_core::Terminals {
+    pub fn terminals(&self) -> &Arc<ai_team_core::Terminals> {
         &self.inner.terminals
     }
 
@@ -83,7 +83,7 @@ impl AppState {
                 run_start: tokio::sync::Mutex::new(()),
                 db_path: None,
                 lsp: ai_team_core::Pool::new(),
-                terminals: ai_team_core::Terminals::new(),
+                terminals: Arc::new(ai_team_core::Terminals::new()),
                 credentials: ai_team_core::CredentialStore::default(),
                 host: ai_team_core::Host::Cli,
                 updates,
@@ -102,7 +102,7 @@ impl AppState {
                 run_start: tokio::sync::Mutex::new(()),
                 db_path: self.inner.db_path.clone(),
                 lsp: ai_team_core::Pool::new(),
-                terminals: ai_team_core::Terminals::new(),
+                terminals: Arc::new(ai_team_core::Terminals::new()),
                 credentials: self.inner.credentials.clone(),
                 host,
                 updates: self.inner.updates.clone(),
@@ -122,7 +122,7 @@ impl AppState {
                 db_path,
                 chat_recovery: tokio::sync::OnceCell::new(),
                 lsp: ai_team_core::Pool::new(),
-                terminals: ai_team_core::Terminals::new(),
+                terminals: Arc::new(ai_team_core::Terminals::new()),
                 credentials: self.inner.credentials.clone(),
                 host: self.inner.host,
                 updates: self.inner.updates.clone(),
@@ -140,7 +140,7 @@ impl AppState {
                 run_start: tokio::sync::Mutex::new(()),
                 db_path: self.inner.db_path.clone(),
                 lsp: ai_team_core::Pool::new(),
-                terminals: ai_team_core::Terminals::new(),
+                terminals: Arc::new(ai_team_core::Terminals::new()),
                 credentials: self.inner.credentials.clone(),
                 host: self.inner.host,
                 updates: self.inner.updates.clone(),
@@ -157,7 +157,7 @@ impl AppState {
                 run_start: tokio::sync::Mutex::new(()),
                 db_path: self.inner.db_path.clone(),
                 lsp: ai_team_core::Pool::new(),
-                terminals: ai_team_core::Terminals::new(),
+                terminals: Arc::new(ai_team_core::Terminals::new()),
                 credentials,
                 chat_recovery: tokio::sync::OnceCell::new(),
                 host: self.inner.host,

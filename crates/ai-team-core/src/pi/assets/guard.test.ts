@@ -9,6 +9,7 @@
 import { strict as assert } from "node:assert";
 import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { after, beforeEach, describe, test } from "node:test";
 
@@ -30,6 +31,54 @@ after(() => {
 });
 
 beforeEach(() => resetWorktreeCache());
+
+describe("requested thinking", () => {
+  function start(expected: string, actual: string, hook = "before_agent_start") {
+    return spawnSync(process.execPath, ["--input-type=module", "-e", `
+      import guard from ${JSON.stringify(new URL("./guard.ts", import.meta.url).href)};
+      const handlers = new Map();
+      guard({ on: (name, handler) => handlers.set(name, handler), getThinkingLevel: () => {
+        const value = ${JSON.stringify(actual)};
+        if (value === "throws") throw Error("session state unavailable");
+        return value;
+      } });
+      // Pi reports ordinary hook exceptions and continues. Refusal must not be one.
+      try { handlers.get(${JSON.stringify(hook)})?.({}); }
+      catch (error) { console.error("extension error:", error.message); }
+      console.log("provider-request");
+      process.exit(0);
+    `], { encoding: "utf8", env: { ...process.env, AI_TEAM_THINKING: expected } });
+  }
+
+  test("a clamped effort is refused before a provider can be asked", () => {
+    for (const hook of ["before_agent_start", "before_provider_request"]) {
+      const result = start("max", "high", hook);
+      assert.equal(result.status, 1, result.stdout + result.stderr);
+      assert.doesNotMatch(result.stdout, /provider-request/);
+      assert.match(result.stderr, /requested max thinking.*high.*not sent/);
+    }
+  });
+
+  test("all seven unchanged levels reach the provider hook", () => {
+    for (const level of ["off", "minimal", "low", "medium", "high", "xhigh", "max"]) {
+      const result = start(level, level);
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(result.stdout, /provider-request/);
+    }
+  });
+
+  test("unreadable session state fails closed rather than becoming an ignored hook error", () => {
+    const result = start("max", "throws");
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+    assert.doesNotMatch(result.stdout, /provider-request/);
+  });
+
+  test("an unknown spelling is not accepted even when echoed back", () => {
+    for (const spelling of ["min", "none", "", "extreme"]) {
+      assert.equal(start(spelling, spelling).status, 1);
+    }
+  });
+});
 
 describe("paths", () => {
   test("a write inside the lease is allowed", () => {

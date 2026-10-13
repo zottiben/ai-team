@@ -12,6 +12,7 @@
 mod analytics;
 mod chat;
 pub mod chat_changes;
+pub mod chat_images;
 pub mod chat_push;
 pub mod chat_review;
 mod chat_schedule;
@@ -34,6 +35,7 @@ mod layout;
 mod lsp;
 mod machine;
 mod map;
+pub mod mcp;
 mod model;
 mod neighbours;
 mod onboard;
@@ -104,9 +106,15 @@ pub use lsp::{
 pub use machine::{
     ensure_machine_profile, set_context, set_fallback, set_provider, sign_in_command,
     ContextSource, MachineProfile, ModelChoice, ModelRegistry, ModelResolution, ProviderState,
-    ProviderStatus, RoleModelDefault, Stranded, DEFAULT_MACHINE_PROFILE,
+    ProviderStatus, RoleModelDefault, Stranded, ThinkingCapabilities, DEFAULT_MACHINE_PROFILE,
 };
 pub use map::{repo_map, MapEdge, MapNode, MapZone, Owner, RepoMap};
+pub use mcp::{
+    import as import_mcp_servers, import_candidates as mcp_import_preview,
+    import_from as import_mcp_servers_at, preview_in as mcp_import_preview_at,
+    user_sources as mcp_user_sources, McpImportCandidate, McpImportPreview, McpServer,
+    McpServerEdit, McpTransport, NewMcpServer,
+};
 pub use model::{
     Agent, ChatMode, ChatTeamPhase, CommentStatus, DeliveryAction, DeliveryPolicy,
     DeliverySettings, DiffSide, Event, EventKind, Guardrails, NewAgent, NewComment, NewEvent,
@@ -163,7 +171,7 @@ pub use speak::{
 pub use stack::parent as stacked_on;
 pub use store::{Abandoned, Store, INTERRUPTED_REASON};
 pub use supervise::{outcome_status, Dispatched, Orchestration, Orchestrator, Rig, TurnOutcome};
-pub use terminal::{Chunk, Listed, Terminals};
+pub use terminal::{Chunk, Listed, TerminalUpdate, Terminals};
 pub use today::{
     checkouts as today_checkouts, from_plans as today_from_plans, from_question, from_slice,
     from_store as today_from_store, rank as rank_today, Item, Urgency,

@@ -11,6 +11,8 @@ mod ailocal;
 mod catalog;
 mod probe;
 mod profile;
+mod thinking;
+pub use thinking::ThinkingCapabilities;
 
 use ailocal::{non_empty_env, AilocalSettings};
 pub use catalog::{ModelChoice, RoleModelDefault, Stranded};
@@ -141,18 +143,32 @@ impl ModelRegistry {
     }
 
     pub fn resolve(&self, agent: &Agent) -> Result<ModelResolution> {
-        if self.profile.allowed(agent.provider) {
+        self.resolve_choice(
+            &agent.role,
+            agent.provider,
+            &agent.model,
+            agent.context_window,
+        )
+    }
+
+    fn resolve_choice(
+        &self,
+        role: &str,
+        provider: Provider,
+        model: &str,
+        context_window: Option<i64>,
+    ) -> Result<ModelResolution> {
+        if self.profile.allowed(provider) {
             return Ok(ModelResolution {
-                role: agent.role.clone(),
-                requested_provider: agent.provider,
-                requested_model: agent.model.clone(),
-                provider: agent.provider,
-                model: agent.model.clone(),
+                role: role.to_string(),
+                requested_provider: provider,
+                requested_model: model.to_string(),
+                provider,
+                model: model.to_string(),
                 context_window: Some(
-                    agent
-                        .context_window
-                        .unwrap_or_else(|| provider_default(agent.provider).1),
+                    context_window.unwrap_or_else(|| provider_default(provider).1),
                 ),
+
                 fallback_reason: None,
             });
         }
@@ -165,22 +181,18 @@ impl ModelRegistry {
             .find(|provider| self.profile.allowed(*provider) && implemented(*provider))
             .ok_or_else(|| {
                 Error::invalid(format!(
-                    "{} is denied for role {:?}, and this machine has no allowed, implemented fallback",
-                    agent.provider, agent.role
+                    "{provider} is denied for role {role:?}, and this machine has no allowed, implemented fallback"
                 ))
             })?;
-        let (model, context_window) = provider_default(fallback);
+        let (fallback_model, context_window) = provider_default(fallback);
         Ok(ModelResolution {
-            role: agent.role.clone(),
-            requested_provider: agent.provider,
-            requested_model: agent.model.clone(),
+            role: role.to_string(),
+            requested_provider: provider,
+            requested_model: model.to_string(),
             provider: fallback,
-            model: model.to_string(),
+            model: fallback_model.to_string(),
             context_window: Some(context_window),
-            fallback_reason: Some(format!(
-                "{} is denied by the machine profile",
-                agent.provider
-            )),
+            fallback_reason: Some(format!("{provider} is denied by the machine profile")),
         })
     }
 

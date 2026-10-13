@@ -91,7 +91,66 @@ export function workLabel(slice: string | null, task?: string | null): string | 
   return task ? `${slice} ${task}` : slice;
 }
 
+/**
+ * Pi's thinking range, in the spelling the database stores.
+ *
+ * `none` rather than `off` because that is the stored value; the backend accepts `off`
+ * and `min` as input aliases and normalises them, so nothing here ever sends one. The
+ * order is the order a person reads them in, least effort first.
+ */
+export const REASONING_LEVELS = [
+  "none",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+] as const;
+export type Reasoning = (typeof REASONING_LEVELS)[number];
+
+/** What each stored level is called on screen. `none` is the one that differs. */
+export const THINKING_LABELS: Record<Reasoning, string> = {
+  none: "Off",
+  minimal: "Minimal",
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+  xhigh: "XHigh",
+  max: "Max",
+};
+
+export function isReasoning(value: string): value is Reasoning {
+  return (REASONING_LEVELS as readonly string[]).includes(value);
+}
+
+/**
+ * Which levels one exact model actually supports, read from Pi rather than guessed.
+ *
+ * Deliberately not cached anywhere shared: a catalogue that changed under the app would
+ * otherwise keep enforcing yesterday's limits, and the answer is cheap. Callers scope it
+ * to the model they asked about, because a late answer for an abandoned model is a wrong
+ * answer. `provider` is ai-team's policy name, `model` the exact id.
+ */
+export type ThinkingCapabilities = {
+  provider: string;
+  model: string;
+  levels: Reasoning[];
+  fallback_reason: string | null;
+};
+
+export function getModelThinking(
+  provider: string,
+  model: string,
+): Promise<ThinkingCapabilities> {
+  return api<ThinkingCapabilities>(
+    `/models/thinking?provider=${encodeURIComponent(provider)}&model=${encodeURIComponent(model)}`,
+  );
+}
+
 export type NodeRun = {
+  /** Frozen when the turn was admitted. Older turns never recorded one. */
+  reasoning?: Reasoning | null;
   id: number;
   role: string;
   provider: string;
@@ -824,6 +883,7 @@ export type Available = {
   checked_at: string | null;
   state: "idle" | "updating" | "inspection" | "restart";
   release_url: string;
+  terminals?: { approval: string; sessions: { id: number; label: string; worktree: string }[] } | null;
 };
 
 export function updateCheck(force = false): Promise<Available> {
@@ -834,8 +894,8 @@ export function updateInspect(): Promise<{ installed: boolean; version: string; 
   return post("/update/inspect", {});
 }
 
-export function updateApply(version: string, approval: string): Promise<{ version: string; restart_required: boolean; backup: string; warnings: string[] }> {
-  return post("/update", { version, approval });
+export function updateApply(version: string, approval: string, close_terminals?: string): Promise<{ version: string; restart_required: boolean; backup: string; warnings: string[] }> {
+  return post("/update", { version, approval, close_terminals });
 }
 
 export type Check = {
@@ -916,6 +976,126 @@ export function settings(): Promise<Settings> {
 
 export function setProvider(provider: string, allowed: boolean): Promise<unknown> {
   return post("/settings/provider", { provider, allowed });
+}
+
+/// One MCP server AI Team gives its own agents.
+///
+/// `env_keys` and `header_keys` rather than the maps: the keys say what a server is
+/// configured with, and the values are the part that may be a credential. Nothing on
+/// these routes ever returns one, which is why the fields in the page are always blank.
+export type McpServer = {
+  id: number;
+  /** null is an app default, offered to every project. */
+  project_id: number | null;
+  name: string;
+  enabled: boolean;
+  transport: "stdio" | "http";
+  command: string | null;
+  args: string[];
+  url: string | null;
+  env_keys: string[];
+  header_keys: string[];
+  /** null is every tool the server exposes. */
+  include_tools: string[] | null;
+  origin: "manual" | "import";
+  origin_detail: string;
+  rev: number;
+  updated_at: string;
+};
+
+/// One of your own Pi definitions, as a preview shows it. `command`, `args` and `url`
+/// are the destination with anything that reads like a credential taken out - a URL
+/// carries its token in the same string as its host, and this one is for reading.
+export type McpImportCandidate = {
+  name: string;
+  source: string;
+  transport: "stdio" | "http";
+  command: string | null;
+  args: string[];
+  url: string | null;
+  env_keys: string[];
+  header_keys: string[];
+  include_tools: string[] | null;
+  importable: boolean;
+  note: string;
+  already: boolean;
+};
+
+/// What a preview showed, and the token that pins an import to it.
+///
+/// `fingerprint` covers the scope and everything the source files held, values included.
+/// An import quotes it back; if the files or the scope moved in between, the server
+/// refuses the whole import rather than pinning something nobody reviewed.
+export type McpImportPreview = {
+  project_id: number | null;
+  fingerprint: string;
+  candidates: McpImportCandidate[];
+  /** A source that could not be read as configuration, named rather than skipped. */
+  problems: string[];
+};
+
+/// What a save sends. Omitting `env` or `headers` keeps what is stored - the page was
+/// never given them, so it cannot send them back, and silence has to mean "leave it".
+export type McpServerEdit = {
+  rev: number;
+  enabled?: boolean;
+  command?: string;
+  args?: string[];
+  url?: string;
+  env?: Record<string, string>;
+  headers?: Record<string, string>;
+  include_tools?: string[];
+};
+
+export type NewMcpServer = {
+  project_id?: number | null;
+  name: string;
+  enabled?: boolean;
+  transport: "stdio" | "http";
+  command?: string;
+  args?: string[];
+  url?: string;
+  env?: Record<string, string>;
+  headers?: Record<string, string>;
+  include_tools?: string[];
+};
+
+export function mcpServers(project?: number | null): Promise<McpServer[]> {
+  return api<McpServer[]>(
+    project == null ? "/mcp/servers" : `/mcp/servers?project=${project}`,
+  );
+}
+
+export function addMcpServer(server: NewMcpServer): Promise<McpServer> {
+  return post("/mcp/servers", server);
+}
+
+export function editMcpServer(id: number, edit: McpServerEdit): Promise<McpServer> {
+  return post(`/mcp/servers/${id}`, edit);
+}
+
+export function removeMcpServer(id: number, rev: number): Promise<unknown> {
+  return post(`/mcp/servers/${id}/remove`, { rev });
+}
+
+/// What could be copied out of your own Pi definitions. Reading only - nothing here
+/// connects to a server or runs its command.
+export function mcpImportPreview(
+  project?: number | null,
+): Promise<McpImportPreview> {
+  return api<McpImportPreview>(
+    project == null ? "/mcp/import" : `/mcp/import?project=${project}`,
+  );
+}
+
+/// Import exactly what a preview showed. `fingerprint` is that preview's - an import
+/// that cannot say which list it was approved against is refused.
+export function importMcpServers(
+  project: number | null,
+  names: string[],
+  fingerprint: string,
+): Promise<McpServer[]> {
+  return post("/mcp/import", { project_id: project, names, fingerprint });
 }
 
 export function setContext(source: string, allowed: boolean): Promise<unknown> {

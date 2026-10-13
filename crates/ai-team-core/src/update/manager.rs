@@ -53,6 +53,7 @@ pub struct UpdateStatus {
     pub checked_at: Option<String>,
     pub state: UpdateState,
     pub release_url: String,
+    pub terminals: Option<crate::TerminalUpdate>,
 }
 
 impl UpdateStatus {
@@ -100,7 +101,7 @@ struct Inner {
     installation: Option<UpdateInstallation>,
     source: release::ReleaseSource,
     cache: Mutex<Cache>,
-    applying: Mutex<()>,
+    applying: Arc<Mutex<()>>,
     initial: std::sync::Mutex<Option<Vec<UpdateTarget>>>,
     initial_update: std::result::Result<Option<std::time::SystemTime>, String>,
 }
@@ -128,7 +129,7 @@ impl UpdateManager {
             initial_update,
             source: release::ReleaseSource::Github,
             cache: Mutex::new(Cache::default()),
-            applying: Mutex::new(()),
+            applying: Arc::new(Mutex::new(())),
             initial: std::sync::Mutex::new(None),
         }))
     }
@@ -147,7 +148,7 @@ impl UpdateManager {
             initial_update,
             source: release::ReleaseSource::Isolated(root),
             cache: Mutex::new(Cache::default()),
-            applying: Mutex::new(()),
+            applying: Arc::new(Mutex::new(())),
             initial: std::sync::Mutex::new(None),
         })))
     }
@@ -184,6 +185,7 @@ impl UpdateManager {
                 UpdateState::Idle
             },
             release_url: format!("https://github.com/{}/releases/latest", super::REPO),
+            terminals: None,
         };
         let Some(installation) = &self.0.installation else {
             status.blocked = Some("updates are disabled for this server".into());
@@ -248,6 +250,12 @@ impl UpdateManager {
                     .into(),
             );
         }
+        if status.blocked.is_none() {
+            status.blocked = installation
+                .check_idle()
+                .err()
+                .map(|error| error.to_string());
+        }
         if let Some(version) = latest.as_ref() {
             status.offer(version);
         }
@@ -255,10 +263,31 @@ impl UpdateManager {
     }
 
     pub async fn apply(&self, version: &str, expected: &str) -> Result<Updated> {
+        self.apply_reviewed(version, expected, None).await
+    }
+
+    pub async fn apply_with_terminals(
+        &self,
+        version: &str,
+        expected: &str,
+        terminals: Arc<crate::Terminals>,
+        close_approval: Option<String>,
+    ) -> Result<Updated> {
+        self.apply_reviewed(version, expected, Some((terminals, close_approval)))
+            .await
+    }
+
+    async fn apply_reviewed(
+        &self,
+        version: &str,
+        expected: &str,
+        terminals: Option<(Arc<crate::Terminals>, Option<String>)>,
+    ) -> Result<Updated> {
         let guard = self
             .0
             .applying
-            .try_lock()
+            .clone()
+            .try_lock_owned()
             .map_err(|_| Error::invalid("an update is already running"))?;
         // The guard makes status say busy; comparison below deliberately ignores only that bit.
         let status = self.check(true).await;
@@ -284,16 +313,27 @@ impl UpdateManager {
         let version = version.to_string();
         let targets = status.targets;
         let source = self.0.source.clone();
-        let result =
-            tokio::task::spawn_blocking(move || installation.install(&version, &targets, &source))
+        tokio::task::spawn_blocking(move || {
+            // The preparation reservation, like the filesystem fence, outlives a
+            // disconnected caller. New terminal creation/input stays fenced; the
+            // installation's database and filesystem fences still recheck other work.
+            let _guard = guard;
+            if let Some((terminals, close_approval)) = terminals {
+                installation.check_idle()?;
+                if let Some(approval) = close_approval {
+                    terminals.close_for_update(&approval)?;
+                } else if !terminals.review_update().sessions.is_empty() {
+                    return Err(Error::invalid("review the app terminal/sign-in sessions and choose Close sessions and update; nothing was stopped"));
+                }
+            }
+            installation.install(&version, &targets, &source)
+        })
                 .await
                 .map_err(|e| {
                     Error::invalid(format!(
                         "update worker failed; inspect recovery evidence: {e}"
                     ))
-                })?;
-        drop(guard);
-        result
+                })?
     }
 
     pub async fn inspect(&self) -> Result<UpdateInspection> {

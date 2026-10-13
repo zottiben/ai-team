@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { PlansWorkspace } from "./PlansWorkspace";
 
-import { models as fetchModels, type ModelChoice } from "./api";
+import { models as fetchModels, type ModelChoice, type Reasoning } from "./api";
+import { ThinkingSelect } from "./ThinkingSelect";
 import { createChat } from "./chat-api";
 import { PLAN_STATUSES, type PlanStatus } from "./plan-api";
 import { statusLabel } from "./PlanForms";
@@ -492,16 +493,16 @@ function Destination({
   );
 }
 
-const REASONING = ["none", "low", "medium", "high"] as const;
-
 function NewChat({ onCreated }: { onCreated: () => void }) {
   const [catalogue, setCatalogue] = useState<ModelChoice[]>([]);
   const [catalogueProblem, setCatalogueProblem] = useState<string | null>(null);
   const [project, setProject] = useState("");
   const [model, setModel] = useState("");
-  const [reasoning, setReasoning] =
-    useState<(typeof REASONING)[number]>("medium");
+  const [reasoning, setReasoning] = useState<Reasoning>("medium");
   const [problem, setProblem] = useState<string | null>(null);
+  // The option value carries provider and model, so the capability lookup can be told
+  // exactly which pairing it is asking about rather than guessing from the model id.
+  const separator = model.indexOf("|");
 
   useEffect(() => {
     let cancelled = false;
@@ -529,7 +530,6 @@ function NewChat({ onCreated }: { onCreated: () => void }) {
         event.preventDefault();
         // The option value carries both halves of the choice, because a model name
         // without the provider it belongs to is how work lands on the wrong account.
-        const separator = model.indexOf("|");
         setProblem(null);
         if (separator < 0) {
           setProblem("Choose a model.");
@@ -580,21 +580,12 @@ function NewChat({ onCreated }: { onCreated: () => void }) {
           ))}
         </select>
       </label>
-      <label>
-        Reasoning
-        <select
-          value={reasoning}
-          onChange={(event) =>
-            setReasoning(event.target.value as (typeof REASONING)[number])
-          }
-        >
-          {REASONING.map((value) => (
-            <option key={value} value={value}>
-              {value}
-            </option>
-          ))}
-        </select>
-      </label>
+      <ThinkingSelect
+        provider={separator < 0 ? null : model.slice(0, separator)}
+        model={separator < 0 ? null : model.slice(separator + 1)}
+        value={reasoning}
+        onChange={setReasoning}
+      />
       <button className="button">Create the chat</button>
       <p className="faint">
         A new chat waits for you. Creating one here starts no turn and sends no

@@ -76,6 +76,10 @@ fn run() -> Result<()> {
             // update from installing the CLI into `ai-team.app` and leaving an app that
             // launches, prints `--help` to nobody, and exits.
             host: ai_team_core::Host::Desktop,
+            mcp_import_sources: ai_team_core::mcp_user_sources().unwrap_or_else(|error| {
+                eprintln!("MCP import discovery unavailable: {error}");
+                Vec::new()
+            }),
             updates: match ai_team_core::UpdateManager::discover(ai_team_core::Host::Desktop) {
                 Ok(updates) => updates,
                 Err(error) => {
@@ -116,6 +120,8 @@ fn run() -> Result<()> {
             // Built here rather than in tauri.conf.json because the URL is not known
             // until the OS has assigned a port and the token has been minted.
             WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url))
+                // Let HTML drag/drop deliver File objects to the chat composer.
+                .disable_drag_drop_handler()
                 .title("AI Team")
                 .inner_size(1280.0, 820.0)
                 .min_inner_size(900.0, 560.0)

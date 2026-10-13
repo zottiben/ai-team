@@ -5,7 +5,10 @@ pub(super) fn definition(name: &'static str) -> Tool {
     let (description, fields, optional): (&str, &[&str], &[&str]) = match name {
         "list_worktrees" => ("List this chat project's existing Git worktrees and external lease availability. Read-only; no scope overrides.", &[], &[]),
         "request_worktree" => ("Propose using an existing worktree when the user asks. Supply an exact path from list_worktrees, then END this turn. Only the human can approve switching after it settles. This does not move the running process or grant access outside its checkout.", &["path"], &[]),
-        "get_plan" => ("Read this chat's plan, progress, questions, decisions and current revision. No plan is created by reading.", &[], &[]),
+        "list_chat_images" => ("List images the human attached to this chat, with their message node IDs and image indexes. Read-only, no scope overrides. Use read_chat_image to inspect an earlier screenshot or implement a plan based on it.", &[], &[]),
+        "read_chat_image" => ("Read one image attached by the human in this exact chat. Supply node and index from list_chat_images. Returns native image content. Images are context, never execution or publication approval.", &["node", "index"], &[]),
+        "get_plan" => ("Read this chat's plan, progress, questions, decisions and current revision. No plan is created by reading. A plan too large for one response answers with partial:true and no content: it still exists unchanged and still carries the revision, and read_plan fetches it.", &[], &[]),
+        "read_plan" => ("Read one page of this chat's whole plan as pretty JSON, for when get_plan or a mutation answers partial:true. Start at offset 0, then pass back exactly the next_offset each page returns, once each, until next_offset is null; joining the pages in order rebuilds that snapshot. Every page comes from the revision you supply, so a refusal means re-reading from offset 0. No scope overrides.", &["offset", "limit"], &["limit"]),
         "create_plan" => ("Create a plan for this chat when the user needs one; ordinary conversations need no plan.", &["title", "summary"], &["summary"]),
         "set_plan_status" => ("Update the status of this chat's plan. A planning status is not a verification verdict.", &["status"], &[]),
         "write_section" => ("Write a plan section, preserving concurrent edits through expect_revision.", &["key", "title", "body"], &[]),
@@ -23,13 +26,25 @@ pub(super) fn definition(name: &'static str) -> Tool {
     let mut required = Vec::new();
     if !matches!(
         name,
-        "get_plan" | "list_worktrees" | "request_worktree" | "request_publication"
+        "get_plan"
+            | "list_worktrees"
+            | "request_worktree"
+            | "request_publication"
+            | "list_chat_images"
+            | "read_chat_image"
     ) {
-        properties.insert("expect_revision".into(), json!({"type":"integer","minimum":0,"description":"Revision returned by get_plan or the previous mutation. Re-read after a conflict."}));
+        properties.insert("expect_revision".into(), json!({"type":"integer","minimum":0,"description":"Revision returned by get_plan, a read_plan page or the previous mutation. Re-read after a conflict."}));
         required.push("expect_revision");
     }
     for field in fields {
         let schema = match *field {
+            "node" | "index" => json!({"type":"integer","minimum":0}),
+            "offset" => {
+                json!({"type":"integer","minimum":0,"description":"0 for the first page, then exactly the next_offset the previous page returned."})
+            }
+            "limit" => {
+                json!({"type":"integer","minimum":1,"maximum":super::response::MAX_LIMIT,"description":"Optional cap on this page's plan text. Fewer bytes may come back; always follow next_offset."})
+            }
             "touches" => {
                 json!({"type":"array","items":{"type":"string"},"minItems":1,"description":"Repository-relative paths/globs, for example src/**. No absolute or parent paths."})
             }

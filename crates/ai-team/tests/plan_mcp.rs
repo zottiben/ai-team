@@ -176,6 +176,100 @@ fn fixture(
 }
 
 #[tokio::test]
+async fn chat_images_are_native_mcp_content_with_exact_chat_and_live_actor_scope() {
+    use ai_team_core::chat_images::{self, ImageInput, Prompt};
+    let dir = tempfile::tempdir().unwrap();
+    let (mut store, chat, other, first) = fixture(dir.path());
+    let registry = ModelRegistry::local_only();
+    store
+        .finish_chat_turn(chat.id, first.node_id, NodeStatus::Done, None)
+        .unwrap();
+    let data = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNgYGAAAAAEAAH2FzhVAAAAAElFTkSuQmCC";
+    let images = || {
+        chat_images::validate(vec![ImageInput {
+            name: "screen.png".into(),
+            media_type: "image/png".into(),
+            data: data.into(),
+        }])
+        .unwrap()
+    };
+    let photo = store
+        .begin_chat_prompt(
+            chat.id,
+            "Inspect screenshot",
+            "photo",
+            &registry,
+            Prompt {
+                expected_reasoning: None,
+                workspace_epoch: 0,
+                images: images(),
+                publication: None,
+            },
+        )
+        .unwrap();
+    store
+        .finish_chat_turn(chat.id, photo.node_id, NodeStatus::Done, None)
+        .unwrap();
+    let foreign = store
+        .begin_chat_prompt(
+            other.id,
+            "Private screenshot",
+            "other-photo",
+            &registry,
+            Prompt {
+                expected_reasoning: None,
+                workspace_epoch: 0,
+                images: images(),
+                publication: None,
+            },
+        )
+        .unwrap();
+    store
+        .finish_chat_turn(other.id, foreign.node_id, NodeStatus::Done, None)
+        .unwrap();
+    let turn = store
+        .begin_chat_turn(chat.id, "Use the earlier screenshot", "later", &registry)
+        .unwrap();
+    let mut client = Client::connect(store.path(), dir.path(), chat.id, turn.node_id).await;
+    let listed = client.call("list_chat_images", json!({})).await;
+    assert_eq!(listed["isError"], false, "{listed}");
+    let entries: Value =
+        serde_json::from_str(listed["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(entries.as_array().unwrap().len(), 1);
+    assert_eq!(entries[0]["node"], photo.node_id);
+    assert!(!listed.to_string().contains(data));
+    let image = client
+        .call("read_chat_image", json!({"node":photo.node_id,"index":0}))
+        .await;
+    assert_eq!(image["isError"], false, "{image}");
+    assert_eq!(image["content"][0]["type"], "image");
+    assert_eq!(image["content"][0]["data"], data);
+    assert_eq!(image["content"][0]["mimeType"], "image/png");
+    assert_eq!(
+        client
+            .call("read_chat_image", json!({"node":foreign.node_id,"index":0}))
+            .await["isError"],
+        true
+    );
+    assert_eq!(
+        client
+            .call("list_chat_images", json!({"chat":other.id}))
+            .await["isError"],
+        true
+    );
+    store
+        .finish_chat_turn(chat.id, turn.node_id, NodeStatus::Done, None)
+        .unwrap();
+    assert_eq!(
+        client
+            .call("read_chat_image", json!({"node":photo.node_id,"index":0}))
+            .await["isError"],
+        true
+    );
+    client.close().await;
+}
+
+#[tokio::test]
 async fn embedded_mcp_round_trip_is_scoped_revocable_and_independent_of_aip() {
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path();
@@ -555,6 +649,198 @@ async fn request_publication_is_offered_only_to_an_authorised_turn() {
             .as_deref(),
         Some(made.as_str())
     );
+}
+
+/// Pi drops a tool result whose output exceeds its guard, so a plan that outgrew one
+/// response vanished entirely: the seat was handed nothing, could not read the revision
+/// and stopped. A board too large for one answer is paged, never dropped and never cut.
+#[tokio::test]
+async fn a_plan_too_large_for_one_response_is_paged_exactly_rather_than_dropped() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path();
+    let (mut store, chat, other, turn) = fixture(home);
+    let db = store.path().to_path_buf();
+    let mut client = Client::connect(&db, home, chat.id, turn.node_id).await;
+    assert!(tool_names(&mut client)
+        .await
+        .contains(&"read_plan".to_string()));
+
+    // A plan small enough to answer whole still arrives whole, and says so.
+    let mut revision = apply(
+        &mut store,
+        chat.id,
+        0,
+        json!({"action":"create_plan","title":"Large board","summary":"Paging regression"}),
+    );
+    let small = client.plan().await;
+    assert_eq!(small["partial"], false);
+    assert_eq!(small["bundle"]["plan"]["title"], "Large board");
+
+    // Unicode and one very long line, because both are what the output guard measures.
+    let unicode = "é漢字🛠 ".repeat(1_000);
+    for action in [
+        json!({"action":"write_section","key":"context","title":"Context","body":format!("{unicode}\n{unicode}")}),
+        json!({"action":"add_slice","key":"S1","title":"Build","scope":&unicode,"touches":["src/**"],"demo":&unicode}),
+        json!({"action":"append_log","body":&unicode}),
+    ] {
+        revision = apply(&mut store, chat.id, revision, action);
+    }
+    let whole = serde_json::to_value(store.chat_plan(chat.id, PlanActor::Human).unwrap()).unwrap();
+    assert!(
+        serde_json::to_string(&whole).unwrap().len() > 60_000,
+        "the fixture must outgrow one response"
+    );
+
+    // get_plan keeps the revision and the plan's identity, and never calls it absent.
+    let described = client.call("get_plan", json!({})).await;
+    assert_ne!(described["isError"], true, "{described}");
+    let text = described["content"][0]["text"].as_str().unwrap();
+    assert!(
+        text.len() <= BUDGET,
+        "get_plan returned {} bytes",
+        text.len()
+    );
+    let descriptor: Value = serde_json::from_str(text).unwrap();
+    assert_eq!(descriptor["partial"], true);
+    assert_eq!(descriptor["plan_present"], true);
+    assert_eq!(descriptor["revision"], revision);
+    assert_eq!(descriptor["chat_id"], chat.id);
+    assert_eq!(descriptor["project_id"], chat.project_id);
+    assert_eq!(descriptor["plan"]["title"], "Large board");
+    assert!(descriptor.get("bundle").is_none(), "{descriptor}");
+    let total = descriptor["total_bytes"].as_u64().unwrap();
+
+    // Every page once, in order, reconstructing exactly what the store holds.
+    let (document, pages) = read_every_page(&mut client, revision, total).await;
+    assert!(pages > 1, "a plan this size must take more than one page");
+    assert_eq!(serde_json::from_str::<Value>(&document).unwrap(), whole);
+
+    // A page is cut from that same fixed document, and a limit bounds it.
+    let page = read_page(
+        &mut client,
+        json!({"expect_revision":revision,"offset":0,"limit":2_000}),
+    )
+    .await;
+    let head = page["content"].as_str().unwrap();
+    assert!(!head.is_empty() && head.len() <= 2_000);
+    assert_eq!(head, &document[..head.len()]);
+
+    // Offsets this tool never handed back, and limits outside its range.
+    let inside = document
+        .char_indices()
+        .find(|(_, c)| c.len_utf8() > 1)
+        .map(|(at, _)| at + 1)
+        .unwrap();
+    assert!(!document.is_char_boundary(inside));
+    for refused in [
+        json!({"expect_revision":revision,"offset":inside}),
+        json!({"expect_revision":revision,"offset":total + 1}),
+        json!({"expect_revision":revision,"offset":-1}),
+        json!({"expect_revision":revision,"offset":0,"limit":0}),
+        json!({"expect_revision":revision,"offset":0,"limit":1_000_000}),
+        json!({"expect_revision":revision,"offset":0,"chat":other.id}),
+        json!({"expect_revision":revision,"offset":0,"plan_id":999}),
+        json!({"offset":0}),
+    ] {
+        assert_eq!(
+            client.call("read_plan", refused.clone()).await["isError"],
+            true,
+            "{refused}"
+        );
+    }
+
+    // The revision the descriptor carried is still a working write token, and the
+    // mutation's own answer is bounded the same way.
+    let appended = client
+        .call(
+            "append_log",
+            json!({"expect_revision":revision,"body":"paged the board"}),
+        )
+        .await;
+    assert_ne!(appended["isError"], true, "{appended}");
+    let written = appended["content"][0]["text"].as_str().unwrap();
+    assert!(
+        written.len() <= BUDGET,
+        "the mutation returned {} bytes",
+        written.len()
+    );
+    let written: Value = serde_json::from_str(written).unwrap();
+    assert_eq!(written["partial"], true);
+    let fresh = written["revision"].as_i64().unwrap();
+    assert!(fresh > revision);
+
+    // A stale page would stitch two different documents together.
+    assert_eq!(
+        client
+            .call("read_plan", json!({"expect_revision":revision,"offset":0}))
+            .await["isError"],
+        true
+    );
+    assert!(store
+        .chat_plan(other.id, PlanActor::Human)
+        .unwrap()
+        .bundle
+        .is_none());
+    store
+        .finish_chat_turn(chat.id, turn.node_id, NodeStatus::Done, None)
+        .unwrap();
+    assert_eq!(
+        client
+            .call("read_plan", json!({"expect_revision":fresh,"offset":0}))
+            .await["isError"],
+        true
+    );
+    client.close().await;
+    assert_standalone_untouched(home);
+}
+
+/// Comfortably inside Pi's 50KB output guard, which is what dropped the whole snapshot.
+const BUDGET: usize = 24_000;
+
+fn apply(store: &mut Store, chat: i64, revision: i64, mut action: Value) -> i64 {
+    action["expect_revision"] = revision.into();
+    store
+        .change_chat_plan(
+            chat,
+            PlanActor::Human,
+            serde_json::from_value(action).unwrap(),
+        )
+        .unwrap()
+        .revision
+}
+
+async fn read_page(client: &mut Client, arguments: Value) -> Value {
+    let result = client.call("read_plan", arguments).await;
+    assert_ne!(result["isError"], true, "{result}");
+    let body = result["content"][0]["text"].as_str().unwrap();
+    assert!(body.len() <= BUDGET, "a page of {} bytes", body.len());
+    serde_json::from_str(body).unwrap()
+}
+
+/// Follow next_offset to the end, refusing to visit an offset twice.
+async fn read_every_page(client: &mut Client, revision: i64, total: u64) -> (String, usize) {
+    let mut document = String::new();
+    let mut seen: Vec<u64> = Vec::new();
+    let mut at = Some(0);
+    while let Some(offset) = at {
+        assert!(!seen.contains(&offset), "offset {offset} was paged twice");
+        assert!(seen.len() < 64, "paging never finished");
+        seen.push(offset);
+        let page = read_page(client, json!({"expect_revision":revision,"offset":offset})).await;
+        assert_eq!(page["offset"], offset);
+        assert_eq!(page["revision"], revision);
+        assert_eq!(page["total_bytes"], total);
+        let content = page["content"].as_str().unwrap();
+        assert!(!content.is_empty(), "an empty page cannot make progress");
+        document.push_str(content);
+        at = page["next_offset"].as_u64();
+        match at {
+            Some(next) => assert_eq!(next, offset + content.len() as u64),
+            None => assert!(page["next_offset"].is_null(), "{page}"),
+        }
+    }
+    assert_eq!(document.len() as u64, total);
+    (document, seen.len())
 }
 
 async fn tool_names(client: &mut Client) -> Vec<String> {

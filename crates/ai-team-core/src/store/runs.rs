@@ -921,8 +921,8 @@ impl Store {
             tx.execute(
                 "INSERT INTO node_run
                    (run_id, agent_id, role, provider, model, attempt, slice_key, task_key,
-                    created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)",
+                    created_at, updated_at, reasoning)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9, ?10)",
                 params![
                     run_id,
                     agent_id,
@@ -932,7 +932,8 @@ impl Store {
                     attempt,
                     slice_key,
                     task_key,
-                    at
+                    at,
+                    agent.reasoning
                 ],
             )?;
             let node_id = tx.last_insert_rowid();
@@ -1610,10 +1611,11 @@ const NODE_SELECT: &str = "SELECT id, run_id, agent_id, role, provider, model, s
      tokens_in, tokens_out, tokens_cache_read, tokens_cache_write, turns, blocked_reason, \
      started_at, ended_at, rev, created_at, updated_at, context_tokens, session_retired_at, \
      session_resetting_at, pushed_at, pr_url, merge_requested_at, delivery_claim, \
-     delivery_claimed_at, delivery_error, supervisor_pid, task_key, push_replaces, pi_pid FROM node_run";
+     delivery_claimed_at, delivery_error, supervisor_pid, task_key, push_replaces, pi_pid, reasoning FROM node_run";
 
 fn node_from_row(r: &Row<'_>) -> rusqlite::Result<NodeRun> {
     Ok(NodeRun {
+        reasoning: r.get(40)?,
         id: r.get(0)?,
         run_id: r.get(1)?,
         agent_id: r.get(2)?,

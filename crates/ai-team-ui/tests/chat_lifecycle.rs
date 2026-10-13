@@ -322,7 +322,105 @@ fn authenticated_solo_team_stop_continue_close_and_concurrent_chats() {
         .unwrap()
         .is_empty());
     working_checkout(&f, chat, other);
+    thinking_levels(&f, chat);
+    image_transport(&f, chat);
     drop(f.runtime);
+}
+
+fn thinking_levels(f: &Fixture, chat: i64) {
+    f.mode("normal");
+    let route = format!("/chats/{chat}/messages");
+    let mut previous: Option<(Value, Value)> = None;
+    assert_eq!(
+        f.request(
+            "GET",
+            "/models/thinking?provider=local&model=fixture",
+            Value::Null
+        ),
+        (
+            200,
+            json!({"provider":"local", "model":"fixture", "fallback_reason":null, "levels":["none", "minimal", "low", "medium", "high", "xhigh", "max"]})
+        )
+    );
+    for level in ["minimal", "low", "medium", "high", "xhigh", "max", "none"] {
+        f.post(
+            &format!("/chats/{chat}/thinking"),
+            json!({"reasoning":level,"expect_revision":f.detail(chat)["rev"]}),
+        );
+        if let Some((input, node)) = &previous {
+            let count = f.calls().len();
+            assert_eq!(f.post(&route, input.clone())["node_id"], *node);
+            assert_eq!(f.calls().len(), count);
+            let mut changed = input.clone();
+            changed["expected_reasoning"] = json!(level);
+            assert_eq!(f.request("POST", &route, changed).0, 400);
+        }
+        let input = json!({"message":"Use the selected thinking level","request_id":format!("thinking-{level}"),"expected_reasoning":level,"workspace_epoch":f.detail(chat)["workspace_epoch"]});
+        let response = f.post(&route, input.clone());
+        let settled = f.wait(chat, |detail| detail["active_node_id"].is_null());
+        let node = response["node_id"].as_i64().unwrap().to_string();
+        let calls = f.calls();
+        let call = calls
+            .iter()
+            .find(|call| call["node"].as_str() == Some(node.as_str()))
+            .unwrap();
+        assert_eq!(
+            call["thinking"],
+            if level == "none" { "off" } else { level }
+        );
+        assert_eq!(call["requested_thinking"], call["thinking"]);
+        let turn = settled["turns"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|turn| turn["node"]["id"] == response["node_id"])
+            .unwrap();
+        assert_eq!(turn["node"]["reasoning"], level);
+        assert_eq!(turn["node"]["status"], "done");
+        previous = Some((input, response["node_id"].clone()));
+    }
+    let count = f.calls().len();
+    assert_eq!(f.request("POST",&route,json!({"message":"Stale preference","request_id":"stale-thinking","expected_reasoning":"high","workspace_epoch":f.detail(chat)["workspace_epoch"]})).0,400);
+    assert_eq!(f.calls().len(), count);
+}
+
+fn image_transport(f: &Fixture, chat: i64) {
+    f.mode("normal");
+    let data = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNgYGAAAAAEAAH2FzhVAAAAAElFTkSuQmCC";
+    let input = json!({"message":"Inspect my screenshot","request_id":"native-image-http","workspace_epoch":f.detail(chat)["workspace_epoch"],"images":[{"name":"../../screenshot.png","media_type":"image/png","data":data}]});
+    let route = format!("/chats/{chat}/messages");
+    let response = f.post(&route, input.clone());
+    let settled = f.wait(chat, |detail| detail["active_node_id"].is_null());
+    assert_eq!(
+        settled["turns"].as_array().unwrap().last().unwrap()["node"]["status"],
+        "done",
+        "{settled}"
+    );
+    let calls = f.calls();
+    let node = response["node_id"].as_i64().unwrap().to_string();
+    let call = calls
+        .iter()
+        .find(|call| call["node"].as_str() == Some(node.as_str()))
+        .unwrap();
+    assert_eq!(call["images"][0]["data"], data);
+    assert_eq!(call["images"].as_array().unwrap().len(), 1);
+    let path = Path::new(call["images"][0]["file"].as_str().unwrap());
+    let until = Instant::now() + Duration::from_secs(5);
+    while path.exists() && Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(
+        !path.exists(),
+        "the settled turn retained temporary image files"
+    );
+    let replay = f.post(&route, input.clone());
+    assert_eq!(replay["started"], false);
+    assert_eq!(replay["node_id"], response["node_id"]);
+    assert_eq!(f.calls().len(), calls.len());
+    let mut changed = input;
+    changed["images"] = json!([]);
+    assert_eq!(f.request("POST", &route, changed).0, 400);
+    assert!(git(&f.repo, &["status", "--porcelain"]).is_empty());
 }
 
 fn working_checkout(f: &Fixture, chat: i64, other: i64) {

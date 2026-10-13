@@ -177,7 +177,15 @@ fn agent_tools_cannot_escape_chat_ownership_answer_for_a_human_or_survive_settle
         .unwrap();
     assert!(f.store.chat_plan(first, agent).is_err());
     assert!(!PlanAccess::Maker.tools().contains(&"add_slice"));
-    assert_eq!(PlanAccess::Reader.tools(), ["get_plan"]);
+    assert_eq!(
+        PlanAccess::Reader.tools(),
+        [
+            "get_plan",
+            "read_plan",
+            "list_chat_images",
+            "read_chat_image"
+        ]
+    );
     let forged =
         json!({"action":"create_plan","expect_revision":0,"title":"Escape","project_id":999});
     assert!(serde_json::from_value::<PlanAction>(forged).is_err());

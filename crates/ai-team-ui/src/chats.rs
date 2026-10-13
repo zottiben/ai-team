@@ -29,12 +29,17 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/chats", get(list).post(create))
         .route("/chats/{id}", get(detail).patch(edit))
         .route("/chats/{id}/events", get(events))
+        .route("/chats/{id}/images/{node}/{index}", get(image))
+        .route("/chats/{id}/thinking", post(thinking))
         .route("/chats/{id}/messages", post(send))
         .route("/chats/{id}/followups", post(queue_followup))
         .route("/chats/{id}/followups/cancel", post(cancel_followup))
         .route("/chats/{id}/followups/send", post(send_followup))
         .route("/chats/{id}/stop", post(stop))
         .route("/chats/{id}/resume", post(resume))
+        .layer(axum::extract::DefaultBodyLimit::max(
+            ai_team_core::chat_images::MAX_REQUEST_BYTES,
+        ))
 }
 
 #[derive(Deserialize)]
@@ -102,6 +107,25 @@ async fn create(State(state): State<AppState>, Json(input): Json<Create>) -> Res
             reasoning: input.reasoning,
         },
         input.mode,
+    )?))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Thinking {
+    reasoning: Reasoning,
+    expect_revision: i64,
+}
+
+async fn thinking(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Json(input): Json<Thinking>,
+) -> Result<Json<Chat>> {
+    Ok(Json(state.store()?.lock().set_chat_reasoning(
+        id,
+        input.reasoning,
+        input.expect_revision,
     )?))
 }
 
@@ -245,8 +269,32 @@ async fn events(
     ))
 }
 
+async fn image(
+    State(state): State<AppState>,
+    Path((chat, node, index)): Path<(i64, i64, usize)>,
+) -> Result<Json<ai_team_core::chat_images::ImageInput>> {
+    Ok(Json(state.store()?.lock().chat_image(chat, node, index)?))
+}
+
+async fn validate_images(
+    input: Vec<ai_team_core::chat_images::ImageInput>,
+) -> Result<ai_team_core::chat_images::Images> {
+    tokio::task::spawn_blocking(|| ai_team_core::chat_images::validate(input))
+        .await
+        .map_err(|error| {
+            Error::Core(ai_team_core::Error::invalid(format!(
+                "validating image input failed: {error}"
+            )))
+        })?
+        .map_err(Error::Core)
+}
+
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct SendRequest {
+    expected_reasoning: Option<Reasoning>,
+    #[serde(default)]
+    images: Vec<ai_team_core::chat_images::ImageInput>,
     message: String,
     request_id: String,
     #[serde(default)]
@@ -256,8 +304,9 @@ struct SendRequest {
 async fn send(
     State(state): State<AppState>,
     Path(id): Path<i64>,
-    Json(input): Json<SendRequest>,
+    Json(mut input): Json<SendRequest>,
 ) -> Result<Json<ai_team_core::ChatSubmission>> {
+    let images = validate_images(std::mem::take(&mut input.images)).await?;
     let db = state.database_path()?;
     ai_team_core::recover_abandoned_chat_team(&db, id).await?;
     // The only place push authority is ever minted. A schedule, a queued instruction, a
@@ -266,34 +315,55 @@ async fn send(
     if let Some(receipt) =
         ai_team_core::Store::open(&db)?.replay_chat_push(id, &input.request_id, &input.message)?
     {
+        let store = ai_team_core::Store::open(&db)?;
+        store.check_chat_image_replay(id, receipt.node_id, &images)?;
+        if input.expected_reasoning.is_some()
+            && store.node_run(receipt.node_id)?.reasoning != input.expected_reasoning
+        {
+            return Err(Error::Core(ai_team_core::Error::invalid(
+                "that request id belongs to different or unrecorded thinking settings",
+            )));
+        }
         return Ok(Json(receipt));
     }
     let authority = push_authority(&db, id, &input).await?;
+    if !images.is_empty()
+        && matches!(
+            authority,
+            ai_team_core::chat_push::Authority::Solo(_)
+                | ai_team_core::chat_push::Authority::Team(_, _)
+        )
+    {
+        return Err(Error::Core(ai_team_core::Error::invalid("send images as a work request; approve publication separately after reviewing the result")));
+    }
     if let ai_team_core::chat_push::Authority::Team(target, _) = authority {
+        if input.expected_reasoning.is_some() {
+            return Err(Error::Core(ai_team_core::Error::invalid(
+                "team seats keep their own thinking settings",
+            )));
+        }
         return Ok(Json(publish_team(db, id, input, target).await?));
     }
     let registry = ModelRegistry::load()?;
     let receipt = {
         let store = state.store()?;
         let mut store = store.lock();
-        if let ai_team_core::chat_push::Authority::Solo(target) = &authority {
-            store.begin_chat_turn_with_push(
-                id,
-                &input.message,
-                &input.request_id,
-                &registry,
-                input.workspace_epoch,
-                target.clone(),
-            )?
-        } else {
-            store.begin_chat_turn_at_epoch(
-                id,
-                &input.message,
-                &input.request_id,
-                &registry,
-                input.workspace_epoch,
-            )?
-        }
+        store.begin_chat_prompt(
+            id,
+            &input.message,
+            &input.request_id,
+            &registry,
+            ai_team_core::chat_images::Prompt {
+                expected_reasoning: input.expected_reasoning,
+                workspace_epoch: input.workspace_epoch,
+                images,
+                publication: if let ai_team_core::chat_push::Authority::Solo(target) = &authority {
+                    Some(target.clone())
+                } else {
+                    None
+                },
+            },
+        )?
     };
     if receipt.started {
         // Before the worker: the seat is offered the publication tool only if this is
@@ -468,6 +538,8 @@ pub(crate) fn spawn(
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Followup {
+    #[serde(default)]
+    images: Vec<ai_team_core::chat_images::ImageInput>,
     node_id: i64,
     message: String,
     request_id: String,
@@ -478,13 +550,17 @@ async fn queue_followup(
     Path(id): Path<i64>,
     Json(input): Json<Followup>,
 ) -> Result<Json<ai_team_core::ChatFollowup>> {
-    Ok(Json(state.store()?.lock().queue_chat_followup(
-        id,
-        input.node_id,
-        &input.message,
-        &input.request_id,
-        input.kind,
-    )?))
+    let images = validate_images(input.images).await?;
+    Ok(Json(
+        state.store()?.lock().queue_chat_followup_with_images(
+            id,
+            input.node_id,
+            &input.message,
+            &input.request_id,
+            input.kind,
+            &images,
+        )?,
+    ))
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]

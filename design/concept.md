@@ -58,7 +58,22 @@ Legacy run/review history remains separate, never mixed into Today or chat comma
 During a solo turn, the composer's primary action is a pulsing Stop button. Typing
 replaces it with the send arrow to queue a follow-up; Stop and steer remains an explicit
 choice. Empty Enter never stops a turn. Honour reduced motion and retain exact-attempt
-interrupted recovery rather than silently retrying work.
+interrupted recovery rather than silently retrying work. Pending queued messages use
+normal Markdown; once dispatched their receipt belongs to their exact transcript message,
+not a permanent composer banner. A new exact Pi acknowledgement animates once (unless
+reduced motion is requested). Received, unconfirmed and turn outcome are distinct facts;
+none proves that the requested change was made or verified.
+
+Solo thinking is visible beside the model: Off, Minimal, Low, Medium, High, XHigh or Max.
+`min` is an input alias for Minimal, not another level; stored `none` remains Pi's `off`.
+Choices come from Pi's selected-model capabilities, including its thinking-level map,
+not a provider-wide guess. Unknown capabilities preserve the setting without offering
+unconfirmed alternatives. The runtime refuses a clamped setting before asking the model,
+even if capabilities changed after selection. Idle, revision-checked changes affect future
+turns only; running/queued work and archived chats cannot be edited.
+New turns snapshot the requested Pi setting immutably; historical unknown settings stay
+unknown, and replay cannot silently change it. Team seats retain their own settings.
+The control describes requested effort, not a guarantee of a provider's internal reasoning.
 
 Completed turns and required human actions stand apart from tool chatter, with a
 persistent outcome beside the composer and a highlighted final assistant response.
@@ -108,7 +123,11 @@ hooks, network access and dependency installation. An unleased pool slot pinned 
 (including idle/archived chats), a pre-node planning run or nonterminal/retained work is
 not disposable; refuse acquisition before AWT can reset it. Refresh detected locked dependencies,
 including warm Composer/JS installations, before reporting readiness. Journal commands
-and child lifetimes; lost responses cannot acquire another checkout. Failed or uncertain
+and child lifetimes; lost responses cannot acquire another checkout. Known admission
+refusals are terminal, unattempted receipts under the original request key: they acquire
+nothing, do not leave the composer blocked and cannot start later through replay or
+inspection. Trying again after the blocker clears requires a new explicit request.
+Unknown responses remain protected until their exact receipt is recovered. Failed or uncertain
 setup retains its lease and evidence. Inspection never replays acquisition/hooks; retry
 is explicit and confined to dependencies in the same confirmed checkout and branch.
 Selecting an existing checkout never triggers this setup or resets its contents.
@@ -135,12 +154,21 @@ bounded operational I/O and cleanup timeouts. Removing caps never resumes stoppe
 
 Desktop checks are read-only and periodic, with a visible offer and a shared CLI/desktop
 installation service. Human approval pins the release and concrete program destinations;
-never install automatically, create a shadow CLI, request background sudo or stop agents.
+never install automatically, create a shadow CLI, request background sudo or stop chat agents
+or team builds.
 Ambiguous CLI copies are not guessed, and a global installer marker does not establish
 ownership of package-managed programs. Legacy broken-app recovery must not bypass approval.
 Stage verified programs, back up both owned databases and configuration/auth state, and
 fence writes across processes. Active or uncertain work refuses the update. Keep recovery
 evidence after an uncertain swap; inspection checks bytes rather than replaying installation.
+The desktop lists its terminal/sign-in sessions and offers explicitly approved closure as
+part of updating, rather than making the operator hunt for a busy lock. Bind that consent
+to the exact app session set; new sessions need fresh approval. Never inject terminal input
+on close. Wait for process, owned-group and output drain; uncertain closure retains its
+protection and scrollback. Preparation survives a disconnected caller and blocks terminal
+creation/input, not Stop. Final database/filesystem fences still exclude other active work
+and concurrent writes. Preflight names real work blockers without recovering or resuming them;
+unsent UI drafts remain mounted. Sessions in other processes are not silently terminated.
 Installed files and the running process are different: replacing files requires a restart,
 not a page reload. Package-managed Linux desktops remain with their package distribution.
 
@@ -246,17 +274,48 @@ service; there is no automatic synchronization with the source.
 seat-local configuration. Keep role tool allow-lists and scope calls to the chat's
 project/plan. UI and Rust dispatch call the service directly, not through MCP or a
 subprocess per operation. Additional CLI commands can serve diagnostics or
-headless workflows without duplicating the entire old CLI surface.
+headless workflows without duplicating the entire old CLI surface. Plan responses must
+fit the runtime's output guard: oversized snapshots explicitly retain scope and revision
+and offer revision-pinned UTF-8 pages, never pretend the plan is absent or silently omit
+content. Mutations remain revision-checked and return bounded responses too.
 
 Chat MCP discovery is explicit: generated planning/context servers and unrelated
 checkout MCP servers are included; global MCP discovery is not inherited. This
 prevents standalone planning from silently reappearing alongside the scoped tools.
 It changes which servers a chat sees, not the operator's registrations or extensions.
+Settings also owns explicit app-default and project MCP definitions. Importing selected
+personal Pi definitions is a disabled snapshot pinned to the reviewed source and scope,
+not inheritance or synchronization. Enablement affects future dispatches, never a live
+turn. A disabled override suppresses the checkout's same-named server. Stale writes and
+imports fail closed; changed commands/endpoints cannot implicitly carry stored credentials.
+Credential maps remain write-only on read surfaces; embedded URL credentials are refused
+in favour of those fields, rather than disclosed in later settings reads. Discovery/save runs no command and
+opens no connection; “configured” is not “connected”. Generated planner/context allow-lists
+and browser exclusions remain authoritative; known ClickUp/Figma aliases cannot bypass
+their managed read-only settings. Fixture servers discover no personal sources by default.
 Toolbox onboarding remains a separate previewed, approved configuration workflow.
 
 MCP is an interface, not a security boundary. Server-side validation and policy
 still matter; an unrestricted shell cannot be contained by hiding a tool name.
 `awt`, file-sql and read-only context integrations are not part of this absorption.
+
+## Chat images
+
+The composer accepts dropped, pasted or selected PNG, JPEG, GIF and WebP images:
+at most four per message, five MiB each, with bounded decoding and no SVG or arbitrary
+path input. Keep text and previews through failed requests; image-only prompts are valid.
+Original bytes are immutable parts of the human turn/follow-up identity, stored with
+separate small metadata so polling does not load the payloads. Changed attachments cannot
+reuse a request key. Native Pi image arguments use private generated temporary files,
+not files in the checkout; their lifetime covers the invocation and cleanup.
+
+Agents can retrieve earlier images through chat-scoped `list_chat_images` and
+`read_chat_image` MCP tools, including during approved team work. History loads an image
+only when requested. Model image capability is checked at dispatch, without silently
+changing providers. Images never grant publication authority; approve publication
+separately. Queued delivery remains conservative: only the exact observed prompt and
+image bytes acknowledge delivery. Pi resizing/conversion may leave that receipt
+unconfirmed; inspect the response rather than automatically replaying the request.
 
 ## Model access and setup — preserve what works
 
@@ -284,8 +343,10 @@ explicit model choices.
 | Settings | Preserve working model/OAuth flows; make local setup optional |
 
 Remote capabilities are revisited **after the first round of desktop testing and
-usage**. Mobile, voice, computer-use/browser automation and general-purpose rich
-document/image features are not requirements for this first delivery. Keep later
+usage**. Mobile, voice, built-in computer-use/browser automation and general-purpose
+rich document creation/image generation are not requirements for this first delivery.
+Bounded chat screenshot/image inputs and explicitly configured external MCP tools are
+included at the operator's request. Keep later
 capabilities explicit in the parity inventory instead of implying they shipped.
 
 Codex-like permission controls must describe actual enforcement. The current Pi

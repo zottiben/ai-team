@@ -26,6 +26,9 @@ pub struct Setup {
     pub state: String,
     pub detail: String,
     pub rev: i64,
+    /// A worker claimed this receipt. Failed/unattempted means admission refused;
+    /// it owns no acquisition and cannot be revived by inspection or replay.
+    pub attempted: bool,
     pub steps: Vec<Step>,
 }
 #[derive(Debug, Serialize)]
@@ -264,6 +267,12 @@ async fn step(owner: &Ownership, cwd: &Path, program: &str, args: &[&str]) -> Re
 pub async fn inspect(db: &Path, project: i64, id: i64, revision: i64) -> Result<Setup> {
     let mut store = Store::open(db)?;
     let setup = store.workspace_setup(project, id)?;
+    if setup.state == "failed" && !setup.attempted {
+        if setup.rev != revision {
+            return Err(Error::invalid("setup changed; refresh its receipt"));
+        }
+        return Ok(setup);
+    }
     let owner = store.claim_workspace_setup(project, id, revision, true)?;
     let result = owner
         .track(async {

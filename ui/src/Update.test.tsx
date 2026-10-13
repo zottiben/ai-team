@@ -63,6 +63,34 @@ it("reviews both concrete destinations and pins the explicit approval", async ()
   expect((screen.getByRole("textbox", { name: "Draft" }) as HTMLTextAreaElement).value).toBe("Keep this unsent draft");
 });
 
+it("reviews exact app sessions and closes them only with explicit update approval", async () => {
+  status.terminals = { approval: "exact-session-scope", sessions: [{ id: 2, label: "Shell", worktree: "/fixture/repo" }] };
+  render(<Fixture settings />);
+  const button = await screen.findByRole("button", { name: "Close sessions and update" });
+  expect(screen.getByText("/fixture/repo")).toBeTruthy();
+  expect(button).toHaveProperty("disabled", true);
+  expect(post).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("checkbox", { name: /Close these app terminal/ }));
+  expect(button).toHaveProperty("disabled", false);
+  fireEvent.click(button);
+  expect(await screen.findAllByText("Restart AI Team")).toHaveLength(2);
+  expect(post).toHaveBeenCalledTimes(1);
+  expect(post).toHaveBeenCalledWith(expect.objectContaining({ body: JSON.stringify({ version: "0.7.6", approval: "exact-reviewed-targets", close_terminals: "exact-session-scope" }) }));
+  expect(screen.getByRole("textbox", { name: "Draft" })).toHaveProperty("value", "Keep this unsent draft");
+});
+
+it("requires fresh closure approval when the app session set changes", async () => {
+  status.terminals = { approval: "first", sessions: [{ id: 1, label: "Shell", worktree: "/fixture/repo" }] };
+  render(<Fixture settings />);
+  fireEvent.click(await screen.findByRole("checkbox", { name: /Close these app terminal/ }));
+  status.terminals = { approval: "second", sessions: [...status.terminals.sessions, { id: 2, label: "Provider sign-in", worktree: "/fixture/home" }] };
+  fireEvent.click(screen.getByRole("button", { name: "Check for updates" }));
+  await screen.findByText("/fixture/home");
+  expect(screen.getByRole("checkbox", { name: /Close these app terminal/ })).toHaveProperty("checked", false);
+  expect(screen.getByRole("button", { name: "Close sessions and update" })).toHaveProperty("disabled", true);
+  expect(post).not.toHaveBeenCalled();
+});
+
 it("can replace a source build with an explicitly reviewed release", async () => {
   status.method = "source";
   render(<Fixture settings />);

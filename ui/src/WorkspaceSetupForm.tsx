@@ -47,10 +47,11 @@ export default function WorkspaceSetupForm({ state, disabled, onSelect }: {
       </p>}
       {!state.loaded && <p className="faint">Loading setup receipts…</p>}
       {state.items.map((receipt) => <article className="workspace-setup-receipt" key={receipt.id}>
-        <strong>Setup {receipt.id} · {receipt.state}</strong>
+        <strong>Setup {receipt.id} · {receipt.state === "failed" && receipt.attempted === false ? "not started" : receipt.state}</strong>
         <p className="mono">{receipt.branch || `ai-team/workspace-${receipt.id}`}
           {receipt.workspace_path && <> · {receipt.workspace_path}</>}</p>
         <p>{receipt.detail || "Waiting for setup to start. No agent will run yet."}</p>
+        {receipt.state === "failed" && receipt.attempted === false && <p>No worktree was acquired. Choose an existing checkout, or submit a new setup request once the blocker is resolved. Your message is still here.</p>}
         {receipt.steps.length > 0 && <details>
           <summary>Latest setup commands and output ({receipt.steps.length})</summary>
           {receipt.steps.map((step, index) => <div key={`${step.at}:${index}`}>

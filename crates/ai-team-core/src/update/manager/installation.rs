@@ -105,6 +105,14 @@ impl UpdateInstallation {
         .map_err(|e| Error::invalid(format!("could not inspect installed programs: {e}")))?
     }
 
+    pub(super) fn check_idle(&self) -> Result<()> {
+        if let Some(db) = self.database.as_ref().filter(|db| db.exists()) {
+            Store::check_update_schema(db)?;
+            Store::check_update_idle_at(db)?;
+        }
+        Ok(())
+    }
+
     pub(super) fn install(
         &self,
         version: &str,

@@ -68,7 +68,8 @@ export function TerminalPane({
           type="button"
           className="button"
           onClick={() => {
-            if (id !== null) void closeTerminal(id).then(() => setId(null)).then(attach);
+            if (id !== null) void closeTerminal(id).then(() => setId(null)).then(attach)
+              .catch((error: unknown) => setProblem(error instanceof Error ? error.message : String(error)));
           }}
         >
           Restart

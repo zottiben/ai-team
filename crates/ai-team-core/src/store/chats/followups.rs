@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 use crate::chat::{ChatFollowup, ChatSubmission, FollowupKind};
 use crate::{Error, ModelRegistry, NodeStatus, Result, Store};
 
-const SELECT: &str = "SELECT id,chat_id,after_node_id,body,kind,state,node_id,created_at,delivered_at FROM chat_followup";
+const SELECT: &str = "SELECT id,chat_id,after_node_id,body,kind,state,node_id,created_at,delivered_at,json_array_length(images_meta) FROM chat_followup";
 
 impl Store {
     pub fn chat_followups(&self, chat: i64) -> Result<Vec<ChatFollowup>> {
@@ -41,6 +41,26 @@ impl Store {
         request: &str,
         kind: FollowupKind,
     ) -> Result<ChatFollowup> {
+        self.queue_chat_followup_with_images(
+            chat,
+            after,
+            body,
+            request,
+            kind,
+            &crate::chat_images::Images::default(),
+        )
+    }
+
+    pub fn queue_chat_followup_with_images(
+        &mut self,
+        chat: i64,
+        after: i64,
+        body: &str,
+        request: &str,
+        kind: FollowupKind,
+        images: &crate::chat_images::Images,
+    ) -> Result<ChatFollowup> {
+        let images = images.json()?;
         let body = body.trim();
         super::validate_message(body, request)?;
         let kind = match kind {
@@ -49,7 +69,7 @@ impl Store {
         };
         let id = self.db_mut().write(|tx| {
             if let Some((id, prior, text, intent)) = tx.query_row("SELECT id,after_node_id,body,kind FROM chat_followup WHERE chat_id=?1 AND request_id=?2", params![chat,request], |r| Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?))).optional()? {
-                if prior != after || text != body || intent != kind { return Err(Error::invalid("that request id belongs to another queued instruction")); }
+                if prior != after || text != body || intent != kind || super::super::chat_images::queued_json(tx, id)? != images { return Err(Error::invalid("that request id belongs to another queued instruction or image attachment")); }
                 return Ok(id);
             }
             super::super::chat_workspaces::pending(tx, chat)?;
@@ -57,7 +77,7 @@ impl Store {
             if !allowed { return Err(Error::invalid("that solo turn is no longer accepting instructions; inspect its receipts, or clear this draft before composing for another turn")); }
             let pending: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM chat_followup WHERE chat_id=?1 AND state='queued')", [chat], |r| r.get(0))?;
             if pending { return Err(Error::invalid("this chat already has a queued instruction; cancel it before replacing it")); }
-            tx.execute("INSERT INTO chat_followup(chat_id,after_node_id,request_id,body,kind,created_at) VALUES(?1,?2,?3,?4,?5,?6)", params![chat,after,request,body,kind,crate::now()])?;
+            tx.execute("INSERT INTO chat_followup(chat_id,after_node_id,request_id,body,kind,created_at,images_json,images_meta) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)", params![chat,after,request,body,kind,crate::now(),images,super::super::chat_images::describe(&images)?])?;
             let id = tx.last_insert_rowid();
             tx.execute("UPDATE chat SET stop_requested=CASE WHEN ?2='steer' THEN 1 ELSE stop_requested END, rev=rev+1, updated_at=?3 WHERE id=?1", params![chat,kind,crate::now()])?;
             note(tx, after, if kind == "steer" { "Steering queued; stopping and draining this exact turn before starting a follow-up. Not delivered yet." } else { "Follow-up queued for this turn's completion. Not delivered yet." })?;
@@ -100,6 +120,10 @@ impl Store {
             &format!("followup/{id}"),
             registry,
             super::TurnOptions {
+                images_json: Some(super::super::chat_images::queued_json(
+                    self.db().conn(),
+                    id,
+                )?),
                 followup: Some(id),
                 ..super::TurnOptions::default()
             },
@@ -215,6 +239,31 @@ pub(crate) fn acknowledge(
     else {
         return Ok(());
     };
+    let expected: Option<String> = conn
+        .query_row(
+            "SELECT images_json FROM chat_followup WHERE node_id=?1 AND state='starting'",
+            [node],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let Some(expected) = expected else {
+        return Ok(());
+    };
+    let expected: Vec<crate::chat_images::ImageInput> = serde_json::from_str(&expected)?;
+    let actual = content
+        .iter()
+        .filter(|value| value["type"] == "image")
+        .collect::<Vec<_>>();
+    if actual.len() != expected.len()
+        || actual.iter().zip(&expected).any(|(actual, expected)| {
+            actual["data"].as_str() != Some(expected.data.as_str())
+                || actual["mimeType"].as_str() != Some(expected.media_type.as_str())
+        })
+    {
+        // Pi may resize an image. Keep an unconfirmed receipt rather than asserting
+        // delivery of bytes we did not observe or ever replaying that instruction.
+        return Ok(());
+    }
     let text: String = content
         .iter()
         .filter(|v| v["type"] == "text")
@@ -235,6 +284,7 @@ fn note(conn: &rusqlite::Connection, node: i64, summary: &str) -> Result<()> {
 
 fn from_row(row: &Row<'_>) -> rusqlite::Result<ChatFollowup> {
     Ok(ChatFollowup {
+        image_count: row.get(9)?,
         id: row.get(0)?,
         chat_id: row.get(1)?,
         after_node_id: row.get(2)?,
