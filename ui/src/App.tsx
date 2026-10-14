@@ -12,6 +12,7 @@ import { Roster } from "./Roster";
 const Schedule = lazy(() => import("./Schedule").then(m => ({ default: m.Schedule })));
 const Settings = lazy(() => import("./Settings").then(m => ({ default: m.Settings })));
 import { Setup } from "./Setup";
+const SynthToggle = lazy(() => import("./SynthToggle").then(m => ({ default: m.SynthToggle })));
 import { Today } from "./Today";
 import { UpdateBanner, useUpdates } from "./Update";
 import {
@@ -419,6 +420,7 @@ export default function App() {
                 {label}
               </button>
             ))}
+            <Suspense fallback={null}><SynthToggle /></Suspense>
           </nav>
         </Popover>}
         <div className="chat-sidebar-footer">

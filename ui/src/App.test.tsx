@@ -189,6 +189,7 @@ beforeEach(() => {
   ];
   localStorage.clear();
   document.documentElement.removeAttribute("data-theme");
+  document.documentElement.removeAttribute("data-synth");
 });
 
 it("opens chat-first with real chats beneath their project, not a run list", async () => {
@@ -201,6 +202,25 @@ it("opens chat-first with real chats beneath their project, not a run list", asy
     within(sidebar).getByRole("button", { name: "First conversation" }),
   ).not.toBeNull();
   expect(screen.queryByRole("heading", { name: "Today content" })).toBeNull();
+});
+
+it("switches Synth in place from More without replacing the chat or its event subscription", async () => {
+  localStorage.setItem("ai-team.theme", "light");
+  render(<App />);
+  fireEvent.click(await screen.findByRole("button", { name: "First conversation" }));
+  const draft = screen.getByLabelText("Fixture draft");
+  const subscription = state.subscribe;
+  fireEvent.change(draft, { target: { value: "Keep my unsent message" } });
+  fireEvent.click(screen.getByRole("button", { name: "More tools" }));
+  fireEvent.click(await screen.findByRole("switch", { name: "Synth UI preview" }));
+  expect(document.documentElement.dataset.synth).toBe("true");
+  expect(document.documentElement.dataset.theme).toBe("light");
+  expect(screen.getByLabelText("Fixture draft")).toBe(draft);
+  expect((draft as HTMLInputElement).value).toBe("Keep my unsent message");
+  expect(state.subscribe).toBe(subscription);
+  fireEvent.click(screen.getByRole("switch", { name: "Synth UI preview" }));
+  expect(document.documentElement.dataset.synth).toBe("false");
+  expect(screen.getByLabelText("Fixture draft")).toBe(draft);
 });
 
 it("shows archived chats only on request without closing an open chat or discarding its draft", async () => {

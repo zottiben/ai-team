@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, expect, it, vi } from "vitest";
 
 import { Settings } from "./Settings";
+import { setSynth } from "./ui-preferences";
 import type { ContextSetting, Settings as SettingsData } from "./api";
 
 afterEach(() => {
@@ -226,6 +227,20 @@ it("says where the file is, because it is meant to stay hand-editable", async ()
   stub();
   render(<Settings theme="dark" onTheme={() => {}} onChanged={() => {}} />);
   expect(await screen.findByText("/home/me/.config/ai-team/machine.toml")).toBeDefined();
+});
+
+it("enables only a local isolated Synth preview without changing the theme or machine profile", async () => {
+  const calls = stub(), onTheme = vi.fn(), changed = vi.fn();
+  setSynth(false);
+  const view = render(<Settings theme="light" onTheme={onTheme} onChanged={changed} />);
+  await userEvent.click(await screen.findByRole("switch", { name: "Synth UI preview" }));
+  expect(await screen.findByText("Synth foundation")).toBeDefined();
+  expect(localStorage.getItem("ui.synth")).toBe("true");
+  expect(calls.every(call => call.method === "GET")).toBe(true);
+  expect(onTheme).not.toHaveBeenCalled(); expect(changed).not.toHaveBeenCalled();
+  await userEvent.click(screen.getByRole("switch", { name: "Synth UI preview" }));
+  expect(screen.queryByText("Synth foundation")).toBeNull();
+  view.unmount(); setSynth(false);
 });
 
 it("switching theme is immediate and does not touch the server", async () => {

@@ -14,6 +14,9 @@ import {
   type Settings as SettingsData,
 } from "./api";
 import { type Theme } from "./theme";
+import { SynthToggle } from "./SynthToggle";
+import { useSynth } from "./ui-preferences";
+const SynthPreview = lazy(() => import("./synth/SynthPreview"));
 
 /**
  * Everything that used to need a text editor or a CLI.
@@ -35,6 +38,7 @@ export function Settings({
   onTheme: (theme: Theme) => void;
   onChanged: () => void;
 }) {
+  const synth = useSynth();
   const [data, setData] = useState<SettingsData | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
 
@@ -216,6 +220,9 @@ export function Settings({
 
       <section className="settings__group">
         <h3>Appearance</h3>
+        <SynthToggle />
+        <p className="faint">Opt-in ui.synth preview, stored locally. The existing theme and chat state are kept; this does not change your machine profile.</p>
+        {synth && <Suspense fallback={<p>Loading Synth preview…</p>}><SynthPreview /></Suspense>}
         <div className="settings__row">
           {(["system", "dark", "light"] as const).map((option) => (
             <button

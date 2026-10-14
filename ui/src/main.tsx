@@ -4,6 +4,9 @@ import { createRoot } from "react-dom/client";
 import App from "./App";
 import { captureToken } from "./api";
 import "./styles.css";
+import { initializeSynth } from "./ui-preferences";
+
+initializeSynth();
 
 // Before the first render, and before anything can fetch: the token has to be out of
 // the address bar and into this tab's storage.
