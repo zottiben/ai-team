@@ -64,6 +64,17 @@ it("captures a drag, commits only on release and applies Shift to incremental de
   expect(commit).toHaveBeenCalledExactlyOnceWith(.71);
 });
 
+it("does not cancel the captured pointer when another touch ends", () => {
+  const commit = vi.fn(); render(<Knob label="Amount" value={.5} onCommit={commit} />);
+  const knob = screen.getByRole("slider");
+  fireEvent.pointerDown(knob, { pointerId: 1, clientY: 200, button: 0 });
+  fireEvent.pointerMove(knob, { pointerId: 1, clientY: 180 });
+  fireEvent.pointerCancel(knob, { pointerId: 2 });
+  fireEvent.lostPointerCapture(knob, { pointerId: 2 });
+  fireEvent.pointerUp(knob, { pointerId: 1, clientY: 180 });
+  expect(commit).toHaveBeenCalledExactlyOnceWith(.6);
+});
+
 it("cancels interrupted drags and pending commits when disabled or unmounted", () => {
   const commit = vi.fn();
   const view = render(<Knob label="Amount" value={.5} onCommit={commit} />);

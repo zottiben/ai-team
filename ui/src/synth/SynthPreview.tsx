@@ -11,7 +11,8 @@ import { Knob } from "./primitives/Knob";
 import { SegmentMeter } from "./primitives/SegmentMeter";
 import { VuMeter } from "./primitives/VuMeter";
 import { Chase } from "./primitives/Chase";
-import { Cable } from "./primitives/Cable";
+import { PatchDemo } from "./PatchDemo";
+import { GraphPreview } from "./GraphPreview";
 import "./primitives.css";
 
 const LEVELS = ["Low", "Medium", "High", "Max"];
@@ -26,7 +27,6 @@ export default function SynthPreview() {
   const [working, setWorking] = useState(false);
   const [event, setEvent] = useState(0);
   const [view, setView] = useState("overview");
-  const [patch, setPatch] = useState({ connected: false, event: 0 });
   return <SynthProvider><div className="synth-ui synth-preview">
     <h3>Synth foundation</h3>
     <p className="synth-muted">Preview controls only — not agent settings or live telemetry. Chat screens are unchanged while the new skin is built. No licensed fonts or external assets are loaded.</p>
@@ -58,16 +58,12 @@ export default function SynthPreview() {
           <div className="synth-preview__controls"><HwButton variant="primary">Primary example</HwButton><HwButton variant="danger">Danger example</HwButton><HwButton variant="comment">Comment example</HwButton></div>
         </div>
       </Plate>
-      <Plate tone="night" heading="Cable · connection spring">
-        <Lcd>
-          <svg className="synth-preview__cable" viewBox="0 0 300 160" aria-hidden="true">
-            <Cable from={{ x: 25, y: 25 }} to={{ x: 275, y: 25 }} connected={patch.connected} eventId={patch.event} />
-          </svg>
-          <p>{patch.connected ? "Connected example" : "Gate closed example"}</p>
-          <HwButton onClick={() => setPatch(p => ({ connected: !p.connected, event: p.event + 1 }))}>{patch.connected ? "Disconnect example" : "Connect example"}</HwButton>
-        </Lcd>
-      </Plate>
+      <Plate tone="night" heading="Cables · click, drag or keyboard"><PatchDemo /></Plate>
     </div>
+    <GraphPreview working={working} />
+    <Plate tone="ice" heading="Readout sizes · light faceplate"><div className="synth-preview__controls">
+      {([40, 44, 52, 68, 72, 120] as const).map(size => <Knob key={size} label={`${size}px readout`} size={size} value={input} readOnly light />)}
+    </div></Plate>
     <div className="synth-preview__grid">{TONES.map(tone => <Plate key={tone} tone={tone} heading={tone} actions={<Led state="on" bezel size={6} />}>
       <p>Faceplate · {tone}</p><p className="synth-muted">Secondary text remains readable.</p><Lcd>Read-only LCD data</Lcd>
     </Plate>)}</div>

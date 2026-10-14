@@ -107,8 +107,12 @@ export function Knob({ label, value, onCommit, detents, valueText, defaultValue 
 
   return <div className="synth-knob-control" style={signalStyle(signal)} data-light={light || undefined}>
     <span className="synth-silk">{label}</span>
-    <div className="synth-knob-labels" ref={labels}>
-      {detents?.map((name, i) => <span key={`${i}:${name}`} data-active={i === Math.round(ratio(value) * steps)}>{name}</span>)}
+    <div className="synth-knob-face" data-detents={!!detents?.length || undefined} style={{ width: size, height: size }}>
+    <div className="synth-knob-labels" ref={labels} aria-hidden="true">
+      {detents?.map((name, i) => {
+        const [left, top] = point(c, c + 15, steps ? -135 + 270 * i / steps : 0);
+        return <span key={`${i}:${name}`} title={name} style={{ left, top }} data-active={i === Math.round(ratio(value) * steps)}>{name}</span>;
+      })}
     </div>
     <div ref={host} className="synth-knob" role={readOnly ? "meter" : "slider"} aria-label={label} aria-orientation={readOnly ? undefined : "vertical"}
       aria-valuemin={0} aria-valuemax={steps || 100} aria-valuenow={steps ? Math.round(ratio(value) * steps) : Math.round(ratio(value) * 100)}
@@ -141,7 +145,8 @@ export function Knob({ label, value, onCommit, detents, valueText, defaultValue 
         } else { paint(to); setMoving(false); }
         onCommit?.(to);
       }}
-      onPointerCancel={reset} onLostPointerCapture={() => { if (drag.current) reset(); }}
+      onPointerCancel={event => { if (drag.current?.id === event.pointerId) reset(); }}
+      onLostPointerCapture={event => { if (drag.current?.id === event.pointerId) reset(); }}
       onDoubleClick={() => { if (!locked) { cancelTimer(); live.current = snapped(defaultValue); paint(live.current); onCommit?.(live.current); } }}
       onKeyDown={event => {
         if (event.key === "Escape" && (drag.current || timer.current !== null)) { event.preventDefault(); reset(); return; }
@@ -159,6 +164,7 @@ export function Knob({ label, value, onCommit, detents, valueText, defaultValue 
       </svg>
       <span className="synth-knob__cap" style={{ inset: Math.round(size * 0.17) }} />
       <span ref={pointer} className="synth-knob__pointer" style={{ inset: Math.round(size * 0.17), transform: `rotate(${-135 + 270 * display.current}deg)` }}><span style={{ height: size * 0.19 }} /></span>
+    </div>
     </div>
     <span ref={output} className="synth-knob__value">{text(live.current)}</span>
   </div>;

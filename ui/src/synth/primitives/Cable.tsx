@@ -12,8 +12,15 @@ export function Cable({ from, to, signal = "diff", connected, eventId }: {
   const elapsed = useRef(0);
   const reduced = useReducedMotion();
   const draw = (factor: number) => group.current?.querySelectorAll("path").forEach(path => path.setAttribute("d", cablePath(from, to, factor)));
-  const identity = `${from.x}:${from.y}:${to.x}:${to.y}:${connected}:${eventId ?? ""}`;
-  useLayoutEffect(() => { elapsed.current = 0; draw(reduced || eventId === undefined || !connected ? 1 : 0); }, [identity, reduced]);
+  const identity = `${connected}:${eventId ?? ""}`;
+  useLayoutEffect(() => {
+    elapsed.current = reduced || eventId === undefined || !connected ? 1200 : 0;
+    draw(spring(elapsed.current / 1000));
+  }, [identity]);
+  useLayoutEffect(() => {
+    if (reduced) elapsed.current = 1200;
+    draw(spring(elapsed.current / 1000));
+  }, [from.x, from.y, to.x, to.y, reduced]);
   useTicker(group, (_now, dt) => {
     elapsed.current += dt;
     draw(spring(elapsed.current / 1000));
