@@ -6,6 +6,8 @@ use ai_team_core::{Event, EventKind, PiEvent};
 use serde::Serialize;
 use serde_json::Value;
 
+mod edits;
+
 const TARGET_CHARS: usize = 1_024;
 const OUTPUT_CHARS: usize = 4_000;
 const OUTPUT_BLOCKS: usize = 64;
@@ -42,6 +44,7 @@ pub(crate) struct ToolActivity {
     duration_ms: Option<f64>,
     /// Plain text only, and only for the native shell tools. Not an interactive PTY.
     output: Option<BoundedText>,
+    edits: Option<edits::EditCounts>,
 }
 
 fn identity(value: Option<&Value>, bytes: usize) -> Option<String> {
@@ -185,6 +188,9 @@ pub(crate) fn tool(event: &Event) -> Option<ToolActivity> {
     let output = (end && matches!(name.as_deref(), Some("bash" | "powershell")))
         .then(|| output(data))
         .flatten();
+    let edits = (name.as_deref() == Some("edit") && matches!(outcome, Some(Outcome::Returned)))
+        .then(|| edits::counts(data))
+        .flatten();
     Some(ToolActivity {
         call_id: identity(data.get("toolCallId"), 256),
         parent_call_id: identity(data.get("parentToolCallId"), 256),
@@ -193,6 +199,7 @@ pub(crate) fn tool(event: &Event) -> Option<ToolActivity> {
         outcome,
         duration_ms,
         output,
+        edits,
     })
 }
 
@@ -215,6 +222,34 @@ mod tests {
             observation: None,
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn edit_counts_are_reported_metadata_not_source_or_inferred_write_lengths() {
+        let value = projected(
+            EventKind::ToolResult,
+            json!({"toolName":"edit", "isError":false,
+            "result":{"details":{"diff":" 1 context\n-2 private old source\n+2 private new source\n+3 another line\n     ...", "firstChangedLine":2}}}),
+        );
+        assert_eq!(
+            value["edits"],
+            json!({"added":2,"removed":1,"first_changed_line":2,"source":"pi_edit_diff"})
+        );
+        assert!(!value.to_string().contains("private"));
+        for name in ["write", "bash", "mcp__edit"] {
+            let value = projected(
+                EventKind::ToolResult,
+                json!({"toolName":name,"isError":false,
+                "result":{"details":{"diff":"+1 source"}}}),
+            );
+            assert!(value["edits"].is_null());
+        }
+        let failed = projected(
+            EventKind::ToolResult,
+            json!({"toolName":"edit", "isError":true,
+            "result":{"details":{"diff":"+1 source"}}}),
+        );
+        assert!(failed["edits"].is_null());
     }
 
     #[test]

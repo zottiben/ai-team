@@ -38,6 +38,18 @@ describe("shared tracker rendering", () => {
     await waitFor(() => expect(output.open).toBe(true));
   });
 
+  it("shows recorded native edit counts without inventing counts for writes", async () => {
+    const start = tool(1, "tool_call", "edit"), end = tool(2, "tool_result", "edit");
+    if (!start.tool || !end.tool) throw new Error("Missing fixture metadata");
+    start.tool.name = end.tool.name = "edit";
+    end.tool.edits = { added: 3, removed: 2, first_changed_line: 42, source: "pi_edit_diff" };
+    const view = render(<Tracker {...props} events={[start, end]}/>);
+    expect(screen.getByText("+3 −2 reported lines · first change 42")).toBeTruthy();
+    view.rerender(<Tracker {...props} events={[{ ...start, tool: { ...start.tool, name: "write" } }]}/>);
+    expect(screen.getByText("Edit counts unavailable")).toBeTruthy();
+    expect(screen.queryByText(/reported lines/)).toBeNull();
+  });
+
   it("keeps message DOM and expanded summaries across both skins", async () => {
     const thought = { ...message(2), kind: "cost", message: null, thinking: ["Inspecting safely"] };
     const events = [message(1), thought];

@@ -14,6 +14,7 @@ export function ToolRow({ row, disclosure }: { row: ToolActivityRow; disclosure:
   const tool = row.start?.tool ?? row.result?.tool;
   const output = row.result?.tool?.output;
   const result = row.result?.tool?.outcome;
+  const edits = row.result?.tool?.edits;
   const status = result === "failed" ? "Failed" : result === "returned" ? "Returned" : row.result ? "Result status unknown" : "Return not recorded";
   const correlation = { paired: "", start_only: "", result_only: "Start not recorded", missing_identity: "Unpaired · identity unavailable", ambiguous: "Unpaired · ambiguous identity" }[row.correlation];
   const time = row.duration ? `${row.duration.milliseconds.toLocaleString(undefined, { maximumFractionDigits: 1 })} ms${row.duration.source === "observed" ? " observed" : " runtime"}` : "Timing unavailable";
@@ -34,7 +35,7 @@ export function ToolRow({ row, disclosure }: { row: ToolActivityRow; disclosure:
         {[row.start, row.result].map(item => item && <p key={item.id}>#{item.id} · {item.actor ?? "unknown actor"} · {item.summary}<br/>Recorded {item.at} (coarse) · session {item.session_id ?? "unknown"}{item.observation && <><br/>Received {item.observation.at}</>}</p>)}
       </details>
     </div>
-    <span className="synth-tracker-meta" title={row.duration?.source === "observed" ? "Host-observed receive interval, not execution duration" : row.duration ? "Pi-reported execution duration" : "No precise timing was recorded"}>{time}{row.lane === "edit" && <small>Edit counts unavailable</small>}</span>
+    <span className="synth-tracker-meta" title={row.duration?.source === "observed" ? "Host-observed receive interval, not execution duration" : row.duration ? "Pi-reported execution duration" : "No precise timing was recorded"}>{time}{row.lane === "edit" && <small>{edits ? `+${edits.added} −${edits.removed} reported lines${edits.first_changed_line === null ? "" : ` · first change ${edits.first_changed_line}`}` : "Edit counts unavailable"}</small>}</span>
     <Led state={result === "returned" || result === "failed" ? "on" : "off"} signal={result === "failed" ? "attention" : "done"}/>
   </div>;
 }

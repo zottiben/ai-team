@@ -19,4 +19,6 @@ export type ToolActivity = {
   duration_ms: number | null;
   /** Bounded completed shell output; not a live PTY or a command input surface. */
   output: BoundedActivityText | null;
+  /** Reported native edit lines, not net checkout statistics or guessed write counts. */
+  edits?: { added: number; removed: number; first_changed_line: number | null; source: "pi_edit_diff" } | null;
 };

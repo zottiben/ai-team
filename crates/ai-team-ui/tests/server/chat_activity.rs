@@ -30,6 +30,45 @@ fn offline_stream() -> Vec<PiEvent> {
 }
 
 #[test]
+fn edit_activity_exposes_counts_without_exporting_the_source_diff() {
+    let (h, dir) = Harness::with_store();
+    let mut store = Store::open(&dir.path().join("team.db")).unwrap();
+    let project = store.find_project("widget").unwrap();
+    let chat = store
+        .create_chat(NewChat {
+            project_id: project.id,
+            workspace: dir.path().to_path_buf(),
+            provider: Provider::Local,
+            model: "test-model".into(),
+            reasoning: Reasoning::High,
+        })
+        .unwrap();
+    let turn = store
+        .begin_chat_turn(chat.id, "Edit", "edit-counts", &ModelRegistry::local_only())
+        .unwrap();
+    let event = PiEvent::parse(&json!({"type":"tool_execution_end", "toolCallId":"edit-1", "toolName":"edit", "isError":false,
+        "result":{"details":{"diff":"-1 private source before\n+1 private source after", "firstChangedLine":1}}}).to_string()).unwrap();
+    store
+        .ingest_pi_events(turn.node_id, "edit-session", 0, &[event])
+        .unwrap();
+    let response = h.get(&format!("/api/chats/{}/events", chat.id));
+    assert_eq!(response.status, 200);
+    let events = response.json();
+    let edit = events
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|event| event["kind"] == "tool_result")
+        .unwrap();
+    assert_eq!(
+        edit["tool"]["edits"],
+        json!({"added":1,"removed":1,"first_changed_line":1,"source":"pi_edit_diff"})
+    );
+    assert_eq!(edit["session_id"], "edit-session");
+    assert!(!response.body.contains("private source"));
+}
+
+#[test]
 fn chat_activity_projects_exact_tool_identity_without_raw_provider_payloads() {
     let (h, dir) = Harness::with_store();
     let mut store = Store::open(&dir.path().join("team.db")).unwrap();
