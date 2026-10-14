@@ -40,6 +40,21 @@ it("a preset wraps, exposes its selected option, returns focus, and uses one ann
   expect(document.querySelectorAll('[aria-live="polite"]')).toHaveLength(1);
 });
 
+it("waits until the portal is placed before focusing its selected preset", async () => {
+  const focus = HTMLElement.prototype.focus;
+  const spy = vi.spyOn(HTMLElement.prototype, "focus").mockImplementation(function(this: HTMLElement, options?: FocusOptions) {
+    // jsdom otherwise focuses visibility:hidden nodes, unlike Chromium/WKWebView.
+    if (this.closest<HTMLElement>(".anchored-popover")?.style.visibility === "hidden") return;
+    focus.call(this, options);
+  });
+  try {
+    const user = userEvent.setup();
+    render(<SynthProvider><PresetSelector label="Mode" options={[{ id: "a", label: "First" }, { id: "b", label: "Second" }]} value="b" onChange={vi.fn()}/></SynthProvider>);
+    await user.click(screen.getByRole("button", { name: "Mode" }));
+    expect(document.activeElement).toBe(screen.getByRole("option", { name: "Second" }));
+  } finally { spy.mockRestore(); }
+});
+
 it("native switches work by keyboard and locked keys state their reason", async () => {
   const change = vi.fn(), user = userEvent.setup();
   render(<><Switch label="Preview" checked={false} onChange={change} /><HwButton lockedReason="Agent is working">Commit</HwButton></>);

@@ -24,6 +24,7 @@ const SessionTabs = lazy(() => import("./synth/views/Session/SessionNavigation")
 const PanelFrame = lazy(() => import("./synth/views/panels/PanelFrame"));
 const Tracker = lazy(() => import("./synth/views/Session/Tracker/Tracker"));
 const LiveRow = lazy(() => import("./synth/views/Session/Tracker/LiveRow"));
+const ComposerDeck = lazy(() => import("./synth/views/Session/ComposerDeck"));
 import {
   archiveChat,
   restoreChat,
@@ -212,6 +213,16 @@ export function ChatView({
   const outcome = chatOutcome(detail, events);
   const activeTeam = detail?.turns.find((turn) => turn.team?.control_node_id === detail.active_node_id)?.team;
   const mode = detail?.mode ?? newMode;
+  const chooseModel = (value: string) => {
+    modelPicked.current = true;
+    setModelKey(value);
+    if (catalogue.find(choice => `${choice.provider}/${choice.model}` === value)?.thinking === false) setNewReasoning("none");
+  };
+  const chooseMode = (value: string) => {
+    const next = value === "team" ? "team" : "single";
+    if (detail) void command(() => setChatMode(detail.id, next, detail.rev));
+    else setNewMode(next);
+  };
   const queued = detail?.followups?.find((item) => item.state === "queued");
   const arriving = useFollowupArrivals(detail?.followups);
   const receipts = useMemo(() => new Map((detail?.followups ?? []).filter(item => item.node_id !== null && (item.state === "starting" || item.state === "delivered")).map(item => [item.node_id, item])), [detail?.followups]);
@@ -546,18 +557,16 @@ export function ChatView({
         <div className="chat-composer-context">
           <span title={project.name}>{project.name}</span>
           <ChatWorkspace project={project.slug} detail={detail} selected={newWorkspace} tick={tick} disabled={busy || !!detail?.archived || (id !== null && !detail) || (id === null && created.current !== null)} onSelect={setNewWorkspace} onChanged={() => { setTool(null); onChanged(); void load(); }} onPending={setWorkspacePending} />
-          <span className="chat-select">
+          {synth ? <Suspense fallback={<span>Mode: {mode}</span>}><ComposerDeck label="Execution mode" value={mode}
+            options={[{ id: "single", label: "Single agent · Pi" }, { id: "team", label: "Team · Pi" }]}
+            disabled={busy || active || !!queued || !!detail?.archived || (id !== null && !detail) || (id === null && created.current !== null)} onChange={chooseMode}/></Suspense> : <span className="chat-select">
           <select aria-label="Execution mode" value={mode} disabled={busy || active || !!queued || detail?.archived || (id !== null && !detail) || (id === null && created.current !== null)}
-            onChange={(event) => {
-              const next = event.target.value === "team" ? "team" : "single";
-              if (detail) void command(() => setChatMode(detail.id, next, detail.rev));
-              else setNewMode(next);
-            }}>
+            onChange={event => chooseMode(event.target.value)}>
             <option value="single">Single agent · Pi</option>
             <option value="team">Team · Pi</option>
           </select>
           <SelectChevron />
-          </span>
+          </span>}
         </div>
         {!!images.length && <Suspense fallback={<p>Loading image previews…</p>}><ImageDrafts images={images} disabled={busy || readingImages} onRemove={index => setImages(previous => previous.filter((_, i) => i !== index))}/></Suspense>}
         {readingImages && <p role="status">Reading images…</p>}
@@ -589,22 +598,20 @@ export function ChatView({
           <div className="chat-composer-options">
           <input ref={imagePicker} type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden aria-label="Choose images" onChange={event => { const files = Array.from(event.target.files ?? []); event.target.value = ""; void attach(files); }}/>
           <button type="button" className="button" disabled={busy || readingImages || detail?.archived} onClick={() => imagePicker.current?.click()} title="Drop or paste images, or choose files. Up to 4 images, 5 MiB each.">Attach image</button>
-          <span
+          {synth ? <details className="synth-execution-policy"><summary>Execution policy</summary><p>Tools are guarded to the checkout; this is not an OS sandbox. Publishing is controlled separately. This is not a guard-off control.</p></details> : <span
             className="faint"
             title="Tools are guarded to the checkout; this is not an OS sandbox. Publishing is controlled separately."
           >
             Checkout guard
-          </span>
-          {id === null ? (
+          </span>}
+          {id === null && synth ? <Suspense fallback={<span>Model: {modelKey || "not selected"}</span>}><ComposerDeck label="Model" value={modelKey || "Choose a provider in Settings"}
+            options={catalogue.map(choice => ({ id: `${choice.provider}/${choice.model}`, label: `${choice.model} · ${choice.provider}` }))}
+            disabled={busy || created.current !== null} onChange={chooseModel}/></Suspense> : id === null ? (
             <span className="chat-select chat-model-select">
             <select
               aria-label="Model"
               value={modelKey}
-              onChange={(event) => {
-                modelPicked.current = true;
-                setModelKey(event.target.value);
-                if (catalogue.find(choice => `${choice.provider}/${choice.model}` === event.target.value)?.thinking === false) setNewReasoning("none");
-              }}
+              onChange={event => chooseModel(event.target.value)}
               disabled={busy || created.current !== null}
             >
               {!catalogue.length && (
@@ -625,7 +632,7 @@ export function ChatView({
             <span className="chat-model-name faint" title={detail?.model}>{detail?.model}</span>
           )}
           {mode === "single" ? <Suspense fallback={<span className="faint">Thinking…</span>}>
-            <ThinkingSelect
+            <ThinkingSelect synth={synth}
               provider={thinkingModel?.provider ?? null}
               model={thinkingModel?.model ?? null}
               value={thinkingValue}
@@ -642,11 +649,12 @@ export function ChatView({
           </Suspense> : <span className="faint">Team thinking · per-seat settings</span>}
           </div>
           <div className="chat-composer-actions">
-          {soloActive && running && hasDraft && <button type="button" className="button" disabled={busy || !canQueue} onClick={() => void queue("steer")}>Stop and steer</button>}
+          {soloActive && running && hasDraft && <button type="button" className="button synth-steer" disabled={busy || !canQueue} onClick={() => void queue("steer")}>Stop and steer</button>}
           <button
             type={showStop ? "button" : "submit"}
             className="chat-send"
             data-working={soloActive && running}
+            data-stop={showStop || undefined}
             aria-label={actionLabel}
             title={actionLabel}
             onClick={() => {

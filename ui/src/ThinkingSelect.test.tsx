@@ -135,6 +135,59 @@ it("shows the policy fallback's capabilities without changing the requested effo
   expect(onChange).toHaveBeenCalledWith("high");
 });
 
+it("uses every supported Synth detent and commits keyboard input only after the debounce", async () => {
+  const onChange = vi.fn();
+  render(<ThinkingSelect synth provider="openai" model="fixture" value="none" onChange={onChange}/>);
+  const knob = await screen.findByRole("slider", { name: "Thinking effort" });
+  await waitFor(() => expect(knob.getAttribute("aria-valuemax")).toBe("6"));
+  fireEvent.keyDown(knob, { key: "End" });
+  expect(onChange).not.toHaveBeenCalled();
+  await waitFor(() => expect(onChange).toHaveBeenCalledWith("max"));
+});
+
+it("does not snap unsupported Synth preferences or invent unrecorded history", async () => {
+  service.getModelThinking.mockResolvedValue(capabilities(["low", "medium"]));
+  const onChange = vi.fn();
+  const view = render(<ThinkingSelect synth provider="openai" model="fixture" value="max" onChange={onChange}/>);
+  const knob = await screen.findByRole("slider", { name: "Thinking effort" });
+  expect(await screen.findByText(/Max is not supported/)).toBeTruthy();
+  expect(knob.getAttribute("aria-valuetext")).toBe("Max");
+  expect(onChange).not.toHaveBeenCalled();
+  fireEvent.keyDown(knob, { key: "Home" });
+  await waitFor(() => expect(onChange).toHaveBeenCalledWith("low"));
+  view.rerender(<ThinkingSelect synth disabled provider="openai" model="fixture" value="" onChange={onChange}/>);
+  expect(knob.getAttribute("aria-valuetext")).toBe("Not recorded");
+  expect(knob.getAttribute("aria-disabled")).toBe("true");
+});
+
+it("shares one capability receipt across skins and cancels pending knob writes when locked", async () => {
+  const onChange = vi.fn();
+  const view = render(<ThinkingSelect provider="openai" model="fixture" value="high" onChange={onChange}/>);
+  await waitFor(() => expect(select().disabled).toBe(false));
+  view.rerender(<ThinkingSelect synth provider="openai" model="fixture" value="high" onChange={onChange}/>);
+  const knob = await screen.findByRole("slider", { name: "Thinking effort" });
+  expect(service.getModelThinking).toHaveBeenCalledTimes(1);
+  fireEvent.keyDown(knob, { key: "Home" });
+  view.rerender(<ThinkingSelect synth disabled provider="openai" model="fixture" value="high" onChange={onChange}/>);
+  await new Promise(resolve => setTimeout(resolve, 300));
+  expect(onChange).not.toHaveBeenCalled();
+  expect(knob.getAttribute("aria-valuetext")).toBe("High");
+});
+
+it("discards a pending Synth detent on a model switch rather than writing the old model's choice", async () => {
+  const onChange = vi.fn();
+  const view = render(<ThinkingSelect synth provider="openai" model="first" value="high" onChange={onChange}/>);
+  const knob = await screen.findByRole("slider", { name: "Thinking effort" });
+  await waitFor(() => expect(knob.getAttribute("aria-disabled")).toBe("false"));
+  fireEvent.keyDown(knob, { key: "Home" });
+  service.getModelThinking.mockImplementation(() => new Promise(() => {}));
+  view.rerender(<ThinkingSelect synth provider="openai" model="second" value="high" onChange={onChange}/>);
+  await new Promise(resolve => setTimeout(resolve, 300));
+  expect(onChange).not.toHaveBeenCalled();
+  expect(knob.getAttribute("aria-disabled")).toBe("true");
+  expect(knob.getAttribute("aria-valuetext")).toBe("High");
+});
+
 it("asks for nothing until a model is chosen", async () => {
   render(<ThinkingSelect provider={null} model={null} value="medium" onChange={vi.fn()} />);
   await waitFor(() => expect(select().value).toBe("medium"));

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 
 import {
   getModelThinking,
@@ -9,6 +9,7 @@ import {
   type ThinkingCapabilities,
 } from "./api";
 import { SelectChevron } from "./SelectChevron";
+const ThinkingKnob = lazy(() => import("./synth/views/Session/ThinkingKnob"));
 
 /**
  * The thinking picker, told what the selected model can actually do.
@@ -32,6 +33,7 @@ export function ThinkingSelect({
   disabled,
   onChange,
   title,
+  synth = false,
 }: {
   /** ai-team's policy provider name. `null` while no model is chosen. */
   provider: string | null;
@@ -41,6 +43,7 @@ export function ThinkingSelect({
   disabled?: boolean;
   onChange: (next: Reasoning) => void;
   title?: string;
+  synth?: boolean;
 }) {
   // `null` means "not known", which is deliberately distinct from "known to be empty".
   const [retry, setRetry] = useState(0);
@@ -74,7 +77,7 @@ export function ThinkingSelect({
 
   return (
     <>
-      <label className="chat-select chat-thinking-select" title={title}>
+      {synth ? <Suspense fallback={<span>Thinking: {value ? THINKING_LABELS[value] : "Not recorded"}</span>}><ThinkingKnob value={value} supported={supported} disabled={disabled} onChange={onChange} title={title}/></Suspense> : <label className="chat-select chat-thinking-select" title={title}>
         <span>Thinking</span>
         <select
           aria-label="Thinking effort"
@@ -93,7 +96,7 @@ export function ThinkingSelect({
           ))}
         </select>
         <SelectChevron />
-      </label>
+      </label>}
       {provider && model && <button type="button" className="button" aria-label="Refresh thinking levels" disabled={disabled || (!supported && !problem)} onClick={() => setRetry(value => value + 1)}>Refresh levels</button>}
       {capabilities?.fallback_reason && <small className="faint">{capabilities.fallback_reason}. These levels apply to {capabilities.provider}/{capabilities.model}, the policy fallback. Your requested thinking is unchanged.</small>}
       {kept && (

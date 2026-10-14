@@ -16,9 +16,6 @@ export function PresetSelector({ label, options, value, onChange, disabled = fal
     if (!option || disabled) return;
     onChange(option.id); announce(`${label}: ${option.label}`); setOpen(false); anchor.current?.focus();
   };
-  useEffect(() => {
-    if (open) (list.current?.querySelector<HTMLButtonElement>('[aria-selected="true"]') ?? list.current?.querySelector<HTMLButtonElement>("button"))?.focus();
-  }, [open]);
   useEffect(() => { if (disabled) setOpen(false); }, [disabled]);
   return <div className="synth-preset">
     <HwButton aria-label={`Previous ${label}`} disabled={disabled || !options.length}
@@ -28,7 +25,7 @@ export function PresetSelector({ label, options, value, onChange, disabled = fal
       onClick={() => setOpen(!open)}>{options[index]?.label ?? value}</button>
     <HwButton aria-label={`Next ${label}`} disabled={disabled || !options.length}
       onClick={() => select((index + 1) % options.length)}>›</HwButton>
-    {open && !disabled && <Popover anchor={anchor} label={`${label} choices`} onClose={() => setOpen(false)} width={260} className="synth-preset-popover">
+    {open && !disabled && <Popover anchor={anchor} label={`${label} choices`} onClose={() => setOpen(false)} width={260} className="synth-preset-popover" initialFocus={index >= 0 ? '[role="option"][aria-selected="true"]' : '[role="option"]'}>
       <div ref={list} role="listbox" aria-label={label} onKeyDown={event => {
         const buttons = [...list.current?.querySelectorAll<HTMLButtonElement>("button") ?? []];
         const focused = buttons.indexOf(document.activeElement as HTMLButtonElement);

@@ -14,13 +14,15 @@ export function popoverPosition(anchor: Pick<DOMRect, "top" | "right">, width: n
   };
 }
 
-export function Popover({ anchor, label, children, onClose, width = 448, className = "" }: {
+export function Popover({ anchor, label, children, onClose, width = 448, className = "", initialFocus }: {
   anchor: RefObject<HTMLButtonElement | null>;
   label: string;
   children: ReactNode;
   onClose: () => void;
   width?: number;
   className?: string;
+  /** Optional child selector, focused only after the initially hidden portal is placed. */
+  initialFocus?: string;
 }) {
   const panel = useRef<HTMLElement | null>(null);
   const [position, setPosition] = useState<ReturnType<typeof popoverPosition> | null>(null);
@@ -44,7 +46,6 @@ export function Popover({ anchor, label, children, onClose, width = 448, classNa
       }
     };
     place();
-    panel.current?.focus({ preventScroll: true });
     const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(place);
     if (panel.current) observer?.observe(panel.current);
     if (anchor.current) observer?.observe(anchor.current);
@@ -60,6 +61,12 @@ export function Popover({ anchor, label, children, onClose, width = 448, classNa
       document.removeEventListener("keydown", key);
     };
   }, [anchor, width]);
+  const placed = position !== null;
+  useLayoutEffect(() => {
+    if (!placed) return;
+    const target = initialFocus ? panel.current?.querySelector<HTMLElement>(initialFocus) : null;
+    (target ?? panel.current)?.focus({ preventScroll: true });
+  }, [placed, initialFocus]);
   return createPortal(<section ref={panel} tabIndex={-1} aria-label={label} className={`anchored-popover ${className}`}
     style={position ?? { visibility: "hidden" }}>
     {children}

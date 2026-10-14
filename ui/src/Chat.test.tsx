@@ -201,6 +201,27 @@ it("offers explicit thinking for new chats and revision-checked changes for an e
   await waitFor(() => expect(service.setChatThinking).toHaveBeenCalledWith(1,"none",1));
 });
 
+it("uses the Synth knob through the existing revision-checked controller without replacing the draft", async () => {
+  setSynth(true);
+  service.setChatThinking.mockResolvedValue({ ...detail(), reasoning: "max", rev: 1 });
+  render(<ChatView {...props()}/>);
+  const draft = await screen.findByRole("textbox", { name: "Message" });
+  fireEvent.change(draft, { target: { value: "Keep the exact draft" } });
+  const knob = await screen.findByRole("slider", { name: "Thinking effort" });
+  await waitFor(() => expect(knob.getAttribute("aria-disabled")).toBe("false"));
+  fireEvent.keyDown(knob, { key: "End" });
+  expect(service.setChatThinking).not.toHaveBeenCalled();
+  await waitFor(() => expect(service.setChatThinking).toHaveBeenCalledWith(1, "max", 0));
+  expect(screen.getByRole("button", { name: "Execution mode" })).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Model" })).toBeNull(); // Existing model is a readout, not rerouting authority.
+  act(() => setSynth(false));
+  await waitFor(() => expect(screen.getByRole("combobox", { name: "Thinking effort" })).toHaveProperty("value", "max"));
+  expect(screen.getByRole("textbox", { name: "Message" })).toBe(draft);
+  expect(draft).toHaveProperty("value", "Keep the exact draft");
+  expect(thinking).toHaveBeenCalledTimes(1);
+  expect(service.sendChat).not.toHaveBeenCalled();
+});
+
 it("offers the whole thinking range, scoped to what the chosen model supports", async () => {
   thinking.mockResolvedValue({ provider: "openai", model: "gpt-5", fallback_reason: null, levels: ["none", "low", "medium", "high", "xhigh", "max"] });
   render(<ChatView {...props()} id={null}/>);
@@ -266,7 +287,8 @@ it("keeps the draft and previous thinking when a preference update is refused", 
   expect(service.sendChat).not.toHaveBeenCalled();
 });
 
-it("attaches a dropped image to a prompt and preserves it after a failed send", async () => {
+it.each([false, true])("attaches a dropped image and preserves a failed-send request with Synth=%s", async synth => {
+  setSynth(synth);
   service.sendChat.mockRejectedValueOnce(new Error("connection lost"));
   const view = render(<ChatView {...props()} />);
   await screen.findByText("Chat 1");
@@ -283,7 +305,8 @@ it("attaches a dropped image to a prompt and preserves it after a failed send", 
   expect(service.sendChat.mock.calls[1]).toEqual(service.sendChat.mock.calls[0]);
 });
 
-it("accepts pasted images without requiring text and allows removing them", async () => {
+it.each([false, true])("accepts pasted image-only drafts and removal with Synth=%s", async synth => {
+  setSynth(synth);
   render(<ChatView {...props()} />);
   await screen.findByText("Chat 1");
   const file = new File(["image"], "clipboard.png", { type: "image/png" });
