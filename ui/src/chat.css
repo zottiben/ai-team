@@ -393,7 +393,11 @@
 .chat-tool-pane[hidden] {
   display: none;
 }
+.chat-transcript-shell { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; }
+.tracker-content { display: flex; flex-direction: column; min-width: 0; }
+.tracker-announcement { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
 .chat-transcript {
+  flex: 1;
   width: 100%;
   min-height: 0;
   overflow-y: auto;

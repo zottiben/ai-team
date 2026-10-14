@@ -4,7 +4,7 @@ import {
   Suspense,
   useCallback,
   useEffect,
-  useLayoutEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -22,6 +22,8 @@ import { SelectChevron } from "./SelectChevron";
 import { useSynth } from "./ui-preferences";
 const SessionTabs = lazy(() => import("./synth/views/Session/SessionNavigation").then(m => ({ default: m.SessionTabs })));
 const PanelFrame = lazy(() => import("./synth/views/panels/PanelFrame"));
+const Tracker = lazy(() => import("./synth/views/Session/Tracker/Tracker"));
+const LiveRow = lazy(() => import("./synth/views/Session/Tracker/LiveRow"));
 import {
   archiveChat,
   restoreChat,
@@ -105,8 +107,8 @@ export function ChatView({
   const [problem, setProblem] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState(false);
   const [title, setTitle] = useState("");
-  const [following, setFollowing] = useState(true);
   const [clock, setClock] = useState(Date.now());
+  const [followRequest, setFollowRequest] = useState(0);
   const alive = useRef(true);
   const loading = useRef(false);
   const pending = useRef(false);
@@ -114,7 +116,6 @@ export function ChatView({
   const created = useRef<number | null>(null);
   const submission = useRef<{ body: string; images: ImageInput[]; key: string; workspaceEpoch: number; reasoning?: ChatDetail["reasoning"] } | null>(null);
   const queuedSubmission = useRef<{ body: string; images: ImageInput[]; key: string; node: number; kind: ChatFollowup["kind"] } | null>(null);
-  const feed = useRef<HTMLDivElement | null>(null);
   const composer = useRef<HTMLTextAreaElement | null>(null);
   const openPanel = (next: ChatPanel) => {
     setPanel(next);
@@ -162,7 +163,7 @@ export function ChatView({
         const found = await chat(id);
         if (!alive.current) return;
         cursor.current = after;
-        setEvents((previous) => [...previous, ...added]);
+        setEvents((previous) => added.length ? [...previous, ...added] : previous);
         setDetail(previous => previous && previous.rev > found.rev ? previous : found);
       } while (pending.current && alive.current);
     } catch (error: unknown) {
@@ -213,7 +214,15 @@ export function ChatView({
   const mode = detail?.mode ?? newMode;
   const queued = detail?.followups?.find((item) => item.state === "queued");
   const arriving = useFollowupArrivals(detail?.followups);
-  const messageEvents = [...events, ...(detail?.followups ?? []).filter(item => item.node_id !== null && (item.state === "starting" || item.state === "delivered") && !events.some(event => event.actor === "human" && event.node_run_id === item.node_id)).map(followupEvent)];
+  const receipts = useMemo(() => new Map((detail?.followups ?? []).filter(item => item.node_id !== null && (item.state === "starting" || item.state === "delivered")).map(item => [item.node_id, item])), [detail?.followups]);
+  const messageEvents = useMemo(() => {
+    const humanNodes = new Set(events.filter(event => event.actor === "human").map(event => event.node_run_id));
+    return [...events, ...[...receipts.values()].filter(item => !humanNodes.has(item.node_id)).map(followupEvent)];
+  }, [events, receipts]);
+  const eventKey = useCallback((event: RunEvent) => {
+    const receipt = event.actor === "human" ? receipts.get(event.node_run_id) : undefined;
+    return receipt ? `followup:${receipt.id}` : event.id;
+  }, [receipts]);
   const activeTurn = detail?.turns.find(turn => turn.node.id === detail.active_node_id);
   const thinkingValue: Reasoning | "" = active ? activeTurn?.node.reasoning ?? "" : detail?.reasoning ?? newReasoning;
   // Which model's limits apply. An existing chat's are its own; a new one's come from the
@@ -246,11 +255,6 @@ export function ChatView({
     const timer = setInterval(() => setClock(Date.now()), 1000);
     return () => clearInterval(timer);
   }, [running]);
-
-  useLayoutEffect(() => {
-    if (following && feed.current)
-      feed.current.scrollTop = feed.current.scrollHeight;
-  }, [following, events.length, detail?.live_text, detail?.followups, tool, wideBoard]);
 
   const attach = async (files: File[]) => {
     if (!files.length || busy || reading.current || detail?.archived) return;
@@ -301,7 +305,7 @@ export function ChatView({
       setMessage("");
       setImages([]);
       submission.current = null;
-      setFollowing(true);
+      setFollowRequest(value => value + 1);
       onChanged();
       if (id === null) onCreated(target);
       else await load();
@@ -497,60 +501,23 @@ export function ChatView({
       <div ref={body} className="chat-body" data-context={panel !== null && tool === null && !wideBoard} data-synth-board={wideBoard || undefined}>
       <div className="chat-conversation" hidden={wideBoard}>
       <div className="chat-panel" hidden={tool !== null}>
-          <div
-            className="chat-transcript"
-            ref={feed}
-            onScroll={() => {
-              if (feed.current)
-                setFollowing(
-                  feed.current.scrollHeight -
-                    feed.current.scrollTop -
-                    feed.current.clientHeight <
-                    100,
-                );
-            }}
-          >
-            {messageEvents.length === 0 ? (
-              <div className="chat-empty">
-                <img className="chat-empty-mark" src={logo} alt="" width="64" height="64" />
-                <h2>What should we build in {project.name}?</h2>
-                <p className="faint">
-                  Start with a question, an idea, or a change to make.
-                </p>
-              </div>
-            ) : (
-              <div className="chat-messages" aria-label="Conversation messages">
-                {messageEvents.map(event => {
-                  const turn = detail?.turns.find(turn => turn.node.id === event.node_run_id);
-                  const followup = event.actor === "human" ? detail?.followups?.find(item => item.node_id === event.node_run_id && (item.state === "starting" || item.state === "delivered")) : undefined;
-                  return <Fragment key={followup ? `followup:${followup.id}` : event.id}>
-                    <Message event={event} result={event.id === outcome?.response} followup={followup} status={turn?.node.status} arriving={arriving} />
-                    {detail && turn && event.actor === "human" && !!turn.images?.length && <Suspense fallback={<p>Loading images…</p>}><SentImages chat={detail.id} node={turn.node.id} images={turn.images}/></Suspense>}
-                  </Fragment>;
-                })}
-              </div>
-            )}
-            <CancelledInstructions items={detail?.followups}/>
-            {active && detail?.live_text && (
-              <article
-                className="chat-message"
-                aria-label="Assistant response in progress"
-              >
-                <BoardMarkdown source={detail.live_text} />
-              </article>
-            )}
-            {running && (
-              <div className="chat-working" role="status">
-                <span className="chat-pulse" />
-                {detail?.stop_requested
-                  ? "Stopping the current turn…"
-                  : "Working…"}
-                <span className="faint">
-                  {Number.isFinite(elapsed) ? elapsed : 0}s
-                </span>
-              </div>
-            )}
-          </div>
+          <Suspense fallback={<p>Loading conversation…</p>}><Tracker events={messageEvents} followRequest={followRequest} synth={synth} visible={tool === null && !wideBoard} pattern={panel === "overview"}
+            eventKey={eventKey} renderEvent={(event, disclosure) => {
+              const turn = detail?.turns.find(turn => turn.node.id === event.node_run_id);
+              const followup = event.actor === "human" ? receipts.get(event.node_run_id) : undefined;
+              return <Fragment>
+                <Message event={event} result={event.id === outcome?.response} followup={followup} status={turn?.node.status} arriving={arriving} thinkingOpen={disclosure.open} onThinkingToggle={disclosure.onToggle}/>
+                {detail && turn && event.actor === "human" && !!turn.images?.length && <Suspense fallback={<p>Loading images…</p>}><SentImages chat={detail.id} node={turn.node.id} images={turn.images}/></Suspense>}
+              </Fragment>;
+            }} empty={<div className="chat-empty">
+              <img className="chat-empty-mark" src={logo} alt="" width="64" height="64" />
+              <h2>What should we build in {project.name}?</h2>
+              <p className="faint">Start with a question, an idea, or a change to make.</p>
+            </div>} tail={<>
+              <CancelledInstructions items={detail?.followups}/>
+              {active && detail?.live_text && <article className="chat-message" aria-label="Assistant response in progress"><BoardMarkdown source={detail.live_text}/></article>}
+              {running && (synth ? <Suspense fallback={<p>Working…</p>}><LiveRow stopping={!!detail?.stop_requested} elapsed={elapsed}/></Suspense> : <div className="chat-working" role="status"><span className="chat-pulse"/>{detail?.stop_requested ? "Stopping the current turn…" : "Working…"}<span className="faint">{Number.isFinite(elapsed) ? elapsed : 0}s</span></div>)}
+            </>}/></Suspense>
       </div>
       {detail && Object.entries(openedTools).map(([workspace, opened]) => <section key={workspace} className="chat-tools-panel" hidden={tool === null || workspace !== detail.workspace_path} aria-label="Chat checkout tools">
         <div className="card__row"><strong className="mono">{workspace}</strong><button className="button" onClick={closeTool}>Close tools</button></div>
@@ -562,14 +529,6 @@ export function ChatView({
           {opened.terminal && <Suspense fallback={<p>Loading terminal…</p>}><Terminal project={project.slug} workspace={workspace} node={null} /></Suspense>}
         </div>
       </section>)}
-      {!following && tool === null && (
-        <button
-          className="button chat-follow"
-          onClick={() => setFollowing(true)}
-        >
-          Jump to latest
-        </button>
-      )}
       {tool === null && outcome && <ChatOutcome outcome={outcome} onAction={action => {
         if (action === "reply") composer.current?.focus();
         else openPanel(action === "review" ? "review" : "work");
@@ -747,11 +706,11 @@ export function ChatView({
   );
 }
 
-function Message({ event, result, followup, status, arriving }: { event: RunEvent; result: boolean; followup?: ChatFollowup; status?: string; arriving: ReadonlySet<number> }) {
+function Message({ event, result, followup, status, arriving, thinkingOpen, onThinkingToggle }: { event: RunEvent; result: boolean; followup?: ChatFollowup; status?: string; arriving: ReadonlySet<number>; thinkingOpen: boolean; onThinkingToggle: (open: boolean) => void }) {
   return (
     <>
       {event.thinking.length > 0 && (
-        <details className="chat-thinking">
+        <details className="chat-thinking" open={thinkingOpen} onToggle={event => onThinkingToggle(event.currentTarget.open)}>
           <summary>Thinking summary</summary>
           {event.thinking.map((text, index) => (
             <p key={index}>{text}</p>
