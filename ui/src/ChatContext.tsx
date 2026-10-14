@@ -3,6 +3,7 @@ import { ChatTeam, TEAM_PHASES } from "./ChatTeam";
 import type { ChatDetail } from "./chat-api";
 import type { RunEvent } from "./api";
 
+const PanelSelector = lazy(() => import("./synth/views/Session/SessionNavigation").then(m => ({ default: m.PanelSelector })));
 const ChatChanges = lazy(() => import("./ChatChanges").then(module => ({ default: module.ChatChanges })));
 const ChatOverview = lazy(() => import("./ChatOverview").then(module => ({ default: module.ChatOverview })));
 const ChatPlanning = lazy(() => import("./ChatPlan").then(module => ({ default: module.ChatPlanning })));
@@ -16,7 +17,9 @@ export const CHAT_PANELS = {
 export type ChatPanel = keyof typeof CHAT_PANELS;
 
 /** The command surfaces belong to this chat, never the project's latest run. */
-export function ChatContext({ detail, panel, opened, hidden, status, tick, busy, command, events, elapsed, now, onChanged, onFeedback, onClose }: {
+export function ChatContext({ detail, panel, opened, hidden, status, tick, busy, command, events, elapsed, now, onChanged, onFeedback, onClose, synth = false, onSelect }: {
+  synth?: boolean;
+  onSelect?: (panel: ChatPanel) => void;
   detail: ChatDetail;
   panel: ChatPanel | null;
   opened: ReadonlySet<ChatPanel>;
@@ -36,26 +39,26 @@ export function ChatContext({ detail, panel, opened, hidden, status, tick, busy,
   return <aside id="chat-context" className="chat-context" aria-label="Chat context" hidden={hidden || panel === null}
     onKeyDown={event => { if (event.key === "Escape" && !event.defaultPrevented) { event.stopPropagation(); onClose(); } }}>
     <header className="chat-context-heading">
-      <h2>{panel ? CHAT_PANELS[panel] : "Chat context"}</h2>
+      {synth && panel && panel !== "board" && onSelect ? <Suspense fallback={<h2>{CHAT_PANELS[panel]}</h2>}><PanelSelector panel={panel} onChange={onSelect} /></Suspense> : <h2>{panel ? CHAT_PANELS[panel] : "Chat context"}</h2>}
       <button className="button" aria-label="Close chat panel" onClick={onClose}>×</button>
     </header>
     {/* Keep opened panels mounted: switching context must not discard review/plan drafts. */}
-    {opened.has("overview") && <section className="chat-context-pane" aria-label="Overview" hidden={panel !== "overview"}>
+    {opened.has("overview") && <section id="chat-pane-overview" role={synth ? "tabpanel" : undefined} className="chat-context-pane" aria-label="Overview" hidden={panel !== "overview"}>
       <Suspense fallback={<p className="faint">Loading overview…</p>}>
         <ChatOverview detail={detail} status={status} tick={tick} events={events} elapsed={elapsed} now={now} />
       </Suspense>
     </section>}
-    {opened.has("review") && <section className="chat-context-pane" aria-label="Review" hidden={panel !== "review"}>
+    {opened.has("review") && <section id="chat-pane-review" role={synth ? "tabpanel" : undefined} className="chat-context-pane" aria-label="Review" hidden={panel !== "review"}>
       <Suspense fallback={<p className="faint">Loading changes…</p>}>
         <ChatChanges chatId={detail.id} tick={tick} disabled={detail.archived || detail.active_node_id !== null} onChanged={onChanged} onFeedback={onFeedback} />
       </Suspense>
     </section>}
-    {opened.has("board") && <section className="chat-context-pane" aria-label="Board" hidden={panel !== "board"}>
+    {opened.has("board") && <section id="chat-pane-board" role={synth ? "tabpanel" : undefined} className="chat-context-pane" aria-label="Board" hidden={panel !== "board"}>
       <Suspense fallback={<p className="faint">Loading board…</p>}>
         <ChatPlanning chatId={detail.id} tick={tick} archived={detail.archived} frozen={activeTeam?.approved_revision != null} onChanged={onChanged} />
       </Suspense>
     </section>}
-    {opened.has("work") && <section className="chat-context-pane" aria-label="Work" hidden={panel !== "work"}>
+    {opened.has("work") && <section id="chat-pane-work" role={synth ? "tabpanel" : undefined} className="chat-context-pane" aria-label="Work" hidden={panel !== "work"}>
       {(detail.mode === "team" || detail.team_builds.length > 0) && <ChatTeam detail={detail} busy={busy} command={command} events={events} now={now} />}
       <section className="chat-overview-card">
         <h3>Turns</h3>

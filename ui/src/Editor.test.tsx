@@ -10,8 +10,9 @@ afterEach(() => {
 });
 
 type Call = { url: string; method: string; body: unknown };
+const fileWrites = (calls: Call[]) => calls.filter(call => call.method === "POST" && call.url === "/file");
 
-/** Routes the editor's four endpoints and records every write. */
+/** Routes the editor's fixture endpoints and records every request. */
 function stub(files: Record<string, string>, hits: unknown[] = [], searchFails?: string) {
   const calls: Call[] = [];
   vi.stubGlobal(
@@ -172,8 +173,8 @@ it("saving sends what is in the buffer and clears the dirty mark", async () => {
   await waitFor(() => expect(container.querySelector(".editor__dirty")).not.toBeNull());
   await user.click(screen.getByText("Save"));
 
-  await waitFor(() => expect(calls.some((call) => call.method === "POST")).toBe(true));
-  const write = calls.find((call) => call.method === "POST");
+  await waitFor(() => expect(fileWrites(calls)).toHaveLength(1));
+  const write = fileWrites(calls)[0];
   expect(write?.url).toBe("/file");
   expect((write?.body as { text: string }).text).toContain("and more");
   await waitFor(() => expect(container.querySelector(".editor__dirty")).toBeNull());
@@ -185,13 +186,16 @@ it("keeps hidden buffers but does not intercept another pane's Save shortcut", a
   const view = render(<Editor project="widget" workspace="/widget/task" node={null} />);
   await user.click(await screen.findByText("a.md"));
   await shown(view.container);
+  // Completion queries are POSTs too, but do not save files. Include one explicitly
+  // rather than letting CodeMirror's asynchronous completion timing decide the test.
+  await fetch("/api/lsp/completion", { method: "POST", body: "{}" });
   view.rerender(<Editor project="widget" workspace="/widget/task" node={null} visible={false} />);
   fireEvent.keyDown(window, { key: "s", metaKey: true });
-  expect(calls.filter((call) => call.method === "POST")).toHaveLength(0);
+  expect(fileWrites(calls)).toHaveLength(0);
   view.rerender(<Editor project="widget" workspace="/widget/task" node={null} visible />);
   fireEvent.keyDown(window, { key: "s", metaKey: true });
-  await waitFor(() => expect(calls.filter((call) => call.method === "POST")).toHaveLength(1));
-  expect(calls.find((call) => call.method === "POST")?.body).toMatchObject({ workspace: "/widget/task", path: "a.md", text: "first" });
+  await waitFor(() => expect(fileWrites(calls)).toHaveLength(1));
+  expect(fileWrites(calls)[0]?.body).toMatchObject({ workspace: "/widget/task", path: "a.md", text: "first" });
 });
 
 it("refuses to open a file that is not text", async () => {

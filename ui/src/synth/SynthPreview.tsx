@@ -29,7 +29,7 @@ export default function SynthPreview() {
   const [view, setView] = useState("overview");
   return <SynthProvider><div className="synth-ui synth-preview">
     <h3>Synth foundation</h3>
-    <p className="synth-muted">Preview controls only — not agent settings or live telemetry. Chat screens are unchanged while the new skin is built. No licensed fonts or external assets are loaded.</p>
+    <p className="synth-muted">Example controls only — not agent settings or live telemetry. The application uses these primitives as each screen is integrated. No licensed fonts or external assets are loaded.</p>
     <div className="synth-preview__grid">
       <Plate tone="deck" radius={22} heading="Input · bounded settings">
         <div className="synth-preview__controls">

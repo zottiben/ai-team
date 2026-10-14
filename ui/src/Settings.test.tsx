@@ -230,6 +230,8 @@ it("says where the file is, because it is meant to stay hand-editable", async ()
 });
 
 it("enables only a local isolated Synth preview without changing the theme or machine profile", async () => {
+  // This checks preference isolation, not concurrent Vitest module-transform latency.
+  await import("./synth/SynthPreview");
   const calls = stub(), onTheme = vi.fn(), changed = vi.fn();
   setSynth(false);
   const view = render(<Settings theme="light" onTheme={onTheme} onChanged={changed} />);

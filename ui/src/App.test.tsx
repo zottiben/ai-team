@@ -192,6 +192,13 @@ beforeEach(() => {
   document.documentElement.removeAttribute("data-synth");
 });
 
+it("keeps the deferred default team reachable through More", async () => {
+  render(<App />);
+  fireEvent.click(await screen.findByRole("button", { name: "More tools" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Default team" }));
+  expect(await screen.findByRole("heading", { name: "Default team" })).toBeDefined();
+});
+
 it("opens chat-first with real chats beneath their project, not a run list", async () => {
   render(<App />);
   await screen.findByRole("heading", { name: "Demo project / New chat" });

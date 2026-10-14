@@ -35,6 +35,7 @@
   --plate-ice: linear-gradient(180deg, #c9f6ff, #b5f2ff);
   --plate-flamingo: linear-gradient(180deg, #ff9bd6, #ff79c6);
   --plate-yellow: linear-gradient(180deg, #ffe066, #ffd23f);
+  --synth-panel-width: 400px;
   --r-key: 999px; --r-screen: 14px; --r-card: 14px; --r-plate: 18px; --r-deck: 22px; --r-rail: 12px; --r-pad: 4px; --r-cmdpad: 14px;
   --shadow-plate: inset 0 1px 0 rgba(253,244,255,.10), inset 0 -1px 0 rgba(0,0,0,.35), 0 10px 24px rgba(0,0,0,.35);
   --shadow-plate-light: inset 0 1px 0 rgba(253,244,255,.35), inset 0 -2px 0 rgba(0,0,0,.25), 0 14px 30px rgba(0,0,0,.5);

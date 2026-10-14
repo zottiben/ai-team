@@ -384,6 +384,8 @@
 .chat-tools-panel .terminal__host {
   min-height: 8rem;
 }
+.chat-conversation[hidden],
+.chat-composer-area[hidden],
 .chat-panel[hidden],
 .chat-context[hidden],
 .chat-context-pane[hidden],
@@ -516,6 +518,7 @@
   background: var(--status-running-default);
   animation: chat-pulse var(--motion-beat) ease-in-out infinite;
 }
+.chat-composer-area { display: flex; flex-direction: column; flex: none; min-width: 0; }
 .chat-composer {
   flex-shrink: 0;
   border: 1px solid var(--border-strong-default);

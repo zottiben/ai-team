@@ -9,6 +9,7 @@ import {
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ChatView } from "./Chat";
+import { setSynth } from "./ui-preferences";
 import { chatOutcome } from "./ChatOutcome";
 import type { ChatDetail } from "./chat-api";
 import type { Project, RunEvent } from "./api";
@@ -125,6 +126,8 @@ const props = () => ({
 });
 
 beforeEach(() => {
+  document.documentElement.removeAttribute("data-synth");
+  localStorage.removeItem("ui.synth");
   vi.clearAllMocks();
   service.chat.mockImplementation((id: number) => Promise.resolve(detail(id)));
   service.chatEvents.mockResolvedValue([]);
@@ -356,6 +359,79 @@ describe("clear turn outcomes", () => {
     const outcome = await screen.findByRole("status", { name: "Turn outcome" });
     expect(outcome.textContent).toContain("Your approval is needed");
     expect(within(outcome).getByRole("button", { name: "Review plan" })).toBeTruthy();
+    expect(service.sendChat).not.toHaveBeenCalled();
+  });
+});
+
+describe("Synth workspace", () => {
+  it("keeps one conversation and its drafts through tabs, full-width Board and both skins", async () => {
+    service.chatEvents.mockResolvedValue([event(1, "Persistent transcript")]);
+    render(<ChatView {...props()} />);
+    await screen.findByRole("heading", { name: "Chat 1" });
+    const message = screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement;
+    const transcript = screen.getByRole("article", { name: "You" });
+    fireEvent.change(message, { target: { value: "Keep the unsent draft" } });
+    fireEvent.change(screen.getByLabelText("Choose images"), { target: { files: [new File(["fixture"], "fixture.png", { type: "image/png" })] } });
+    const image = await screen.findByAltText("Attached fixture.png");
+    fireEvent.click(screen.getByRole("button", { name: "Review" }));
+    const finding = await screen.findByRole("textbox", { name: "Unsaved review finding" }) as HTMLInputElement;
+    fireEvent.change(finding, { target: { value: "Review draft" } });
+    act(() => { setSynth(true); });
+    expect((await screen.findByRole("tab", { name: "Review" })).getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByRole("textbox", { name: "Message" })).toBe(message);
+    expect(screen.getByRole("textbox", { name: "Unsaved review finding" })).toBe(finding);
+    fireEvent.click(await screen.findByRole("button", { name: "Next Panel view" }));
+    expect(screen.getByRole("tab", { name: "Work" }).getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByRole("article", { name: "You" })).toBe(transcript);
+    fireEvent.click(screen.getByRole("tab", { name: "Board" }));
+    await screen.findByRole("tabpanel", { name: "Board" });
+    expect(message.closest(".chat-conversation")?.hasAttribute("hidden")).toBe(true);
+    expect(screen.queryByRole("textbox", { name: "Message" })).toBeNull();
+    expect(document.querySelector('.chat-body[data-synth-board="true"]')).not.toBeNull();
+    act(() => { setSynth(false); });
+    expect(screen.getByRole("textbox", { name: "Message" })).toBe(message);
+    expect(message.value).toBe("Keep the unsent draft");
+    expect(screen.getByAltText("Attached fixture.png")).toBe(image);
+    fireEvent.click(screen.getByRole("button", { name: "Review" }));
+    expect(screen.getByRole("textbox", { name: "Unsaved review finding" })).toBe(finding);
+    expect(finding.value).toBe("Review draft");
+    expect(service.chat).toHaveBeenCalledTimes(1);
+    expect(service.chatEvents).toHaveBeenCalledTimes(1);
+    expect(service.sendChat).not.toHaveBeenCalled();
+  });
+
+  it("latches mutually exclusive tools and restores the last tab without remounting editor or terminal", async () => {
+    setSynth(true);
+    render(<ChatView {...props()} initialPanel="review" />);
+    await screen.findByRole("heading", { name: "Chat 1" });
+    await screen.findByRole("tab", { name: "Review" });
+    const message = screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement;
+    fireEvent.change(message, { target: { value: "Still here" } });
+    fireEvent.click(screen.getByRole("button", { name: "Editor" }));
+    const file = await screen.findByRole("textbox", { name: "Unsaved fixture file" }) as HTMLInputElement;
+    fireEvent.change(file, { target: { value: "Unsaved source" } });
+    expect(screen.getByRole("button", { name: "Editor" }).getAttribute("aria-current")).toBe("true");
+    expect(screen.getAllByRole("tab").every(tab => tab.getAttribute("aria-selected") === "false")).toBe(true);
+    expect(screen.queryByRole("textbox", { name: "Message" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Terminal" }));
+    const terminal = await screen.findByText("Terminal demo: /repo/demo");
+    expect(file.closest(".chat-tool-pane")?.hasAttribute("hidden")).toBe(true);
+    act(() => { setSynth(false); }); act(() => { setSynth(true); });
+    expect(screen.getByText("Terminal demo: /repo/demo")).toBe(terminal);
+    fireEvent.click(screen.getByRole("button", { name: "Close tools" }));
+    expect(screen.getByRole("tab", { name: "Review" }).getAttribute("aria-selected")).toBe("true");
+    expect(document.activeElement).toBe(screen.getByRole("tab", { name: "Review" }));
+    expect(screen.getByRole("textbox", { name: "Message" })).toBe(message);
+    expect(message.value).toBe("Still here");
+    fireEvent.click(screen.getByRole("button", { name: "Editor" }));
+    expect(screen.getByRole("textbox", { name: "Unsaved fixture file" })).toBe(file);
+    expect(file.value).toBe("Unsaved source");
+    fireEvent.click(screen.getByRole("tab", { name: "Board" }));
+    expect(screen.queryByRole("textbox", { name: "Unsaved fixture file" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Editor" }));
+    fireEvent.click(screen.getByRole("button", { name: "Close tools" }));
+    expect(screen.getByRole("tab", { name: "Board" }).getAttribute("aria-selected")).toBe("true");
+    expect(service.chat).toHaveBeenCalledTimes(1);
     expect(service.sendChat).not.toHaveBeenCalled();
   });
 });

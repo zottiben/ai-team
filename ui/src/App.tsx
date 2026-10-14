@@ -8,11 +8,13 @@ import logo from "../../crates/ai-team-desktop/icons/mark.svg";
 import { Notifications } from "./Notifications";
 import { Popover } from "./Popover";
 import { Projects } from "./Projects";
-import { Roster } from "./Roster";
+const Roster = lazy(() => import("./Roster").then(m => ({ default: m.Roster })));
 const Schedule = lazy(() => import("./Schedule").then(m => ({ default: m.Schedule })));
 const Settings = lazy(() => import("./Settings").then(m => ({ default: m.Settings })));
 import { Setup } from "./Setup";
 const SynthToggle = lazy(() => import("./SynthToggle").then(m => ({ default: m.SynthToggle })));
+const SynthTitleBar = lazy(() => import("./synth/views/Shell/TitleBar"));
+import { useSynth } from "./ui-preferences";
 import { Today } from "./Today";
 import { UpdateBanner, useUpdates } from "./Update";
 import {
@@ -74,6 +76,7 @@ function restored(): { project: string | null; chat: number | null } {
 
 export default function App() {
   const updates = useUpdates();
+  const synth = useSynth();
   const [initial] = useState(restored);
   const [projects, setProjects] = useState<Project[]>([]);
   const [conversations, setConversations] = useState<Record<string, Chat[]>>(
@@ -346,6 +349,7 @@ export default function App() {
               <button
                 type="button"
                 className="chat-project-name"
+                data-project-tone={entry.id % 3}
                 aria-current={
                   page === "chat" &&
                   entry.slug === projectSlug &&
@@ -541,7 +545,7 @@ export default function App() {
               /></Suspense>
             )}
             {page === "plans" && <Suspense fallback={<p>Loading plans…</p>}><PlanLibrary tick={tick} onOpenChat={(slug, id) => navigate(slug, id, "board")} onChanged={changed} /></Suspense>}
-            {page === "team" && <Roster onChanged={changed} />}
+            {page === "team" && <Suspense fallback={<p>Loading team…</p>}><Roster onChanged={changed} /></Suspense>}
             {page === "analytics" && <Analytics tick={tick} />}
             {page === "today" && (
               <Today
@@ -552,6 +556,7 @@ export default function App() {
           </main>
         )}
       </div>
+      {synth && <Suspense fallback={null}><SynthTitleBar context={setup ? "Setup" : page === "chat" ? project?.name ?? "Chats" : page === "plans" ? "Plans · all projects" : page === "tools" ? "Project tools" : page === "team" ? "Default team" : page.charAt(0).toUpperCase() + page.slice(1)} version={updates.available?.current} /></Suspense>}
     </div>
   );
 }

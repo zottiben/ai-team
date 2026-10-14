@@ -19,6 +19,9 @@ import logo from "../../crates/ai-team-desktop/icons/mark.svg";
 import { setChatMode } from "./team-api";
 import { models, type ModelChoice, type Project, type Reasoning, type RunEvent } from "./api";
 import { SelectChevron } from "./SelectChevron";
+import { useSynth } from "./ui-preferences";
+const SessionTabs = lazy(() => import("./synth/views/Session/SessionNavigation").then(m => ({ default: m.SessionTabs })));
+const PanelFrame = lazy(() => import("./synth/views/panels/PanelFrame"));
 import {
   archiveChat,
   restoreChat,
@@ -76,11 +79,14 @@ export function ChatView({
   onSettings: () => void;
   initialPanel?: ChatPanel | null;
 }) {
+  const synth = useSynth();
+  const body = useRef<HTMLDivElement>(null);
   const [detail, setDetail] = useState<ChatDetail | null>(null);
   const [events, setEvents] = useState<RunEvent[]>([]);
   const [panel, setPanel] = useState<ChatPanel | null>(initialPanel);
   const [openedPanels, setOpenedPanels] = useState<ReadonlySet<ChatPanel>>(new Set(initialPanel ? [initialPanel] : []));
   const [tool, setTool] = useState<"editor" | "terminal" | null>(null);
+  const wideBoard = synth && panel === "board" && tool === null;
   const [openedTools, setOpenedTools] = useState<Record<string, { editor: boolean; terminal: boolean }>>({});
   const [newWorkspace, setNewWorkspace] = useState<string | null>(null);
   const [workspacePending, setWorkspacePending] = useState(false);
@@ -118,6 +124,14 @@ export function ChatView({
   const closePanel = () => {
     if (panel) document.getElementById(`chat-context-${panel}`)?.focus();
     setPanel(null);
+  };
+  const closeTool = () => {
+    if (synth) {
+      const target = panel ? document.getElementById(`chat-context-${panel}`)
+        : body.current?.closest(".chat-workspace")?.querySelector<HTMLButtonElement>('.chat-header-actions [aria-pressed="true"]');
+      target?.focus();
+    }
+    setTool(null);
   };
 
   useEffect(() => {
@@ -236,7 +250,7 @@ export function ChatView({
   useLayoutEffect(() => {
     if (following && feed.current)
       feed.current.scrollTop = feed.current.scrollHeight;
-  }, [following, events.length, detail?.live_text, detail?.followups, tool]);
+  }, [following, events.length, detail?.live_text, detail?.followups, tool, wideBoard]);
 
   const attach = async (files: File[]) => {
     if (!files.length || busy || reading.current || detail?.archived) return;
@@ -367,7 +381,7 @@ export function ChatView({
     >
       <header className="chat-header">
         <div className="chat-heading">
-          <span className="faint">{project.name}</span>
+          <span className="faint" data-project-tone={project.id % 3}>{project.name}{synth && ` · ${mode === "single" ? "single agent" : "team"}`}</span>
           {editingTitle && detail ? (
             <form
               onSubmit={(event) => {
@@ -404,7 +418,7 @@ export function ChatView({
         </div>
         {detail && (
           <div className="chat-header-actions">
-            {(["editor", "terminal"] as const).map((name) => <button key={name} className="button" aria-pressed={tool === name} aria-controls={`chat-tool-${name}-${encodeURIComponent(detail.workspace_path)}`} onClick={() => {
+            {(["editor", "terminal"] as const).map((name) => <button key={name} className="button" aria-pressed={tool === name} aria-current={synth && tool === name ? "true" : undefined} aria-controls={`chat-tool-${name}-${encodeURIComponent(detail.workspace_path)}`} onClick={() => {
               setTool(tool === name ? null : name);
               setOpenedTools((opened) => ({ ...opened, [detail.workspace_path]: { editor: false, terminal: false, ...opened[detail.workspace_path], [name]: true } }));
             }}>{name === "editor" ? "Editor" : "Terminal"}</button>)}
@@ -436,7 +450,7 @@ export function ChatView({
         )}
       </header>
       <div className="chat-toolbar" role="group" aria-label="Chat tools">
-        {(Object.keys(CHAT_PANELS) as ChatPanel[]).map(name => <button
+        {synth ? <Suspense fallback={<span>Loading views…</span>}><SessionTabs panel={tool === null ? panel : null} disabled={!detail} onChange={openPanel} /></Suspense> : (Object.keys(CHAT_PANELS) as ChatPanel[]).map(name => <button
           key={name}
           id={`chat-context-${name}`}
           aria-expanded={panel === name && tool === null}
@@ -480,8 +494,8 @@ export function ChatView({
       {latest?.node.blocked_reason && !active && (
         <p className="chat-notice notice">{latest.node.blocked_reason}</p>
       )}
-      <div className="chat-body" data-context={panel !== null && tool === null}>
-      <div className="chat-conversation">
+      <div ref={body} className="chat-body" data-context={panel !== null && tool === null && !wideBoard} data-synth-board={wideBoard || undefined}>
+      <div className="chat-conversation" hidden={wideBoard}>
       <div className="chat-panel" hidden={tool !== null}>
           <div
             className="chat-transcript"
@@ -539,7 +553,7 @@ export function ChatView({
           </div>
       </div>
       {detail && Object.entries(openedTools).map(([workspace, opened]) => <section key={workspace} className="chat-tools-panel" hidden={tool === null || workspace !== detail.workspace_path} aria-label="Chat checkout tools">
-        <div className="card__row"><strong className="mono">{workspace}</strong><button className="button" onClick={() => setTool(null)}>Close tools</button></div>
+        <div className="card__row"><strong className="mono">{workspace}</strong><button className="button" onClick={closeTool}>Close tools</button></div>
         <p className="faint">These are operator tools, not covered by the agent's checkout guard. This is the persistent chat checkout, not a team draft. Save edits before leaving this chat.</p>
         <div id={`chat-tool-editor-${encodeURIComponent(workspace)}`} className="chat-tool-pane" hidden={tool !== "editor"}>
           {opened.editor && <Suspense fallback={<p>Loading editor…</p>}><Editor project={project.slug} workspace={workspace} node={null} visible={tool === "editor" && workspace === detail.workspace_path} /></Suspense>}
@@ -560,6 +574,7 @@ export function ChatView({
         if (action === "reply") composer.current?.focus();
         else openPanel(action === "review" ? "review" : "work");
       }} />}
+      <div className="chat-composer-area" hidden={synth && tool !== null}>
       <QueuedInstructions detail={detail} active={active} busy={busy} command={command}/>
       <form
         className="chat-composer"
@@ -719,7 +734,9 @@ export function ChatView({
         )}
       </form>
       </div>
-      {detail && <ChatContext detail={detail} panel={panel} opened={openedPanels} hidden={tool !== null}
+      </div>
+      {synth && detail && <Suspense fallback={null}><PanelFrame host={body} active={panel !== null && tool === null && !wideBoard} /></Suspense>}
+      {detail && <ChatContext detail={detail} panel={panel} opened={openedPanels} hidden={tool !== null} synth={synth} onSelect={openPanel}
         status={LABELS[detail.state]} tick={tick} busy={busy} command={command} events={events} elapsed={elapsed} now={clock}
         onChanged={onChanged} onClose={closePanel} onFeedback={text => {
           setMessage(old => old ? `${old}\n\n${text}` : text);
