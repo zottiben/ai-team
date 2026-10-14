@@ -319,6 +319,44 @@ mod tests {
     }
 
     #[test]
+    fn cumulative_message_usage_is_counted_once_at_the_completed_step() {
+        let mut store = Store::memory().unwrap();
+        let node_run = node(&mut store);
+        let usage = serde_json::json!({"input":10,"output":4,"cacheRead":20,"cacheWrite":5,"totalTokens":39});
+        let message = serde_json::json!({"role":"assistant","content":[{"type":"text","text":"Done"}],"usage":usage});
+        let events: Vec<_> = [
+            serde_json::json!({"type":"message_update","usage":usage,"assistantMessageEvent":{"type":"thinking_end","content":"Retained summary"}}),
+            serde_json::json!({"type":"message_end","message":message}),
+            serde_json::json!({"type":"turn_end","message":message}),
+        ].iter().map(|value| event(&value.to_string())).collect();
+        let result = store
+            .ingest_pi_events(node_run, "usage", 0, &events)
+            .unwrap();
+        assert_eq!(
+            result.recorded, 3,
+            "retain summaries and prose independently of accounting"
+        );
+        assert_eq!(result.steps, 1);
+        assert_eq!(
+            result.usage,
+            Usage {
+                tokens_in: 10,
+                tokens_out: 4,
+                cache_read: 20,
+                cache_write: 5
+            }
+        );
+        assert_eq!(store.node_run(node_run).unwrap().context_tokens, Some(35));
+        assert_eq!(
+            store
+                .ingest_pi_events(node_run, "usage", 0, &events)
+                .unwrap()
+                .usage,
+            Usage::default()
+        );
+    }
+
+    #[test]
     fn the_cache_figures_are_stored_beside_the_uncached_input() {
         // Rule 12 in Pi's spelling: 100 uncached, 600 read, 300 written - a 1000-token
         // prompt, which is what the session holds.

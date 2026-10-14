@@ -143,12 +143,13 @@ impl PiEvent {
         }
     }
 
-    /// What this step spent, with the cached prompt kept apart from the uncached.
+    /// What this completed step spent, with the cached prompt kept apart from the uncached.
+    /// Message deltas and message_end repeat cumulative usage; they are not new spend.
     ///
     /// Storing the cache inside the input column would charge a cached prefix twice and
     /// make every cost comparison wrong in the same direction.
     pub fn usage(&self) -> Option<Usage> {
-        if self.kind == "tool_execution_update" {
+        if self.kind != "turn_end" {
             return None;
         }
         let usage = self.usage_figures()?;
