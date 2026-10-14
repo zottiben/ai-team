@@ -11,6 +11,7 @@
 mod api;
 mod assets;
 mod auth;
+mod chat_activity;
 mod chat_changes;
 mod chat_overview;
 mod chat_plans;

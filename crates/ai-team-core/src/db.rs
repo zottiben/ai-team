@@ -192,6 +192,11 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
         "full thinking range",
         include_str!("migrations/043_thinking_levels.sql"),
     ),
+    (
+        44,
+        "supervisor event observations",
+        include_str!("migrations/044_event_observations.sql"),
+    ),
 ];
 
 /// Migrations that rebuild a table other tables point at.
@@ -513,6 +518,56 @@ mod tests {
         .unwrap();
     }
 
+    fn upgrade_thinking_only(path: &Path) -> Db {
+        let conn = Connection::open(path).unwrap();
+        configure(&conn).unwrap();
+        let mut db = Db {
+            conn,
+            path: path.to_path_buf(),
+        };
+        let (version, name, sql) = MIGRATIONS
+            .iter()
+            .find(|(version, _, _)| *version == 43)
+            .unwrap();
+        db.rebuild(*version, name, sql).unwrap();
+        db
+    }
+
+    #[test]
+    fn observations_upgrade_v43_without_rewriting_or_backfilling_events() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("v43.db");
+        seed_v42(&path);
+        let db = upgrade_thinking_only(&path);
+        let query = "SELECT json_group_array(json_array(id,run_id,node_run_id,at,kind,actor,summary,payload_json,eve_event_id)) FROM event";
+        let before = snapshot(db.conn(), query);
+        let trigger_query = "SELECT json_group_array(sql) FROM sqlite_master WHERE type='trigger' AND tbl_name='event'";
+        let triggers = snapshot(db.conn(), trigger_query);
+        drop(db);
+        let db = Db::open(&path).unwrap();
+        assert_eq!(db.schema_version().unwrap(), latest_schema());
+        assert_eq!(snapshot(db.conn(), query), before);
+        assert_eq!(
+            snapshot(
+                db.conn(),
+                "SELECT json_group_array(observation_json) FROM event"
+            ),
+            "[null]"
+        );
+        assert!(db
+            .conn()
+            .execute("UPDATE event SET observation_json='{}' WHERE id=50", [])
+            .is_err());
+        assert_eq!(
+            snapshot(db.conn(), trigger_query),
+            triggers,
+            "preserve the update guard and existing deletion/cascade behavior"
+        );
+        assert!(db.conn().execute("INSERT INTO event(run_id,at,kind,observation_json) VALUES(1,'now','step','not json')", []).is_err());
+        drop(db);
+        assert_eq!(snapshot(Db::open(&path).unwrap().conn(), query), before);
+    }
+
     fn snapshot(conn: &Connection, sql: &str) -> String {
         conn.query_row(sql, [], |r| r.get::<_, String>(0)).unwrap()
     }
@@ -570,8 +625,9 @@ mod tests {
             (taken, objects(&conn))
         };
 
-        let db = Db::open(&path).unwrap();
-        assert_eq!(db.schema_version().unwrap(), latest_schema());
+        // This exact-schema assertion certifies migration 43, not later additive migrations.
+        let db = upgrade_thinking_only(&path);
+        assert_eq!(db.schema_version().unwrap(), 43);
         let conn = db.conn();
 
         let after = [agents, nodes, chats, sequences].map(|q| snapshot(conn, q));

@@ -334,6 +334,7 @@ fn seat(
                 ai_team_core::PiEvent {
                     kind: "message_end".into(),
                     data,
+                    observation: None,
                 }
                 .assistant_message()
             })

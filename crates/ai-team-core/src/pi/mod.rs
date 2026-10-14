@@ -15,6 +15,7 @@ mod guard;
 mod ingest;
 mod instructions;
 mod live;
+mod observation;
 mod process;
 mod seat;
 mod turn;

@@ -5,6 +5,8 @@
 // immediately: a URL that carries a credential gets bookmarked, pasted into a chat, and
 // restored by the browser weeks later.
 
+import type { ActivityObservation, ToolActivity } from "./synth/data/activity-api";
+
 const TOKEN_HEADER = "x-ai-team-token";
 const TOKEN_QUERY = "token";
 const STORAGE_KEY = "ai-team.token";
@@ -194,6 +196,10 @@ export type RunEvent = {
   /** Provider-supplied reasoning summaries. Encrypted reasoning never crosses the API. */
   thinking: string[];
   at: string;
+  /** Immutable ingestion scope, not the node's current (possibly moved) session. */
+  session_id?: string | null;
+  observation?: ActivityObservation | null;
+  tool?: ToolActivity | null;
 };
 
 export function projects(): Promise<Project[]> {

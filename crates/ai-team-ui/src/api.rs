@@ -3313,6 +3313,9 @@ pub(crate) struct ActivityEvent {
     message: Option<String>,
     thinking: Vec<String>,
     at: String,
+    session_id: Option<String>,
+    observation: Option<ai_team_core::EventObservation>,
+    tool: Option<crate::chat_activity::ToolActivity>,
 }
 
 impl From<Event> for ActivityEvent {
@@ -3320,6 +3323,8 @@ impl From<Event> for ActivityEvent {
         let message = event_message(&event);
         let thinking = event_thinking(&event);
         let summary = event_summary(&event);
+        let session_id = crate::chat_activity::session(&event);
+        let tool = crate::chat_activity::tool(&event);
         ActivityEvent {
             id: event.id,
             node_run_id: event.node_run_id,
@@ -3329,6 +3334,9 @@ impl From<Event> for ActivityEvent {
             message,
             thinking,
             at: event.at,
+            session_id,
+            observation: event.observation,
+            tool,
         }
     }
 }
@@ -3339,28 +3347,19 @@ fn event_summary(event: &Event) -> String {
     if event.kind == ai_team_core::EventKind::Done && event.summary == "turn completed" {
         return "turn settled".into();
     }
-    if event.kind != ai_team_core::EventKind::ToolCall {
+    if !matches!(
+        event.kind,
+        ai_team_core::EventKind::ToolCall | ai_team_core::EventKind::ToolResult
+    ) {
         return event.summary.clone();
     }
-    let Some(args) = event.payload.as_ref().and_then(|value| value.get("args")) else {
-        return event.summary.clone();
-    };
-    // The useful, bounded part of common tools: where it is reading/writing, what command
-    // it is running, or what it searched for. Never return the whole payload or results.
-    let detail = ["path", "filePath", "command", "query", "pattern", "url"]
-        .into_iter()
-        .find_map(|key| args.get(key).and_then(serde_json::Value::as_str));
-    let Some(detail) = detail else {
-        return event.summary.clone();
-    };
-    let detail: String = detail
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .chars()
-        .take(240)
-        .collect();
-    format!("{} · {detail}", event.summary)
+    let summary = crate::chat_activity::tool_summary(&event.summary);
+    if event.kind == ai_team_core::EventKind::ToolCall {
+        if let Some(detail) = crate::chat_activity::target_summary(event) {
+            return format!("{summary} · {detail}");
+        }
+    }
+    summary
 }
 
 fn message_content(event: &Event) -> Option<&Vec<serde_json::Value>> {
@@ -3995,6 +3994,8 @@ mod activity_event_tests {
             actor: Some(actor.into()),
             summary: "clipped…".into(),
             payload: Some(payload),
+            stream_id: None,
+            observation: None,
         }
     }
 

@@ -117,12 +117,12 @@ pub use mcp::{
 };
 pub use model::{
     Agent, ChatMode, ChatTeamPhase, CommentStatus, DeliveryAction, DeliveryPolicy,
-    DeliverySettings, DiffSide, Event, EventKind, Guardrails, NewAgent, NewComment, NewEvent,
-    NewNotification, NewProject, NewReminder, NewRepo, NodeRun, NodeStatus, Notification,
-    OnFailure, Project, ProjectKind, ProjectRepo, ProjectSource, ProjectStatus, Provider,
-    Reasoning, Recur, Reminder, ReminderKind, ReminderStatus, RemoteDeliveryStatus, Review,
-    ReviewComment, ReviewStatus, Run, RunOrigin, RunStatus, RunTrigger, ScheduleOutcome, Team,
-    ToolEffect, ToolPolicy, Usage,
+    DeliverySettings, DiffSide, Event, EventKind, EventObservation, Guardrails, NewAgent,
+    NewComment, NewEvent, NewNotification, NewProject, NewReminder, NewRepo, NodeRun, NodeStatus,
+    Notification, OnFailure, Project, ProjectKind, ProjectRepo, ProjectSource, ProjectStatus,
+    Provider, Reasoning, Recur, Reminder, ReminderKind, ReminderStatus, RemoteDeliveryStatus,
+    Review, ReviewComment, ReviewStatus, Run, RunOrigin, RunStatus, RunTrigger, ScheduleOutcome,
+    Team, ToolEffect, ToolPolicy, Usage,
 };
 pub use neighbours::{
     apply_patch_cached, branches, checkout, commit_staged, current_branch, file_sql_available,

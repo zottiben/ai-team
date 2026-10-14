@@ -74,8 +74,8 @@ impl Store {
         self.db_mut().write(|tx| {
             let mut insert = tx.prepare(
                 "INSERT OR IGNORE INTO event
-                   (run_id, node_run_id, at, kind, actor, summary, payload_json, eve_event_id)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                   (run_id, node_run_id, at, kind, actor, summary, payload_json, eve_event_id, observation_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             )?;
 
             for (offset, event) in events.iter().enumerate() {
@@ -87,6 +87,7 @@ impl Store {
                 let index = from_index + i64::try_from(offset).unwrap_or(0);
                 let id = format!("{session_id}:{index}");
                 let payload = serde_json::to_string(&event.data)?;
+                let observation = event.observation.as_ref().map(serde_json::to_string).transpose()?;
 
                 let rows = insert.execute(params![
                     run_id,
@@ -97,6 +98,7 @@ impl Store {
                     summary,
                     payload,
                     id,
+                    observation,
                 ])?;
                 if rows == 0 {
                     out.duplicates += 1;
@@ -196,6 +198,33 @@ mod tests {
             ),
             event(r#"{"type":"agent_settled"}"#),
         ]
+    }
+
+    #[test]
+    fn observations_survive_batching_and_replays_cannot_backfill_history() {
+        let mut store = Store::memory().unwrap();
+        let node_run = node(&mut store);
+        let mut events = turn();
+        let observation = crate::EventObservation {
+            clock_id: "clock-a".into(),
+            elapsed_ms: 125,
+            at: "2026-01-01T00:00:00.125Z".into(),
+        };
+        events[3].observation = Some(observation.clone());
+        store.ingest_pi_events(node_run, "s1", 0, &events).unwrap();
+        let before = store.node_events(node_run, 100).unwrap();
+        assert_eq!(before[1].observation.as_ref(), Some(&observation));
+        assert_eq!(before[1].stream_id.as_deref(), Some("s1:3"));
+        assert!(before[2].observation.is_none());
+        events[3].observation.as_mut().unwrap().elapsed_ms = 999;
+        events[4].observation = Some(observation);
+        let replay = store.ingest_pi_events(node_run, "s1", 0, &events).unwrap();
+        assert_eq!(replay.recorded, 0);
+        assert_eq!(replay.usage, Usage::default());
+        assert_eq!(
+            serde_json::to_value(store.node_events(node_run, 100).unwrap()).unwrap(),
+            serde_json::to_value(before).unwrap()
+        );
     }
 
     #[test]

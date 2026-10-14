@@ -23,6 +23,9 @@ pub struct PiEvent {
     pub kind: String,
     #[serde(flatten)]
     pub data: serde_json::Value,
+    /// Added by the supervisor, never deserialized from the child's JSON.
+    #[serde(skip)]
+    pub observation: Option<crate::EventObservation>,
 }
 
 /// What we do with one stream event.
@@ -193,15 +196,18 @@ impl PiEvent {
     /// evidence inside the result; adapter failures can carry isError=false and a
     /// structured details.error. Never infer an error from quoted text content.
     fn tool_failed(&self) -> bool {
-        let result = self.data.get("result");
+        Self::tool_result_failed(&self.data)
+    }
+
+    /// Shared with the bounded activity projection. A returned tool is not a verified
+    /// task, and text that mentions an error is not structured failure evidence.
+    pub fn tool_result_failed(data: &serde_json::Value) -> bool {
+        let result = data.get("result");
         let flagged = result
             .and_then(|r| r.get("isError"))
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(false);
-        self.data
-            .get("isError")
-            .and_then(serde_json::Value::as_bool)
-            == Some(true)
+        data.get("isError").and_then(serde_json::Value::as_bool) == Some(true)
             || flagged
             || result
                 .and_then(|r| r.pointer("/details/error"))

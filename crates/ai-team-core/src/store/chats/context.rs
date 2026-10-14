@@ -71,6 +71,7 @@ impl Store {
                 crate::PiEvent {
                     kind: "message_end".into(),
                     data,
+                    observation: None,
                 }
                 .assistant_message()
             };

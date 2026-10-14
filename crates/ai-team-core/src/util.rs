@@ -3,8 +3,8 @@
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 
-/// ISO-8601 UTC, second precision. Every timestamp in the database uses this, so rows
-/// sort lexically and read cleanly in TablePlus.
+/// ISO-8601 UTC, second precision for lifecycle/scheduling stamps. Stream observation
+/// receipts carry their own millisecond timestamp; never infer precise timing from this.
 pub fn now() -> String {
     OffsetDateTime::now_utc()
         .replace_nanosecond(0)

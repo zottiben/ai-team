@@ -312,6 +312,7 @@ impl PiProcess {
         let mut out = BufReader::new(stdout).lines();
         let mut err = BufReader::new(stderr).lines();
 
+        let clock = super::observation::ObservationClock::new();
         let mut outcome = TurnOutcome::default();
         let mut latest_provider_turn_failed = false;
         let mut stderr_tail = Vec::new();
@@ -330,7 +331,8 @@ impl PiProcess {
                 }
                 line = out.next_line(), if out_open => match line {
                     Ok(Some(line)) => {
-                        let Some(event) = PiEvent::parse(&line) else { continue };
+                        let Some(mut event) = PiEvent::parse(&line) else { continue };
+                        clock.observe(&mut event);
                         if let Some(id) = event.session_id() {
                             outcome.session_id = Some(id.to_string());
                         }

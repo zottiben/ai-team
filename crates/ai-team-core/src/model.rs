@@ -646,6 +646,15 @@ impl std::ops::AddAssign for Usage {
     }
 }
 
+/// Receipt from the supervisor reading a stream, not a provider timestamp or execution
+/// duration. Monotonic offsets may be compared only within the same clock instance.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EventObservation {
+    pub clock_id: String,
+    pub elapsed_ms: u64,
+    pub at: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Event {
     pub id: i64,
@@ -656,6 +665,11 @@ pub struct Event {
     pub actor: Option<String>,
     pub summary: String,
     pub payload: Option<serde_json::Value>,
+    /// Original ingestion identity. Unlike the node's current session, this never moves.
+    #[serde(default)]
+    pub stream_id: Option<String>,
+    #[serde(default)]
+    pub observation: Option<EventObservation>,
 }
 
 /// A restack about to start: a stacked pull request to rebase onto where its parent is
