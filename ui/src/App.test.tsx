@@ -192,6 +192,29 @@ beforeEach(() => {
   document.documentElement.removeAttribute("data-synth");
 });
 
+it("maps the Synth global Board to existing plans and retains Schedule across skin changes", async () => {
+  const { setSynth } = await import("./ui-preferences");
+  setSynth(true);
+  render(<App />);
+  const rail = screen.getByRole("navigation", { name: "Application" });
+  expect(within(rail).queryByRole("button", { name: "Schedule" })).toBeNull();
+  fireEvent.click(within(rail).getByRole("button", { name: "Board · all projects and chats" }));
+  expect(await screen.findByRole("heading", { name: "All plans" })).toBeDefined();
+  fireEvent.click(screen.getByRole("button", { name: "Open exact plan" }));
+  expect(await screen.findByRole("heading", { name: "Demo project / 42" })).toBeDefined();
+  expect(within(rail).getByRole("button", { name: "Chats" }).getAttribute("aria-current")).toBe("page");
+  fireEvent.click(screen.getByRole("button", { name: "More tools" }));
+  const menu = screen.getByRole("navigation", { name: "More tools" });
+  for (const name of ["Schedule", "Today", "Analytics", "Default team", "Project tools"]) expect(within(menu).getByRole("button", { name })).toBeDefined();
+  fireEvent.click(within(menu).getByRole("button", { name: "Schedule" }));
+  const schedule = await screen.findByRole("heading", { name: "Schedule content" });
+  expect(screen.getByRole("button", { name: "More tools" }).getAttribute("aria-current")).toBe("page");
+  act(() => { setSynth(false); });
+  expect(screen.getByRole("heading", { name: "Schedule content" })).toBe(schedule);
+  expect(within(rail).getByRole("button", { name: "Schedule" }).getAttribute("aria-current")).toBe("page");
+  expect(within(rail).getByRole("button", { name: "Plans" })).toBeDefined();
+});
+
 it("keeps the deferred default team reachable through More", async () => {
   render(<App />);
   fireEvent.click(await screen.findByRole("button", { name: "More tools" }));

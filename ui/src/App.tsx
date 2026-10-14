@@ -253,9 +253,9 @@ export default function App() {
             ["chat", "Chats", "chat"],
             ["projects", "Projects", "folder"],
             ["schedule", "Schedule", "clock"],
-            ["plans", "Plans", "board"],
+            ["plans", synth ? "Board · all projects and chats" : "Plans", "board"],
           ] as const
-        ).map(([target, label, icon]) => (
+        ).filter(([target]) => !synth || target !== "schedule").map(([target, label, icon]) => (
           <button
             key={target}
             type="button"
@@ -276,6 +276,7 @@ export default function App() {
           type="button"
           aria-label="More tools"
           title="More tools"
+          aria-current={synth && !setup && ["schedule", "today", "analytics", "team", "tools", "legacy"].includes(page) ? "page" : undefined}
           aria-expanded={more}
           onClick={() => setMore(!more)}
         >
@@ -401,20 +402,22 @@ export default function App() {
             <p className="faint">Add a project to start a conversation.</p>
           )}
         </div>
-        {more && <Popover anchor={moreButton} label="Additional tools" width={220} onClose={() => setMore(false)}>
+        {more && <Popover anchor={moreButton} label="Additional tools" width={220} onClose={() => setMore(false)} className={synth ? "synth-more-popover" : ""}>
           <nav className="chat-secondary" aria-label="More tools">
             {(
               [
+                ["schedule", "Schedule"],
                 ["today", "Today"],
                 ["analytics", "Analytics"],
                 ["team", "Default team"],
                 ["tools", "Project tools"],
               ] as const
-            ).map(([target, label]) => (
+            ).filter(([target]) => synth || target !== "schedule").map(([target, label]) => (
               <button
                 type="button"
                 key={target}
                 className="nav-item"
+                aria-current={synth && !setup && page === target ? "page" : undefined}
                 onClick={() => {
                   setPage(target);
                   setSetup(false);
@@ -556,7 +559,7 @@ export default function App() {
           </main>
         )}
       </div>
-      {synth && <Suspense fallback={null}><SynthTitleBar context={setup ? "Setup" : page === "chat" ? project?.name ?? "Chats" : page === "plans" ? "Plans · all projects" : page === "tools" ? "Project tools" : page === "team" ? "Default team" : page.charAt(0).toUpperCase() + page.slice(1)} version={updates.available?.current} /></Suspense>}
+      {synth && <Suspense fallback={null}><SynthTitleBar context={setup ? "Setup" : page === "chat" ? project?.name ?? "Chats" : page === "plans" ? "Board · all projects" : page === "tools" ? "Project tools" : page === "team" ? "Default team" : page.charAt(0).toUpperCase() + page.slice(1)} version={updates.available?.current} /></Suspense>}
     </div>
   );
 }

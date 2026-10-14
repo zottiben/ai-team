@@ -7,6 +7,10 @@ export async function checkShell() {
   if (root.scrollWidth > root.clientWidth) throw new Error(`Page overflow: ${root.scrollWidth} > ${root.clientWidth}`);
   const api = performance.getEntriesByType('resource').filter(entry => new URL(entry.name).pathname.startsWith('/api/'));
   if (api.length) throw new Error('Fixture escaped its API stub');
+  if (root.dataset.synth === 'true') {
+    if (!document.querySelector('.app-rail [aria-label="Board · all projects and chats"]')) throw new Error('Global Board scope is missing');
+    if (document.querySelector('.app-rail [aria-label="Schedule"]')) throw new Error('Synth Schedule belongs in More');
+  }
   const project = document.querySelector('.chat-project-name'), heading = document.querySelector('.chat-heading > .faint');
   if (root.dataset.synth === 'true' && project && heading && getComputedStyle(project, '::before').backgroundColor !== getComputedStyle(heading, '::before').backgroundColor)
     throw new Error('Project marker differs between sidebar and chat header');

@@ -14,6 +14,7 @@ const button = name => [...document.querySelectorAll('button')].find(el => el.te
 export async function exerciseWorkspace() {
   if (location.pathname !== '/synth-shell-preview.html') throw new Error('Use the isolated shell fixture');
   await waitFor(() => tab('Work') && !tab('Work').disabled && document.querySelector('textarea[aria-label="Message"]'));
+  const theme = localStorage.getItem('ai-team.theme');
   const draft = document.querySelector('textarea[aria-label="Message"]');
   Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(draft, 'Retained fixture draft');
   draft.dispatchEvent(new Event('input', { bubbles: true }));
@@ -39,7 +40,7 @@ export async function exerciseWorkspace() {
   tab('Work').click();
   await waitFor(() => document.querySelector('[aria-label="Panel view"]'));
   if (document.querySelector('textarea[aria-label="Message"]') !== draft || draft.value !== 'Retained fixture draft') throw new Error('Lost or remounted chat draft');
-  if (localStorage.getItem('ai-team.theme') !== 'dark') throw new Error('Skin replaced the legacy theme preference');
+  if (localStorage.getItem('ai-team.theme') !== theme) throw new Error('Skin replaced the legacy theme preference');
   const separator = document.querySelector('[role="separator"]');
   if (separator?.getClientRects().length) {
     separator.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }));

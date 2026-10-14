@@ -13,7 +13,10 @@
   --synth-key-hover-top: #4b2192; --synth-key-hover-bottom: #2f145d;
   --synth-hairline: rgba(224,195,255,.18); --synth-hairline-soft: rgba(224,195,255,.12); --synth-hairline-faint: rgba(224,195,255,.10);
   --synth-text: #fdf4ff; --synth-text-muted: rgba(253,244,255,.62); --synth-text-faint: rgba(253,244,255,.45);
-  --synth-text-on-magenta: var(--vc-pearl);
+  --synth-text-on-magenta: var(--vc-pearl); --synth-text-on-danger: #ffffff;
+  --synth-color-scheme: dark;
+  --synth-focus: var(--vc-cyan); --synth-accent: var(--vc-cyan); --synth-label: var(--vc-lavender);
+  --synth-selection: var(--vc-pearl);
   --synth-lcd-text: #2de2e6; --synth-lcd-text-alt: #e0c3ff; --synth-lcd-label: rgba(45,226,230,.7);
   --synth-lcd-grid: rgba(45,226,230,.07); --synth-lcd-edge: rgba(45,226,230,.14);
   --synth-track: rgba(253,244,255,.14); --synth-pad-off: rgba(253,244,255,.06); --synth-seg-off: rgba(253,244,255,.10);
@@ -53,7 +56,7 @@
   --synth-key: linear-gradient(180deg, var(--synth-key-top), var(--synth-key-bottom));
   --synth-key-hover: linear-gradient(180deg, var(--synth-key-hover-top), var(--synth-key-hover-bottom));
   --synth-primary: linear-gradient(180deg, var(--vc-hot-pink-hi), var(--vc-hot-pink));
-  --synth-danger: linear-gradient(180deg, #e0237f, var(--vc-magenta));
+  --synth-danger: linear-gradient(180deg, #da207a, var(--vc-magenta));
   --synth-primary-glow: 0 0 18px rgba(255,46,151,.45);
   --synth-danger-glow: 0 0 18px rgba(192,18,111,.45);
   --synth-latched-ring: rgba(45,226,230,.6);
@@ -69,6 +72,48 @@
   --synth-port-light: rgba(26,6,51,.88); --synth-port-magenta: #4a0630;
   --synth-cable-shadow: rgba(0,0,0,.45); --synth-cable-shine: rgba(253,244,255,.38);
   --synth-cable-closed: rgba(253,244,255,.22);
-  --synth-command-pad: linear-gradient(180deg, #34166a, #261049);
+  --synth-command-pad: linear-gradient(180deg, #301261, #261049);
   --synth-pad-shadow: inset 0 -3px 0 rgba(0,0,0,.35);
+}
+
+/* Daylight faceplates: the same sunset branding, with ink rather than neon text.
+   Cover nested galleries as well as the app root; leave legacy tokens untouched. */
+[data-theme="light"][data-synth="true"],
+[data-theme="light"] [data-synth="true"] {
+  --synth-color-scheme: light;
+  --synth-void: #e8ddf3; --synth-floor: #fff4fb; --synth-screen: #fffbfe;
+  --synth-panel: #f4eafa; --synth-panel-hi: #fff7fd; --synth-plate-hi: #f8eaff;
+  --synth-key-top: #f7efff; --synth-key-bottom: #e5d6f4;
+  --synth-key-hover-top: #f4d7ed; --synth-key-hover-bottom: #dfc5f2;
+  --synth-text: #29123f; --synth-text-muted: #614775; --synth-text-faint: #705a82;
+  --synth-focus: #005f65; --synth-accent: #006168; --synth-label: #583078;
+  --synth-selection: #29123f;
+  --synth-hairline: rgba(74,42,107,.28); --synth-hairline-soft: rgba(74,42,107,.18); --synth-hairline-faint: rgba(74,42,107,.12);
+  --synth-lcd-text: #006168; --synth-lcd-text-alt: #583078; --synth-lcd-label: #006168;
+  --synth-lcd-grid: rgba(0,97,104,.07); --synth-lcd-edge: rgba(0,97,104,.3);
+  --synth-track: rgba(41,18,63,.24); --synth-pad-off: rgba(41,18,63,.08); --synth-seg-off: rgba(41,18,63,.14);
+  --synth-led-off: rgba(41,18,63,.3);
+  --lane-think: #7134a5; --lane-read: #245b83; --lane-edit: #006168; --lane-bash: #795100;
+  --lane-mcp: #9b205f; --lane-guard: #963a1a; --lane-live: #795100; --lane-assistant: #9b205f;
+  --sig-ticket: #9b205f; --sig-spec: #583078; --sig-plan: #245b83; --sig-diff: #006168;
+  --sig-verdict: #963a1a; --sig-fix: #7134a5; --sig-result: #795100; --sig-activity: #29123f;
+  --st-working: #795100; --st-done: #006168; --st-attention: #963a1a; --st-info: #7134a5; --st-idle: rgba(41,18,63,.3);
+  --git-modified: #795100; --git-added: #006168; --git-deleted: #963a1a; --git-untracked: #245b83;
+  --run-done: #006168; --run-live: #795100; --run-cancelled: #705a82;
+  --slice-draft: #705a82; --slice-ready: #245b83; --slice-active: #795100; --slice-review: #7134a5;
+  --slice-blocked: #963a1a; --slice-done: #006168; --slice-deferred: #705a82;
+  --plate-night: linear-gradient(180deg, #f9efff, #e8d9f6);
+  --plate-midnight: linear-gradient(180deg, #fff7fd, #f0e4f8);
+  --plate-deck: linear-gradient(180deg, #fff0fa, #eedcf4);
+  --shadow-plate: inset 0 1px 0 rgba(255,255,255,.8), inset 0 -1px 0 rgba(74,42,107,.18), 0 8px 20px rgba(74,42,107,.12);
+  --shadow-plate-light: inset 0 1px 0 rgba(255,255,255,.8), inset 0 -2px 0 rgba(74,42,107,.18), 0 10px 24px rgba(74,42,107,.16);
+  --shadow-screen: inset 0 2px 5px rgba(74,42,107,.16), inset 0 0 0 1px var(--synth-lcd-edge);
+  --shadow-key: inset 0 1px 0 rgba(255,255,255,.8), 0 2px 4px rgba(74,42,107,.2);
+  --shadow-card: inset 0 1px 0 rgba(255,255,255,.8), inset 0 -1px 0 rgba(74,42,107,.18), 0 4px 10px rgba(74,42,107,.16);
+  --shadow-card-lift: inset 0 1px 0 rgba(255,255,255,.8), 0 0 0 2px var(--synth-selection), 0 14px 26px rgba(74,42,107,.2);
+  --synth-latched-ring: rgba(0,97,104,.65);
+  --synth-alert-ring: rgba(150,58,26,.5); --synth-working-ring: rgba(121,81,0,.5); --synth-comment-ring: rgba(113,52,165,.5);
+  --synth-cable-shadow: rgba(74,42,107,.22); --synth-cable-closed: rgba(41,18,63,.45);
+  --synth-command-pad: linear-gradient(180deg, #f7efff, #e5d6f4);
+  --synth-pad-shadow: inset 0 -3px 0 rgba(74,42,107,.22);
 }

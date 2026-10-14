@@ -2,13 +2,18 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, it } from "vitest";
 
-const tokens = readFileSync(join(import.meta.dirname, "tokens.css"), "utf8");
-const styles = readFileSync(join(import.meta.dirname, "primitives.css"), "utf8");
-const values = new Map([...tokens.matchAll(/(--[\w-]+):\s*([^;]+);/g)].map(m => [m[1], m[2]]));
-function resolve(name: string): string {
-  const value = values.get(name);
-  if (!value) throw new Error(`Missing colour token ${name}`);
-  return value.replace(/var\((--[\w-]+)\)/g, (_match, token: string) => resolve(token));
+const css = readFileSync(join(import.meta.dirname, "tokens.css"), "utf8");
+const blocks = [...css.replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/([^{}]+)\{([^{}]+)\}/g)];
+const tokens = (body: string) => [...body.matchAll(/(--[\w-]+):\s*([^;]+);/g)].map(m => [m[1]!, m[2]!] as const);
+const base = tokens(blocks[0]?.[2] ?? "");
+function palette(theme: "dark" | "light") {
+  const values = new Map([...base, ...theme === "light" ? tokens(blocks[1]?.[2] ?? "") : []]);
+  const resolve = (name: string): string => {
+    const value = values.get(name);
+    if (!value) throw new Error(`Missing colour token ${name}`);
+    return value.replace(/var\((--[\w-]+)\)/g, (_match, token: string) => resolve(token));
+  };
+  return resolve;
 }
 function colour(value: string): number[] {
   if (value.startsWith("#")) return [1, 3, 5].map(i => parseInt(value.slice(i, i + 2), 16));
@@ -20,19 +25,42 @@ function luminance(rgb: number[]) {
     return sum + (c <= .04045 ? c / 12.92 : ((c + .055) / 1.055) ** 2.4) * [0.2126, 0.7152, 0.0722][i]!;
   }, 0);
 }
-
-it("small secondary text on the magenta plate meets 4.5:1 at both gradient stops", () => {
-  // Browser inspection exposed 2.47:1 with the usual 62% Pearl. Use the actual
-  // selector/token values so a future palette adjustment cannot silently regress it.
-  const override = styles.match(/\.synth-plate\[data-tone="magenta"\] \.synth-muted\s*\{\s*color:\s*var\((--[\w-]+)\)/)?.[1];
-  const foreground = colour(resolve(override ?? "--synth-text-muted"));
-  const backgrounds = resolve("--plate-magenta").match(/#[a-f\d]{6}/gi) ?? [];
-  expect(backgrounds).toHaveLength(2);
-  for (const stop of backgrounds) {
-    const background = colour(stop);
-    const alpha = foreground[3] ?? 1;
-    const blended = foreground.slice(0, 3).map((c, i) => c * alpha + background[i]! * (1 - alpha));
-    const a = luminance(blended), b = luminance(background);
-    expect((Math.max(a, b) + .05) / (Math.min(a, b) + .05)).toBeGreaterThanOrEqual(4.5);
-  }
-});
+function contrast(fg: string, bg: string) {
+  const foreground = colour(fg), background = colour(bg), alpha = foreground[3] ?? 1;
+  const blended = foreground.slice(0, 3).map((c, i) => c * alpha + background[i]! * (1 - alpha));
+  const a = luminance(blended), b = luminance(background);
+  return (Math.max(a, b) + .05) / (Math.min(a, b) + .05);
+}
+for (const theme of ["dark", "light"] as const) {
+  const resolve = palette(theme);
+  const check = (ink: string, surface: string, minimum = 4.5) => {
+    const background = resolve(surface);
+    const stops = background.startsWith("linear-gradient") ? background.match(/#[a-f\d]{6}/gi) ?? [] : [background];
+    expect(stops.length).toBeGreaterThan(0);
+    for (const stop of stops) expect(contrast(resolve(ink), stop), `${theme}: ${ink} on ${surface} (${stop})`).toBeGreaterThanOrEqual(minimum);
+  };
+  it(`${theme}: body, secondary text and LCDs meet small-text contrast`, () => {
+    for (const surface of ["--synth-floor", "--synth-void", "--synth-screen", "--plate-night", "--plate-midnight", "--plate-deck", "--synth-key", "--synth-key-hover"]) {
+      for (const ink of ["--synth-text", "--synth-text-muted"]) check(ink, surface);
+    }
+    for (const ink of ["--synth-lcd-text", "--synth-lcd-text-alt", "--synth-lcd-label"]) check(ink, "--synth-screen");
+  });
+  it(`${theme}: shell labels and command/status labels remain readable`, () => {
+    check("--synth-label", "--plate-midnight");
+    check("--synth-accent", "--synth-key");
+    for (const ink of ["--lane-think", "--lane-read", "--lane-edit", "--lane-bash", "--lane-mcp", "--st-working", "--st-attention"]) {
+      check(ink, "--plate-midnight");
+      check(ink, "--synth-command-pad");
+    }
+    check("--synth-focus", "--synth-floor", 3);
+    check("--synth-focus", "--synth-key", 3);
+  });
+  it(`${theme}: branded faceplates and primary/danger keys keep their own contrast`, () => {
+    for (const surface of ["--plate-lavender", "--plate-ice", "--plate-flamingo", "--plate-yellow"]) {
+      check("--vc-midnight", surface); check("--vc-text-muted", surface);
+    }
+    check("--synth-text-on-magenta", "--plate-magenta");
+    check("--vc-midnight", "--synth-primary");
+    check("--synth-text-on-danger", "--synth-danger");
+  });
+}

@@ -50,7 +50,11 @@ it("synth tokens cannot leak into or redefine the legacy palette", () => {
   const legacy = new Set([...readFileSync(join(SRC, "tokens.css"), "utf8").matchAll(/(--[a-z0-9-]+):/g)].map(m => m[1]));
   const definitions = [...css.matchAll(/(--[a-z0-9-]+):/g)].map(m => m[1]);
   expect(css.replace(/\/\*[\s\S]*?\*\//g, "").trim().startsWith('[data-synth="true"] {')).toBe(true);
-  expect((css.match(/{/g) ?? []).length).toBe(1);
+  const blocks = [...css.replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/([^{}]+)\{[^{}]+\}/g)];
+  expect(blocks).toHaveLength(2);
+  for (const block of blocks) {
+    for (const selector of block[1]!.split(",")) expect(selector.trim()).toMatch(/\[data-synth="true"\]$/);
+  }
   expect(definitions.filter(token => legacy.has(token))).toEqual([]);
   expect(definitions.length).toBeGreaterThan(100);
 });

@@ -13,8 +13,13 @@ class FixtureStorage implements Storage {
   removeItem(key: string) { this.values.delete(key); }
   setItem(key: string, value: string) { this.values.set(key, String(value)); }
 }
+const params = new URLSearchParams(location.search);
+const theme = params.get("theme") === "light" ? "light" : "dark";
+const synth = params.get("synth") !== "false";
+document.documentElement.dataset.theme = theme;
+document.documentElement.dataset.synth = String(synth);
 Object.defineProperty(window, "localStorage", { configurable: true, value: new FixtureStorage(new Map([
-  ["ui.synth", "true"], ["ai-team.theme", "dark"], ["ai-team.last-chat", JSON.stringify({ project: "demo", chat: 1 })],
+  ["ui.synth", String(synth)], ["ai-team.theme", theme], ["ai-team.last-chat", JSON.stringify({ project: "demo", chat: 1 })],
 ])) });
 Object.defineProperty(window, "sessionStorage", { configurable: true, value: new FixtureStorage() });
 Object.defineProperty(window, "EventSource", { configurable: true, value: class {
