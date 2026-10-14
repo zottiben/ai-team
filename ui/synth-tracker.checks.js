@@ -28,7 +28,7 @@ export async function exerciseGroupedTracker() {
   isolated();
   const thinking = new URLSearchParams(location.search).get('activity-mode') === 'thinking';
   await until(() => document.querySelector(thinking ? '.synth-tracker-thinking' : '[aria-label="Grouped read operations"]'), 'Missing grouped activity');
-  const overview = [...document.querySelectorAll('[role="tab"]')].find(el => el.textContent === 'Overview');
+  const overview = await until(() => [...document.querySelectorAll('[role="tab"]')].find(el => el.textContent === 'Overview'), 'Session navigation did not load');
   overview.click();
   await until(() => document.querySelector('.synth-sequence-scroll'), 'Missing grouped sequence');
   const sequence = document.querySelector('.synth-sequence-scroll');
@@ -48,6 +48,32 @@ export async function exerciseGroupedTracker() {
   assert(focused.isConnected && document.activeElement === focused, 'Grouped virtualization discarded the focused item');
   isolated();
   return { pinnedFocus: true, grouped: thinking ? 'thinking' : 'reads', target, mountedChildren: document.querySelectorAll(selector).length, exactFocus: true, apiRequests: 0 };
+}
+export async function exerciseOutput() {
+  await checkTracker();
+  document.querySelector('.chat-follow')?.click();
+  const { appendShellPhase } = await import('/src/synth/shell-preview.tsx');
+  const id = appendShellPhase('start', '');
+  const row = await until(() => document.querySelector(`[data-row-id="${id}"]`), 'Missing sampled-output call');
+  appendShellPhase('partial', 'Synthetic first tail');
+  const disclosure = await until(() => [...row.querySelectorAll('details')].find(item => item.textContent.includes('Sampled shell output')), 'Missing sampled output');
+  disclosure.querySelector('summary').click(); disclosure.querySelector('summary').focus();
+  await until(() => disclosure.open, 'Output disclosure did not open');
+  const pre = disclosure.querySelector('pre'), scroll = document.querySelector('.chat-transcript');
+  scroll.scrollTop = scroll.scrollHeight / 2;
+  await until(() => document.querySelector('.chat-follow'), 'Output history did not hold');
+  const held = scroll.scrollTop;
+  appendShellPhase('partial', 'Synthetic second tail\n'.repeat(20));
+  await until(() => pre.textContent.includes('Synthetic second tail'), 'The same disclosure did not update');
+  assert(pre.isConnected && disclosure.open, 'Sample update lost the retained output DOM/disclosure');
+  assert(Math.abs(scroll.scrollTop - held) < 2, 'Partial output moved the held viewport');
+  assert(row.textContent.includes('Return not recorded'), 'A partial update invented a return');
+  appendShellPhase('end', 'Synthetic completed tail');
+  await until(() => pre.textContent === 'Synthetic completed tail', 'Completion did not replace the sampled tail');
+  assert(disclosure.open && row.textContent.includes('Completed output'), 'Completion lost disclosure or provenance');
+  assert(Math.abs(scroll.scrollTop - held) < 2, 'Completion moved the held viewport');
+  isolated();
+  return { sampledOutput: true, retainedDisclosure: true, heldViewport: true, apiRequests: 0 };
 }
 export async function exerciseTracker() {
   await checkTracker();
@@ -76,7 +102,7 @@ export async function exerciseTracker() {
   summary.blur(); await pause();
   scroll.scrollTop = expandedOffset;
   await until(() => scroll.querySelector(`[data-row-id="${key}"] details[open]`), 'Recycled output lost disclosure state');
-  const overview = [...document.querySelectorAll('[role="tab"]')].find(el => el.textContent === 'Overview');
+  const overview = await until(() => [...document.querySelectorAll('[role="tab"]')].find(el => el.textContent === 'Overview'), 'Session navigation did not load');
   overview.click();
   await until(() => document.querySelector('[aria-label="Session pattern"]'), 'Overview lost its pattern');
   const all = [...document.querySelectorAll('[aria-label="Pattern range"] button')].find(el => el.textContent === 'All');

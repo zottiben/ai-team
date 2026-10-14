@@ -197,6 +197,11 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
         "supervisor event observations",
         include_str!("migrations/044_event_observations.sql"),
     ),
+    (
+        45,
+        "bounded host activity snapshots",
+        include_str!("migrations/045_event_activity.sql"),
+    ),
 ];
 
 /// Migrations that rebuild a table other tables point at.
@@ -564,6 +569,56 @@ mod tests {
             "preserve the update guard and existing deletion/cascade behavior"
         );
         assert!(db.conn().execute("INSERT INTO event(run_id,at,kind,observation_json) VALUES(1,'now','step','not json')", []).is_err());
+        drop(db);
+        assert_eq!(snapshot(Db::open(&path).unwrap().conn(), query), before);
+    }
+
+    #[test]
+    fn activity_upgrade_preserves_v44_evidence_and_seeds_replay_watermarks() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("v44.db");
+        seed_v42(&path);
+        let db = upgrade_thinking_only(&path);
+        db.conn()
+            .execute_batch(include_str!("migrations/044_event_observations.sql"))
+            .unwrap();
+        db.conn().execute_batch("INSERT INTO schema_migrations VALUES(44,'observations','fixture');
+            UPDATE node_run SET session_id='legacy',stream_cursor=12 WHERE id=9;
+            INSERT INTO event(id,run_id,node_run_id,at,kind,summary,eve_event_id,observation_json)
+            VALUES(51,1,9,'original','tool_call','receipt','legacy:3','{\"clock_id\":\"original\",\"elapsed_ms\":7,\"at\":\"original\"}');").unwrap();
+        let query = "SELECT json_group_array(json_array(id,run_id,node_run_id,at,kind,summary,payload_json,eve_event_id,observation_json)) FROM event";
+        let before = snapshot(db.conn(), query);
+        drop(db);
+        let db = Db::open(&path).unwrap();
+        assert_eq!(snapshot(db.conn(), query), before);
+        assert_eq!(
+            snapshot(
+                db.conn(),
+                "SELECT json_group_array(activity_json) FROM event"
+            ),
+            "[null,null]"
+        );
+        assert_eq!(
+            db.conn()
+                .query_row(
+                    "SELECT next_index FROM pi_ingest_cursor WHERE session_id='legacy'",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+            12
+        );
+        assert!(db
+            .conn()
+            .execute("UPDATE event SET activity_json='{}' WHERE id=51", [])
+            .is_err());
+        assert!(db
+            .conn()
+            .execute(
+                "INSERT INTO event(run_id,at,kind,activity_json) VALUES(1,'now','note','not json')",
+                []
+            )
+            .is_err());
         drop(db);
         assert_eq!(snapshot(Db::open(&path).unwrap().conn(), query), before);
     }

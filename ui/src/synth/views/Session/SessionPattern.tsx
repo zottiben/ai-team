@@ -10,7 +10,7 @@ export function patternEntries(rows: TrackerRow[]): PatternEntry[] {
   return rows.flatMap(row => {
     if (row.kind === "thinking") return row.events.map(event => ({ id: event.id, row: row.id, lane: "think" as const, label: `Thinking summary · event ${event.id}`, duration: null }));
     const tools = row.kind === "reads" ? row.tools : row.kind === "tool" ? [row] : [];
-    return tools.flatMap(tool => tool.lane ? [{ id: tool.id, row: row.id, lane: tool.lane,
+    return tools.flatMap(tool => tool.lane && (tool.start || tool.result) ? [{ id: tool.id, row: row.id, lane: tool.lane,
       label: `${tool.start?.tool?.target?.text ?? tool.start?.summary ?? tool.result?.summary ?? "Tool"} · event ${tool.id}`,
       // Receive intervals are not execute() duration and must not colour duration pads.
       duration: tool.duration?.source === "runtime" ? tool.duration.milliseconds : null }] : []);

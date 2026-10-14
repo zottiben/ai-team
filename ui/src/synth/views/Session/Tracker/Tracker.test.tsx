@@ -38,6 +38,43 @@ describe("shared tracker rendering", () => {
     await waitFor(() => expect(output.open).toBe(true));
   });
 
+  it("updates one retained disclosure with sampled output without inventing a return or pattern step", async () => {
+    const start = tool(1, "tool_call", "a"), update = tool(2, "tool_result", "a");
+    if (!update.tool) throw new Error("Missing fixture metadata");
+    update.kind = "note"; update.tool = { ...update.tool, partial: true, outcome: null, output: { text: "first tail", truncated: false } };
+    const view = render(<Tracker {...props} pattern events={[start, update]}/>);
+    expect(screen.getByText("Return not recorded")).toBeTruthy();
+    expect(screen.getByText(/1 of 1 mapped steps/)).toBeTruthy();
+    const output = screen.getByText(/Sampled shell output/).closest("details");
+    if (!output) throw new Error("Missing output disclosure");
+    output.open = true; fireEvent(output, new Event("toggle"));
+    const text = screen.getByText("first tail");
+    const newer = { ...update, id: 3, tool: { ...update.tool, output: { text: "second tail", truncated: true } } };
+    view.rerender(<Tracker {...props} pattern events={[start, update, newer]}/>);
+    expect(screen.getByText("second tail")).toBe(text);
+    expect(output.open).toBe(true);
+    expect(screen.getByText(/1 of 1 mapped steps/)).toBeTruthy();
+    const end = tool(4, "tool_result", "a");
+    view.rerender(<Tracker {...props} pattern events={[start, update, newer, end]}/>);
+    expect(screen.getByText(/^Completed output/)).toBeTruthy();
+    expect(output.open).toBe(true);
+    view.rerender(<Tracker {...props} synth={false} events={[start, update, newer, end]}/>);
+    expect(screen.queryByText("second tail")).toBeNull();
+  });
+
+  it("does not follow a stale bottom when measurement renders before a native scroll event", () => {
+    const view = render(<Tracker {...props} events={[message(1)]}/>);
+    const scroll = view.container.querySelector<HTMLElement>(".chat-transcript")!;
+    Object.defineProperties(scroll, { scrollHeight: { configurable: true, value: 1000 }, clientHeight: { configurable: true, value: 100 } });
+    view.rerender(<Tracker {...props} events={[message(1), message(2)]}/>);
+    scroll.scrollTop = 300; // The browser may deliver its scroll event after this render.
+    view.rerender(<Tracker {...props} events={[message(1), message(2), message(3)]}/>);
+    expect(scroll.scrollTop).toBe(300);
+    expect(screen.getByRole("button", { name: /new/ })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /new/ }));
+    expect(scroll.scrollTop).toBe(1000);
+  });
+
   it("shows recorded native edit counts without inventing counts for writes", async () => {
     const start = tool(1, "tool_call", "edit"), end = tool(2, "tool_result", "edit");
     if (!start.tool || !end.tool) throw new Error("Missing fixture metadata");

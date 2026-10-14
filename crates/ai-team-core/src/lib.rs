@@ -122,7 +122,7 @@ pub use model::{
     Notification, OnFailure, Project, ProjectKind, ProjectRepo, ProjectSource, ProjectStatus,
     Provider, Reasoning, Recur, Reminder, ReminderKind, ReminderStatus, RemoteDeliveryStatus,
     Review, ReviewComment, ReviewStatus, Run, RunOrigin, RunStatus, RunTrigger, ScheduleOutcome,
-    Team, ToolEffect, ToolPolicy, Usage,
+    ShellOutput, Team, ToolEffect, ToolPolicy, Usage,
 };
 pub use neighbours::{
     apply_patch_cached, branches, checkout, commit_staged, current_branch, file_sql_available,

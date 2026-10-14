@@ -3996,6 +3996,7 @@ mod activity_event_tests {
             payload: Some(payload),
             stream_id: None,
             observation: None,
+            shell_output: None,
         }
     }
 

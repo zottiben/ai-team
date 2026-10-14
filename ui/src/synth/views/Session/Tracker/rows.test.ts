@@ -17,7 +17,29 @@ function tools(events: RunEvent[]): ToolActivityRow[] {
   return trackerRows(events).filter((row): row is ToolActivityRow => row.kind === "tool");
 }
 
+function snapshot(id: number, call: string | null, extra: Partial<RunEvent> = {}): RunEvent {
+  const source = event(id, "tool_result", call, extra);
+  return { ...source, kind: "note", tool: source.tool && { ...source.tool, outcome: null, partial: true, output: { text: `tail ${id}`, truncated: false } } };
+}
+
 describe("tracker evidence projection", () => {
+  it("attaches only exact in-order output snapshots and keeps ambiguous/orphan evidence", () => {
+    const a = event(1, "tool_call", "a"), b = event(2, "tool_call", "b");
+    const wrongName = snapshot(10, "b");
+    if (!wrongName.tool) throw new Error("Missing fixture");
+    wrongName.tool.name = "powershell";
+    const input = [snapshot(0, "a"), a, b, snapshot(3, "b"), snapshot(4, "a"), snapshot(5, "b"),
+      event(6, "tool_result", "a"), snapshot(7, "a"), snapshot(8, "b", { session_id: "different" }), snapshot(9, null), wrongName];
+    const rows = tools(input);
+    expect(rows.find(row => row.id === 1)?.update?.id).toBe(4);
+    expect(rows.find(row => row.id === 1)?.result?.id).toBe(6);
+    expect(rows.find(row => row.id === 2)?.update?.id).toBe(5);
+    expect(rows.filter(row => row.correlation === "update_only").map(row => row.id)).toEqual([0, 7, 8, 9, 10]);
+    expect(tools([...input, ...input])).toEqual(rows);
+    const ambiguous = tools([...input, event(11, "tool_call", "b")]);
+    expect(ambiguous.find(row => row.id === 2)?.update).toBeUndefined();
+    expect(ambiguous.filter(row => row.correlation === "update_only").map(row => row.id)).toContain(3);
+  });
   it("pairs interleaved same-name calls by exact identity and keeps the start row stable", () => {
     const a = event(1, "tool_call", "a"), b = event(2, "tool_call", "b");
     const partial = tools([a, b]);

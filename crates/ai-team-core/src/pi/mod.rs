@@ -16,6 +16,7 @@ mod ingest;
 mod instructions;
 mod live;
 mod observation;
+mod output;
 mod process;
 mod seat;
 mod turn;

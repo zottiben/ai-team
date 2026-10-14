@@ -69,6 +69,67 @@ fn edit_activity_exposes_counts_without_exporting_the_source_diff() {
 }
 
 #[test]
+fn partial_shell_snapshots_remain_scoped_and_are_never_tool_results() {
+    let (h, dir) = Harness::with_store();
+    let mut store = Store::open(&dir.path().join("team.db")).unwrap();
+    let project = store.find_project("widget").unwrap();
+    let chat = store
+        .create_chat(NewChat {
+            project_id: project.id,
+            workspace: dir.path().to_path_buf(),
+            provider: Provider::Local,
+            model: "test-model".into(),
+            reasoning: Reasoning::High,
+        })
+        .unwrap();
+    let turn = store
+        .begin_chat_turn(chat.id, "Observe", "output", &ModelRegistry::local_only())
+        .unwrap();
+    let raw = json!({"type":"tool_execution_update","toolName":"bash","toolCallId":"exact-call",
+        "args":{"private":"secret"},"partialResult":{"content":[{"type":"text","text":"safe tail"}]},
+        "shell_output":{"call_id":"forged"}}).to_string();
+    let mut event = PiEvent::parse(&raw).unwrap();
+    assert_eq!(
+        store
+            .ingest_pi_events(turn.node_id, "forged-session", 0, &[event.clone()])
+            .unwrap()
+            .recorded,
+        0
+    );
+    event.shell_output = Some(ai_team_core::ShellOutput {
+        call_id: "exact-call".into(),
+        parent_call_id: Some("parent".into()),
+        tool_name: "bash".into(),
+        text: "safe tail".into(),
+        truncated: false,
+    });
+    store
+        .ingest_pi_events(turn.node_id, "observed-session", 0, &[event])
+        .unwrap();
+    store
+        .set_node_session(turn.node_id, "changed-current-session")
+        .unwrap();
+    let response = h.get(&format!("/api/chats/{}/events", chat.id));
+    assert_eq!(response.status, 200);
+    let events = response.json();
+    let partial = events
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|event| event["tool"]["partial"] == true)
+        .unwrap();
+    assert_eq!(partial["kind"], "note");
+    assert_eq!(partial["session_id"], "observed-session");
+    assert_eq!(partial["tool"]["call_id"], "exact-call");
+    assert_eq!(partial["tool"]["parent_call_id"], "parent");
+    assert_eq!(partial["tool"]["output"]["text"], "safe tail");
+    assert!(partial["tool"]["outcome"].is_null() && partial["tool"]["duration_ms"].is_null());
+    for private in ["secret", "forged", "partialResult", "args"] {
+        assert!(!response.body.contains(private));
+    }
+}
+
+#[test]
 fn chat_activity_projects_exact_tool_identity_without_raw_provider_payloads() {
     let (h, dir) = Harness::with_store();
     let mut store = Store::open(&dir.path().join("team.db")).unwrap();

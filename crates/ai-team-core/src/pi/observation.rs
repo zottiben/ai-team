@@ -86,15 +86,23 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let script = dir.path().join("offline-pi");
-        std::fs::write(&script, "#!/bin/sh\nprintf '%s\\n' '{\"type\":\"tool_execution_start\",\"toolName\":\"read\",\"toolCallId\":\"c\"}'\nwhile [ ! -f released ]; do sleep 0.01; done\nsleep 0.025\nprintf '%s\\n' '{\"type\":\"tool_execution_end\",\"toolName\":\"read\",\"toolCallId\":\"c\",\"isError\":false}' '{\"type\":\"agent_settled\"}'\n").unwrap();
+        std::fs::write(&script, "#!/bin/sh\nprintf '%s\\n' '{\"type\":\"tool_execution_start\",\"toolName\":\"bash\",\"toolCallId\":\"c\"}'\nwhile [ ! -f released ]; do sleep 0.01; done\nsleep 0.025\nprintf '%s\\n' '{\"type\":\"tool_execution_update\",\"toolName\":\"bash\",\"toolCallId\":\"c\",\"partialResult\":{\"content\":[{\"type\":\"text\",\"text\":\"hello\"}]}}' '{\"type\":\"tool_execution_update\",\"toolName\":\"bash\",\"toolCallId\":\"c\",\"partialResult\":{\"content\":[{\"type\":\"text\",\"text\":\"suppressed\"}]}}' '{\"type\":\"tool_execution_end\",\"toolName\":\"bash\",\"toolCallId\":\"c\",\"isError\":false}' '{\"type\":\"agent_settled\"}'\n").unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
         let mut turn = crate::PiTurn::new(dir.path(), "offline fixture");
         turn.program = Some(script);
         let mut process = crate::PiProcess::start(&turn).unwrap();
         let mut observations = Vec::new();
+        let mut tails = Vec::new();
         let outcome = tokio::time::timeout(
             std::time::Duration::from_secs(5),
             process.drive(|event| {
+                if event.classify() == Disposition::Ignore {
+                    assert!(event.observation.is_none());
+                    return;
+                }
+                if let Some(tail) = &event.shell_output {
+                    tails.push(tail.text.clone());
+                }
                 observations.push(
                     event
                         .observation
@@ -110,7 +118,8 @@ mod tests {
         .unwrap()
         .unwrap();
         assert!(outcome.settled && !outcome.failed);
-        assert_eq!(observations.len(), 3);
+        assert_eq!(tails, vec!["hello"]);
+        assert_eq!(observations.len(), 4);
         assert_eq!(observations[0].clock_id, observations[1].clock_id);
         assert!(observations[1].elapsed_ms > observations[0].elapsed_ms);
     }

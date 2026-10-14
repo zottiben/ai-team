@@ -9,14 +9,15 @@ export const LANE_NAMES = { think: "Think", read: "Read", edit: "Edit", bash: "B
 export type Disclosure = { opened: ReadonlySet<string>; toggle: (ids: string[], open: boolean) => void; selected?: number | null };
 
 export function ToolRow({ row, disclosure }: { row: ToolActivityRow; disclosure: Disclosure }) {
-  const event = row.start ?? row.result;
+  const event = row.start ?? row.result ?? row.update;
   if (!event) return null;
-  const tool = row.start?.tool ?? row.result?.tool;
-  const output = row.result?.tool?.output;
+  const tool = row.start?.tool ?? row.result?.tool ?? row.update?.tool;
+  const completedOutput = row.result?.tool?.output;
+  const output = completedOutput ?? row.update?.tool?.output;
   const result = row.result?.tool?.outcome;
   const edits = row.result?.tool?.edits;
   const status = result === "failed" ? "Failed" : result === "returned" ? "Returned" : row.result ? "Result status unknown" : "Return not recorded";
-  const correlation = { paired: "", start_only: "", result_only: "Start not recorded", missing_identity: "Unpaired · identity unavailable", ambiguous: "Unpaired · ambiguous identity" }[row.correlation];
+  const correlation = { paired: "", start_only: "", result_only: "Start not recorded", missing_identity: "Unpaired · identity unavailable", ambiguous: "Unpaired · ambiguous identity", update_only: "Unpaired output snapshot" }[row.correlation];
   const time = row.duration ? `${row.duration.milliseconds.toLocaleString(undefined, { maximumFractionDigits: 1 })} ms${row.duration.source === "observed" ? " observed" : " runtime"}` : "Timing unavailable";
   return <div className="synth-tracker-tool" data-result={result ?? "unknown"}>
     <span className="synth-tracker-bracket" data-edge={row.parallel ? row.parallel.index === 0 ? "first" : row.parallel.index === row.parallel.count - 1 ? "last" : "middle" : undefined} aria-hidden="true" />
@@ -26,13 +27,13 @@ export function ToolRow({ row, disclosure }: { row: ToolActivityRow; disclosure:
       <span className="synth-mono">{tool?.target?.text ?? event.summary}{tool?.target?.truncated && "… (truncated)"}</span>
       <small>{status}{correlation && ` · ${correlation}`}{row.parallel?.index === 0 && ` · ∥ ${row.parallel.count} observed overlapping calls`}</small>
       {output && <details open={disclosure.opened.has(`output:${event.id}`)} onToggle={e => disclosure.toggle([`output:${event.id}`], e.currentTarget.open)}>
-        <summary>Completed output{output.truncated ? " · tail truncated" : ""}</summary>
+        <summary>{completedOutput ? "Completed output" : "Sampled shell output · may omit intermediate output"}{output.truncated ? " · tail truncated" : ""}</summary>
         <pre className="synth-tracker-output">{output.text}</pre>
       </details>}
       {tool?.name && <small>{tool.name} · node {event.node_run_id ?? "unknown"}</small>}
       <details open={disclosure.opened.has(`evidence:${event.id}`)} onToggle={e => disclosure.toggle([`evidence:${event.id}`], e.currentTarget.open)}>
         <summary>Recorded evidence</summary>
-        {[row.start, row.result].map(item => item && <p key={item.id}>#{item.id} · {item.actor ?? "unknown actor"} · {item.summary}<br/>Recorded {item.at} (coarse) · session {item.session_id ?? "unknown"}{item.observation && <><br/>Received {item.observation.at}</>}</p>)}
+        {[row.start, row.update, row.result].map(item => item && <p key={item.id}>#{item.id} · {item.actor ?? "unknown actor"} · {item.summary}<br/>Recorded {item.at} (coarse) · session {item.session_id ?? "unknown"}{item.observation && <><br/>Received {item.observation.at}</>}</p>)}
       </details>
     </div>
     <span className="synth-tracker-meta" title={row.duration?.source === "observed" ? "Host-observed receive interval, not execution duration" : row.duration ? "Pi-reported execution duration" : "No precise timing was recorded"}>{time}{row.lane === "edit" && <small>{edits ? `+${edits.added} −${edits.removed} reported lines${edits.first_changed_line === null ? "" : ` · first change ${edits.first_changed_line}`}` : "Edit counts unavailable"}</small>}</span>

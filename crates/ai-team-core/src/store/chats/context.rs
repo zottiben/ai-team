@@ -72,6 +72,7 @@ impl Store {
                     kind: "message_end".into(),
                     data,
                     observation: None,
+                    shell_output: None,
                 }
                 .assistant_message()
             };

@@ -44,6 +44,17 @@ export function appendActivity() {
   chat.rev += 1;
   tickers.forEach(tick => tick());
 }
+export function appendShellPhase(phase: "start" | "partial" | "end", text: string) {
+  const id = (events.at(-1)?.id ?? 0) + 1;
+  events.push({ id, node_run_id: 1, session_id: "fixture-session", actor: "assistant", message: null, thinking: [], at: "2026-01-01T00:00:00Z",
+    kind: phase === "partial" ? "note" : phase === "start" ? "tool_call" : "tool_result", summary: "Synthetic sampled shell fixture",
+    tool: { name: "bash", call_id: "fixture-streamed-shell", parent_call_id: null, partial: phase === "partial",
+      target: phase === "start" ? { kind: "command", text: "Synthetic shell fixture · no process", truncated: false } : null,
+      outcome: phase === "end" ? "returned" : null, duration_ms: null, output: phase === "start" ? null : { text, truncated: true } } });
+  chat.rev += 1;
+  tickers.forEach(tick => tick());
+  return id;
+}
 window.fetch = async (input, init) => {
   const request = input instanceof Request ? input : null;
   const url = new URL(request?.url ?? String(input), location.href), method = init?.method ?? request?.method ?? "GET";

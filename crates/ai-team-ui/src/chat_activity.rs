@@ -45,6 +45,8 @@ pub(crate) struct ToolActivity {
     /// Plain text only, and only for the native shell tools. Not an interactive PTY.
     output: Option<BoundedText>,
     edits: Option<edits::EditCounts>,
+    /// A sampled in-progress tail is not a return or proof that a process is still live.
+    partial: bool,
 }
 
 fn identity(value: Option<&Value>, bytes: usize) -> Option<String> {
@@ -162,6 +164,26 @@ fn output(data: &Value) -> Option<BoundedText> {
 }
 
 pub(crate) fn tool(event: &Event) -> Option<ToolActivity> {
+    if let Some(snapshot) = &event.shell_output {
+        return Some(ToolActivity {
+            call_id: exact(&snapshot.call_id, 256).map(str::to_owned),
+            parent_call_id: snapshot
+                .parent_call_id
+                .as_deref()
+                .and_then(|id| exact(id, 256))
+                .map(str::to_owned),
+            name: Some(snapshot.tool_name.clone()),
+            target: None,
+            outcome: None,
+            duration_ms: None,
+            output: Some(BoundedText {
+                text: snapshot.text.clone(),
+                truncated: snapshot.truncated,
+            }),
+            edits: None,
+            partial: true,
+        });
+    }
     if !matches!(event.kind, EventKind::ToolCall | EventKind::ToolResult) {
         return None;
     }
@@ -200,6 +222,7 @@ pub(crate) fn tool(event: &Event) -> Option<ToolActivity> {
         duration_ms,
         output,
         edits,
+        partial: false,
     })
 }
 
@@ -220,6 +243,7 @@ mod tests {
             payload: Some(data),
             stream_id: Some("session:4".into()),
             observation: None,
+            shell_output: None,
         }))
         .unwrap()
     }

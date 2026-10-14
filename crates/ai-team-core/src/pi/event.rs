@@ -26,6 +26,8 @@ pub struct PiEvent {
     /// Added by the supervisor, never deserialized from the child's JSON.
     #[serde(skip)]
     pub observation: Option<crate::EventObservation>,
+    #[serde(skip)]
+    pub shell_output: Option<crate::ShellOutput>,
 }
 
 /// What we do with one stream event.
@@ -146,6 +148,9 @@ impl PiEvent {
     /// Storing the cache inside the input column would charge a cached prefix twice and
     /// make every cost comparison wrong in the same direction.
     pub fn usage(&self) -> Option<Usage> {
+        if self.kind == "tool_execution_update" {
+            return None;
+        }
         let usage = self.usage_figures()?;
         let read = |key: &str| {
             usage
@@ -285,6 +290,10 @@ impl PiEvent {
                 },
             ),
 
+            "tool_execution_update" if self.shell_output.is_some() => Disposition::Record(
+                EventKind::Note,
+                format!("{} output · sampled tail", self.tool_name()),
+            ),
             "tool_execution_start" => {
                 Disposition::Record(EventKind::ToolCall, self.tool_name().to_string())
             }

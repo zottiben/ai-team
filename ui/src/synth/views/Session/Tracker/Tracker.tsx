@@ -36,9 +36,10 @@ export default function Tracker({ events, synth, visible, pattern, eventKey, ren
   const pendingJump = useRef<{ id: number; scrolled: boolean } | null>(null);
   const seenSkin = useRef(synth);
   const holdingJump = useRef(false);
+  const followedAt = useRef<number | null>(null);
   const seen = useRef<Set<string | number> | null>(null);
   const projected = useMemo(() => trackerRows(events), [events]);
-  const allRows = useMemo<TrackerRow[]>(() => synth ? projected : events.filter(visibleEvent).map(event => ({ kind: "event", id: event.id, event })), [events, projected, synth]);
+  const allRows = useMemo<TrackerRow[]>(() => synth ? projected : events.filter(event => !event.tool?.partial && visibleEvent(event)).map(event => ({ kind: "event", id: event.id, event })), [events, projected, synth]);
   const rows = useMemo(() => synth ? allRows.flatMap<TrackerRow>(row => {
     if (!visibleLane(row, lanes)) return [];
     if (row.kind !== "reads" || lanes.has("read")) return [row];
@@ -64,8 +65,18 @@ export default function Tracker({ events, synth, visible, pattern, eventKey, ren
     seen.current = keys;
   }, [allRows, following, keyOf, eventKey, synth]);
   useLayoutEffect(() => {
-    if (visible && following && scroll.current) scroll.current.scrollTop = scroll.current.scrollHeight;
-  }, [visible, following, rows, total, opened, tail, pattern]);
+    const host = scroll.current;
+    if (!visible || !following || !host) { followedAt.current = null; return; }
+    // A disclosure/measurement can render before the browser delivers a user scroll.
+    // Respect an already moved viewport instead of overwriting it with the old follow state.
+    const threshold = synth ? 80 : 100;
+    if (followedAt.current !== null && host.scrollTop < followedAt.current - threshold
+      && host.scrollHeight - host.scrollTop - host.clientHeight > threshold) {
+      followedAt.current = null; setFollowing(false); return;
+    }
+    host.scrollTop = host.scrollHeight;
+    followedAt.current = host.scrollTop;
+  }, [visible, following, rows, total, opened, tail, pattern, synth]);
   useEffect(() => {
     if (jump === null) return;
     const timer = setTimeout(() => { setJump(null); setSelectedEvent(null); pendingJump.current = null; }, 600);

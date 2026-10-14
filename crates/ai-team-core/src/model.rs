@@ -655,6 +655,16 @@ pub struct EventObservation {
     pub at: String,
 }
 
+/// Host-observed shell tail. Each snapshot is bounded and may omit intermediate output.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ShellOutput {
+    pub call_id: String,
+    pub parent_call_id: Option<String>,
+    pub tool_name: String,
+    pub text: String,
+    pub truncated: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Event {
     pub id: i64,
@@ -670,6 +680,8 @@ pub struct Event {
     pub stream_id: Option<String>,
     #[serde(default)]
     pub observation: Option<EventObservation>,
+    #[serde(default)]
+    pub shell_output: Option<ShellOutput>,
 }
 
 /// A restack about to start: a stacked pull request to rebase onto where its parent is

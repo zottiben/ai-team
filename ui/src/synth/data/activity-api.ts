@@ -17,7 +17,9 @@ export type ToolActivity = {
   outcome: "returned" | "failed" | "unknown" | null;
   /** Explicit Pi execute() timing only. Null is not zero. */
   duration_ms: number | null;
-  /** Bounded completed shell output; not a live PTY or a command input surface. */
+  /** Sampled partial snapshots never imply a tool result, liveness or complete output. */
+  partial?: boolean;
+  /** Bounded shell output; not a PTY or a command input surface. */
   output: BoundedActivityText | null;
   /** Reported native edit lines, not net checkout statistics or guessed write counts. */
   edits?: { added: number; removed: number; first_changed_line: number | null; source: "pi_edit_diff" } | null;

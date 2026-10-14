@@ -108,7 +108,7 @@ impl Store {
         let (path, plan, slice) = scope.params();
         let mut stmt = self.db().conn().prepare(&format!(
             "SELECT e.id, e.run_id, e.node_run_id, e.at, e.kind, e.actor, e.summary,
-                    e.payload_json, e.eve_event_id, e.observation_json
+                    e.payload_json, e.eve_event_id, e.observation_json, e.activity_json
                FROM event e
                JOIN run r ON r.id = e.run_id
           LEFT JOIN node_run n ON n.id = e.node_run_id
@@ -249,11 +249,12 @@ impl Store {
 }
 
 const EVENT_SELECT: &str = "SELECT id, run_id, node_run_id, at, kind, actor, summary, \
-     payload_json, eve_event_id, observation_json FROM event";
+     payload_json, eve_event_id, observation_json, activity_json FROM event";
 
 fn event_from_row(r: &Row<'_>) -> rusqlite::Result<Event> {
     let payload: Option<String> = r.get(7)?;
     let observation: Option<String> = r.get(9)?;
+    let activity: Option<String> = r.get(10)?;
     Ok(Event {
         id: r.get(0)?,
         run_id: r.get(1)?,
@@ -267,6 +268,7 @@ fn event_from_row(r: &Row<'_>) -> rusqlite::Result<Event> {
         payload: payload.and_then(|p| serde_json::from_str(&p).ok()),
         stream_id: r.get(8)?,
         observation: observation.and_then(|p| serde_json::from_str(&p).ok()),
+        shell_output: activity.and_then(|p| serde_json::from_str(&p).ok()),
     })
 }
 

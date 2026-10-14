@@ -72,10 +72,16 @@ impl Store {
         let cursor = from_index + i64::try_from(events.len()).unwrap_or(i64::MAX);
 
         self.db_mut().write(|tx| {
+            let seen: i64 = tx.query_row(
+                "SELECT COALESCE((SELECT next_index FROM pi_ingest_cursor WHERE session_id=?1),
+                    (SELECT COALESCE(MAX(CAST(substr(eve_event_id,length(?1)+2) AS INTEGER)+1),0)
+                     FROM event WHERE substr(eve_event_id,1,length(?1)+1)=?1||':'))",
+                [session_id], |row| row.get(0),
+            )?;
             let mut insert = tx.prepare(
                 "INSERT OR IGNORE INTO event
-                   (run_id, node_run_id, at, kind, actor, summary, payload_json, eve_event_id, observation_json)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                   (run_id, node_run_id, at, kind, actor, summary, payload_json, eve_event_id, observation_json, activity_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             )?;
 
             for (offset, event) in events.iter().enumerate() {
@@ -86,7 +92,15 @@ impl Store {
                 };
                 let index = from_index + i64::try_from(offset).unwrap_or(0);
                 let id = format!("{session_id}:{index}");
-                let payload = serde_json::to_string(&event.data)?;
+                if event.shell_output.is_some() && index < seen {
+                    let exists: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM event WHERE eve_event_id=?1)", [&id], |row| row.get(0))?;
+                    if exists { out.duplicates += 1; } else { out.ignored += 1; }
+                    continue;
+                }
+                // Raw partial results can contain private arguments, images and arbitrary
+                // objects. Only the supervisor's bounded tail is durable for these updates.
+                let payload = if event.kind == "tool_execution_update" { None } else { Some(serde_json::to_string(&event.data)?) };
+                let activity = event.shell_output.as_ref().map(serde_json::to_string).transpose()?;
                 let observation = event.observation.as_ref().map(serde_json::to_string).transpose()?;
 
                 let rows = insert.execute(params![
@@ -99,6 +113,7 @@ impl Store {
                     payload,
                     id,
                     observation,
+                    activity,
                 ])?;
                 if rows == 0 {
                     out.duplicates += 1;
@@ -117,6 +132,11 @@ impl Store {
                 }
             }
             drop(insert);
+            tx.execute(
+                "INSERT INTO pi_ingest_cursor(session_id,next_index) VALUES(?1,?2)
+                 ON CONFLICT(session_id) DO UPDATE SET next_index=MAX(next_index,excluded.next_index)",
+                params![session_id, cursor.max(seen).max(0)],
+            )?;
 
             tx.execute(
                 "UPDATE node_run
@@ -224,6 +244,63 @@ mod tests {
         assert_eq!(
             serde_json::to_value(store.node_events(node_run, 100).unwrap()).unwrap(),
             serde_json::to_value(before).unwrap()
+        );
+    }
+
+    #[test]
+    fn sampled_output_is_private_idempotent_and_cannot_backfill_suppressed_history() {
+        let mut store = Store::memory().unwrap();
+        let node_run = node(&mut store);
+        let make = || {
+            event(
+                r#"{"type":"tool_execution_update","toolName":"bash","toolCallId":"a","args":{"private":"secret"},"partialResult":{"content":[{"type":"text","text":"tail"}]},"usage":{"input":99,"output":99}}"#,
+            )
+        };
+        let mut events = vec![make(), make()];
+        let mut sampler = crate::pi::output::OutputSampler::default();
+        let now = std::time::Instant::now();
+        sampler.observe(&mut events[0], now);
+        sampler.observe(&mut events[1], now);
+        let first = store
+            .ingest_pi_events(node_run, "sampled", 0, &events)
+            .unwrap();
+        assert_eq!((first.recorded, first.ignored, first.steps), (1, 1, 0));
+        assert_eq!(first.usage, Usage::default());
+        let before = store.node_events(node_run, 100).unwrap();
+        assert!(before[0].payload.is_none());
+        assert_eq!(before[0].shell_output.as_ref().unwrap().text, "tail");
+        assert!(!serde_json::to_string(&before).unwrap().contains("secret"));
+        // Even after a replay rewinds the ordinary cursor, a new sampler must not
+        // turn a previously omitted observation into apparently historical evidence.
+        store
+            .ingest_pi_events(node_run, "sampled", 0, &events[..1])
+            .unwrap();
+        sampler.observe(&mut events[1], now + std::time::Duration::from_secs(1));
+        events[0].shell_output.as_mut().unwrap().text = "replacement".into();
+        let replay = store
+            .ingest_pi_events(node_run, "sampled", 0, &events)
+            .unwrap();
+        assert_eq!(
+            (replay.recorded, replay.duplicates, replay.ignored),
+            (0, 1, 1)
+        );
+        assert_eq!(
+            serde_json::to_value(store.node_events(node_run, 100).unwrap()).unwrap(),
+            serde_json::to_value(before).unwrap()
+        );
+        assert_eq!(
+            store
+                .ingest_pi_events(node_run, "sampled", 2, &events[..1])
+                .unwrap()
+                .recorded,
+            1
+        );
+        assert_eq!(
+            store
+                .ingest_pi_events(node_run, "other-session", 0, &events[..1])
+                .unwrap()
+                .recorded,
+            1
         );
     }
 
