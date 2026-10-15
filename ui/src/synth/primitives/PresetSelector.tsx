@@ -3,9 +3,9 @@ import { Popover } from "../../Popover";
 import { useAnnounce } from "../SynthProvider";
 import { HwButton } from "./HwButton";
 
-export function PresetSelector({ label, options, value, onChange, disabled = false }: {
+export function PresetSelector({ label, options, value, onChange, disabled = false, announceSelection = true }: {
   label: string; options: readonly { id: string; label: string }[]; value: string;
-  onChange: (id: string) => void; disabled?: boolean;
+  onChange: (id: string) => void; disabled?: boolean; announceSelection?: boolean;
 }) {
   const anchor = useRef<HTMLButtonElement>(null), list = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
@@ -14,7 +14,7 @@ export function PresetSelector({ label, options, value, onChange, disabled = fal
   const select = (next: number) => {
     const option = options[next];
     if (!option || disabled) return;
-    onChange(option.id); announce(`${label}: ${option.label}`); setOpen(false); anchor.current?.focus();
+    onChange(option.id); if (announceSelection) announce(`${label}: ${option.label}`); setOpen(false); anchor.current?.focus();
   };
   useEffect(() => { if (disabled) setOpen(false); }, [disabled]);
   return <div className="synth-preset">

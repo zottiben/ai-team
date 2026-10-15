@@ -27,18 +27,22 @@ export function fixtureBoard(emptyActive = false) {
     flags(flags: { archived?: boolean; frozen?: boolean }) { snapshot = { ...snapshot, ...flags }; },
     change(body: unknown) {
       requests.push(body);
-      if (!body || typeof body !== "object" || !("action" in body) || body.action !== "set_slice_status"
-        || !("key" in body) || typeof body.key !== "string" || !("status" in body) || !("expect_revision" in body)
-        || !Object.keys(body).every(key => ["action", "key", "status", "expect_revision", "reason"].includes(key))) return { status: 400, body: { error: "Only an exact synthetic status change is allowed." } };
-      const status = PLAN_STATUSES.find(status => status === body.status), slice = snapshot.bundle?.slices.find(slice => slice.key === body.key);
+      if (!body || typeof body !== "object" || !("action" in body) || (body.action !== "set_slice_status" && body.action !== "set_plan_status")
+        || !("status" in body) || !("expect_revision" in body)
+        || !Object.keys(body).every(key => (body.action === "set_plan_status" ? ["action", "status", "expect_revision"] : ["action", "key", "status", "expect_revision", "reason"]).includes(key))) return { status: 400, body: { error: "Only an exact synthetic status change is allowed." } };
+      const plan = body.action === "set_plan_status";
+      const status = PLAN_STATUSES.find(status => status === body.status), slice = "key" in body ? snapshot.bundle?.slices.find(slice => slice.key === body.key) : null;
       const reason = "reason" in body && typeof body.reason === "string" ? body.reason : null;
-      if (!status || !slice || body.expect_revision !== snapshot.revision || snapshot.frozen || snapshot.archived
-        || (status === "blocked" && (!reason?.trim() || reason.length > 16000))) return { status: 409, body: { error: "Synthetic status scope or blocking reason is stale or unavailable." } };
+      if (!status || !snapshot.bundle || (!plan && !slice) || body.expect_revision !== snapshot.revision || snapshot.frozen || snapshot.archived
+        || (!plan && status === "blocked" && (!reason?.trim() || reason.length > 16000))) return { status: 409, body: { error: "Synthetic status scope or blocking reason is stale or unavailable." } };
       const fail = failure; failure = null;
       if (fail === "refuse") return { status: 409, body: { error: "Synthetic status refused before writing." } };
       snapshot = structuredClone(snapshot); snapshot.revision++;
-      const changed = snapshot.bundle!.slices.find(candidate => candidate.key === slice.key)!;
-      changed.status = status; changed.blocked_reason = status === "blocked" ? reason : null; changed.rev++;
+      if (plan) snapshot.bundle!.plan.status = status;
+      else {
+        const changed = snapshot.bundle!.slices.find(candidate => candidate.key === slice!.key)!;
+        changed.status = status; changed.blocked_reason = status === "blocked" ? reason : null; changed.rev++;
+      }
       return fail === "lost" ? { status: 500, body: { error: "Synthetic response lost after the status was stored." } } : { status: 200, body: snapshot };
     },
     advance() {

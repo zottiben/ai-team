@@ -74,6 +74,30 @@ beforeEach(() => {
 });
 
 describe("chat-owned planning", () => {
+  it("uses an exact-revision Synth status preset without replacing newer reported state", async () => {
+    const rects = vi.spyOn(HTMLElement.prototype, "getClientRects").mockReturnValue([new DOMRect(0, 0, 200, 40)] as unknown as DOMRectList);
+    try {
+      setSynth(true); service.chatPlan.mockResolvedValue(plan());
+      let resolve!: (value: ChatPlan) => void;
+      service.changeChatPlan.mockReturnValue(new Promise<ChatPlan>(done => { resolve = done; }));
+      const view = render(<ChatPlanning {...props}/>);
+      const preset = await screen.findByRole("button", { name: "Plan status" }); preset.scrollIntoView = vi.fn();
+      await waitFor(() => expect((preset as HTMLButtonElement).disabled).toBe(false));
+      fireEvent.click(screen.getByRole("button", { name: "Next Plan status" }));
+      expect(service.changeChatPlan).toHaveBeenCalledExactlyOnceWith(7, { action: "set_plan_status", status: "active" }, 4);
+      expect(preset.textContent).toBe("ready");
+      const notices = () => [...document.querySelectorAll('[aria-live="polite"]')].map(node => node.textContent).filter(Boolean);
+      expect(notices()).toEqual([]);
+      const newer = plan(); newer.revision = 6; newer.bundle!.plan.status = "done";
+      service.chatPlan.mockResolvedValue(newer);
+      view.rerender(<ChatPlanning {...props} tick={1}/>);
+      await waitFor(() => expect(preset.textContent).toBe("done"));
+      const accepted = plan(); accepted.revision = 5; accepted.bundle!.plan.status = "active";
+      await act(async () => resolve(accepted));
+      expect(preset.textContent).toBe("done");
+      expect(notices()).toEqual(["Plan status request recorded. Status only; not verification or execution approval."]);
+    } finally { rects.mockRestore(); }
+  });
   it("does not create a plan simply by opening Overview", async () => {
     render(<ChatPlanning {...props} />);
     expect(await screen.findByText(/No plan yet/)).toBeTruthy();

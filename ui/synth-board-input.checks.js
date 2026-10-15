@@ -29,6 +29,37 @@ async function lane(board, direction, target) { key(direction); await until(() =
 async function drop(board) { key(' ', 'Space'); await until(() => !board.dataset.dragging, 'Drop did not settle'); }
 const field = form => form.querySelector('input');
 function type(input, value) { input.focus(); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, value); input.dispatchEvent(new Event('input', { bubbles: true })); }
+export async function exercisePlanStatus() {
+  const { fixture, panel } = await setup();
+  const anchor = await until(() => panel.querySelector('button[aria-label="Plan status"]:not(:disabled)'), 'Plan status preset unavailable');
+  anchor.scrollIntoView({ block: 'center' }); anchor.focus(); anchor.click();
+  await until(() => document.activeElement?.getAttribute('role') === 'option', 'Plan preset did not focus its current choice');
+  must(document.activeElement.textContent === 'ready', 'Preset did not select the recorded value');
+  key('Escape'); await until(() => !document.querySelector('[role="listbox"]'), 'Preset Escape did not close');
+  must(document.activeElement === anchor, 'Preset Escape lost its owner focus');
+  const slices = JSON.stringify(fixture.boardState().snapshot.bundle.slices);
+  anchor.click(); await until(() => document.activeElement?.getAttribute('role') === 'option', 'Preset did not reopen');
+  key('ArrowDown'); must(document.activeElement.textContent === 'active', 'Preset keyboard navigation failed');
+  document.activeElement.click();
+  await until(() => anchor.textContent === 'active' && !anchor.disabled, 'Recorded plan status did not arrive');
+  await until(() => document.activeElement === anchor, 'Accepted plan status lost logical selector focus');
+  const requests = fixture.boardState().requests;
+  must(requests.length === 1 && JSON.stringify(requests[0]) === JSON.stringify({ action: 'set_plan_status', status: 'active', expect_revision: 4 }), 'Preset did not use the exact existing command');
+  must(JSON.stringify(fixture.boardState().snapshot.bundle.slices) === slices, 'Plan status changed slice state or ordering');
+  anchor.click(); await until(() => document.querySelector('[role="listbox"]'), 'Preset did not reopen after save');
+  fixture.setBoardFlags({ frozen: true });
+  await until(() => !document.querySelector('[role="listbox"]') && anchor.disabled, 'Frozen plan kept a writable portal');
+  fixture.setBoardFlags({ frozen: false }); await until(() => !anchor.disabled, 'Unfrozen preset stayed disabled');
+  anchor.click(); await until(() => document.querySelector('[role="listbox"]'), 'Preset did not reopen after freeze');
+  const work = [...document.querySelectorAll('[role="tab"]')].find(node => node.textContent.trim() === 'Work');
+  work.focus(); work.click();
+  await until(() => !document.querySelector('[role="listbox"]'), 'Hidden owner left its preset portal open');
+  must(fixture.boardState().requests.length === 1, 'Visibility or frozen state sent another write');
+  must(document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1, 'Preset introduced page overflow');
+  const apiRequests = performance.getEntriesByType('resource').filter(entry => new URL(entry.name).pathname.startsWith('/api/')).length;
+  must(apiRequests === 0, 'Plan preset reached a real API');
+  return { width: document.documentElement.clientWidth, exactPlanStatus: true, unchangedSlices: true, portalOwnership: true, syntheticRequests: 1, apiRequests };
+}
 export async function exerciseProductionBoard() {
   const { board, fixture, panel } = await setup();
   await start(board); await lane(board, 'ArrowRight', 'active'); await drop(board);

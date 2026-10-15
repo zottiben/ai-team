@@ -19,6 +19,15 @@ describe("owned gesture focus handoff", () => {
     ticket.restore(() => target, restored); vi.advanceTimersByTime(20);
     expect(document.activeElement).toBe(source); expect(restored).not.toHaveBeenCalled();
   });
+  it.each([false, true])("retains observed disabled-control release without overriding newer input (%s)", newer => {
+    const { ticket, source, target } = fixture(); source.disabled = true;
+    // Chrome emits this while disabling focus; jsdom needs the explicit receipt.
+    source.dispatchEvent(new FocusEvent("focusout", { bubbles: true, relatedTarget: null }));
+    source.disabled = false; source.blur();
+    if (newer) document.dispatchEvent(new Event("wheel"));
+    ticket.restore(() => target); vi.advanceTimersByTime(20);
+    expect(document.activeElement).toBe(newer ? document.body : target);
+  });
   it("retires the ticket even when a presentation callback fails", () => {
     const { ticket, target } = fixture(); ticket.restore(() => target, () => { throw Error("Synthetic presentation failure"); });
     expect(() => vi.advanceTimersByTime(20)).toThrow("Synthetic presentation failure");

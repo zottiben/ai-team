@@ -40,6 +40,19 @@ it("a preset wraps, exposes its selected option, returns focus, and uses one ann
   expect(document.querySelectorAll('[aria-live="polite"]')).toHaveLength(1);
 });
 
+it("closes a portal before Escape can close its owning panel", async () => {
+  const outer = vi.fn(), user = userEvent.setup();
+  render(<SynthProvider><div onKeyDown={event => { if (event.key === "Escape" && !event.defaultPrevented) { event.stopPropagation(); outer(); } }}>
+    <PresetSelector label="Status" value="ready" options={[{ id: "ready", label: "Ready" }]} onChange={vi.fn()}/>
+  </div></SynthProvider>);
+  const anchor = screen.getByRole("button", { name: "Status" });
+  await user.click(anchor); await user.keyboard("{Escape}");
+  expect(outer).not.toHaveBeenCalled();
+  expect(screen.queryByRole("listbox")).toBeNull();
+  expect(document.activeElement).toBe(anchor);
+  await user.keyboard("{Escape}"); expect(outer).toHaveBeenCalledOnce();
+});
+
 it("waits until the portal is placed before focusing its selected preset", async () => {
   const focus = HTMLElement.prototype.focus;
   const spy = vi.spyOn(HTMLElement.prototype, "focus").mockImplementation(function(this: HTMLElement, options?: FocusOptions) {

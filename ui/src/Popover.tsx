@@ -72,6 +72,12 @@ export function Popover({ anchor, label, children, onClose, width = 448, classNa
     (target ?? panel.current)?.focus({ preventScroll: true });
   }, [placed, initialFocus]);
   return createPortal(<section ref={panel} role={role} tabIndex={-1} aria-label={label} className={`anchored-popover ${className}`}
+    onKeyDown={event => {
+      // Portals still bubble through their React owner before document listeners.
+      if (event.key === "Escape" && !event.defaultPrevented) {
+        event.preventDefault(); event.stopPropagation(); close.current(); anchor.current?.focus();
+      }
+    }}
     style={position ?? { visibility: "hidden" }}>
     {children}
   </section>, document.body);

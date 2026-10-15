@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import type { PlanSlice } from "../../../plan-api";
 import { SlicePattern } from "./SlicePattern";
 import { TabStrip } from "../../primitives/TabStrip";
@@ -16,7 +17,7 @@ export function PlanTabs({ prefix, view, questions, onChange }: { prefix: string
 }
 
 /** Derived planning facts only: no inferred ticket, execution, throughput or WIP limit. */
-export default function PlanHeader({ slices, onReveal }: { slices: PlanSlice[]; onReveal: (key: string) => void }) {
+export default function PlanHeader({ slices, onReveal, statusControl }: { slices: PlanSlice[]; onReveal: (key: string) => void; statusControl?: ReactNode }) {
   const count = (status: PlanSlice["status"]) => slices.filter(slice => slice.status === status).length;
   const done = count("done"), review = count("in_review"), blocked = count("blocked");
   return <div className="synth-plan-overview">
@@ -28,6 +29,7 @@ export default function PlanHeader({ slices, onReveal }: { slices: PlanSlice[]; 
       <span className="synth-silk">Reported done</span>
       <output aria-label="Reported slice count" aria-live="off">{done}<span>/{slices.length}</span></output>
       <span>Not verification</span>
+      {statusControl}
     </div>
   </div>;
 }

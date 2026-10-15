@@ -19,6 +19,7 @@ import "./synth/views/Board/board.css";
 import { useSynth } from "./ui-preferences";
 
 const SynthPlanHeader = lazy(() => import("./synth/views/Board/PlanHeader"));
+const SynthPlanStatus = lazy(() => import("./synth/views/Board/PlanStatusControl").then(module => ({ default: module.PlanStatusControl })));
 const SynthPlanTabs = lazy(() => import("./synth/views/Board/PlanHeader").then(module => ({ default: module.PlanTabs })));
 
 type Props = {
@@ -165,7 +166,7 @@ function PlanningController({ chatId, tick, archived, frozen = false, workspace:
               <div className="plan-head">
               <div className="plan-heading">
                 {synth ? <h2>{bundle.plan.title}</h2> : <h4>{bundle.plan.title}</h4>}
-                <label>
+                <label hidden={synth}>
                   Plan status
                   <select
                     disabled={locked || readOnly}
@@ -187,7 +188,7 @@ function PlanningController({ chatId, tick, archived, frozen = false, workspace:
               </div>
               <div hidden={!synth}>{synthOpened.current && <Suspense fallback={<p className="faint">Loading slice pattern…</p>}><SynthPlanHeader slices={bundle.slices} onReveal={key => {
                 setView("board"); setReveal(previous => ({ key, nonce: (previous?.nonce ?? 0) + 1 }));
-              }}/></Suspense>}</div>
+              }} statusControl={<SynthPlanStatus key={bundle.plan.id} status={bundle.plan.status} revision={snapshot.revision} disabled={busy || locked || readOnly || !synth} save={save}/>}/></Suspense>}</div>
               </div>
               {bundle.plan.summary && (
                 <div hidden={workspace && !planVisible}>
