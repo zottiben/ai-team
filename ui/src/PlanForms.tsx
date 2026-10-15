@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import type { FormEvent } from "react";
 import { PLAN_STATUSES } from "./plan-api";
 import type {
@@ -232,24 +232,34 @@ export function SliceForm({
 
 export function SliceStatus({
   slice,
+  revision,
   save,
 }: {
   slice: PlanSlice;
+  revision: number;
   save: SavePlan;
 }) {
-  const [status, setStatus] = useState(slice.status);
+  const [choice, setChoice] = useState<{ status: PlanStatus; revision: number } | null>(null);
   const [reason, setReason] = useState("");
-  useEffect(() => setStatus(slice.status), [slice.status]);
+  const status = choice?.status ?? slice.status;
+  const changed = status !== slice.status;
+  const stale = choice !== null && choice.revision !== revision;
   return (
     <form
       className="plan-status"
       onSubmit={(event) => {
         event.preventDefault();
+        if (!choice || !changed || (status === "blocked" && !reason.trim())) return;
         void save({
           action: "set_slice_status",
           key: slice.key,
           status,
-          reason: reason || undefined,
+          reason: status === "blocked" ? reason : undefined,
+        }, choice.revision).then(ok => {
+          if (ok) {
+            setChoice(current => current === choice ? null : current);
+            setReason(current => current === reason ? "" : current);
+          }
         });
       }}
     >
@@ -258,7 +268,10 @@ export function SliceStatus({
         <select
           aria-label={`${slice.key} status`}
           value={status}
-          onChange={(event) => setStatus(event.target.value as PlanStatus)}
+          onChange={(event) => {
+            const status = event.target.value as PlanStatus;
+            setChoice(status === slice.status ? null : { status, revision: choice?.revision ?? revision });
+          }}
         >
           {PLAN_STATUSES.map((value) => (
             <option key={value} value={value}>
@@ -267,7 +280,7 @@ export function SliceStatus({
           ))}
         </select>
       </label>
-      {status === "blocked" && status !== slice.status && (
+      {status === "blocked" && changed && (
         <label>
           Blocking reason
           <input
@@ -278,9 +291,9 @@ export function SliceStatus({
           />
         </label>
       )}
-      {status !== slice.status && (
-        <button className="button">Update status</button>
-      )}
+      {stale && <p className="notice">The plan changed after this status choice. Its original revision is retained; cancel and choose again against the current plan.</p>}
+      {changed && <button className="button" disabled={status === "blocked" && !reason.trim()}>Update status</button>}
+      {choice && <button type="button" className="button" onClick={() => { setChoice(null); setReason(""); }}>Cancel status change</button>}
     </form>
   );
 }

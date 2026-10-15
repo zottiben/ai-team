@@ -205,7 +205,7 @@ function SliceDrawer({
         </>
       )}
       <fieldset className="plan-controls" disabled={disabled}>
-        <SliceStatus slice={slice} save={save} />
+        <SliceStatus slice={slice} revision={revision} save={save} />
         {editing ? (
           <SliceForm
             slice={slice}

@@ -17,21 +17,16 @@ import {
 import type { SavePlan } from "./PlanForms";
 import "./chat-planning.css";
 
-export function ChatPlanning({
-  chatId,
-  tick,
-  archived,
-  frozen = false,
-  workspace = false,
-  onChanged,
-}: {
+type Props = {
   chatId: number;
   tick: number;
   archived: boolean;
   frozen?: boolean;
   workspace?: boolean;
   onChanged: () => void;
-}) {
+};
+export function ChatPlanning(props: Props) { return <PlanningController key={props.chatId} {...props}/>; }
+function PlanningController({ chatId, tick, archived, frozen = false, workspace = false, onChanged }: Props) {
   const [view, setView] = useState<"board" | "plan">("board");
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
@@ -55,6 +50,7 @@ export function ChatPlanning({
     void chatPlan(chatId)
       .then((next) => {
         if (!cancelled) {
+          if (next.chat_id !== chatId) throw Error("Plan snapshot no longer matches this chat.");
           setSnapshot((previous) =>
             previous && previous.revision > next.revision ? previous : next,
           );
@@ -73,13 +69,15 @@ export function ChatPlanning({
   }, [chatId, tick, reload]);
 
   const save: SavePlan = async (action, revision = snapshot?.revision ?? 0) => {
-    if (saving.current) return false;
+    if (saving.current || archived || snapshot?.archived) return false;
+    if ((frozen || snapshot?.frozen) && action.action !== "answer_question" && action.action !== "open_question") return false;
     saving.current = true;
     setBusy(true);
     setProblem(null);
     try {
       const next = await changeChatPlan(chatId, action, revision);
       if (!alive.current) return false;
+      if (next.chat_id !== chatId) throw Error("Plan response no longer matches this chat.");
       setSnapshot((previous) =>
         previous && previous.revision > next.revision ? previous : next,
       );
@@ -346,7 +344,7 @@ export function ChatPlanning({
                           Blocked: {slice.blocked_reason}
                         </p>
                       )}
-                      <SliceStatus slice={slice} save={save} />
+                      <SliceStatus slice={slice} revision={snapshot.revision} save={save} />
                     </article>
                   ))}
                   {editor?.kind === "slice" && (
