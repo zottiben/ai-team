@@ -34,6 +34,7 @@ Object.defineProperty(window, "EventSource", { configurable: true, value: class 
 const project: Project = { id: 1, slug: "demo", name: "Demo project · fixture", kind: "repo", status: "active", open_runs: 0 };
 const chat: ChatDetail = { id: 1, project_id: 1, title: "Shape the workspace", mode: "single", workspace_path: "/fixture/demo", provider: "openai", model: "fixture-model", reasoning: "high",
   active_node_id: null, live_text: "", stop_requested: false, archived: false, rev: 0, created_at: "2026-01-01", updated_at: "2026-01-01", turns: [], followups: [], team_builds: [], state: "idle", can_resume: false, orphan_running: false };
+if (params.get("work") === "true") chat.turns = (await import("./work-fixture")).fixtureRuns();
 const events: RunEvent[] = [{ id: 1, node_run_id: 1, actor: "human", kind: "note", summary: "Fixture message", message: "Keep this conversation and its unsent draft while exploring the workspace.", thinking: [], at: "2026-01-01" },
   { id: 2, node_run_id: 1, actor: "assistant", kind: "note", summary: "Fixture response", message: "This is an isolated **layout fixture**. Tabs and tools share the real application controller. Network access and all backend mutations are disabled.", thinking: [], at: "2026-01-01" }];
 const activityCount = Math.max(0, Math.min(5_000, Number(params.get("activity")) || 0));
