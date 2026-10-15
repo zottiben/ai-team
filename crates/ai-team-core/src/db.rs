@@ -207,6 +207,11 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
         "editor save notices",
         include_str!("migrations/046_editor_saves.sql"),
     ),
+    (
+        47,
+        "project command pads and receipts",
+        include_str!("migrations/047_terminal_pads.sql"),
+    ),
 ];
 
 /// Migrations that rebuild a table other tables point at.

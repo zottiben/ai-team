@@ -49,6 +49,7 @@ pub(crate) fn routes() -> Router<AppState> {
         .merge(crate::editor::routes())
         .merge(crate::toolbox::routes())
         .merge(crate::mcp::routes())
+        .merge(crate::terminal_commands::routes())
         .route("/events", get(stream))
         .route("/runs/{id}/approve-plan", axum::routing::post(approve_plan))
         .route("/runs/{id}/approvals", get(approvals))

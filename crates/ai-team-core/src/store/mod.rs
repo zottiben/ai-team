@@ -30,6 +30,10 @@ mod reminders;
 mod restacks;
 mod reviews;
 mod runs;
+mod terminal_pads;
+pub use terminal_pads::{
+    ClaimedPress, Dispatch, DispatchClaim, PressRequest, TerminalCommandRow, TerminalPad,
+};
 mod toolbox;
 mod toolbox_operations;
 mod toolbox_registry;

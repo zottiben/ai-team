@@ -176,9 +176,15 @@ pub use speak::{
     target_in as speak_target_in, Reached, Target, Would,
 };
 pub use stack::parent as stacked_on;
-pub use store::{Abandoned, Store, INTERRUPTED_REASON};
+pub use store::{
+    Abandoned, ClaimedPress, Dispatch, DispatchClaim, PressRequest, Store, TerminalCommandRow,
+    TerminalPad, INTERRUPTED_REASON,
+};
 pub use supervise::{outcome_status, Dispatched, Orchestration, Orchestrator, Rig, TurnOutcome};
-pub use terminal::{Chunk, Listed, TerminalUpdate, Terminals};
+pub use terminal::{
+    Chunk, CommandReceipt, Listed, ManagedCommand, SessionKind, SettledCommand, TerminalUpdate,
+    Terminals,
+};
 pub use today::{
     checkouts as today_checkouts, from_plans as today_from_plans, from_question, from_slice,
     from_store as today_from_store, rank as rank_today, Item, Urgency,

@@ -1,18 +1,17 @@
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal as XTerm } from "@xterm/xterm";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 
 import {
-  closeTerminal,
-  openTerminal,
-  readTerminal,
   resizeTerminal,
-  terminals as listTerminals,
-  writeTerminal,
-  type Where,
+  type RunEvent,
 } from "./api";
+import { serialInput, streamOutput } from "./terminal-stream";
+import { useSynth } from "./ui-preferences";
 
 import "@xterm/xterm/css/xterm.css";
+
+const TerminalWorkspace = lazy(() => import("./synth/views/Terminal/TerminalWorkspace"));
 
 /**
  * A real terminal in the worktree.
@@ -20,65 +19,46 @@ import "@xterm/xterm/css/xterm.css";
  * Not a shell reimplementation - enough to run a gate by hand and read what it says. The
  * session lives in the server, so closing the window does not kill a `cargo test` four
  * minutes in; reopening finds it by asking which sessions this worktree already has.
+ *
+ * Both skins share one controller and mounted xterm/input owner per session. A skin
+ * change must not discard scroll position, selection or uncertain input state.
  */
 export function TerminalPane({
   project,
   workspace = null,
   node,
+  events,
+  agentActive,
+  onSend,
+  onClose,
 }: {
   project: string | null;
   workspace?: string | null;
   node: number | null;
+  /** The chat's event feed, which is where the synth read-only mirror comes from. */
+  events?: readonly RunEvent[];
+  agentActive?: boolean;
+  onSend?: (text: string, source?: "operator_terminal" | "agent_shell") => void;
+  onClose?: () => void;
 }) {
-  const [id, setId] = useState<number | null>(null);
-  const [problem, setProblem] = useState<string | null>(null);
-
-  const where: Where | null = project === null ? null : { project, workspace, node };
-
-  // Attach to an existing session before opening one, so a reconnecting window rejoins
-  // the terminal it had rather than leaving it orphaned and starting another.
-  const attach = useCallback(async () => {
-    if (where === null) return;
-    try {
-      const open = (await listTerminals(where)).filter((session) => !session.done);
-      setId(open[0]?.id ?? (await openTerminal(where)).id);
-      setProblem(null);
-    } catch (error: unknown) {
-      setProblem(error instanceof Error ? error.message : String(error));
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [project, workspace, node]);
-
-  useEffect(() => {
-    void attach();
-  }, [attach]);
-
-  if (project === null) {
-    return <p className="empty">Pick a project to open a terminal in it.</p>;
-  }
-
-  return (
-    <div className="terminal">
-      <div className="main__header">
-        <div>
-          <h2>Terminal</h2>
-          {id !== null && <span className="faint mono">session {id}</span>}
-        </div>
-        <button
-          type="button"
-          className="button"
-          onClick={() => {
-            if (id !== null) void closeTerminal(id).then(() => setId(null)).then(attach)
-              .catch((error: unknown) => setProblem(error instanceof Error ? error.message : String(error)));
-          }}
-        >
-          Restart
-        </button>
-      </div>
-      {problem !== null && <p className="error">{problem}</p>}
-      {id !== null && <Session id={id} />}
-    </div>
-  );
+  const synth = useSynth();
+  if (project !== null)
+    return (
+      <Suspense fallback={<p>Loading terminal…</p>}>
+        <TerminalWorkspace
+          key={JSON.stringify([project, workspace, node])}
+          project={project}
+          synth={synth}
+          workspace={workspace}
+          node={node}
+          events={events}
+          agentActive={agentActive}
+          onSend={onSend}
+          onClose={onClose}
+        />
+      </Suspense>
+    );
+  return <p className="empty">Pick a project to open a terminal in it.</p>;
 }
 
 /** xterm needs real colours, so the semantic tokens are resolved once at mount. */
@@ -133,49 +113,18 @@ export function Session({ id }: { id: number }) {
     const observer = new ResizeObserver(tell);
     observer.observe(host.current);
 
-    let stopped = false;
-    let inputFailed = false;
-    let writes = Promise.resolve();
-    term.onData((text) => {
-      // Independent HTTP requests can arrive out of order, including Enter before the
-      // command. A failed acknowledgement is uncertain delivery, not permission to retry
-      // or send the remaining suffix of a now possibly different command.
-      writes = writes.then(async () => {
-        if (stopped || inputFailed) return;
-        try {
-          await writeTerminal(id, text);
-        } catch (error: unknown) {
-          inputFailed = true;
-          if (!stopped) setInputProblem(`Input delivery failed: ${error instanceof Error ? error.message : String(error)}. Queued input was stopped and not retried. Inspect the terminal before enabling input again; no previous text will be resent.`);
-        }
-      });
+    // Ordering and the refusal to resend after an uncertain write are the same rules in
+    // both skins, so they live in one module rather than in two copies of this effect.
+    const input = serialInput(id, setInputProblem);
+    term.onData((text) => input.push(text));
+    const stop = streamOutput(id, {
+      text: (text) => term.write(text),
+      done: (status) => term.write(`\r\n[exited ${status ?? "?"}]\r\n`),
     });
 
-    // Polled from an absolute cursor, the same way Pi's stream is ingested: a reconnect
-    // asks from a number it already has rather than replaying everything.
-    let cursor = 0;
-    const poll = async () => {
-      while (!stopped) {
-        try {
-          const chunk = await readTerminal(id, cursor);
-          if (chunk.text !== "") term.write(chunk.text);
-          cursor = chunk.cursor;
-          if (chunk.done) {
-            term.write(`\r\n[exited ${chunk.status ?? "?"}]\r\n`);
-            return;
-          }
-        } catch {
-          // A closed session is not worth an error banner over a pane that has already
-          // printed everything it is going to.
-          return;
-        }
-        await new Promise((resolve) => setTimeout(resolve, 120));
-      }
-    };
-    void poll();
-
     return () => {
-      stopped = true;
+      stop();
+      input.stop();
       observer.disconnect();
       term.dispose();
     };

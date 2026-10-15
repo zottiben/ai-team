@@ -55,6 +55,23 @@ for (const theme of ["dark", "light"] as const) {
     check("--synth-focus", "--synth-floor", 3);
     check("--synth-focus", "--synth-key", 3);
   });
+  it(`${theme}: code syntax and line numbers meet small-text contrast`, () => {
+    for (const role of ["text", "punctuation", "keyword", "variable", "string", "number", "function", "type", "comment", "gutter", "gutter-active"]) {
+      check(`--code-${role}`, "--code-surface");
+    }
+  });
+  it(`${theme}: the terminal palette stays readable on the screen it paints on`, () => {
+    // A terminal is almost entirely small text, so this is the surface where a
+    // decorative colour costs legibility outright. `black` and `brightBlack` are left
+    // out on purpose: in any ANSI palette they are the near-background shades programs
+    // use for dimmed decoration, and holding them to text contrast would mean a
+    // terminal that cannot dim anything.
+    check("--synth-term-fg", "--synth-term-bg", 7);
+    for (const ink of ["red", "green", "yellow", "blue", "magenta", "cyan", "white",
+      "bright-red", "bright-green", "bright-yellow", "bright-blue", "bright-magenta", "bright-cyan", "bright-white"]) {
+      check(`--synth-term-${ink}`, "--synth-term-bg");
+    }
+  });
   it(`${theme}: branded faceplates and primary/danger keys keep their own contrast`, () => {
     for (const surface of ["--plate-lavender", "--plate-ice", "--plate-flamingo", "--plate-yellow"]) {
       check("--vc-midnight", surface); check("--vc-text-muted", surface);

@@ -4,6 +4,7 @@ import {
   Suspense,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -20,6 +21,7 @@ import { setChatMode } from "./team-api";
 import { models, type ModelChoice, type Project, type Reasoning, type RunEvent } from "./api";
 import { SelectChevron } from "./SelectChevron";
 import { useSynth } from "./ui-preferences";
+import { snippetFrom, SNIPPET_LIMIT, withSnippets, type DraftSnippet } from "./draft-snippets";
 const SessionTabs = lazy(() => import("./synth/views/Session/SessionNavigation").then(m => ({ default: m.SessionTabs })));
 const PanelFrame = lazy(() => import("./synth/views/panels/PanelFrame"));
 const Tracker = lazy(() => import("./synth/views/Session/Tracker/Tracker"));
@@ -101,6 +103,10 @@ export function ChatView({
   const [modelError, setModelError] = useState<string | null>(null);
   const [message, setMessage] = useState("");
   const [images, setImages] = useState<ImageInput[]>([]);
+  // Output the operator quoted out of the terminal. It rides in the message body as
+  // quoted data (see draft-snippets) - it is never sent on its own, and attaching it
+  // grants the agent nothing.
+  const [snippets, setSnippets] = useState<DraftSnippet[]>([]);
   const [readingImages, setReadingImages] = useState(false);
   const reading = useRef(false);
   const imagePicker = useRef<HTMLInputElement | null>(null);
@@ -115,8 +121,8 @@ export function ChatView({
   const pending = useRef(false);
   const cursor = useRef(0);
   const created = useRef<number | null>(null);
-  const submission = useRef<{ body: string; images: ImageInput[]; key: string; workspaceEpoch: number; reasoning?: ChatDetail["reasoning"] } | null>(null);
-  const queuedSubmission = useRef<{ body: string; images: ImageInput[]; key: string; node: number; kind: ChatFollowup["kind"] } | null>(null);
+  const submission = useRef<{ body: string; images: ImageInput[]; snippets: DraftSnippet[]; key: string; workspaceEpoch: number; reasoning?: ChatDetail["reasoning"] } | null>(null);
+  const queuedSubmission = useRef<{ body: string; images: ImageInput[]; snippets: DraftSnippet[]; key: string; node: number; kind: ChatFollowup["kind"] } | null>(null);
   const composer = useRef<HTMLTextAreaElement | null>(null);
   const openPanel = (next: ChatPanel) => {
     setPanel(next);
@@ -127,6 +133,13 @@ export function ChatView({
     if (panel) document.getElementById(`chat-context-${panel}`)?.focus();
     setPanel(null);
   };
+  const pendingComposerFocus = useRef(false);
+  const revealComposer = () => { pendingComposerFocus.current = true; setTool(null); };
+  useLayoutEffect(() => {
+    if (!pendingComposerFocus.current || (synth && tool !== null)) return;
+    pendingComposerFocus.current = false;
+    composer.current?.focus();
+  });
   const closeTool = () => {
     if (synth) {
       const target = panel ? document.getElementById(`chat-context-${panel}`)
@@ -245,7 +258,14 @@ export function ChatView({
       : null;
   const canQueue = detail?.state === "running" && !activeTeam && mode === "single" && !detail.stop_requested && !queued && !workspacePending;
   const soloActive = active && !activeTeam && mode === "single";
-  const hasDraft = !!message.trim() || images.length > 0;
+  const hasDraft = !!message.trim() || images.length > 0 || snippets.length > 0;
+  /** A selection becomes a chip on this draft. Nothing is sent by attaching it. */
+  const quote = (text: string, source: "operator_terminal" | "agent_shell" = "operator_terminal") => {
+    const snippet = snippetFrom(source === "agent_shell" ? "recorded agent shell output in this chat" : "the terminal in this checkout", text);
+    if (!snippet) return;
+    setSnippets(previous => previous.length >= SNIPPET_LIMIT ? previous : [...previous, snippet]);
+    revealComposer();
+  };
   const showStop = soloActive && (!hasDraft || !running);
   const stopping = !!detail?.stop_requested && detail.state !== "interrupted";
   const actionLabel = showStop ? stopping ? "Stopping…" : "Stop turn" : soloActive ? "Queue follow-up" : "Send message";
@@ -293,9 +313,9 @@ export function ChatView({
     if (id === null && !chosen) return;
     setBusy(true);
     setProblem(null);
-    const body = message.trim() || "Please inspect the attached images.";
-    if (submission.current?.body !== body || submission.current.images !== images)
-      submission.current = { body, images, key: crypto.randomUUID(), workspaceEpoch: detail?.workspace_epoch ?? 0, reasoning: mode === "single" ? detail?.reasoning ?? newReasoning : undefined };
+    const body = draftBody(message, images, snippets);
+    if (submission.current?.body !== body || submission.current.images !== images || submission.current.snippets !== snippets)
+      submission.current = { body, images, snippets, key: crypto.randomUUID(), workspaceEpoch: detail?.workspace_epoch ?? 0, reasoning: mode === "single" ? detail?.reasoning ?? newReasoning : undefined };
     try {
       let target = id ?? created.current;
       if (target === null && chosen) {
@@ -315,6 +335,7 @@ export function ChatView({
       if (!alive.current) return;
       setMessage("");
       setImages([]);
+      setSnippets([]);
       submission.current = null;
       setFollowRequest(value => value + 1);
       onChanged();
@@ -330,9 +351,9 @@ export function ChatView({
 
   const queue = async (kind: ChatFollowup["kind"]) => {
     if (busy || readingImages || !canQueue || detail?.active_node_id == null || !hasDraft) return;
-    const body = message.trim() || "Please inspect the attached images.";
-    if (queuedSubmission.current?.body !== body || queuedSubmission.current.kind !== kind || queuedSubmission.current.images !== images)
-      queuedSubmission.current = { body, images, key: crypto.randomUUID(), node: detail.active_node_id, kind };
+    const body = draftBody(message, images, snippets);
+    if (queuedSubmission.current?.body !== body || queuedSubmission.current.kind !== kind || queuedSubmission.current.images !== images || queuedSubmission.current.snippets !== snippets)
+      queuedSubmission.current = { body, images, snippets, key: crypto.randomUUID(), node: detail.active_node_id, kind };
     const request = queuedSubmission.current;
     setBusy(true);
     setProblem(null);
@@ -342,6 +363,7 @@ export function ChatView({
       if (!alive.current) return;
       setMessage("");
       setImages([]);
+      setSnippets([]);
       queuedSubmission.current = null;
       onChanged();
       await load();
@@ -534,10 +556,10 @@ export function ChatView({
         <div className="card__row"><strong className="mono">{workspace}</strong><button className="button" onClick={closeTool}>Close tools</button></div>
         <p className="faint">These are operator tools, not covered by the agent's checkout guard. This is the persistent chat checkout, not a team draft. Save edits before leaving this chat.</p>
         <div id={`chat-tool-editor-${encodeURIComponent(workspace)}`} className="chat-tool-pane" hidden={tool !== "editor"}>
-          {opened.editor && <Suspense fallback={<p>Loading editor…</p>}><Editor project={project.slug} workspace={workspace} node={null} chat={detail.id} visible={tool === "editor" && workspace === detail.workspace_path} onOpenChat={closeTool} onSteer={() => { closeTool(); composer.current?.focus(); }} /></Suspense>}
+          {opened.editor && <Suspense fallback={<p>Loading editor…</p>}><Editor project={project.slug} workspace={workspace} node={null} chat={detail.id} visible={tool === "editor" && workspace === detail.workspace_path} onOpenChat={closeTool} onSteer={revealComposer} /></Suspense>}
         </div>
         <div id={`chat-tool-terminal-${encodeURIComponent(workspace)}`} className="chat-tool-pane" hidden={tool !== "terminal"}>
-          {opened.terminal && <Suspense fallback={<p>Loading terminal…</p>}><Terminal project={project.slug} workspace={workspace} node={null} /></Suspense>}
+          {opened.terminal && <Suspense fallback={<p>Loading terminal…</p>}><Terminal project={project.slug} workspace={workspace} node={null} events={events} agentActive={running && workspace === detail.workspace_path} onSend={quote} onClose={closeTool} /></Suspense>}
         </div>
       </section>)}
       {tool === null && outcome && <ChatOutcome outcome={outcome} onAction={action => {
@@ -569,6 +591,14 @@ export function ChatView({
           </span>}
         </div>
         {!!images.length && <Suspense fallback={<p>Loading image previews…</p>}><ImageDrafts images={images} disabled={busy || readingImages} onRemove={index => setImages(previous => previous.filter((_, i) => i !== index))}/></Suspense>}
+        {!!snippets.length && <ul className="chat-snippets" aria-label="Quoted output on this draft">
+          {snippets.map(snippet => <li key={snippet.id}>
+            <code title={snippet.text}>{snippet.lines} line{snippet.lines === 1 ? "" : "s"} from {snippet.source}{snippet.truncated ? " (truncated)" : ""}</code>
+            <button type="button" className="button" disabled={busy} aria-label={`Remove the quoted output from ${snippet.source}`}
+              onClick={() => setSnippets(previous => previous.filter(item => item.id !== snippet.id))}>Remove</button>
+          </li>)}
+        </ul>}
+        {snippets.length >= SNIPPET_LIMIT && <small className="faint">That is the most quoted output one message carries. Remove one to attach another.</small>}
         {readingImages && <p role="status">Reading images…</p>}
         <textarea
           ref={composer}
@@ -679,7 +709,7 @@ export function ChatView({
         </div>
         {(queuedSubmission.current || submission.current) && problem && <small className="faint">
           {queuedSubmission.current ? `This draft still targets turn #${queuedSubmission.current.node}.` : "This message still targets the checkout selected for its original send."} Clearing it does not cancel work already accepted by the server; inspect this chat's history and receipts first.
-          <button className="button" type="button" disabled={busy} onClick={() => { queuedSubmission.current = null; submission.current = null; setMessage(""); setImages([]); setProblem(null); }}>Clear this draft</button>
+          <button className="button" type="button" disabled={busy} onClick={() => { queuedSubmission.current = null; submission.current = null; setMessage(""); setImages([]); setSnippets([]); setProblem(null); }}>Clear this draft</button>
         </small>}
         {soloActive && activeTurn?.node.reasoning !== detail?.reasoning && <small className="faint">Queued follow-ups use this chat's {detail?.reasoning === "none" ? "off" : detail?.reasoning} thinking preference.</small>}
         {mode === "team" && !active && <small className="faint">The configured project team plans first. Review and explicitly approve before building. Your solo model and history are kept.</small>}
@@ -712,6 +742,19 @@ export function ChatView({
       </div>
     </main>
   );
+}
+
+/**
+ * What a draft sends: what was typed, then whatever was quoted into it.
+ *
+ * A message that is only attachments still needs words, because the agent is being
+ * asked to look at something rather than being handed an instruction.
+ */
+function draftBody(message: string, images: ImageInput[], snippets: DraftSnippet[]): string {
+  const typed = message.trim()
+    || (images.length ? "Please inspect the attached images." : "")
+    || (snippets.length ? "Please look at the output I have quoted below." : "");
+  return withSnippets(typed, snippets);
 }
 
 function Message({ event, result, followup, status, arriving, thinkingOpen, onThinkingToggle }: { event: RunEvent; result: boolean; followup?: ChatFollowup; status?: string; arriving: ReadonlySet<number>; thinkingOpen: boolean; onThinkingToggle: (open: boolean) => void }) {

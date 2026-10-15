@@ -25,6 +25,7 @@ mod mcp;
 mod plan_library;
 pub mod plan_mcp;
 mod state;
+mod terminal_commands;
 mod toolbox;
 mod updates;
 

@@ -506,15 +506,27 @@ fn sentences(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut current = String::new();
     let mut quote = None;
-    let mut fenced = false;
+    let mut fenced: Option<(u8, usize)> = None;
     for line in text.lines() {
         let trimmed = line.trim();
-        if trimmed.starts_with("```") {
-            fenced = !fenced;
+        let marker = trimmed
+            .as_bytes()
+            .first()
+            .copied()
+            .filter(|byte| matches!(byte, b'`' | b'~'));
+        let width = marker.map_or(0, |marker| {
+            trimmed.bytes().take_while(|byte| *byte == marker).count()
+        });
+        if let Some((opening, minimum)) = fenced {
+            if marker == Some(opening) && width >= minimum && trimmed[width..].trim().is_empty() {
+                fenced = None;
+            } else {
+                out.push(format!("quoted-content {trimmed}"));
+            }
             continue;
         }
-        if fenced {
-            out.push(format!("quoted-content {trimmed}"));
+        if let Some(marker) = marker.filter(|_| width >= 3) {
+            fenced = Some((marker, width));
             continue;
         }
         if trimmed.starts_with(['>', '-', '*']) || line.starts_with("    ") {

@@ -79,12 +79,12 @@
   /* §11.3 code surface. Syntax is a palette like any other: a literal in the editor
      theme is a buffer that stays dark when the window goes light. */
   --code-surface: #0a0119;
-  --code-text: rgba(253,244,255,.82); --code-punctuation: rgba(224,195,255,.55);
+  --code-text: rgba(253,244,255,.82); --code-punctuation: rgba(224,195,255,.65);
   --code-keyword: #b967ff; --code-variable: #e0c3ff; --code-string: #ff79c6;
   --code-number: #ffd23f; --code-function: #2de2e6; --code-type: #b5f2ff;
   --code-comment: #8a6aa8;
   --code-selection: rgba(185,103,255,.25); --code-active-line: rgba(253,244,255,.05);
-  --code-gutter: rgba(224,195,255,.38); --code-gutter-active: #fdf4ff;
+  --code-gutter: rgba(224,195,255,.65); --code-gutter-active: #fdf4ff;
   --code-caret: #fdf4ff;
   --code-added: #2de2e6; --code-added-tint: rgba(45,226,230,.07); --code-removed: #ff6b35;
   --code-added-glow: 0 0 6px rgba(45,226,230,.55);
@@ -92,6 +92,21 @@
   --code-presence-glow: 0 0 8px rgba(45,226,230,.6);
   --map-line: rgba(185,103,255,.55); --map-added: #2de2e6; --map-removed: #ff6b35;
   --map-window: rgba(253,244,255,.07); --map-window-ring: rgba(253,244,255,.35);
+
+  /* Terminal, §12.3. xterm paints to a canvas and cannot read a variable, so these are
+     resolved with getComputedStyle at mount and again when the theme changes - which is
+     why the ANSI palette lives here with every other colour rather than in the pane. */
+  --synth-term-bg: #0a0119; --synth-term-fg: #e0c3ff;
+  --synth-term-cursor: #2de2e6; --synth-term-cursor-accent: #0a0119;
+  --synth-term-selection: rgba(185,103,255,.35);
+  --synth-term-highlight: rgba(185,103,255,.22);
+  --synth-term-black: #070012; --synth-term-red: #ff6b35; --synth-term-green: #2de2e6;
+  --synth-term-yellow: #ffd23f; --synth-term-blue: #b967ff; --synth-term-magenta: #ff79c6;
+  --synth-term-cyan: #b5f2ff; --synth-term-white: #fdf4ff;
+  --synth-term-bright-black: #8a6aa8; --synth-term-bright-red: #ff6b35; --synth-term-bright-green: #e0c3ff;
+  --synth-term-bright-yellow: #ffd23f; --synth-term-bright-blue: #b5f2ff; --synth-term-bright-magenta: #ff79c6;
+  --synth-term-bright-cyan: #b5f2ff; --synth-term-bright-white: #ffffff;
+  --synth-term-scanline: rgba(0,0,0,.16); --synth-term-vignette: rgba(0,0,0,.55);
 }
 
 /* Daylight faceplates: the same sunset branding, with ink rather than neon text.
@@ -151,4 +166,19 @@
   --code-presence-glow: 0 0 0 1px rgba(0,97,104,.35);
   --map-line: rgba(113,52,165,.5); --map-added: #006168; --map-removed: #963a1a;
   --map-window: rgba(41,18,63,.07); --map-window-ring: rgba(41,18,63,.35);
+
+  /* Ink on a daylight screen: the same hues as the neon palette, darkened until they
+     read on white. A terminal is mostly small text, so this is the one surface where a
+     decorative colour would cost legibility outright. */
+  --synth-term-bg: #fffbfe; --synth-term-fg: #29123f;
+  --synth-term-cursor: #006168; --synth-term-cursor-accent: #fffbfe;
+  --synth-term-selection: rgba(113,52,165,.28);
+  --synth-term-highlight: rgba(113,52,165,.18);
+  --synth-term-black: #29123f; --synth-term-red: #963a1a; --synth-term-green: #006168;
+  --synth-term-yellow: #795100; --synth-term-blue: #7134a5; --synth-term-magenta: #9b205f;
+  --synth-term-cyan: #245b83; --synth-term-white: #614775;
+  --synth-term-bright-black: #705a82; --synth-term-bright-red: #963a1a; --synth-term-bright-green: #004b51;
+  --synth-term-bright-yellow: #5e3e00; --synth-term-bright-blue: #1d4a6b; --synth-term-bright-magenta: #7d1a4c;
+  --synth-term-bright-cyan: #1d4a6b; --synth-term-bright-white: #29123f;
+  --synth-term-scanline: rgba(74,42,107,.07); --synth-term-vignette: rgba(74,42,107,.18);
 }

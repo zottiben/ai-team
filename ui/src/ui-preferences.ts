@@ -28,9 +28,36 @@ export function setSynth(enabled: boolean): boolean {
   return persisted;
 }
 
+/**
+ * Whether the terminal paints its scanlines and vignette.
+ *
+ * An explicit switch rather than a guess: there is no browser API that reliably says a
+ * machine is on battery or thermally limited, so "pause them on low-power devices" has
+ * to be somebody's choice. They are pure CSS and cheap, which is why the default is on.
+ */
+const EFFECTS = "ui.synth.screen-effects";
+
+export function screenEffects(): boolean {
+  try { return localStorage.getItem(EFFECTS) !== "false"; }
+  catch { return true; }
+}
+
+/** Returns false if persistence failed. The switch still works for this window. */
+export function setScreenEffects(enabled: boolean): boolean {
+  let persisted = true;
+  try { localStorage.setItem(EFFECTS, String(enabled)); }
+  catch { persisted = false; }
+  window.dispatchEvent(new Event(CHANGED));
+  return persisted;
+}
+
+export function useScreenEffects(): boolean {
+  return useSyncExternalStore(subscribe, screenEffects, () => true);
+}
+
 function subscribe(changed: () => void): () => void {
   const storage = (event: StorageEvent) => {
-    if (event.key === SYNTH || event.key === null) {
+    if (event.key === SYNTH || event.key === EFFECTS || event.key === null) {
       initializeSynth();
       changed();
     }

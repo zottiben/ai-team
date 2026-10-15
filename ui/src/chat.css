@@ -593,6 +593,21 @@
 .chat-images img { display: block; max-width: 100%; max-height: 160px; object-fit: contain; border-radius: 6px; }
 .chat-images figcaption { overflow-wrap: anywhere; font-size: 12px; }
 
+/* Text the operator quoted into this draft. Styled here rather than with the terminal,
+   because a chip outlives the pane it came from and has to render without it. */
+.chat-snippets { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; padding: 0; list-style: none; }
+.chat-snippets li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 320px;
+  padding: 6px 8px;
+  border: 1px solid var(--border-subtle-default);
+  border-radius: 8px;
+  font-size: 12px;
+}
+.chat-snippets code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 .chat-composer textarea {
   display: block;
   resize: none;

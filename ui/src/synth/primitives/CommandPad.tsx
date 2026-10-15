@@ -3,9 +3,9 @@ import { Led } from "./Led";
 import { signalStyle, type Signal } from "./signal";
 
 export interface CommandResult { id: string; exitCode: number; finishedAt: number }
-export function CommandPad({ label, command, onActivate, running = false, result, disabled = false, blockedReason, signal = "edit" }: {
+export function CommandPad({ label, command, onActivate, running = false, result, disabled = false, blockedReason, idleLabel = "Not run", signal = "edit" }: {
   label: string; command: string; onActivate: () => void; running?: boolean; result?: CommandResult;
-  disabled?: boolean; blockedReason?: string; signal?: Signal;
+  disabled?: boolean; blockedReason?: string; idleLabel?: string; signal?: Signal;
 }) {
   const [recent, setRecent] = useState(false);
   useEffect(() => {
@@ -22,6 +22,6 @@ export function CommandPad({ label, command, onActivate, running = false, result
       <Led state={running ? "pulse" : recent ? "on" : "off"} signal={running ? "working" : result?.exitCode === 0 ? "done" : "attention"} size={7} />
     </span>
     <code>{command}</code>
-    <span className="synth-muted">{blockedReason ?? (running ? "Running" : result ? `Exit ${result.exitCode}` : "Not run")}</span>
+    <span className="synth-muted">{blockedReason ?? (running ? "Running" : result ? `Exit ${result.exitCode}` : idleLabel)}</span>
   </button>;
 }
