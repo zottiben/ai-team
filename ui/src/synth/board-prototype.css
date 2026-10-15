@@ -1,0 +1,20 @@
+/* Isolated input-lab layout, not production Board presentation. */
+html { background: var(--synth-void); color: var(--synth-text); font-family: var(--synth-font-sans); color-scheme: var(--synth-color-scheme); }
+body { margin: 0; }
+body * { box-sizing: border-box; }
+main { padding: 20px; min-width: 0; }
+h1 { font-size: 24px; }
+.board-prototype-output { min-height: 2em; color: var(--synth-label); }
+.board-prototype-lanes { display: flex; gap: 14px; overflow: auto; max-height: 65vh; padding: 8px; overscroll-behavior: contain; }
+.board-prototype-lane { --synth-signal: var(--st-idle); flex: 0 0 244px; border: 1px solid var(--synth-hairline); border-radius: 16px; padding: 10px; background: var(--plate-midnight); }
+.board-prototype-lane h2 { font-size: 16px; margin: 8px 0 16px; }
+.board-prototype-lane[data-over] { border-color: var(--synth-signal); box-shadow: inset 0 0 18px color-mix(in srgb, var(--synth-signal) 10%, transparent); }
+.board-prototype-well { display: grid; gap: 8px; }
+.board-prototype-card { border: 1px solid var(--synth-hairline); border-radius: 14px; padding: 12px; background: var(--plate-deck); color: var(--synth-text); font: 14px/1.4 var(--synth-font-sans); }
+.board-prototype-content { display: grid; gap: 8px; }
+.board-prototype-card button { min-height: 44px; cursor: grab; touch-action: none; border: 1px solid var(--synth-hairline); border-radius: 8px; background: var(--synth-key-bottom); color: var(--synth-text); font: inherit; }
+.board-prototype-card button:focus-visible { outline: 2px solid var(--synth-focus); outline-offset: 2px; }
+.board-prototype-card[data-source] { border-style: dashed; background: var(--synth-void); }
+.board-prototype-card[data-source] > * { opacity: 0; }
+.board-prototype-ghost { position: fixed; top: 0; left: 0; width: 220px; z-index: 1000; pointer-events: none; margin: 0; }
+.board-prototype-ghost > * { pointer-events: none; }
