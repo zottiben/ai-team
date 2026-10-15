@@ -6,12 +6,12 @@ import type { Changes, Delivery, DraftReview, DeliveryInspection } from "./chang
 const service = vi.hoisted(() => ({ chatChanges: vi.fn(), reviewDraft: vi.fn(), submitReviewFix: vi.fn(), previewDelivery: vi.fn(), approveDelivery: vi.fn(), inspectDelivery: vi.fn(), acknowledgeDelivery: vi.fn(), committedTree: vi.fn(), committedFile: vi.fn() }));
 vi.mock("./changes-api", () => service);
 vi.mock("./review-api", () => service);
-vi.mock("./checkout-api", () => ({ checkoutState: vi.fn(async () => ({ workspace: "/repo", head: "base-sha", branch: "main", fingerprint: "working", staged: [], unstaged: [], untracked: ["solo.txt"], untracked_files: [{ file: { path: "solo.txt", old_path: null, status: "added", binary: false, hunks: [], additions: 0, deletions: 0 }, reason: "Empty file.", fingerprint: "new-file" }], findings: [], operations: [] })) }));
+vi.mock("./checkout-api", () => ({ checkoutState: vi.fn(async () => ({ workspace: "/repo", workspace_epoch: 9, head: "base-sha", branch: "main", fingerprint: "working", staged: [], unstaged: [], untracked: ["solo.txt"], untracked_files: [{ file: { path: "solo.txt", old_path: null, status: "added", binary: false, hunks: [], additions: 0, deletions: 0 }, reason: "Empty file.", fingerprint: "new-file" }], findings: [], operations: [] })) }));
 const target = { run_id: 14, slice_key: "S1", revision: 7 };
 const draft = { target, base_sha: "base-sha", commit_sha: "commit-sha", branch: "draft", lease_state: "released", worktree_path: "/pool/returned" };
 const changes = (): Changes => ({ workspace_path: "/repo", workspace_epoch: 9, head: "base-sha", branch: "main", issues: [], staged: [], unstaged: [], untracked: ["solo.txt"], drafts: [draft], deliveries: [] });
 const review = (): DraftReview => ({ draft, findings: [], files: [{ path: "feature.rs", old_path: null, status: "added", binary: false, additions: 1, deletions: 0, hunks: [{ header: "@@ -0,0 +1 @@", old_start: 0, new_start: 1, lines: [{ kind: "added", old: null, new: 1, text: "verified code" }] }] }] });
-const delivery = (): Delivery => ({ id: 9, chat_id: 4, rev: 1, state: "preview", result: null, snapshot: { target, action: "push", commit_sha: "commit-sha", workspace_path: "/repo", checkout_head: "base-sha", checkout_branch: "main", remote_url: "ssh://git@example/repo", delivery_branch: "chat-4/commit-sha", github_repo: null, base_branch: null, base_sha: null } });
+const delivery = (): Delivery => ({ id: 9, chat_id: 4, rev: 1, state: "preview", result: null, snapshot: { target, action: "push", commit_sha: "commit-sha", workspace_path: "/repo", workspace_epoch: 9, checkout_head: "base-sha", checkout_branch: "main", remote_url: "ssh://git@example/repo", delivery_branch: "chat-4/commit-sha", github_repo: null, base_branch: null, base_sha: null } });
 const props = { chatId: 4, tick: 0, disabled: false, onChanged: vi.fn() };
 beforeEach(() => {
   vi.clearAllMocks();
@@ -35,6 +35,23 @@ it("shows real working changes separately from a chat's returned-worktree draft"
   expect(screen.getByText(/not attributed to this conversation/)).toBeTruthy();
   expect(screen.getByRole("button", { name: /comment on new line/ })).toBeTruthy();
   expect(service.previewDelivery).not.toHaveBeenCalled();
+  expect(service.approveDelivery).not.toHaveBeenCalled();
+});
+it("does not expose another chat's drafts during a delayed switch", async () => {
+  const view=render(<ChatChanges {...props}/>); await openReview();
+  service.chatChanges.mockImplementation(()=>new Promise(()=>{}));
+  view.rerender(<ChatChanges {...props} chatId={5}/>);
+  expect(screen.queryByText("verified code")).toBeNull();
+  expect(screen.queryByRole("button",{name:"Review S1"})).toBeNull();
+});
+it("invalidates a delivery preview after a checkout-generation change", async () => {
+  const view=render(<ChatChanges {...props}/>); await openReview();
+  fireEvent.click(screen.getByRole("button",{name:"Preview: Push draft"}));
+  await screen.findByRole("region",{name:"Delivery approval"});
+  service.chatChanges.mockResolvedValue({...changes(),workspace_epoch:10});
+  view.rerender(<ChatChanges {...props} tick={1}/>);
+  await waitFor(()=>expect(service.chatChanges).toHaveBeenCalledTimes(4));
+  expect((screen.getByRole("button",{name:"Approve: Push draft"}) as HTMLButtonElement).disabled).toBe(true);
   expect(service.approveDelivery).not.toHaveBeenCalled();
 });
 it("browses objects from the reviewed commit rather than the current checkout", async () => {

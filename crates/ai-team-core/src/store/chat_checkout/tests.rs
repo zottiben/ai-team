@@ -25,6 +25,7 @@ async fn inspection_keeps_already_drained_child_timestamps() {
         .unwrap();
     let snapshot = Snapshot {
         workspace: chat.workspace_path,
+        workspace_epoch: Some(chat.workspace_epoch),
         head: None,
         branch: Some("main".into()),
         fingerprint: "reviewed".into(),
@@ -97,6 +98,7 @@ async fn checkout_receipts_exclude_other_chats_and_unknown_spawn_intents_fail_cl
     let other = store.create_chat(make()).unwrap();
     let snapshot = Snapshot {
         workspace: chat.workspace_path.clone(),
+        workspace_epoch: Some(chat.workspace_epoch),
         head: None,
         branch: Some("main".into()),
         fingerprint: "reviewed".into(),

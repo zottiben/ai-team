@@ -11,7 +11,7 @@ export type Delivery = {
   result: string | null;
   snapshot: {
     target: DraftTarget; action: DeliveryAction; commit_sha: string;
-    workspace_path: string; checkout_head: string; checkout_branch: string;
+    workspace_path: string; workspace_epoch?: number | null; checkout_head: string; checkout_branch: string;
     remote_url: string | null; delivery_branch: string; github_repo: string | null;
     base_branch: string | null; base_sha: string | null;
   };

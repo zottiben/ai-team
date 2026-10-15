@@ -68,6 +68,8 @@ async fn exact_checkout_actions_preserve_work_and_never_create_verified_drafts()
     let chat = store.create_chat(create()).unwrap().id;
     let other = store.create_chat(create()).unwrap().id;
     staging(&mut store, &repo, chat, other).await;
+    file_revisions(&mut store, &repo, chat).await;
+    checkout_round_trip(&mut store, &repo, chat).await;
     feedback(&mut store, &repo, chat, other).await;
     publication(&mut store, &root, &repo, chat).await;
     uncertainty(&mut store, &repo, chat, other).await;
@@ -175,6 +177,89 @@ async fn staging(store: &mut Store, repo: &Path, chat: i64, other: i64) {
     assert_eq!(git(repo, &["ls-tree", "--name-only", "HEAD"]), "README.md");
     assert!(repo.join("not-staged").exists());
 }
+async fn file_revisions(store: &mut Store, repo: &Path, chat: i64) {
+    std::fs::write(repo.join("README.md"), "changed text\n").unwrap();
+    let before = serde_json::to_value(c::state(store, chat).await.unwrap()).unwrap();
+    let revision = before["unstaged_revisions"]["README.md"].clone();
+    assert!(
+        revision.is_string(),
+        "exact per-file diff identity is missing"
+    );
+    std::fs::write(repo.join("not-staged"), "unrelated change\n").unwrap();
+    let unrelated = serde_json::to_value(c::state(store, chat).await.unwrap()).unwrap();
+    assert_ne!(before["fingerprint"], unrelated["fingerprint"]);
+    assert_eq!(revision, unrelated["unstaged_revisions"]["README.md"]);
+    std::fs::write(repo.join("README.md"), "changed text").unwrap();
+    let newline = serde_json::to_value(c::state(store, chat).await.unwrap()).unwrap();
+    assert_eq!(
+        before["unstaged"], newline["unstaged"],
+        "the rendered lines alone cannot detect this byte change"
+    );
+    assert_ne!(revision, newline["unstaged_revisions"]["README.md"]);
+    git(repo, &["add", "README.md"]);
+    let staged = serde_json::to_value(c::state(store, chat).await.unwrap()).unwrap();
+    assert!(staged["staged_revisions"]["README.md"].is_string());
+    git(repo, &["reset", "--", "README.md"]);
+}
+
+async fn checkout_round_trip(store: &mut Store, repo: &Path, chat: i64) {
+    let before = c::state(store, chat).await.unwrap();
+    let preview = c::preview(
+        store,
+        chat,
+        &before.fingerprint,
+        c::Action::Stage {
+            path: "README.md".into(),
+        },
+    )
+    .await
+    .unwrap();
+    let elsewhere = repo.parent().unwrap().join("other-checkout");
+    std::fs::create_dir(&elsewhere).unwrap();
+    for target in [elsewhere.as_path(), repo] {
+        let request = store
+            .request_chat_workspace(chat, ai_team_core::planning::PlanActor::Human, target)
+            .unwrap();
+        store
+            .apply_chat_workspace(chat, request.id, store.chat(chat).unwrap().rev, target)
+            .unwrap();
+    }
+    let result = c::approve(store, chat, preview.id, preview.rev)
+        .await
+        .unwrap();
+    assert_eq!(
+        result.state, "refused",
+        "returning to the same checkout bytes must not revive an old approval"
+    );
+    assert!(git(repo, &["diff", "--cached"]).is_empty());
+    let current = c::state(store, chat).await.unwrap();
+    let fresh = c::preview(
+        store,
+        chat,
+        &current.fingerprint,
+        c::Action::Stage {
+            path: "README.md".into(),
+        },
+    )
+    .await
+    .unwrap();
+    let conn = rusqlite::Connection::open(store.path()).unwrap();
+    // Seed a separate historical-format receipt; never rewrite immutable evidence.
+    conn.execute("INSERT INTO chat_checkout_operation(chat_id,workspace_path,snapshot_json,created_at,updated_at) SELECT chat_id,workspace_path,json_remove(snapshot_json,'$.workspace_epoch'),created_at,updated_at FROM chat_checkout_operation WHERE id=?1", [fresh.id]).unwrap();
+    let legacy = store
+        .checkout_operation(chat, conn.last_insert_rowid())
+        .unwrap();
+    assert_eq!(legacy.snapshot.workspace_epoch, None);
+    assert_eq!(
+        c::approve(store, chat, legacy.id, legacy.rev)
+            .await
+            .unwrap()
+            .state,
+        "refused"
+    );
+    assert!(git(repo, &["diff", "--cached"]).is_empty());
+}
+
 async fn feedback(store: &mut Store, repo: &Path, chat: i64, other: i64) {
     std::fs::write(repo.join("README.md"), "reviewed change\n").unwrap();
     let state = c::state(store, chat).await.unwrap();

@@ -6,7 +6,7 @@ const api=vi.hoisted(()=>({checkoutState:vi.fn(),checkoutPreview:vi.fn(),checkou
 vi.mock("./checkout-api",()=>api);
 vi.mock("./review-api",()=>api);
 const state=():CheckoutState=>({workspace:"/linked",workspace_epoch:7,head:"abc",branch:"feature",fingerprint:"bytes1",untracked:["new.txt"],untracked_files:[{file:{path:"new.txt",old_path:null,status:"added",binary:false,additions:0,deletions:0,hunks:[]},reason:"Empty file.",fingerprint:"new-bytes"}],staged:[],unstaged:[{path:"kept.txt",old_path:null,status:"modified",binary:false,additions:1,deletions:1,hunks:[{header:"@@ -1 +1 @@",old_start:1,new_start:1,lines:[{kind:"removed",old:1,new:null,text:"old"},{kind:"added",old:null,new:1,text:"new"}]}]}],findings:[],operations:[]});
-const op=():CheckoutOperation=>({id:9,chat_id:4,rev:1,state:"preview",result:null,snapshot:{workspace:"/linked",head:"abc",branch:"feature",fingerprint:"bytes1",action:{kind:"stage",path:"new.txt"},remote:null}});
+const op=():CheckoutOperation=>({id:9,chat_id:4,rev:1,state:"preview",result:null,snapshot:{workspace:"/linked",workspace_epoch:7,head:"abc",branch:"feature",fingerprint:"bytes1",action:{kind:"stage",path:"new.txt"},remote:null}});
 const props={chatId:4,tick:0,disabled:false,onChanged:vi.fn(),onFeedback:vi.fn()};
 beforeEach(()=>{vi.clearAllMocks();api.checkoutState.mockResolvedValue(state());api.checkoutPreview.mockResolvedValue(op());api.checkoutApprove.mockResolvedValue({...op(),state:"done"});api.submitReviewFix.mockResolvedValue({turn:{started:true}});});
 it("previews exact checkout state before any staging and approves only that receipt",async()=>{
@@ -17,6 +17,39 @@ it("previews exact checkout state before any staging and approves only that rece
 it("invalidates a stale preview on refresh without sending the action",async()=>{
  const view=render(<ChatCheckout {...props}/>);fireEvent.click(await screen.findByRole("button",{name:"Stage new.txt"}));await screen.findByRole("region",{name:"Checkout action approval"});
  api.checkoutState.mockResolvedValue({...state(),fingerprint:"bytes2"});view.rerender(<ChatCheckout {...props} tick={1}/>);await screen.findByText(/This preview is stale/);expect((screen.getByRole("button",{name:"Approve: Stage file"}) as HTMLButtonElement).disabled).toBe(true);expect(api.checkoutApprove).not.toHaveBeenCalled();
+});
+it("does not expose a previous chat's checkout while the next request is pending", async () => {
+ const view=render(<ChatCheckout {...props}/>); await screen.findByRole("button",{name:"Stage new.txt"});
+ api.checkoutState.mockImplementation(()=>new Promise(()=>{}));
+ view.rerender(<ChatCheckout {...props} chatId={5}/>);
+ expect(screen.queryByRole("button",{name:"Stage new.txt"})).toBeNull();
+ expect(screen.queryByText("/linked · feature · abc")).toBeNull();
+});
+it("refuses approval from another checkout generation even if a supplied fingerprint repeats", async () => {
+ const view=render(<ChatCheckout {...props}/>); fireEvent.click(await screen.findByRole("button",{name:"Stage new.txt"}));
+ await screen.findByRole("region",{name:"Checkout action approval"});
+ api.checkoutState.mockResolvedValue({...state(),workspace_epoch:8}); view.rerender(<ChatCheckout {...props} tick={1}/>);
+ await waitFor(()=>expect(api.checkoutState).toHaveBeenCalledTimes(3));
+ expect((screen.getByRole("button",{name:"Approve: Stage file"}) as HTMLButtonElement).disabled).toBe(true);
+ expect(api.checkoutApprove).not.toHaveBeenCalled();
+});
+it("keeps a historical-format preview readable without treating an unrecorded epoch as current",async()=>{
+ const legacy=op(); delete legacy.snapshot.workspace_epoch; api.checkoutPreview.mockResolvedValue(legacy);
+ render(<ChatCheckout {...props}/>); fireEvent.click(await screen.findByRole("button",{name:"Stage new.txt"}));
+ await screen.findByText(/Checkout generation was not recorded/);
+ expect((screen.getByRole("button",{name:"Approve: Stage file"}) as HTMLButtonElement).disabled).toBe(true);
+ expect(api.checkoutApprove).not.toHaveBeenCalled();
+});
+it("invalidates Viewed on non-rendered file-byte changes without clearing an unrelated file", async()=>{
+ const first={...state(),unstaged_revisions:{"kept.txt":"file-bytes-one"}};
+ api.checkoutState.mockResolvedValue(first); const view=render(<ChatCheckout {...props}/>);
+ fireEvent.click(await screen.findByRole("checkbox",{name:"Viewed kept.txt"}));
+ api.checkoutState.mockResolvedValue({...first,fingerprint:"unrelated-change"}); view.rerender(<ChatCheckout {...props} tick={1}/>);
+ await waitFor(()=>expect(api.checkoutState).toHaveBeenCalledTimes(2));
+ expect((screen.getByRole("checkbox",{name:"Viewed kept.txt"}) as HTMLInputElement).checked).toBe(true);
+ api.checkoutState.mockResolvedValue({...first,fingerprint:"newline-change",unstaged_revisions:{"kept.txt":"file-bytes-two"}});
+ view.rerender(<ChatCheckout {...props} tick={2}/>);
+ await waitFor(()=>expect((screen.getByRole("checkbox",{name:"Viewed kept.txt"}) as HTMLInputElement).checked).toBe(false));
 });
 it("keeps feedback drafts after rejected line anchors without approving publication",async()=>{
  api.submitReviewFix.mockRejectedValue(Error("diff changed"));render(<ChatCheckout {...props}/>);fireEvent.click(await screen.findByRole("button",{name:"comment on new line 1"}));fireEvent.change(screen.getByLabelText("comment on kept.txt new line 1"),{target:{value:"Check error handling"}});fireEvent.click(screen.getByRole("button",{name:"Comment"}));await screen.findByText("diff changed");expect((screen.getByLabelText("comment on kept.txt new line 1") as HTMLTextAreaElement).value).toBe("Check error handling");expect(api.submitReviewFix).toHaveBeenCalledWith(4,expect.objectContaining({request_id:expect.any(String),workspace_epoch:7,review:{kind:"checkout",finding:expect.objectContaining({fingerprint:"bytes1",path:"kept.txt",side:"new",line:1,area:"unstaged"})}}));expect(props.onFeedback).not.toHaveBeenCalled();expect(api.checkoutApprove).not.toHaveBeenCalled();

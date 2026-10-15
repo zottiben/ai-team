@@ -20,6 +20,9 @@ pub struct DeliverySnapshot {
     pub action: DeliveryAction,
     pub commit_sha: String,
     pub workspace_path: String,
+    /// Historical receipts have no generation; they are evidence, not fresh approval.
+    #[serde(default)]
+    pub workspace_epoch: Option<i64>,
     pub checkout_head: String,
     pub checkout_branch: String,
     pub remote_url: Option<String>,
@@ -47,7 +50,8 @@ pub async fn preview(
 ) -> Result<Delivery> {
     available(store, chat, target, action)?;
     let draft = draft(store, chat, target)?;
-    let workspace = store.chat(chat)?.workspace_path;
+    let current = store.chat(chat)?;
+    let workspace = current.workspace_path;
     let repo = Path::new(&workspace);
     let mut snapshot = DeliverySnapshot {
         target: target.clone(),
@@ -61,6 +65,7 @@ pub async fn preview(
             .await
             .ok_or_else(|| Error::invalid("select a checkout branch before delivery"))?,
         workspace_path: workspace.clone(),
+        workspace_epoch: Some(current.workspace_epoch),
         remote_url: None,
         // Different verified commits never share a mutable publication ref.
         delivery_branch: format!(
@@ -203,9 +208,11 @@ pub(crate) fn available(
 async fn recheck(store: &mut Store, chat: i64, expected: &DeliverySnapshot) -> Result<()> {
     available(store, chat, &expected.target, expected.action)?;
     let actual = draft(store, chat, &expected.target)?;
-    let workspace = store.chat(chat)?.workspace_path;
+    let current = store.chat(chat)?;
+    let workspace = current.workspace_path;
     let repo = Path::new(&workspace);
     if workspace != expected.workspace_path
+        || Some(current.workspace_epoch) != expected.workspace_epoch
         || actual.commit_sha != expected.commit_sha
         || git(repo, &["rev-parse", "--verify", "HEAD"]).await?.trim() != expected.checkout_head
         || crate::current_branch(repo).await.as_deref() != Some(expected.checkout_branch.as_str())

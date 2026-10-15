@@ -11,9 +11,9 @@ import "./chat-changes.css";
 const ACTIONS: Record<DeliveryAction, string> = {
   integrate: "Integrate locally", push: "Push draft", pull_request: "Open draft PR",
 };
-export function ChatChanges({ chatId, tick, disabled, onChanged, onFeedback }: {
-  chatId: number; tick: number; disabled: boolean; onChanged: () => void; onFeedback?: (text: string) => void;
-}) {
+type Props = { chatId: number; tick: number; disabled: boolean; onChanged: () => void; onFeedback?: (text: string) => void };
+export function ChatChanges(props: Props) { return <ChangesController key={props.chatId} {...props}/>; }
+function ChangesController({ chatId, tick, disabled, onChanged, onFeedback }: Props) {
   const submitFix = useReviewFix(chatId);
   const [submitted, setSubmitted] = useState(false);
   const [changes, setChanges] = useState<Changes | null>(null);
@@ -46,6 +46,11 @@ export function ChatChanges({ chatId, tick, disabled, onChanged, onFeedback }: {
   const unavailable = disabled || busy || pending;
   const selected = review?.draft;
   const fresh = selected && changes?.drafts.some((d) => d.target.run_id === selected.target.run_id && d.target.slice_key === selected.target.slice_key && d.target.revision === selected.target.revision && d.commit_sha === selected.commit_sha);
+  const approvalCurrent = !!preview && !!changes && !!selected && !!fresh && preview.chat_id === chatId && preview.state === "preview"
+    && preview.snapshot.workspace_epoch === changes.workspace_epoch && preview.snapshot.workspace_path === changes.workspace_path
+    && preview.snapshot.checkout_head === changes.head && preview.snapshot.checkout_branch === changes.branch
+    && preview.snapshot.commit_sha === selected.commit_sha && preview.snapshot.target.run_id === selected.target.run_id
+    && preview.snapshot.target.slice_key === selected.target.slice_key && preview.snapshot.target.revision === selected.target.revision;
   return <section className="chat-overview-card chat-changes" aria-label="Changes and delivery">
     <div className="chat-changes-heading"><h3>Changes and delivery</h3>
       <button className="button" disabled={busy} onClick={() => { setProblem(null); setRefresh((n) => n + 1); }}>Refresh changes</button></div>
@@ -72,7 +77,7 @@ export function ChatChanges({ chatId, tick, disabled, onChanged, onFeedback }: {
         <p className="mono">{selected.base_sha} → {selected.commit_sha}</p>
         <p className="faint">Submitting a comment sends it to the maker for repair and independent checks. Only this slice is approved; no push, PR or merge.</p>
         {submitted && <p role="status">Review submitted to the agent. Follow its new attempt in this chat.</p>}
-        {review.files.map((file) => <FileView key={file.path} file={file} reviewKey={`chat:${chatId}:draft:${selected.target.run_id}:${selected.target.slice_key}`} onComment={unavailable || !fresh ? undefined : async (body, anchor) => command(async () => {
+        {review.files.map((file) => <FileView key={file.path} file={file} retryCapturedRequest revision={selected.commit_sha} commentScope={JSON.stringify([chatId,selected.target,selected.commit_sha,changes.workspace_epoch])} reviewKey={`chat:${chatId}:draft:${selected.target.run_id}:${selected.target.slice_key}`} onComment={unavailable || !fresh ? undefined : async (body, anchor) => command(async () => {
           await submitFix({ kind: "draft", target: selected.target, body, anchor: { path: anchor.file_path, side: anchor.side, line: anchor.line_start } }, changes.workspace_epoch);
           setSubmitted(true);
         })} />)}
@@ -110,7 +115,8 @@ export function ChatChanges({ chatId, tick, disabled, onChanged, onFeedback }: {
           ? "Fast-forward this clean checkout only. Dirty files or divergent history cause refusal; nothing is stashed, reset or cherry-picked."
           : preview.snapshot.action === "push" ? "Publish only this commit to the named ref. Do not open or merge a PR."
             : "Create an unmerged draft PR for the already published commit. Do not retarget an existing PR or request a merge."}</p>
-        <button className="button button--primary" disabled={unavailable || !fresh} onClick={() => void command(async () => {
+        {!approvalCurrent && <p className="notice">{preview.snapshot.workspace_epoch == null ? "Checkout generation was not recorded; request a fresh preview." : "Changed since preview — review again. This approval no longer matches the current checkout generation and draft."}</p>}
+        <button className="button button--primary" disabled={unavailable || !approvalCurrent} onClick={() => void command(async () => {
           const result = await approveDelivery(chatId, preview); setPreview(null);
           if (result.state !== "done") throw new Error(result.result ?? "Delivery did not finish; inspect its recorded state.");
         })}>Approve: {ACTIONS[preview.snapshot.action]}</button>

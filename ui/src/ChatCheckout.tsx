@@ -4,7 +4,9 @@ import type { FileDiff } from "./api";
 import { useReviewFix } from "./useReviewFix";
 import { checkoutState, checkoutPreview, checkoutApprove, checkoutInspect, checkoutAcknowledge, type CheckoutAction, type CheckoutFinding, type CheckoutState, type CheckoutOperation, type CheckoutInspection } from "./checkout-api";
 const labels={stage:"Stage file",unstage:"Unstage file",commit:"Manual commit",push:"Push checkout commit",pull_request:"Open checkout draft PR",push_branch:"Chat-approved branch push"};
-export function ChatCheckout({chatId,tick,disabled,onChanged,onFeedback}:{chatId:number;tick:number;disabled:boolean;onChanged:()=>void;onFeedback?:(text:string)=>void}) {
+type Props = {chatId:number;tick:number;disabled:boolean;onChanged:()=>void;onFeedback?:(text:string)=>void};
+export function ChatCheckout(props: Props) { return <CheckoutController key={props.chatId} {...props}/>; }
+function CheckoutController({chatId,tick,disabled,onChanged,onFeedback}: Props) {
   const submitFix=useReviewFix(chatId);
   const [submitted,setSubmitted]=useState(false);
   const [data,setData]=useState<CheckoutState|null>(null);
@@ -18,11 +20,16 @@ export function ChatCheckout({chatId,tick,disabled,onChanged,onFeedback}:{chatId
     setBusy(true);setProblem(null);try{await work();return true;}catch(e){setProblem(e instanceof Error?e.message:String(e));return false;}finally{setBusy(false);setRefresh(n=>n+1);onChanged();}
   },[onChanged]);
   const blocked=disabled||busy||data?.operations.some(o=>o.state==="running"||o.state==="inspection");
+  const approvalCurrent = !!data && !!preview && preview.chat_id === chatId && preview.state === "preview"
+    && preview.snapshot.workspace_epoch === data.workspace_epoch && preview.snapshot.workspace === data.workspace
+    && preview.snapshot.head === data.head && preview.snapshot.branch === data.branch && preview.snapshot.fingerprint === data.fingerprint;
   const propose=(action:CheckoutAction)=>{if(data)void command(async()=>{setPreview(await checkoutPreview(chatId,data.fingerprint,action));setInspection(null);});};
   const reviewFile=(file:FileDiff,area:CheckoutFinding["area"],reason?:string|null,revision?:string)=>{
     if(!data)return null;
+    const revisions = area === "staged" ? data.staged_revisions : data.unstaged_revisions;
+    const exact = revision ?? (revisions && Object.hasOwn(revisions, file.path) ? revisions[file.path] : undefined);
     return <div key={file.path}>
-      <FileView file={file} reason={reason} revision={revision} reviewKey={JSON.stringify(["chat",chatId,data.workspace,data.workspace_epoch,data.branch,area])}
+      <FileView file={file} retryCapturedRequest reason={reason} revision={typeof exact === "string" ? exact : data.fingerprint} commentScope={JSON.stringify([chatId,data.workspace,data.workspace_epoch,data.fingerprint])} reviewKey={JSON.stringify(["chat",chatId,data.workspace,data.workspace_epoch,data.branch,area])}
         comments={data.findings.filter(f=>f.fingerprint===data.fingerprint&&f.area===area).map(f=>({id:f.id,review_id:0,parent_id:null,file_path:f.path,side:f.side,line_start:f.line,line_end:f.line,author:"you",body:f.body,status:"open",created_at:f.created_at}))}
         onComment={blocked?undefined:async(body,anchor)=>command(async()=>{await submitFix({kind:"checkout",finding:{id:0,fingerprint:data.fingerprint,head:data.head,area,path:anchor.file_path,side:anchor.side,line:anchor.line_start,body,created_at:""}},data.workspace_epoch);setSubmitted(true);})}/>
       <button className="button" disabled={blocked} onClick={()=>propose({kind:area==="staged"?"unstage":"stage",path:file.path})}>{area==="staged"?"Unstage":"Stage"} {file.path}</button>
@@ -50,8 +57,8 @@ export function ChatCheckout({chatId,tick,disabled,onChanged,onFeedback}:{chatId
       {preview&&<section className="notice" aria-label="Checkout action approval"><h4>{labels[preview.snapshot.action.kind]} — exact approval</h4><p className="mono">{preview.snapshot.workspace} · {preview.snapshot.branch??"detached"} · {preview.snapshot.head??"unborn HEAD"}</p>
         {"path" in preview.snapshot.action&&<p className="mono">{preview.snapshot.action.path}</p>}{"message" in preview.snapshot.action&&<pre>{preview.snapshot.action.message}</pre>}
         {preview.snapshot.remote&&<><p className="mono">{preview.snapshot.remote.url} · {preview.snapshot.remote.branch}</p>{preview.snapshot.remote.base&&<p className="mono">PR base: {preview.snapshot.remote.repository} · {preview.snapshot.remote.base} · {preview.snapshot.remote.base_sha}</p>}<p>Only this committed snapshot is published, never dirty files or your current branch ref. No merge. Push and draft PR need separate approvals.</p></>}
-        <button className="button button--primary" disabled={blocked||data.fingerprint!==preview.snapshot.fingerprint} onClick={()=>void command(async()=>{const r=await checkoutApprove(chatId,preview);setPreview(null);if(r.state!=="done")throw Error(r.result??"Inspect checkout outcome");if(preview.snapshot.action.kind==="commit")setMessage("");})}>Approve: {labels[preview.snapshot.action.kind]}</button><button className="button" disabled={busy} onClick={()=>setPreview(null)}>Dismiss checkout approval</button>
-        {data.fingerprint!==preview.snapshot.fingerprint&&<p>This preview is stale. Refresh and preview again.</p>}
+        <button className="button button--primary" disabled={blocked||!approvalCurrent} onClick={()=>void command(async()=>{const r=await checkoutApprove(chatId,preview);setPreview(null);if(r.state!=="done")throw Error(r.result??"Inspect checkout outcome");if(preview.snapshot.action.kind==="commit")setMessage("");})}>Approve: {labels[preview.snapshot.action.kind]}</button><button className="button" disabled={busy} onClick={()=>setPreview(null)}>Dismiss checkout approval</button>
+        {!approvalCurrent&&<p>{preview.snapshot.workspace_epoch == null ? "Checkout generation was not recorded; request a fresh preview." : "This preview is stale. Changed since preview — review again."}</p>}
       </section>}
       {!!data.operations.length&&<details open={data.operations.some(o=>o.state==="running"||o.state==="inspection")}><summary>Checkout action history</summary>{data.operations.map(o=><div className="notice" key={o.id}><strong>{labels[o.snapshot.action.kind]} · {o.state}</strong><p>{o.result??"Command is running or interrupted. No automatic retry."}</p>{o.state==="done"&&o.snapshot.action.kind==="pull_request"&&o.result?.startsWith("https://")&&<a href={o.result} target="_blank" rel="noreferrer">Open draft PR</a>}{(o.state==="running"||o.state==="inspection")&&<button className="button" disabled={busy} onClick={()=>void command(async()=>{setInspection(await checkoutInspect(chatId,o));setReason("");})}>Drain and inspect checkout action #{o.id}</button>}</div>)}</details>}
       {inspection&&<form className="notice" onSubmit={e=>{e.preventDefault();void command(async()=>{await checkoutAcknowledge(chatId,inspection,reason);setInspection(null);});}}><h4>Keep inspected checkout state</h4><p>Local command groups drained. Inspect files, index, history and remote effects before acknowledging. A remote effect may still be delayed. This releases the reservation without certifying success, changing files or retrying the action.</p><p className="mono">{inspection.checkout.head} · {inspection.checkout.staged.length} staged · {inspection.checkout.unstaged.length} unstaged · {inspection.checkout.untracked.length} untracked</p><label>Reason for keeping the state<input value={reason} onChange={e=>setReason(e.target.value)} maxLength={4000}/></label><button className="button" disabled={busy||!reason.trim()}>Acknowledge checkout state</button></form>}

@@ -163,6 +163,7 @@ async fn chat_drafts_have_exact_review_and_separate_idempotent_delivery() {
     std::env::set_var("DELIVERY_TEST_ROOT", env.path());
     publication(&env).await;
     stale_destinations_and_integration().await;
+    checkout_round_trip().await;
     abandoned_approval_before_attempt().await;
     ignored_files_and_acknowledgement().await;
     cancelled_publisher(&env).await;
@@ -318,6 +319,43 @@ async fn publication(env: &tempfile::TempDir) {
         std::fs::read_to_string(env.path().join("gh-log")).unwrap(),
         log
     );
+}
+
+async fn checkout_round_trip() {
+    let mut f = Fixture::new();
+    let preview = f.preview(DeliveryAction::Integrate).await;
+    let elsewhere = f.repo.parent().unwrap().join("other-checkout");
+    std::fs::create_dir(&elsewhere).unwrap();
+    for target in [&elsewhere, &f.repo] {
+        let request = f
+            .store
+            .request_chat_workspace(f.chat, planning::PlanActor::Human, target)
+            .unwrap();
+        f.store
+            .apply_chat_workspace(
+                f.chat,
+                request.id,
+                f.store.chat(f.chat).unwrap().rev,
+                target,
+            )
+            .unwrap();
+    }
+    let result = f.approve(&preview).await;
+    assert_eq!(
+        result.state, "refused",
+        "returning to the same checkout must not revive a draft-delivery approval"
+    );
+    assert_eq!(git(&f.repo, &["rev-parse", "HEAD"]), f.base);
+    let fresh = f.preview(DeliveryAction::Integrate).await;
+    let conn = rusqlite::Connection::open(f.store.path()).unwrap();
+    conn.execute("INSERT INTO chat_delivery(chat_id,run_id,slice_key,workspace_path,snapshot_json,created_at,updated_at) SELECT chat_id,run_id,slice_key,workspace_path,json_remove(snapshot_json,'$.workspace_epoch'),created_at,updated_at FROM chat_delivery WHERE id=?1", [fresh.id]).unwrap();
+    let legacy = f
+        .store
+        .chat_delivery(f.chat, conn.last_insert_rowid())
+        .unwrap();
+    assert_eq!(legacy.snapshot.workspace_epoch, None);
+    assert_eq!(f.approve(&legacy).await.state, "refused");
+    assert_eq!(git(&f.repo, &["rev-parse", "HEAD"]), f.base);
 }
 
 async fn stale_destinations_and_integration() {

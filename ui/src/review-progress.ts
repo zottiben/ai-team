@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { FileDiff } from "./api";
 
 const STORAGE = "ai-team.review-files.v1";
@@ -19,7 +19,7 @@ async function digest(text: string): Promise<string> {
 /** Presentation only. Store digests, never source text, review findings or authority. */
 export function useFileProgress(file: FileDiff, reviewKey: string | undefined, initiallyCollapsed: boolean, reason?: string | null, revision?: string) {
   const key = JSON.stringify([reviewKey, file.path]);
-  const source = JSON.stringify([key, file, reason, revision]);
+  const source = useMemo(() => JSON.stringify([key, file, reason, revision]), [key, file, reason, revision]);
   const fresh: Progress = { source, storageKey: null, hash: null, viewed: false, collapsed: initiallyCollapsed, edited: false };
   const [progress, setProgress] = useState<Progress>(fresh);
   const [problem, setProblem] = useState<string | null>(null);
