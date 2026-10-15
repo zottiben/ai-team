@@ -3241,6 +3241,8 @@ pub(crate) struct ActivityEvent {
     session_id: Option<String>,
     observation: Option<ai_team_core::EventObservation>,
     tool: Option<crate::chat_activity::ToolActivity>,
+    telemetry: Option<ai_team_core::telemetry::Telemetry>,
+    telemetry_only: bool,
 }
 
 impl From<Event> for ActivityEvent {
@@ -3250,6 +3252,7 @@ impl From<Event> for ActivityEvent {
         let summary = event_summary(&event);
         let session_id = crate::chat_activity::session(&event);
         let tool = crate::chat_activity::tool(&event);
+        let telemetry_only = event.telemetry.is_some() && event.payload.is_none();
         ActivityEvent {
             id: event.id,
             node_run_id: event.node_run_id,
@@ -3262,6 +3265,8 @@ impl From<Event> for ActivityEvent {
             session_id,
             observation: event.observation,
             tool,
+            telemetry: event.telemetry,
+            telemetry_only,
         }
     }
 }
@@ -3922,6 +3927,7 @@ mod activity_event_tests {
             stream_id: None,
             observation: None,
             shell_output: None,
+            telemetry: None,
         }
     }
 

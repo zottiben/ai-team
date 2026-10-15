@@ -115,7 +115,7 @@ export function AgentActivity({
     [detail, nodeId],
   );
   const conversation = useMemo(
-    () => events.filter((event) => event.node_run_id === nodeId),
+    () => events.filter((event) => !event.telemetry_only && event.node_run_id === nodeId),
     [events, nodeId],
   );
   const awaitingPlanApproval = Boolean(

@@ -55,6 +55,7 @@ mod stack;
 mod store;
 mod supervise;
 mod tasks;
+pub mod telemetry;
 mod terminal;
 mod today;
 mod update;

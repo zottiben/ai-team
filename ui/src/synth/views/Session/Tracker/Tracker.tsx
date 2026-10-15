@@ -39,7 +39,7 @@ export default function Tracker({ events, synth, visible, pattern, eventKey, ren
   const followedAt = useRef<number | null>(null);
   const seen = useRef<Set<string | number> | null>(null);
   const projected = useMemo(() => trackerRows(events), [events]);
-  const allRows = useMemo<TrackerRow[]>(() => synth ? projected : events.filter(event => !event.tool?.partial && visibleEvent(event)).map(event => ({ kind: "event", id: event.id, event })), [events, projected, synth]);
+  const allRows = useMemo<TrackerRow[]>(() => synth ? projected : events.filter(event => !event.telemetry_only && !event.tool?.partial && visibleEvent(event)).map(event => ({ kind: "event", id: event.id, event })), [events, projected, synth]);
   const rows = useMemo(() => synth ? allRows.flatMap<TrackerRow>(row => {
     if (!visibleLane(row, lanes)) return [];
     if (row.kind !== "reads" || lanes.has("read")) return [row];

@@ -74,7 +74,7 @@ function correlation(key: string | null, call: Call | undefined, isStart: boolea
 export function trackerRows(input: readonly RunEvent[]): TrackerRow[] {
   const seen = new Set<number>();
   const events = input.filter(event => {
-    if (seen.has(event.id)) return false;
+    if (seen.has(event.id) || event.telemetry_only) return false;
     seen.add(event.id);
     return true;
   });

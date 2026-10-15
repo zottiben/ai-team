@@ -28,6 +28,8 @@ pub struct PiEvent {
     pub observation: Option<crate::EventObservation>,
     #[serde(skip)]
     pub shell_output: Option<crate::ShellOutput>,
+    #[serde(skip)]
+    pub telemetry: Option<crate::telemetry::Telemetry>,
 }
 
 /// What we do with one stream event.
@@ -270,6 +272,19 @@ impl PiEvent {
 
     /// One line of what happened, or nothing worth a row.
     pub fn classify(&self) -> Disposition {
+        let base = self.base_classify();
+        if self.telemetry.is_some() && base == Disposition::Ignore {
+            Disposition::Record(EventKind::Note, "host telemetry observation".into())
+        } else {
+            base
+        }
+    }
+
+    pub(crate) fn telemetry_only(&self) -> bool {
+        self.telemetry.is_some() && self.base_classify() == Disposition::Ignore
+    }
+
+    fn base_classify(&self) -> Disposition {
         match self.kind.as_str() {
             "turn_start" => Disposition::Record(
                 EventKind::Step,

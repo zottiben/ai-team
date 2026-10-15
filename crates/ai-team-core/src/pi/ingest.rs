@@ -80,8 +80,8 @@ impl Store {
             )?;
             let mut insert = tx.prepare(
                 "INSERT OR IGNORE INTO event
-                   (run_id, node_run_id, at, kind, actor, summary, payload_json, eve_event_id, observation_json, activity_json)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                   (run_id, node_run_id, at, kind, actor, summary, payload_json, eve_event_id, observation_json, activity_json, telemetry_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             )?;
 
             for (offset, event) in events.iter().enumerate() {
@@ -92,15 +92,13 @@ impl Store {
                 };
                 let index = from_index + i64::try_from(offset).unwrap_or(0);
                 let id = format!("{session_id}:{index}");
-                if event.shell_output.is_some() && index < seen {
+                if index < seen && (event.shell_output.is_some() || event.telemetry_only()) {
                     let exists: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM event WHERE eve_event_id=?1)", [&id], |row| row.get(0))?;
                     if exists { out.duplicates += 1; } else { out.ignored += 1; }
                     continue;
                 }
-                // Raw partial results can contain private arguments, images and arbitrary
-                // objects. Only the supervisor's bounded tail is durable for these updates.
-                let payload = if event.kind == "tool_execution_update" { None } else { Some(serde_json::to_string(&event.data)?) };
                 let activity = event.shell_output.as_ref().map(serde_json::to_string).transpose()?;
+                let telemetry = event.telemetry.as_ref().map(serde_json::to_string).transpose()?;
                 let observation = event.observation.as_ref().map(serde_json::to_string).transpose()?;
 
                 let rows = insert.execute(params![
@@ -110,10 +108,11 @@ impl Store {
                     kind,
                     node.role,
                     summary,
-                    payload,
+                    payload(event)?,
                     id,
                     observation,
                     activity,
+                    telemetry,
                 ])?;
                 if rows == 0 {
                     out.duplicates += 1;
@@ -169,6 +168,16 @@ impl Store {
     }
 }
 
+/// Only allowlisted host data is durable for partial output and metric-only updates.
+/// Final prose and canonical completion keep their existing private evidence policy.
+fn payload(event: &PiEvent) -> Result<Option<String>> {
+    if event.kind == "tool_execution_update" || event.telemetry_only() {
+        Ok(None)
+    } else {
+        Ok(Some(serde_json::to_string(&event.data)?))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -176,6 +185,77 @@ mod tests {
 
     fn event(line: &str) -> PiEvent {
         PiEvent::parse(line).expect("a valid line")
+    }
+
+    #[test]
+    fn telemetry_replay_preserves_sampling_unknowns_and_counts_only_completed_steps() {
+        use crate::pi::{measurements::LiveSampler, observation::ObservationClock};
+        use serde_json::json;
+        let mut store = Store::memory().unwrap();
+        let node = node(&mut store);
+        let now = std::time::Instant::now();
+        let mut sampler = LiveSampler::default();
+        let clock = ObservationClock::new();
+        let usage = json!({"input":10,"output":4,"cacheRead":20,"cacheWrite":5,"totalTokens":39});
+        let mut events: Vec<_> = [
+            json!({"type":"message_start","message":{"role":"assistant"}}),
+            json!({"type":"message_update","usage":usage,"private":"secret delta"}),
+            json!({"type":"message_update","usage":{"output":5},"private":"suppressed delta"}),
+            json!({"type":"compaction_start","reason":"manual"}),
+            json!({"type":"compaction_end","reason":"manual","aborted":false,"willRetry":false,"result":{"tokensBefore":35,"estimatedTokensAfter":12,"summary":"secret summary"}}),
+            json!({"type":"turn_end","message":{"role":"assistant","usage":usage}}),
+        ].iter().map(|value| event(&value.to_string())).collect();
+        for event in &mut events {
+            sampler.observe(event, now);
+            clock.observe(event);
+        }
+        let first = store
+            .ingest_pi_events(node, "telemetry", 0, &events)
+            .unwrap();
+        assert_eq!(
+            (
+                first.recorded,
+                first.ignored,
+                first.steps,
+                first.usage.tokens_out
+            ),
+            (4, 2, 1, 4)
+        );
+        let run = store.node_run(node).unwrap().run_id;
+        store
+            .ingest_pi_events(node, "telemetry", 6, &[events[1].clone()])
+            .unwrap();
+        assert_eq!(
+            store.latest_node_event(node).unwrap().unwrap().kind,
+            crate::EventKind::Cost
+        );
+        assert!(store.latest_node_message_event(node).unwrap().is_none());
+        let before = serde_json::to_value(store.events(run, None, 100).unwrap()).unwrap();
+        assert!(!before.to_string().contains("secret"));
+        assert!(events[2].telemetry.is_none());
+        // A replay has different sampling opportunities, but cannot fill an old gap.
+        events[2].telemetry = events[1].telemetry.clone();
+        events[1].observation.as_mut().unwrap().elapsed_ms += 100;
+        let replay = store
+            .ingest_pi_events(node, "telemetry", 0, &events)
+            .unwrap();
+        assert_eq!(
+            (replay.recorded, replay.duplicates, replay.steps),
+            (0, 4, 0)
+        );
+        assert_eq!(
+            serde_json::to_value(store.events(run, None, 100).unwrap()).unwrap(),
+            before
+        );
+        assert_eq!(store.node_run(node).unwrap().usage.tokens_out, 4);
+        // The same shape in a fresh session remains new evidence.
+        assert_eq!(
+            store
+                .ingest_pi_events(node, "new-telemetry", 0, &events)
+                .unwrap()
+                .recorded,
+            5
+        );
     }
 
     /// A node run to ingest against.

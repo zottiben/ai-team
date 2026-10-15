@@ -96,7 +96,7 @@ export default function WorkPanel({ detail, events, now, view: suppliedView, vis
     followedAt.current = rows.scrollTop;
   }, [following, live, records, view.filter, view.expanded, visible]);
 
-  const recent = events.slice(-20);
+  const recent = events.filter(event => !event.telemetry_only).slice(-20);
   return <SynthProvider><div ref={host} className="synth-work">
     <Plate tone="night" className="synth-work__runs" aria-label="Runs"
       heading="Runs" actions={<span className="synth-mono">this conversation</span>}>

@@ -271,7 +271,7 @@ it("keeps the team controls and the reader's choices through a skin change", asy
     now: NOW, onChanged: () => {}, onFeedback: () => {}, onClose: () => {}, synth,
   });
   const view = render(<ChatContext {...props(false)} />);
-  fireEvent.click(screen.getByRole("button", { name: "Review build" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Review build" }));
   const approve = await screen.findByRole("button", { name: "Approve and build" });
   expect(screen.getByText("Base commit: base-A")).toBeTruthy();
   expect(document.querySelector(".chat-turn-list")).toBeTruthy();

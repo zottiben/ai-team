@@ -1,5 +1,5 @@
 import { lazy, Suspense, useRef } from "react";
-import { ChatTeam, TEAM_PHASES } from "./ChatTeam";
+import { TEAM_PHASES } from "./team-api";
 import type { ChatDetail } from "./chat-api";
 import type { RunEvent } from "./api";
 
@@ -7,6 +7,7 @@ const PanelSelector = lazy(() => import("./synth/views/Session/SessionNavigation
 const ChatChanges = lazy(() => import("./ChatChanges").then(module => ({ default: module.ChatChanges })));
 const ChatOverview = lazy(() => import("./ChatOverview").then(module => ({ default: module.ChatOverview })));
 const ChatPlanning = lazy(() => import("./ChatPlan").then(module => ({ default: module.ChatPlanning })));
+const ChatTeam = lazy(() => import("./ChatTeam").then(module => ({ default: module.ChatTeam })));
 const WorkPanel = lazy(() => import("./synth/views/panels/WorkPanel"));
 
 export const CHAT_PANELS = {
@@ -64,7 +65,7 @@ export function ChatContext({ detail, panel, opened, hidden, status, tick, busy,
     {opened.has("work") && <section id="chat-pane-work" role={synth ? "tabpanel" : undefined} className="chat-context-pane" aria-label="Work" hidden={panel !== "work"}>
       {/* Team execution is rendered in the same place for both skins: a review, a close
           form or a retained inspection must survive the flag, not be remounted by it. */}
-      {(detail.mode === "team" || detail.team_builds.length > 0) && <ChatTeam detail={detail} busy={busy} command={command} events={events} now={now} />}
+      {(detail.mode === "team" || detail.team_builds.length > 0) && <Suspense fallback={<p className="faint">Loading team execution…</p>}><ChatTeam detail={detail} busy={busy} command={command} events={events} now={now} /></Suspense>}
       <div hidden={!synth}>{workOpened.current && <Suspense fallback={<p className="faint">Loading work…</p>}>
         <WorkPanel detail={detail} events={events} now={now} visible={synth && panel === "work" && !hidden} />
       </Suspense>}</div>
@@ -82,7 +83,7 @@ export function ChatContext({ detail, panel, opened, hidden, status, tick, busy,
         <section className="chat-overview-card">
           <h3>Recent activity</h3>
           {!events.length ? <p className="faint">No activity yet.</p> : <ol className="chat-turn-list">
-            {events.slice(-20).map(event => <li key={event.id}><span>{event.summary}</span><span className="faint">{event.at} · turn #{event.node_run_id}</span></li>)}
+            {events.filter(event => !event.telemetry_only).slice(-20).map(event => <li key={event.id}><span>{event.summary}</span><span className="faint">{event.at} · turn #{event.node_run_id}</span></li>)}
           </ol>}
         </section>
       </div>

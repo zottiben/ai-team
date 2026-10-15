@@ -203,7 +203,7 @@ export function clipActivity(events: readonly RunEvent[], record: RunRecord, now
   const counts = new Array<number>(buckets).fill(0);
   let total = 0;
   for (const event of events) {
-    if (event.node_run_id !== record.nodeId) continue;
+    if (event.telemetry_only || event.node_run_id !== record.nodeId) continue;
     const at = instant(event.at);
     if (at === null || at < start || at > end) continue;
     const bucket = Math.min(buckets - 1, Math.floor(((at - start) / (end - start)) * buckets));

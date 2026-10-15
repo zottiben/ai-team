@@ -73,6 +73,7 @@ impl Store {
                     data,
                     observation: None,
                     shell_output: None,
+                    telemetry: None,
                 }
                 .assistant_message()
             };

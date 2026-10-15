@@ -16,7 +16,7 @@ export function ChatTeam({ detail, busy, command, events, now }: {
   detail: ChatDetail;
   busy: boolean;
   command: (act: () => Promise<unknown>) => Promise<void>;
-  events: { node_run_id: number | null; summary: string }[];
+  events: { node_run_id: number | null; summary: string; telemetry_only?: boolean }[];
   now: number;
 }) {
   const [review, setReview] = useState<BuildReview | null>(null);
@@ -71,7 +71,7 @@ export function ChatTeam({ detail, busy, command, events, now }: {
               <strong>{node.role}</strong> · {node.status} · {node.provider}/{node.model}
               <span className="faint"> · attempt {node.attempt}{node.slice_key ? ` · ${node.slice_key}` : ""}
                 {live && Number.isFinite(started) ? ` · ${Math.max(0, Math.floor((now - started) / 1000))}s` : ""}</span>
-              <p>{node.blocked_reason ?? events.filter((event) => event.node_run_id === node.id).at(-1)?.summary}</p>
+              <p>{node.blocked_reason ?? events.filter((event) => !event.telemetry_only && event.node_run_id === node.id).at(-1)?.summary}</p>
               {live_text && <BoardMarkdown source={live_text} />}
             </li>;
           })}

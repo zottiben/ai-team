@@ -244,6 +244,7 @@ mod tests {
             stream_id: Some("session:4".into()),
             observation: None,
             shell_output: None,
+            telemetry: None,
         }))
         .unwrap()
     }

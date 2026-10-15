@@ -314,6 +314,7 @@ impl PiProcess {
 
         let clock = super::observation::ObservationClock::new();
         let mut output = super::output::OutputSampler::default();
+        let mut measurements = super::measurements::LiveSampler::default();
         let mut outcome = TurnOutcome::default();
         let mut latest_provider_turn_failed = false;
         let mut stderr_tail = Vec::new();
@@ -333,7 +334,9 @@ impl PiProcess {
                 line = out.next_line(), if out_open => match line {
                     Ok(Some(line)) => {
                         let Some(mut event) = PiEvent::parse(&line) else { continue };
-                        output.observe(&mut event, std::time::Instant::now());
+                        let received = std::time::Instant::now();
+                        output.observe(&mut event, received);
+                        measurements.observe(&mut event, received);
                         clock.observe(&mut event);
                         if let Some(id) = event.session_id() {
                             outcome.session_id = Some(id.to_string());

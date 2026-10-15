@@ -387,7 +387,7 @@ export function Workspace({
               Expand
             </button>
           </div>
-          <Events events={events.slice(-25)} />
+          <Events events={events.filter(event => !event.telemetry_only).slice(-25)} />
         </aside>
       )}
 
@@ -413,7 +413,7 @@ function Events({ events }: { events: RunEvent[] }) {
   }
   return (
     <div className="events">
-      {events.map((event) => (
+      {events.filter(event => !event.telemetry_only).map((event) => (
         <div key={event.id} className="event">
           <span className="event__kind">{event.kind}</span>
           <span>{event.message ?? event.summary}</span>

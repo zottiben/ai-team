@@ -21,6 +21,12 @@ const props = { synth: true, visible: true, pattern: false, eventKey, renderEven
 beforeEach(() => { document.documentElement.dataset.synth = "true"; });
 
 describe("shared tracker rendering", () => {
+  it.each([false, true])("keeps telemetry receipts out of prose and sequence steps (Synth %s)", synth => {
+    render(<Tracker {...props} synth={synth} pattern events={[message(1), { ...message(2, "Counter-only receipt"), telemetry_only: true }]} />);
+    expect(screen.getByText("Keep this message")).toBeTruthy();
+    expect(screen.queryByText("Counter-only receipt")).toBeNull();
+    expect(document.querySelector('[data-row-id="2"]')).toBeNull();
+  });
   it("pairs parallel calls, exposes bounded output and never filters away failures or messages", async () => {
     const events = [message(1), tool(2, "tool_call", "a"), tool(3, "tool_call", "b"), tool(4, "tool_result", "b", true), tool(5, "tool_result", "a")];
     const view = render(<Tracker {...props} events={events}/>);

@@ -2,6 +2,78 @@ use super::Harness;
 use ai_team_core::{ModelRegistry, NewChat, PiEvent, Provider, Reasoning, Store};
 use serde_json::json;
 
+#[test]
+fn telemetry_uses_the_existing_authenticated_scoped_cursor_without_private_payloads() {
+    let (h, dir) = Harness::with_store();
+    let mut store = Store::open(&dir.path().join("team.db")).unwrap();
+    let project = store.find_project("widget").unwrap();
+    let make = || NewChat {
+        project_id: project.id,
+        workspace: dir.path().to_path_buf(),
+        provider: Provider::Local,
+        model: "test-model".into(),
+        reasoning: Reasoning::High,
+    };
+    let chat = store.create_chat(make()).unwrap();
+    let other = store.create_chat(make()).unwrap();
+    let turn = store
+        .begin_chat_turn(
+            chat.id,
+            "Observe",
+            "telemetry",
+            &ModelRegistry::local_only(),
+        )
+        .unwrap();
+    let mut event = PiEvent::parse(&json!({"type":"message_update","usage":{"output":7},"private":"secret provider delta", "telemetry":{"kind":"forged"}}).to_string()).unwrap();
+    assert!(event.telemetry.is_none());
+    event.telemetry = Some(serde_json::from_value(json!({"kind":"usage","phase":"live","sequence":1,
+        "tokens":{"input":null,"output":7,"cache_read":null,"cache_write":null,"context":null,"context_source":null}})).unwrap());
+    event.observation = Some(ai_team_core::EventObservation {
+        clock_id: "host".into(),
+        elapsed_ms: 1234,
+        at: "2026-01-01T00:00:01.234Z".into(),
+    });
+    store
+        .ingest_pi_events(turn.node_id, "original-session", 0, &vec![event; 501])
+        .unwrap();
+    store
+        .set_node_session(turn.node_id, "different-session")
+        .unwrap();
+    let url = format!("/api/chats/{}/events", chat.id);
+    assert_eq!(h.get_anonymous(&url).status, 401);
+    assert_eq!(
+        h.get(&format!("/api/chats/{}/events", other.id)).json(),
+        json!([])
+    );
+    let response = h.get(&url);
+    assert_eq!(response.status, 200);
+    let rows = response.json();
+    assert_eq!(rows.as_array().unwrap().len(), 500);
+    let sample = rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["telemetry_only"] == true)
+        .unwrap();
+    assert_eq!(sample["session_id"], "original-session");
+    assert_eq!(sample["telemetry"]["tokens"]["output"], 7);
+    assert!(sample["telemetry"]["tokens"]["input"].is_null());
+    assert_eq!(sample["observation"]["elapsed_ms"], 1234);
+    let cursor = rows.as_array().unwrap().last().unwrap()["id"]
+        .as_i64()
+        .unwrap();
+    let rest = h.get(&format!("{url}?after={cursor}")).json();
+    assert!(!rest.as_array().unwrap().is_empty());
+    for private in [
+        "secret provider",
+        "forged",
+        "different-session",
+        "payload_json",
+    ] {
+        assert!(!response.body.contains(private));
+    }
+}
+
 fn offline_stream() -> Vec<PiEvent> {
     let mut events: Vec<_> = [
         json!({"type":"tool_execution_start", "toolCallId":"a", "toolName":"bash",

@@ -212,6 +212,11 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
         "project command pads and receipts",
         include_str!("migrations/047_terminal_pads.sql"),
     ),
+    (
+        48,
+        "bounded provider telemetry receipts",
+        include_str!("migrations/048_telemetry.sql"),
+    ),
 ];
 
 /// Migrations that rebuild a table other tables point at.
@@ -546,6 +551,45 @@ mod tests {
             .unwrap();
         db.rebuild(*version, name, sql).unwrap();
         db
+    }
+
+    #[test]
+    fn telemetry_upgrade_leaves_v47_rows_and_guards_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("v47.db");
+        seed_v42(&path);
+        let db = upgrade_thinking_only(&path);
+        for (version, name, sql) in MIGRATIONS.iter().filter(|(v, _, _)| *v > 43 && *v <= 47) {
+            db.conn().execute_batch(sql).unwrap();
+            db.conn()
+                .execute(
+                    "INSERT INTO schema_migrations VALUES(?1,?2,'fixture')",
+                    rusqlite::params![version, name],
+                )
+                .unwrap();
+        }
+        let query = "SELECT json_group_array(json_array(id,run_id,node_run_id,at,kind,summary,payload_json,observation_json,activity_json)) FROM event";
+        let before = snapshot(db.conn(), query);
+        let trigger_query = "SELECT json_group_array(sql) FROM sqlite_master WHERE type='trigger' AND tbl_name='event'";
+        let triggers = snapshot(db.conn(), trigger_query);
+        drop(db);
+        let db = Db::open(&path).unwrap();
+        assert_eq!(snapshot(db.conn(), query), before);
+        assert_eq!(snapshot(db.conn(), trigger_query), triggers);
+        assert_eq!(
+            snapshot(
+                db.conn(),
+                "SELECT json_group_array(telemetry_json) FROM event"
+            ),
+            "[null]"
+        );
+        assert!(db
+            .conn()
+            .execute("UPDATE event SET telemetry_json='{}' WHERE id=50", [])
+            .is_err());
+        assert!(db.conn().execute("INSERT INTO event(run_id,at,kind,telemetry_json) VALUES(1,'now','note','not json')", []).is_err());
+        drop(db);
+        assert_eq!(snapshot(Db::open(&path).unwrap().conn(), query), before);
     }
 
     #[test]

@@ -93,7 +93,7 @@ export function ChatOverview({
 
   const running = detail.state === "running" || detail.state === "stopping";
   const active = events.filter(
-    (event) => event.node_run_id === (detail.active_node_id ?? detail.turns.at(-1)?.node.id),
+    (event) => !event.telemetry_only && event.node_run_id === (detail.active_node_id ?? detail.turns.at(-1)?.node.id),
   );
   const seats = live?.seats ?? [];
   const activity = view === null ? null : chatActivity(view.map, seats);

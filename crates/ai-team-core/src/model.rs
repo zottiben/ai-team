@@ -682,6 +682,8 @@ pub struct Event {
     pub observation: Option<EventObservation>,
     #[serde(default)]
     pub shell_output: Option<ShellOutput>,
+    #[serde(default)]
+    pub telemetry: Option<crate::telemetry::Telemetry>,
 }
 
 /// A restack about to start: a stacked pull request to rebase onto where its parent is

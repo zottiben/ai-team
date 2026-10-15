@@ -7,6 +7,16 @@ export type ActivityObservation = {
   at: string;
 };
 
+export type TokenObservation = {
+  input: number | null; output: number | null; cache_read: number | null; cache_write: number | null;
+  context: number | null; context_source: "reported_total" | "complete_parts" | null;
+};
+export type Telemetry =
+  | { kind: "usage"; phase: "live" | "message_end" | "step"; sequence: number | null; tokens: TokenObservation }
+  | { kind: "compaction"; phase: "started" | "completed" | "aborted" | "retrying" | "failed" | "unknown";
+      sequence: number | null; reason: "manual" | "threshold" | "overflow" | null;
+      tokens_before: number | null; estimated_tokens_after: number | null };
+
 export type BoundedActivityText = { text: string; truncated: boolean };
 
 export type ToolActivity = {

@@ -12,7 +12,7 @@ import {
 
 import { BoardMarkdown } from "./BoardMarkdown";
 import { CHAT_PANELS, ChatContext, type ChatPanel } from "./ChatContext";
-import { TEAM_PHASES } from "./ChatTeam";
+import { TEAM_PHASES } from "./team-api";
 import { ChatWorkspace } from "./ChatWorkspace";
 import { ChatOutcome, chatOutcome } from "./ChatOutcome";
 import { CancelledInstructions, FollowupReceipt, QueuedInstructions, followupEvent, useFollowupArrivals } from "./ChatFollowups";
