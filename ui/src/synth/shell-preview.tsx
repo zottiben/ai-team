@@ -41,6 +41,14 @@ const overview = params.get("overview") === "true" ? (await import("./overview-f
 if (overview) { chat.turns = overview.turns; events.push(...overview.events); }
 const reviewFixture = params.get("review") === "true" ? await import("./review-fixture") : null;
 const review = reviewFixture?.fixtureReview() ?? null;
+const teamReviews = review && params.get("team-review") === "true" ? (await import("./team-review-fixture")).fixtureTeamReviews() : null;
+if (teamReviews && review) { chat.mode = "team"; review.changes.drafts = teamReviews.drafts(); }
+export function replaceTeamReview() {
+  if (!teamReviews || !review) throw Error("Team review fixture not selected");
+  review.changes = { ...review.changes, workspace_epoch: review.changes.workspace_epoch + 1, drafts: teamReviews.replace() };
+  review.checkout = { ...review.checkout, workspace_epoch: review.changes.workspace_epoch };
+  chat.rev++; tickers.forEach(tick => tick());
+}
 let reviewRevision = 0, previewId = 100;
 export const reviewRequests: { method: string; path: string }[] = [];
 export function moveReviewFile(path: string) {
@@ -76,6 +84,11 @@ window.fetch = async (input, init) => {
   const url = new URL(request?.url ?? String(input), location.href), method = init?.method ?? request?.method ?? "GET";
   const json = (data: unknown, status = 200) => new Response(JSON.stringify(data), { status, headers: { "Content-Type": "application/json" } });
   if (review && method !== "GET") reviewRequests.push({ method, path: url.pathname });
+  if (method === "POST" && url.pathname === "/api/chats/1/draft/review" && teamReviews) {
+    const target: unknown = JSON.parse(typeof init?.body === "string" ? init.body : request ? await request.text() : "null");
+    const captured = teamReviews.review(target);
+    return captured ? json(captured) : json({ error: "Synthetic draft revision no longer available" }, 400);
+  }
   if (method === "POST" && url.pathname === "/api/chats/1/checkout/preview" && review && reviewFixture) {
     const body: unknown = JSON.parse(typeof init?.body === "string" ? init.body : request ? await request.text() : "null");
     if (!body || typeof body !== "object" || !("fingerprint" in body) || !("action" in body)) return json({ error: "Invalid synthetic preview" }, 400);

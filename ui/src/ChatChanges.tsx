@@ -1,30 +1,23 @@
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 const ChatCheckout = lazy(() => import("./ChatCheckout").then(m => ({ default: m.ChatCheckout })));
-import { FileView } from "./ReviewFile";
 import { ExactApproval } from "./synth/views/Review/ExactApproval";
+import { DraftReviewPanel } from "./synth/views/Review/DraftReview";
+import { captureReview, currentReview, deliveryActions as ACTIONS, openReviewView, reviewDraftState, type ReviewViews } from "./synth/views/Review/drafts";
 import { useReviewFix } from "./useReviewFix";
 import {
-  acknowledgeDelivery, approveDelivery, chatChanges, committedFile, committedTree, inspectDelivery, previewDelivery, reviewDraft,
-  type Changes, type CommitEntry, type CommitFile, type Delivery, type DeliveryAction, type DeliveryInspection, type DraftReview,
+  acknowledgeDelivery, approveDelivery, chatChanges, inspectDelivery, previewDelivery, reviewDraft,
+  type Changes, type Delivery, type DeliveryInspection,
 } from "./changes-api";
 import "./chat-changes.css";
 
-const ACTIONS: Record<DeliveryAction, string> = {
-  integrate: "Integrate locally", push: "Push draft", pull_request: "Open draft PR",
-};
-type Props = { chatId: number; tick: number; disabled: boolean; working?: boolean; disabledReason?: string; onChanged: () => void; onFeedback?: (text: string) => void };
+type Props = { chatId: number; mode: "single" | "team"; tick: number; disabled: boolean; working?: boolean; disabledReason?: string; onChanged: () => void; onFeedback?: (text: string) => void };
 export function ChatChanges(props: Props) { return <ChangesController key={props.chatId} {...props}/>; }
-function ChangesController({ chatId, tick, disabled, working, disabledReason, onChanged, onFeedback }: Props) {
+function ChangesController({ chatId, mode, tick, disabled, working, disabledReason, onChanged, onFeedback }: Props) {
   const submitFix = useReviewFix(chatId);
   const host = useRef<HTMLElement>(null);
-  const [submitted, setSubmitted] = useState(false);
   const [changes, setChanges] = useState<Changes | null>(null);
-  const [review, setReview] = useState<DraftReview | null>(null);
+  const [views, setViews] = useState<ReviewViews>({ active: null, sessions: [] });
   const [preview, setPreview] = useState<Delivery | null>(null);
-  const [finding, setFinding] = useState("");
-  const [tree, setTree] = useState<CommitEntry[] | null>(null);
-  const [path, setPath] = useState("");
-  const [file, setFile] = useState<CommitFile | null>(null);
   const [inspection, setInspection] = useState<DeliveryInspection | null>(null);
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
@@ -46,8 +39,8 @@ function ChangesController({ chatId, tick, disabled, working, disabledReason, on
   }
   const pending = changes?.deliveries.some((d) => d.state === "running" || d.state === "inspection");
   const unavailable = disabled || busy || pending;
-  const selected = review?.draft;
-  const fresh = selected && changes?.drafts.some((d) => d.target.run_id === selected.target.run_id && d.target.slice_key === selected.target.slice_key && d.target.revision === selected.target.revision && d.commit_sha === selected.commit_sha);
+  const selectedView = views.sessions.find(session => session.key === views.active), selected = selectedView?.review.draft;
+  const fresh = selectedView && changes && currentReview(selectedView, changes);
   const approvalCurrent = !!preview && !!changes && !!selected && !!fresh && preview.chat_id === chatId && preview.state === "preview"
     && preview.snapshot.workspace_epoch === changes.workspace_epoch && preview.snapshot.workspace_path === changes.workspace_path
     && preview.snapshot.checkout_head === changes.head && preview.snapshot.checkout_branch === changes.branch
@@ -61,7 +54,7 @@ function ChangesController({ chatId, tick, disabled, working, disabledReason, on
       {changes.issues.length > 0 && <div className="notice"><strong>Checkout or draft inspection is incomplete</strong><ul>{changes.issues.map((issue, n) => <li key={n}>{issue}</li>)}</ul></div>}
       <details open>
         <summary>Working checkout · {changes.branch ?? "detached"} · {changes.staged.length} staged · {changes.unstaged.length} unstaged · {changes.untracked.length} untracked</summary>
-        <Suspense fallback={<p>Loading checkout actions…</p>}><ChatCheckout chatId={chatId} tick={tick+refresh} disabled={disabled||!!pending} working={working} otherBusy={busy}
+        <Suspense fallback={<p>Loading checkout actions…</p>}><ChatCheckout chatId={chatId} mode={mode} tick={tick+refresh} disabled={disabled||!!pending} working={working} otherBusy={busy}
           disabledReason={disabled?disabledReason:pending?"A draft delivery is unresolved. Inspect it before changing the checkout.":undefined} onChanged={onChanged} onFeedback={onFeedback}/></Suspense>
       </details>
       <h4>Verified drafts from this chat</h4>
@@ -72,40 +65,20 @@ function ChangesController({ chatId, tick, disabled, working, disabledReason, on
         <span className="mono">{draft.commit_sha}</span>
         <span className="faint">{draft.branch} · lease {draft.lease_state}</span>
         <button className="button" disabled={busy} onClick={() => void command(async () => {
-          setReview(await reviewDraft(chatId, draft.target)); setPreview(null); setFinding(""); setTree(null); setPath(""); setFile(null);
+          const scope = { epoch: changes.workspace_epoch, workspace: changes.workspace_path };
+          const next = captureReview(await reviewDraft(chatId, draft.target), scope);
+          setViews(previous => openReviewView(previous, next)); setPreview(null);
         })}>Review {draft.target.slice_key}</button>
       </div>)}
-      {review && selected && <section aria-label="Draft review">
-        <h4>Review {selected.target.slice_key} · {selected.commit_sha.slice(0, 12)}</h4>
-        <p className="mono">{selected.base_sha} → {selected.commit_sha}</p>
-        <p className="faint">Submitting a comment sends it to the maker for repair and independent checks. Only this slice is approved; no push, PR or merge.</p>
-        {submitted && <p role="status">Review submitted to the agent. Follow its new attempt in this chat.</p>}
-        {review.files.map((file) => <FileView key={file.path} file={file} commentTarget="agent" retryCapturedRequest revision={selected.commit_sha} commentScope={JSON.stringify([chatId,selected.target,selected.commit_sha,changes.workspace_epoch])} reviewKey={`chat:${chatId}:draft:${selected.target.run_id}:${selected.target.slice_key}`} onComment={unavailable || !fresh ? undefined : async (body, anchor) => command(async () => {
-          await submitFix({ kind: "draft", target: selected.target, body, anchor: { path: anchor.file_path, side: anchor.side, line: anchor.line_start } }, changes.workspace_epoch);
-          setSubmitted(true);
-        })} />)}
-        <button className="button" disabled={busy} onClick={() => void command(async () => { setTree(await committedTree(chatId, selected.target)); })}>Browse committed tree</button>
-        {tree && <div>
-          <label>File in reviewed commit<select value={path} onChange={(event) => { setPath(event.target.value); setFile(null); }}>
-            <option value="">Choose a committed file</option>
-            {tree.map((entry) => <option key={entry.path} value={entry.path}>{entry.path} · {entry.kind} · {entry.size ?? "?"} bytes</option>)}
-          </select></label>
-          <button className="button" disabled={busy || !path} onClick={() => void command(async () => { setFile(await committedFile(chatId, selected.target, path)); })}>Read committed file</button>
-          {file && <div aria-label="Committed file"><p className="mono">{file.path} · {file.commit_sha}</p>{file.reason ? <p>{file.reason}</p> : <pre className="chat-commit-content">{file.text}</pre>}</div>}
-        </div>}
-        {review.findings.map((event) => <p key={event.id} className="notice">{event.summary}</p>)}
-        <form onSubmit={(event) => { event.preventDefault(); void command(async () => {
-          await submitFix({ kind: "draft", target: selected.target, body: finding, anchor: null }, changes.workspace_epoch); setFinding(""); setSubmitted(true);
-        }); }}>
-          <label>Review finding<textarea value={finding} onChange={(e) => setFinding(e.target.value)} rows={3} maxLength={32000} /></label>
-          <p className="faint">Send this finding for repair of this exact slice, without approving publication.</p>
-          <button className="button" disabled={unavailable || !fresh || !finding.trim()}>Send finding for repair</button>
-        </form>
-        {!fresh && <p className="notice">This draft changed. Review it again before acting.</p>}
-        {disabled && <p className="faint">Finish or close the current execution before delivery.</p>}
-        <div className="chat-controls">{(Object.keys(ACTIONS) as DeliveryAction[]).map((action) => <button key={action} className="button" disabled={unavailable || !fresh}
-          onClick={() => void command(async () => { setPreview(await previewDelivery(chatId, selected.target, action)); })}>Preview: {ACTIONS[action]}</button>)}</div>
-      </section>}
+      {views.sessions.some(session => session.key !== views.active) && <nav aria-label="Retained draft reviews">
+        <p className="faint">Other snapshots keep their open comments and local findings. Returning does not rebind them to current files or approve a repair.</p>
+        {views.sessions.filter(session => session.key !== views.active).map(session => <button type="button" className="button" key={session.key} disabled={busy}
+          onClick={() => { setViews(previous => openReviewView(previous, session)); setPreview(null); }}>Return to retained review {session.review.draft.target.slice_key} · run {session.review.draft.target.run_id} · revision {session.review.draft.target.revision} · generation {session.epoch}</button>)}
+      </nav>}
+      {views.sessions.map(session => <DraftReviewPanel key={session.key} chatId={chatId} session={session} active={session.key === views.active}
+        changes={changes} mode={mode} unavailable={!!unavailable} busy={busy} disabled={disabled} command={command} submitFix={submitFix}
+        onDirty={dirty => setViews(previous => reviewDraftState(previous, session.key, dirty))}
+        onPreview={action => void command(async () => { setPreview(await previewDelivery(chatId, session.review.draft.target, action)); })}/>)}
       {preview && <ExactApproval family="delivery" receipt={preview} label="Delivery approval" returnFocus={host} summary={<>
         <h4>{ACTIONS[preview.snapshot.action]} — exact approval</h4>
         <dl>

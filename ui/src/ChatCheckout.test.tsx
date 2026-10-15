@@ -8,7 +8,14 @@ vi.mock("./checkout-api",()=>api);
 vi.mock("./review-api",()=>api);
 const state=():CheckoutState=>({workspace:"/linked",workspace_epoch:7,head:"abc",branch:"feature",fingerprint:"bytes1",untracked:["new.txt"],untracked_files:[{file:{path:"new.txt",old_path:null,status:"added",binary:false,additions:0,deletions:0,hunks:[]},reason:"Empty file.",fingerprint:"new-bytes"}],staged:[],unstaged:[{path:"kept.txt",old_path:null,status:"modified",binary:false,additions:1,deletions:1,hunks:[{header:"@@ -1 +1 @@",old_start:1,new_start:1,lines:[{kind:"removed",old:1,new:null,text:"old"},{kind:"added",old:null,new:1,text:"new"}]}]}],findings:[],operations:[]});
 const op=():CheckoutOperation=>({id:9,chat_id:4,rev:1,state:"preview",result:null,snapshot:{workspace:"/linked",workspace_epoch:7,head:"abc",branch:"feature",fingerprint:"bytes1",action:{kind:"stage",path:"new.txt"},remote:null}});
-const props={chatId:4,tick:0,disabled:false,onChanged:vi.fn(),onFeedback:vi.fn()};
+const props={chatId:4,mode:"single" as const,tick:0,disabled:false,onChanged:vi.fn(),onFeedback:vi.fn()};
+it("offers working-checkout repair only in solo mode without changing operator Git actions",async()=>{
+ render(<ChatCheckout {...props} mode="team"/>);
+ await screen.findByText(/Working-checkout repair comments require solo mode/);
+ expect(screen.queryByRole("button",{name:/comment on/})).toBeNull();
+ expect((screen.getByRole("button",{name:"Stage new.txt"}) as HTMLButtonElement).disabled).toBe(false);
+ expect(api.submitReviewFix).not.toHaveBeenCalled();
+});
 afterEach(()=>{setSynth(false);});
 beforeEach(()=>{localStorage.clear();setSynth(false);vi.clearAllMocks();api.checkoutState.mockResolvedValue(state());api.checkoutPreview.mockResolvedValue(op());api.checkoutApprove.mockResolvedValue({...op(),state:"done"});api.submitReviewFix.mockResolvedValue({turn:{started:true}});});
 it("previews exact checkout state before any staging and approves only that receipt",async()=>{

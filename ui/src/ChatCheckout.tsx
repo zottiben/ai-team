@@ -8,9 +8,9 @@ import { useCheckoutFiles, type CheckoutFile } from "./synth/views/Review/checko
 import { useReviewFix } from "./useReviewFix";
 import { checkoutState, checkoutPreview, checkoutApprove, checkoutInspect, checkoutAcknowledge, type CheckoutAction, type CheckoutState, type CheckoutOperation, type CheckoutInspection } from "./checkout-api";
 const labels={stage:"Stage file",unstage:"Unstage file",commit:"Manual commit",push:"Push checkout commit",pull_request:"Open checkout draft PR",push_branch:"Chat-approved branch push"};
-type Props = {chatId:number;tick:number;disabled:boolean;working?:boolean;otherBusy?:boolean;disabledReason?:string;onChanged:()=>void;onFeedback?:(text:string)=>void};
+type Props = {chatId:number;mode:"single"|"team";tick:number;disabled:boolean;working?:boolean;otherBusy?:boolean;disabledReason?:string;onChanged:()=>void;onFeedback?:(text:string)=>void};
 export function ChatCheckout(props: Props) { return <CheckoutController key={props.chatId} {...props}/>; }
-function CheckoutController({chatId,tick,disabled,working=false,otherBusy=false,disabledReason,onChanged,onFeedback}: Props) {
+function CheckoutController({chatId,mode,tick,disabled,working=false,otherBusy=false,disabledReason,onChanged,onFeedback}: Props) {
   const synth=useSynth(), sequence=useRef(0), host=useRef<HTMLElement>(null);
   const [opened,setOpened]=useState(synth);
   const [untrackedOpen,setUntrackedOpen]=useState(!synth), [untrackedMounted,setUntrackedMounted]=useState(!synth);
@@ -56,7 +56,7 @@ function CheckoutController({chatId,tick,disabled,working=false,otherBusy=false,
           initiallyCollapsed={synth&&extra&&!showAll} expand={area==="unstaged"?expanded:undefined}
           reveal={area==="unstaged"&&reveal?.path===file.path?reveal.sequence:undefined}
           onState={state=>files.report(entry,state)} comments={entry.comments}
-          onComment={blocked||!present?undefined:async(body,anchor)=>command(async()=>{await submitFix({kind:"checkout",finding:{id:0,fingerprint:entry.fingerprint,head:entry.head,area,path:anchor.file_path,side:anchor.side,line:anchor.line_start,body,created_at:""}},entry.epoch);setSubmitted(true);})}/>
+          onComment={blocked||!present||mode!=="single"?undefined:async(body,anchor)=>command(async()=>{await submitFix({kind:"checkout",finding:{id:0,fingerprint:entry.fingerprint,head:entry.head,area,path:anchor.file_path,side:anchor.side,line:anchor.line_start,body,created_at:""}},entry.epoch);setSubmitted(true);})}/>
         <button className="button" disabled={blocked||!present} onClick={()=>propose({kind:area==="staged"?"unstage":"stage",path:file.path})}>{area==="staged"?"Unstage":"Stage"} {file.path}</button>
       </div>
     </Fragment>;
@@ -73,8 +73,8 @@ function CheckoutController({chatId,tick,disabled,working=false,otherBusy=false,
       </>}</div>
       <p className="faint">These are the checkout's actual files, not attributed to this conversation and not a verified team draft. Each action previews exact state and refuses stale approval. Editor and terminal remain explicit operator tools, not an OS sandbox.</p>
       {lockReason&&<p className="notice" hidden={synth}>{lockReason}</p>}
-      <p className="faint">Submitting an inline comment sends it to the solo agent to address in this checkout. No commit or publication is approved.</p>
-      {submitted&&<p role="status">Review submitted to the agent. Follow its new turn in this chat.</p>}
+      <p className="faint">{mode==="single"?"Submitting an inline comment sends it to the solo agent to address in this checkout. No commit or publication is approved.":"Working-checkout repair comments require solo mode. In team mode, review the exact verified draft to send a repair to its maker. No mode change or publication is automatic."}</p>
+      {submitted&&<p role="status">Review submitted to the agent. Follow its recorded turn in this chat.</p>}
       {(["staged","unstaged"] as const).map(area=><section key={area} className="synth-review-files" aria-label={`${area} checkout files`}><h4>{area==="staged"?"Staged — the next commit's contents":"Unstaged"}{synth?` · ${data[area].length}`:null}</h4>
         {!data[area].length&&<p className="faint synth-review-empty">{synth?"None in the current snapshot.":"None."}</p>}
         {files.rows.filter(row=>row.entry.area===area).map(({entry,present},index)=>reviewFile(entry,present,index))}

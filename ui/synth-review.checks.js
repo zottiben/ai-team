@@ -148,6 +148,47 @@ export async function exerciseSyntax() {
   } finally { Worker.prototype.postMessage = original; Worker.prototype.terminate = originalTerminate; }
 }
 
+export async function exerciseTeamReview() {
+  must(document.visibilityState === "visible", "Visible viewport required for team review checks");
+  const tab = await until(() => [...document.querySelectorAll('[role="tab"]')].find(node => node.textContent.includes("Review")), "Review tab unavailable");
+  tab.click();
+  (await until(() => button(document, "Review S1"), "Team review fixture unavailable")).click();
+  const active = () => [...document.querySelectorAll('[aria-label="Draft review"]')].find(visible);
+  let panel = await until(() => { const p=active(); return p?.textContent.includes("Review S1") && p; }, "First draft did not open");
+  panel.scrollIntoView({ block: "start" });
+  const finding = panel.querySelector('textarea'), add = panel.querySelector('[aria-label="comment on new line 1"]');
+  fill(finding, "Keep the original S1 general finding."); add.click();
+  const inline = await until(() => panel.querySelector('textarea[aria-label="comment on src/S1.ts new line 1"]'), "Team inline draft absent");
+  fill(inline, "Keep the original S1 exact line.");
+  must(!document.querySelector('[aria-label="Working checkout actions"] .diff__add'), "Team mode offered a solo checkout repair");
+  button(document, "Review S2").click();
+  panel = await until(() => { const p=active(); return p?.textContent.includes("Review S2") && p; }, "Second draft did not open");
+  must(panel.querySelector("textarea").value === "", "A general finding followed a different slice");
+  button(document, "Return to retained review S1 · run 14 · revision 1 · generation 3").click();
+  panel = await until(() => { const p=active(); return p?.textContent.includes("Review S1") && p; }, "Retained draft did not reopen");
+  must(panel.contains(finding) && panel.contains(inline) && finding.value.includes("original S1") && inline.value.includes("original S1"), "Switching drafts lost the original input owners");
+  const { replaceTeamReview, reviewRequests } = await import("/src/synth/shell-preview.tsx");
+  replaceTeamReview();
+  await until(() => button(panel, "Send finding for repair")?.disabled, "A newer generation was borrowed for an old finding");
+  button(document, "Review S1").click();
+  panel = await until(() => { const p=active(); return p?.textContent.includes("draft revision 2") && p; }, "Replacement draft did not open");
+  must(panel.querySelector("textarea").value === "", "A general finding followed the replacement revision");
+  must(panel.textContent.includes("export const revision = 2;"), "Replacement review has the wrong committed text");
+  button(document, "Return to retained review S1 · run 14 · revision 1 · generation 3").click();
+  panel = await until(() => { const p=active(); return p?.textContent.includes("draft revision 1") && p; }, "Old revision was discarded");
+  panel.scrollIntoView({ block: "start" });
+  must(panel.contains(finding) && panel.contains(inline), "An immutable revision switch remounted the original drafts");
+  must(button(panel, "Send finding for repair").disabled && button(inline.closest("form"), "Send to agent").disabled, "Old unsubmitted drafts acquired replacement authority");
+  const { setSynth } = await import("/src/ui-preferences.ts");
+  setSynth(false); await delay(100); setSynth(true); await delay(150);
+  must(panel.contains(finding) && panel.contains(inline) && finding.value.includes("original S1") && inline.value.includes("original S1"), "Skins lost a team draft");
+  must(reviewRequests.length === 3 && reviewRequests.every(request => request.path === "/api/chats/1/draft/review"), `Unexpected team action: ${JSON.stringify(reviewRequests)}`);
+  must(document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1, "Team review overflowed the page");
+  const apiRequests = performance.getEntriesByType("resource").filter(entry => new URL(entry.name).pathname.startsWith("/api/")).length;
+  must(apiRequests === 0, "Team review reached a real backend");
+  return { width: document.documentElement.clientWidth, theme: document.documentElement.dataset.theme, originalInputsRetained: true, oldScopeDisabled: true, syntheticReads: reviewRequests.length, apiRequests };
+}
+
 // A synthetic visible scroll probe, not native input, INP or whole-app CPU certification.
 export async function measureReviewScroll() {
   must(document.visibilityState === "visible", "Visible viewport required for the scroll probe");
