@@ -1,6 +1,8 @@
 import { useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { DiffLine, FileDiff } from "../../../api";
 import { useMeasuredRows } from "../../virtual/useMeasuredRows";
+import { useDiffSyntax } from "./syntax/useDiffSyntax";
+import { CHUNK_ROWS, type Span } from "./syntax/types";
 
 export type DiffRow = { key: string; kind: "header"; header: string }
   | { key: string; kind: "line"; line: DiffLine };
@@ -11,9 +13,9 @@ export function diffRows(file: FileDiff): DiffRow[] {
 const keyOf = (row: DiffRow) => row.key;
 
 /** The caller owns the comment draft. Measurement owns only placement, never an anchor. */
-export function DiffView({ rows, path, synth, pinned, renderLine }: {
-  rows: readonly DiffRow[]; path: string; synth: boolean; pinned: string | null;
-  renderLine: (row: Extract<DiffRow, { kind: "line" }>) => ReactNode;
+export function DiffView({ rows, path, source, synth, pinned, renderLine }: {
+  rows: readonly DiffRow[]; path: string; source: string; synth: boolean; pinned: string | null;
+  renderLine: (row: Extract<DiffRow, { kind: "line" }>, syntax?: Span[]) => ReactNode;
 }) {
   const scroll = useRef<HTMLDivElement>(null), elements = useRef(new Map<string, HTMLDivElement>());
   const [focused, setFocused] = useState<string | null>(null), [pending, setPending] = useState<string | null>(null);
@@ -23,6 +25,7 @@ export function DiffView({ rows, path, synth, pinned, renderLine }: {
   const windowed = synth && count > 400;
   const keys = [pinned, focused, pending].filter((key): key is string => key !== null);
   const { virtualizer, entries } = useMeasuredRows(rows, keyOf, scroll, windowed, keys, 24);
+  const syntax = useDiffSyntax(rows, path, source, entries, synth, scroll);
   useLayoutEffect(() => {
     if (!pending) return;
     const index = rows.findIndex(row => row.key === pending), element = elements.current.get(pending);
@@ -42,6 +45,10 @@ export function DiffView({ rows, path, synth, pinned, renderLine }: {
       setProblem(null); setPending(row.key);
     }}>
       <span>{count.toLocaleString()} displayed lines{windowed ? " · windowed" : ""}</span>
+      <span className="synth-diff-syntax-note" title="Syntax hints use visible 64-row chunks with up to 64 preceding displayed rows. Hunk gaps reset context. Missing file context can change interpretation; this is not validation.">
+        {syntax.state === "unsupported" ? "Plain text · no grammar" : syntax.state === "unavailable" ? "Plain text · syntax unavailable" : syntax.state === "limited" ? "Some syntax hints omitted by limits" : `Syntax hints · ${syntax.state === "loading" ? "loading" : "bounded context"}`}
+      </span>
+      {syntax.state === "unavailable" && <button type="button" className="button" onClick={syntax.retry}>Retry syntax hints</button>}
       <label>Side<select aria-label={`Line side for ${path}`} value={side} onChange={event => setSide(event.target.value === "old" ? "old" : "new")}><option value="new">New</option><option value="old">Old</option></select></label>
       <label>Line<input aria-label={`Go to line in ${path}`} type="number" min={1} step={1} value={line} onChange={event => setLine(event.target.value)}/></label>
       <button type="submit" className="button">Go</button>
@@ -61,7 +68,7 @@ export function DiffView({ rows, path, synth, pinned, renderLine }: {
             }}
             style={windowed ? { position: "absolute", top: 0, left: 0, width: "100%", transform: `translateY(${entry.start ?? 0}px)` } : undefined}
             onFocusCapture={() => setFocused(row.key)}>
-            {row.kind === "header" ? <div className="diff__hunk-head mono">{row.header}</div> : renderLine(row)}
+            {row.kind === "header" ? <div className="diff__hunk-head mono">{row.header}</div> : renderLine(row, synth ? syntax.chunks?.get(Math.floor(entry.index / CHUNK_ROWS))?.lines[row.key] : undefined)}
           </div>;
         })}
       </div>

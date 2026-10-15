@@ -75,6 +75,16 @@
 [data-synth="true"] .synth-diff-row:focus-within { box-shadow: inset 0 0 0 1px var(--sig-fix); }
 [data-synth="true"] .diff__num { color: var(--code-gutter); padding: 0 4px; font-size: 10px; }
 [data-synth="true"] .diff__text { white-space: pre-wrap; overflow-wrap: anywhere; padding: 0 6px; min-width: 0; font: inherit; }
+[data-synth="true"] .diff__text [class^="diff-syntax-"] { opacity: .85; }
+[data-synth="true"] .diff-syntax-keyword { color: var(--diff-code-keyword); }
+[data-synth="true"] .diff-syntax-variable { color: var(--diff-code-variable); }
+[data-synth="true"] .diff-syntax-string { color: var(--diff-code-string); }
+[data-synth="true"] .diff-syntax-number { color: var(--diff-code-number); }
+[data-synth="true"] .diff-syntax-function { color: var(--diff-code-function); }
+[data-synth="true"] .diff-syntax-type { color: var(--diff-code-type); }
+[data-synth="true"] .diff-syntax-comment { color: var(--diff-code-comment); }
+[data-synth="true"] .diff-syntax-punctuation { color: var(--diff-code-punctuation); }
+[data-synth="true"] .synth-diff-syntax-note { flex-basis: 100%; }
 [data-synth="true"] .diff__add { opacity: 1; background: none; border: 0; color: var(--sig-fix); min-height: 32px; width: 32px; margin-inline: -5px; padding: 0; }
 [data-synth="true"] .diff__compose { margin: 6px 8px 10px 72px; padding: 10px; background: var(--plate-midnight); border: 1px solid var(--synth-comment-ring); border-radius: var(--r-card); color: var(--synth-text); }
 [data-synth="true"] .diff__compose textarea { background: var(--synth-screen); color: var(--synth-text); border-color: var(--synth-comment-ring); font: 12px/1.5 var(--synth-font-sans); }

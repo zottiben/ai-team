@@ -25,8 +25,8 @@ function luminance(rgb: number[]) {
     return sum + (c <= .04045 ? c / 12.92 : ((c + .055) / 1.055) ** 2.4) * [0.2126, 0.7152, 0.0722][i]!;
   }, 0);
 }
-function contrast(fg: string, bg: string) {
-  const foreground = colour(fg), background = colour(bg), alpha = foreground[3] ?? 1;
+function contrast(fg: string, bg: string, opacity = 1) {
+  const foreground = colour(fg), background = colour(bg), alpha = (foreground[3] ?? 1) * opacity;
   const blended = foreground.slice(0, 3).map((c, i) => c * alpha + background[i]! * (1 - alpha));
   const a = luminance(blended), b = luminance(background);
   return (Math.max(a, b) + .05) / (Math.min(a, b) + .05);
@@ -47,6 +47,9 @@ for (const theme of ["dark", "light"] as const) {
     };
     for (const background of [surface, over("--code-added-tint", 1), over("--git-deleted", .13), over("--sig-fix", .16)]) {
       for (const ink of ["--code-text", "--code-gutter"]) expect(contrast(resolve(ink), background), `${theme}: ${ink} on diff ${background}`).toBeGreaterThanOrEqual(4.5);
+      for (const role of ["punctuation", "keyword", "variable", "string", "number", "function", "type", "comment"]) {
+        expect.soft(contrast(resolve(`--diff-code-${role}`), background, .85), `${theme}: ${role} at 85% on diff ${background}`).toBeGreaterThanOrEqual(4.5);
+      }
     }
   });
   it(`${theme}: body, secondary text and LCDs meet small-text contrast`, () => {

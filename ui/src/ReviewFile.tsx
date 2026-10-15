@@ -1,6 +1,8 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useSynth } from "./ui-preferences";
 import { DiffView, diffRows } from "./synth/views/Review/DiffView";
+import { SyntaxText } from "./synth/views/Review/syntax/SyntaxText";
+import type { Span } from "./synth/views/Review/syntax/types";
 import { FileWave } from "./synth/views/Review/ChangeScope";
 import { Led } from "./synth/primitives/Led";
 import "./synth/views/Review/review.css";
@@ -161,13 +163,13 @@ export function FileView({
 
       {anchorChanged && composer}
       <div hidden={collapsed}>
-        {(!collapsed || drafting) && <DiffView rows={rows} path={file.path} synth={synth} pinned={writing && !anchorChanged ? writing.rowKey : null}
-          renderLine={row => {
+        {(!collapsed || drafting) && <DiffView rows={rows} path={file.path} source={progress.source} synth={synth} pinned={writing && !anchorChanged ? writing.rowKey : null}
+          renderLine={(row, syntax) => {
             const { line } = row, side = line.kind === "removed" ? "old" : "new";
             const number = side === "old" ? line.old : line.new, key = `${side}:${number}`;
             const on = mine.filter(comment => comment.side === side && comment.line_start === number);
             return <>
-              <LineRow line={line} synth={synth} selected={writing?.rowKey === row.key && !anchorChanged} onAdd={onComment && number !== null ? () => {
+              <LineRow line={line} synth={synth} syntax={syntax} selected={writing?.rowKey === row.key && !anchorChanged} onAdd={onComment && number !== null ? () => {
                 if (saving || (writing?.key === key && !anchorChanged)) return;
                 setAttemptedBody(null);
                 setWriting({ rowKey: row.key, key, source: progress.source, scope, lineText: line.text,
@@ -182,7 +184,7 @@ export function FileView({
   );
 }
 
-function LineRow({ line, synth, selected, onAdd }: { line: DiffLine; synth: boolean; selected: boolean; onAdd?: () => void }) {
+function LineRow({ line, synth, syntax, selected, onAdd }: { line: DiffLine; synth: boolean; syntax?: Span[]; selected: boolean; onAdd?: () => void }) {
   return (
     <div className="diff__line" data-kind={line.kind} data-selected={selected}>
       <span className="diff__num mono">{line.old ?? ""}</span>
@@ -197,7 +199,7 @@ function LineRow({ line, synth, selected, onAdd }: { line: DiffLine; synth: bool
       >
         {synth ? <><span aria-hidden="true" className="diff__change-sign">{line.kind === "removed" ? "−" : line.kind === "added" ? "+" : ""}</span><span aria-hidden="true" className="diff__comment-sign">+</span></> : "+"}
       </button> : <span aria-hidden="true" className="diff__change-sign">{synth ? line.kind === "removed" ? "−" : line.kind === "added" ? "+" : "" : ""}</span>}
-      <code className="diff__text">{line.text === "" ? " " : line.text}</code>
+      <code className="diff__text"><SyntaxText text={line.text} spans={syntax}/></code>
     </div>
   );
 }

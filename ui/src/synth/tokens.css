@@ -83,6 +83,11 @@
   --code-keyword: #b967ff; --code-variable: #e0c3ff; --code-string: #ff79c6;
   --code-number: #ffd23f; --code-function: #2de2e6; --code-type: #b5f2ff;
   --code-comment: #8a6aa8;
+  /* Diff hints use 85% opacity over tinted rows, not the editor's plain surface. */
+  --diff-code-punctuation: rgba(224,195,255,.8); --diff-code-comment: #b795d0;
+  --diff-code-keyword: #c384ff; --diff-code-variable: var(--code-variable);
+  --diff-code-string: var(--code-string); --diff-code-number: var(--code-number);
+  --diff-code-function: var(--code-function); --diff-code-type: var(--code-type);
   --code-selection: rgba(185,103,255,.25); --code-active-line: rgba(253,244,255,.05);
   --code-gutter: rgba(224,195,255,.65); --code-gutter-active: #fdf4ff;
   --code-caret: #fdf4ff;
@@ -157,6 +162,9 @@
   --code-keyword: #7134a5; --code-variable: #4a2a6b; --code-string: #9b205f;
   --code-number: #795100; --code-function: #006168; --code-type: #245b83;
   --code-comment: #6b5a7a;
+  --diff-code-punctuation: #553966; --diff-code-comment: #503d64;
+  --diff-code-keyword: #622a91; --diff-code-string: #8f1b55; --diff-code-number: #654400;
+  --diff-code-function: #005157; --diff-code-type: #204e71;
   --code-selection: rgba(113,52,165,.22); --code-active-line: rgba(41,18,63,.05);
   --code-gutter: #705a82; --code-gutter-active: #29123f;
   --code-caret: #29123f;

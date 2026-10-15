@@ -18,6 +18,10 @@ export default defineConfig({
       },
     },
   },
+  worker: {
+    format: "es",
+    rollupOptions: { output: { entryFileNames: "diff-syntax-worker.js", chunkFileNames: "diff-syntax-[name].js", assetFileNames: "diff-syntax-[name][extname]" } },
+  },
   server: {
     // `npm run dev` proxies to a server started with `ait ui --port 7788 --no-open`, so
     // the frontend can hot-reload against real data. Nobody needs this to *use* the

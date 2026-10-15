@@ -20,6 +20,7 @@ export async function exerciseReview() {
   must(current && [...current.querySelectorAll(".diff")].filter(visible).length === 3, "First-three default was not applied");
   const diff = must(document.querySelector('[aria-label="Diff for src/large.ts"]'), "Large diff absent");
   must(diff.dataset.windowed === "true", "Ten-thousand-line diff was not windowed");
+  await until(() => visible(diff) && diff.querySelectorAll(".diff__line").length > 0, "Visible diff measurement did not settle");
   const initialRows = diff.querySelectorAll(".diff__line").length;
   must(initialRows > 0 && initialRows < 80, `Unbounded or empty initial diff: ${initialRows}`);
   const target = document.querySelector('[aria-label="Go to line in src/large.ts"]');
@@ -100,6 +101,51 @@ export async function exerciseApproval() {
   must(apiRequests === 0, "Confirmation reached a real backend");
   must(document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1, "Confirmation caused page overflow");
   return { width: document.documentElement.clientWidth, theme: document.documentElement.dataset.theme, capturedHunks: true, staleDisabled: true, commentRetained: true, syntheticPreviews: reviewRequests.length, apiRequests };
+}
+
+export async function exerciseSyntax() {
+  must(document.visibilityState === "visible", "Visible viewport required for syntax checks");
+  const messages = [], original = Worker.prototype.postMessage, originalTerminate = Worker.prototype.terminate;
+  let retired = 0;
+  Worker.prototype.terminate = function() { retired++; return originalTerminate.call(this); };
+  Worker.prototype.postMessage = function(message, ...rest) {
+    if (message?.input?.lines) messages.push({ rows: message.input.lines.length, chars: message.input.lines.reduce((n, row) => n + row.text.length + 1, 0) });
+    return original.call(this, message, ...rest);
+  };
+  try {
+    const tab = await until(() => [...document.querySelectorAll('[role="tab"]')].find(node => node.textContent.includes("Review")), "Review tab unavailable");
+    tab.click();
+    const diff = await until(() => document.querySelector('[aria-label="Diff for src/large.ts"]'), "Large diff unavailable");
+    diff.scrollIntoView({ block: "center" });
+    await until(() => diff.querySelector(".diff-syntax-keyword"), "Visible chunk did not receive syntax hints");
+    const target = document.querySelector('[aria-label="Go to line in src/large.ts"]');
+    fill(target, "8000"); button(target.closest("form"), "Go").click();
+    const add = await until(() => diff.querySelector('[aria-label="comment on new line 8000"]'), "Distant syntax row absent");
+    const code = add.closest(".diff__line").querySelector(".diff__text");
+    await until(() => code.querySelector(".diff-syntax-keyword"), "Distant visible chunk stayed uncoloured");
+    must(code.textContent === "export const sample8000 = 8000; // synthetic line, never executed", "Syntax replaced source text");
+    must(document.activeElement === add, "Syntax arrival stole line focus");
+    const built = new Worker("/dist/diff-syntax-worker.js", { type: "module" });
+    try {
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(Error("Built syntax worker timed out")), 5000);
+        built.onerror = () => { clearTimeout(timer); reject(Error("Built syntax worker failed")); };
+        built.onmessage = event => { clearTimeout(timer); if (event.data.result.state === "ready" && event.data.result.lines.h0l0?.some(span => span.role === "keyword")) resolve(); else reject(Error("Built worker returned no grammar")); };
+        built.postMessage({ id: 991, input: { path: "example.ts", lines: [{ key: "h0l0", kind: "added", text: 'const fixture = "safe";', display: true }] } });
+      });
+    } finally { built.terminate(); }
+    const beforeHide = retired;
+    [...document.querySelectorAll('[role="tab"]')].find(node => node.textContent.includes("Overview")).click();
+    await until(() => retired > beforeHide, "Hidden Review kept its syntax worker alive");
+    tab.click();
+    await until(() => visible(diff) && diff.querySelectorAll(".diff__line").length > 0, "Restored Review measurement did not settle");
+    must(messages.every(message => message.rows <= 128 && message.chars <= 65536), "Syntax shipped an unbounded diff to the worker");
+    must(diff.querySelectorAll(".diff__line").length < 80, "Syntax defeated row windowing");
+    must(document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1, "Syntax caused horizontal overflow");
+    const apiRequests = performance.getEntriesByType("resource").filter(entry => new URL(entry.name).pathname.startsWith("/api/")).length;
+    must(apiRequests === 0, "Syntax reached a real backend");
+    return { width: document.documentElement.clientWidth, theme: document.documentElement.dataset.theme, chunks: messages.length, maximumRows: Math.max(...messages.map(message => message.rows)), builtWorker: true, exactText: true, hiddenWorkerRetired: true, apiRequests };
+  } finally { Worker.prototype.postMessage = original; Worker.prototype.terminate = originalTerminate; }
 }
 
 // A synthetic visible scroll probe, not native input, INP or whole-app CPU certification.

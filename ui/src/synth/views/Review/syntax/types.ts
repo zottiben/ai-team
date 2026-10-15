@@ -1,0 +1,13 @@
+export const CHUNK_ROWS = 64;
+export const CONTEXT_ROWS = 64;
+export const MAX_CHARS = 64 * 1024;
+export const MAX_LINE_SPANS = 128;
+export const MAX_SPANS = 2048;
+export const MAX_CHUNKS = 16;
+export type SyntaxRole = "keyword" | "variable" | "string" | "number" | "function" | "type" | "comment" | "punctuation";
+export type Span = { from: number; to: number; role: SyntaxRole };
+export type SyntaxLine = { key: string; kind: "header" | "context" | "added" | "removed"; text: string; display: boolean };
+export type SyntaxInput = { path: string; lines: SyntaxLine[] };
+export type SyntaxResult = { state: "ready" | "limited" | "unsupported" | "unavailable"; lines: Record<string, Span[]> };
+export type SyntaxRequest = { id: number; input: SyntaxInput };
+export type SyntaxResponse = { id: number; result: SyntaxResult };
