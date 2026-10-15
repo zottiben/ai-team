@@ -54,7 +54,9 @@ export function ChatContext({ detail, panel, opened, hidden, status, tick, busy,
     </section>}
     {opened.has("review") && <section id="chat-pane-review" role={synth ? "tabpanel" : undefined} className="chat-context-pane" aria-label="Review" hidden={panel !== "review"}>
       <Suspense fallback={<p className="faint">Loading changes…</p>}>
-        <ChatChanges chatId={detail.id} tick={tick} disabled={detail.archived || detail.active_node_id !== null} onChanged={onChanged} onFeedback={onFeedback} />
+        <ChatChanges chatId={detail.id} tick={tick} disabled={detail.archived || detail.active_node_id !== null}
+          working={detail.state === "running" || detail.state === "stopping"}
+          disabledReason={detail.archived ? "Archived chat — checkout actions are read-only." : undefined} onChanged={onChanged} onFeedback={onFeedback} />
       </Suspense>
     </section>}
     {opened.has("board") && <section id="chat-pane-board" role={synth ? "tabpanel" : undefined} className="chat-context-pane" aria-label="Board" hidden={panel !== "board"}>

@@ -39,6 +39,16 @@ for (const theme of ["dark", "light"] as const) {
     expect(stops.length).toBeGreaterThan(0);
     for (const stop of stops) expect(contrast(resolve(ink), stop), `${theme}: ${ink} on ${surface} (${stop})`).toBeGreaterThanOrEqual(minimum);
   };
+  it(`${theme}: diff text and gutters remain readable over added, removed and selected rows`, () => {
+    const surface = resolve("--code-surface");
+    const over = (ink: string, alpha: number) => {
+      const foreground = colour(resolve(ink)), background = colour(surface), opacity = (foreground[3] ?? 1) * alpha;
+      return `rgb(${foreground.slice(0, 3).map((value, index) => value * opacity + background[index]! * (1 - opacity)).join(",")})`;
+    };
+    for (const background of [surface, over("--code-added-tint", 1), over("--git-deleted", .13), over("--sig-fix", .16)]) {
+      for (const ink of ["--code-text", "--code-gutter"]) expect(contrast(resolve(ink), background), `${theme}: ${ink} on diff ${background}`).toBeGreaterThanOrEqual(4.5);
+    }
+  });
   it(`${theme}: body, secondary text and LCDs meet small-text contrast`, () => {
     for (const surface of ["--synth-floor", "--synth-void", "--synth-screen", "--plate-night", "--plate-midnight", "--plate-deck", "--synth-key", "--synth-key-hover"]) {
       for (const ink of ["--synth-text", "--synth-text-muted"]) check(ink, surface);

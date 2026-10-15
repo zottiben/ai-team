@@ -44,5 +44,5 @@ export function useFileProgress(file: FileDiff, reviewKey: string | undefined, i
     } catch { setProblem("Review progress is kept for this view only; local storage is unavailable."); }
   }, [key, progress, source, reviewKey]);
   const change = (values: Partial<Pick<Progress, "viewed" | "collapsed">>) => setProgress({ ...current, ...values, edited: true });
-  return { ...current, problem, toggle: () => change({ collapsed: !current.collapsed }), mark: (viewed: boolean) => change({ viewed, collapsed: viewed }) };
+  return { ...current, problem, open: () => change({ collapsed: false }), toggle: () => change({ collapsed: !current.collapsed }), mark: (viewed: boolean) => change({ viewed, collapsed: viewed }) };
 }

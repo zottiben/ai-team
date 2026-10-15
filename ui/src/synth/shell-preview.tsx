@@ -39,6 +39,16 @@ const events: RunEvent[] = [{ id: 1, node_run_id: 1, actor: "human", kind: "note
   { id: 2, node_run_id: 1, actor: "assistant", kind: "note", summary: "Fixture response", message: "This is an isolated **layout fixture**. Tabs and tools share the real application controller. Network access and all backend mutations are disabled.", thinking: [], at: "2026-01-01" }];
 const overview = params.get("overview") === "true" ? (await import("./overview-fixture")).fixtureOverview() : null;
 if (overview) { chat.turns = overview.turns; events.push(...overview.events); }
+const review = params.get("review") === "true" ? (await import("./review-fixture")).fixtureReview() : null;
+export function moveReviewFile(path: string) {
+  if (!review) throw Error("Review fixture not selected");
+  const file = review.checkout.unstaged.find(file => file.path === path);
+  if (!file) throw Error("Unknown fixture file");
+  review.checkout = { ...review.checkout, fingerprint: "fixture-after-external-stage", staged: [...review.checkout.staged, file], unstaged: review.checkout.unstaged.filter(file => file.path !== path) };
+  review.changes = { ...review.changes, staged: review.checkout.staged, unstaged: review.checkout.unstaged };
+  chat.rev += 1;
+  tickers.forEach(tick => tick());
+}
 const activityCount = Math.max(0, Math.min(5_000, Number(params.get("activity")) || 0));
 const activityMode = params.get("activity-mode") === "reads" ? "reads" : params.get("activity-mode") === "thinking" ? "thinking" : "tools";
 events.push(...fixtureActivity(activityCount, events.at(-1)?.id ?? 0, activityMode));
@@ -70,6 +80,8 @@ window.fetch = async (input, init) => {
     case "/api/chats/1/events": return json(events.filter(event => event.id > Number(url.searchParams.get("after") ?? 0)).slice(0, 500));
     case "/api/chats/1/overview": return overview ? json(overview.live) : json({ error: "Overview fixture not selected" }, 404);
     case "/api/chats/1/overview/map": return overview ? json(overview.view) : json({ error: "Overview fixture not selected" }, 404);
+    case "/api/chats/1/changes": return review ? json(review.changes) : json({ error: "Review fixture not selected" }, 404);
+    case "/api/chats/1/checkout": return review ? json(review.checkout) : json({ error: "Review fixture not selected" }, 404);
     case "/api/chats/1/workspace": return json({ requests: [] });
     case "/api/chats/1/plan": return json({ chat_id: 1, project_id: 1, revision: 0, bundle: null });
     case "/api/chat-workspace-setups": return json([]);

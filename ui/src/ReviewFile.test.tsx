@@ -1,12 +1,33 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { webcrypto } from "node:crypto";
 import { FileView } from "./ReviewFile";
+import { setSynth } from "./ui-preferences";
 import type { FileDiff } from "./api";
 
 const file = (text = "new code"): FileDiff => ({ path: "new.rs", old_path: null, status: "added", binary: false, additions: 1, deletions: 0, hunks: [{ header: "@@ -0,0 +1 @@", old_start: 0, new_start: 1, lines: [{ kind: "added", old: null, new: 1, text }] }] });
 beforeEach(() => { localStorage.clear(); vi.stubGlobal("crypto", webcrypto); });
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => { vi.unstubAllGlobals(); setSynth(false); });
+it("retains a windowed comment DOM through hidden zero-height and legacy presentation", async () => {
+  setSynth(true);
+  Object.defineProperty(HTMLElement.prototype,"scrollIntoView",{value:vi.fn(),configurable:true});
+  Object.defineProperty(HTMLElement.prototype,"scrollTo",{value:vi.fn(),configurable:true});
+  const large=file(); large.additions=405; large.hunks[0]!.lines=Array.from({length:405},(_,index)=>({kind:"added",old:null,new:index+1,text:`value ${index+1}`}));
+  const sender=vi.fn();const view=render(<div><FileView file={large} onComment={sender}/></div>);
+  expect(document.querySelectorAll(".diff__line").length).toBeLessThan(30);
+  fireEvent.change(screen.getByLabelText("Go to line in new.rs"),{target:{value:"400"}});
+  fireEvent.click(screen.getByRole("button",{name:"Go"}));
+  fireEvent.click(await screen.findByRole("button",{name:"comment on new line 400"}));
+  const textarea=screen.getByLabelText("comment on new.rs new line 400");fireEvent.change(textarea,{target:{value:"Keep the measured-row draft"}});
+  view.rerender(<div hidden><FileView file={large} onComment={sender}/></div>);
+  act(()=>setSynth(false));act(()=>setSynth(true));
+  view.rerender(<div><FileView file={large} onComment={sender}/></div>);
+  expect(screen.getByLabelText("comment on new.rs new line 400")).toBe(textarea);
+  expect((textarea as HTMLTextAreaElement).value).toBe("Keep the measured-row draft");
+  expect(document.querySelectorAll(".diff__line").length).toBeLessThan(30);
+  expect(sender).not.toHaveBeenCalled();
+  Reflect.deleteProperty(HTMLElement.prototype,"scrollIntoView");Reflect.deleteProperty(HTMLElement.prototype,"scrollTo");
+});
 it("expands ordinary files and collapses them without losing an unsent comment", () => {
   const onComment = vi.fn();
   render(<FileView file={file()} reviewKey="chat:1:working" onComment={onComment} />);

@@ -11,9 +11,9 @@ import "./chat-changes.css";
 const ACTIONS: Record<DeliveryAction, string> = {
   integrate: "Integrate locally", push: "Push draft", pull_request: "Open draft PR",
 };
-type Props = { chatId: number; tick: number; disabled: boolean; onChanged: () => void; onFeedback?: (text: string) => void };
+type Props = { chatId: number; tick: number; disabled: boolean; working?: boolean; disabledReason?: string; onChanged: () => void; onFeedback?: (text: string) => void };
 export function ChatChanges(props: Props) { return <ChangesController key={props.chatId} {...props}/>; }
-function ChangesController({ chatId, tick, disabled, onChanged, onFeedback }: Props) {
+function ChangesController({ chatId, tick, disabled, working, disabledReason, onChanged, onFeedback }: Props) {
   const submitFix = useReviewFix(chatId);
   const [submitted, setSubmitted] = useState(false);
   const [changes, setChanges] = useState<Changes | null>(null);
@@ -59,7 +59,8 @@ function ChangesController({ chatId, tick, disabled, onChanged, onFeedback }: Pr
       {changes.issues.length > 0 && <div className="notice"><strong>Checkout or draft inspection is incomplete</strong><ul>{changes.issues.map((issue, n) => <li key={n}>{issue}</li>)}</ul></div>}
       <details open>
         <summary>Working checkout · {changes.branch ?? "detached"} · {changes.staged.length} staged · {changes.unstaged.length} unstaged · {changes.untracked.length} untracked</summary>
-        <Suspense fallback={<p>Loading checkout actions…</p>}><ChatCheckout chatId={chatId} tick={tick+refresh} disabled={disabled||!!pending} onChanged={onChanged} onFeedback={onFeedback}/></Suspense>
+        <Suspense fallback={<p>Loading checkout actions…</p>}><ChatCheckout chatId={chatId} tick={tick+refresh} disabled={disabled||!!pending} working={working} otherBusy={busy}
+          disabledReason={disabled?disabledReason:pending?"A draft delivery is unresolved. Inspect it before changing the checkout.":undefined} onChanged={onChanged} onFeedback={onFeedback}/></Suspense>
       </details>
       <h4>Verified drafts from this chat</h4>
       <p className="faint">Verification is not integration or publication. Each action needs its own exact approval. Draft review reads commit objects, not a returned worktree.</p>
@@ -77,7 +78,7 @@ function ChangesController({ chatId, tick, disabled, onChanged, onFeedback }: Pr
         <p className="mono">{selected.base_sha} → {selected.commit_sha}</p>
         <p className="faint">Submitting a comment sends it to the maker for repair and independent checks. Only this slice is approved; no push, PR or merge.</p>
         {submitted && <p role="status">Review submitted to the agent. Follow its new attempt in this chat.</p>}
-        {review.files.map((file) => <FileView key={file.path} file={file} retryCapturedRequest revision={selected.commit_sha} commentScope={JSON.stringify([chatId,selected.target,selected.commit_sha,changes.workspace_epoch])} reviewKey={`chat:${chatId}:draft:${selected.target.run_id}:${selected.target.slice_key}`} onComment={unavailable || !fresh ? undefined : async (body, anchor) => command(async () => {
+        {review.files.map((file) => <FileView key={file.path} file={file} commentTarget="agent" retryCapturedRequest revision={selected.commit_sha} commentScope={JSON.stringify([chatId,selected.target,selected.commit_sha,changes.workspace_epoch])} reviewKey={`chat:${chatId}:draft:${selected.target.run_id}:${selected.target.slice_key}`} onComment={unavailable || !fresh ? undefined : async (body, anchor) => command(async () => {
           await submitFix({ kind: "draft", target: selected.target, body, anchor: { path: anchor.file_path, side: anchor.side, line: anchor.line_start } }, changes.workspace_epoch);
           setSubmitted(true);
         })} />)}
