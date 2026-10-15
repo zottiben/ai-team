@@ -1,4 +1,11 @@
-import { useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useSynth } from "./ui-preferences";
+import { SynthProvider } from "./synth/SynthProvider";
+import { useMotionVisible } from "./synth/motion/useMotionVisible";
+import { Led } from "./synth/primitives/Led";
+import { SegmentMeter } from "./synth/primitives/SegmentMeter";
+import { signalStyle } from "./synth/primitives/signal";
+import { statusSignals } from "./synth/views/Board/status";
 import { BoardMarkdown } from "./BoardMarkdown";
 import { PLAN_STATUSES, type PlanSlice, type PlanStatus } from "./plan-api";
 import {
@@ -14,7 +21,9 @@ export function PlanKanban({
   revision,
   save,
   disabled,
+  reveal = null,
 }: {
+  reveal?: { key: string; nonce: number } | null;
   slices: PlanSlice[];
   revision: number;
   save: SavePlan;
@@ -26,6 +35,38 @@ export function PlanKanban({
   const [selected, setSelected] = useState<string | null>(null);
   const [opened, setOpened] = useState<string[]>([]);
   const [adding, setAdding] = useState(false);
+  const synth = useSynth(), host = useRef<HTMLDivElement>(null), motion = useMotionVisible(host);
+  const handled = useRef<typeof reveal>(null);
+  const [revealed, setRevealed] = useState<string | null>(null);
+  useLayoutEffect(() => {
+    if (!reveal || handled.current === reveal) return;
+    handled.current = reveal;
+    const slice = slices.find(value => value.key === reveal.key), owner = document.activeElement;
+    if (!synth || !slice || document.hidden) return;
+    const focus = () => {
+      cancel();
+      const button = [...(host.current?.querySelectorAll<HTMLButtonElement>("[data-slice-open]") ?? [])].find(node => node.dataset.sliceOpen === slice.key);
+      const released = document.activeElement === document.body && owner instanceof HTMLElement && !owner.getClientRects().length;
+      if (document.hidden || !button?.getClientRects().length || (document.activeElement !== owner && !released)) return;
+      button.scrollIntoView({ block: "nearest", inline: "center" }); button.focus({ preventScroll: true });
+      setRevealed(slice.key);
+    };
+    setCollapsed(previous => previous[slice.status] ? { ...previous, [slice.status]: false } : previous);
+    const timer = window.setTimeout(focus, collapsed[slice.status] && motion ? 240 : 0);
+    function cancel() { clearTimeout(timer); document.removeEventListener("pointerdown", cancel); document.removeEventListener("visibilitychange", visibility); }
+    function visibility() { if (document.hidden) cancel(); }
+    document.addEventListener("pointerdown", cancel);
+    document.addEventListener("visibilitychange", visibility);
+    return cancel;
+    // Each request is consumed once. A revision or skin change cancels its deferred
+    // focus; expanding its lane must not restart the request or steal newer focus.
+  }, [reveal, synth, revision]);
+  useEffect(() => {
+    if (!revealed) return;
+    if (!motion) { setRevealed(null); return; }
+    const timer = setTimeout(() => setRevealed(null), 180);
+    return () => clearTimeout(timer);
+  }, [revealed, motion]);
   const open = (key: string) => {
     setSelected(key);
     setOpened((previous) =>
@@ -33,7 +74,7 @@ export function PlanKanban({
     );
   };
   return (
-    <div>
+    <SynthProvider><div>
       <div className="plan-heading">
         <p className="faint">
           Status only · not verification or execution approval.
@@ -57,7 +98,7 @@ export function PlanKanban({
         </fieldset>
       )}
       <div className={`plan-board-shell${selected ? " has-drawer" : ""}`}>
-        <div className="plan-kanban" role="region" aria-label="Plan board">
+        <div ref={host} className="plan-kanban" role="region" aria-label="Plan board" data-motion={synth && motion}>
           {PLAN_STATUSES.map((status) => {
             const lane = slices.filter((slice) => slice.status === status);
             return (
@@ -65,6 +106,7 @@ export function PlanKanban({
                 key={status}
                 className={`plan-lane${collapsed[status] ? " is-collapsed" : ""}`}
                 data-status={status}
+                style={synth ? signalStyle(statusSignals[status]) : undefined}
                 aria-label={`${statusLabel(status)} slices`}
               >
                 <header>
@@ -81,21 +123,23 @@ export function PlanKanban({
                   >
                     <span className="plan-lane-dot" aria-hidden="true" />
                     <strong>{statusLabel(status)}</strong>
-                    <span>{lane.length}</span>
+                    <span className="plan-lane-count">{lane.length}</span>
                     <span aria-hidden="true">
                       {collapsed[status] ? "›" : "‹"}
                     </span>
                   </button>
                 </header>
+                {synth && <SegmentMeter label="Slices · capped meter, not a limit" value={lane.length} segments={8} signal={statusSignals[status]}/>}
                 {!collapsed[status] && (
                   <div className="plan-lane-cards">
                     {lane.length === 0 ? (
-                      <p className="faint">Nothing here.</p>
+                      <p className="faint plan-lane-empty">{synth && status === "active" && <span className="synth-empty-jack" aria-hidden="true"/>}{synth && status === "active" ? "No slices marked active. Status is not execution." : "Nothing here."}</p>
                     ) : (
                       lane.map((slice) => (
                         <article
                           key={slice.id}
                           className="plan-slice-card"
+                          data-revealed={revealed === slice.key || undefined}
                           aria-current={
                             selected === slice.key ? "true" : undefined
                           }
@@ -103,10 +147,11 @@ export function PlanKanban({
                           <button
                             type="button"
                             className="plan-slice-open"
+                            data-slice-open={slice.key}
                             aria-label={`${slice.key} ${slice.title}`}
                             onClick={() => open(slice.key)}
                           >
-                            <span className="mono faint">{slice.key}</span>
+                            {synth ? <span className="plan-slice-key"><span className="mono">{slice.key}</span><span className="plan-slice-state" aria-hidden="true"/></span> : <span className="mono faint">{slice.key}</span>}
                             <strong>{slice.title}</strong>
                           </button>
                           {slice.branch && (
@@ -143,7 +188,7 @@ export function PlanKanban({
                               </a>
                             )}
                           {slice.blocked_reason && (
-                            <p className="notice">{slice.blocked_reason}</p>
+                            <p className="notice">{synth && <span className="synth-plan-blocker-label"><Led state="attention" size={7}/>Blocker · needs you</span>}{slice.blocked_reason}</p>
                           )}
                         </article>
                       ))
@@ -171,7 +216,7 @@ export function PlanKanban({
           })}
         </div>
       </div>
-    </div>
+    </div></SynthProvider>
   );
 }
 function SliceDrawer({

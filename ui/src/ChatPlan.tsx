@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useId, useRef, useState } from "react";
 import { BoardMarkdown } from "./BoardMarkdown";
 import { PlanKanban } from "./PlanKanban";
 import { PlanEditors, usePlanEditors } from "./PlanEditors";
@@ -15,7 +15,11 @@ import {
 } from "./PlanForms";
 import type { SavePlan } from "./PlanForms";
 import "./chat-planning.css";
+import "./synth/views/Board/board.css";
 import { useSynth } from "./ui-preferences";
+
+const SynthPlanHeader = lazy(() => import("./synth/views/Board/PlanHeader"));
+const SynthPlanTabs = lazy(() => import("./synth/views/Board/PlanHeader").then(module => ({ default: module.PlanTabs })));
 
 type Props = {
   chatId: number;
@@ -27,10 +31,14 @@ type Props = {
 };
 export function ChatPlanning(props: Props) { return <PlanningController key={props.chatId} {...props}/>; }
 function PlanningController({ chatId, tick, archived, frozen = false, workspace: libraryWorkspace = false, onChanged }: Props) {
-  const synth = useSynth(), workspace = libraryWorkspace || synth;
-  const boardOpened = useRef(workspace);
+  const synth = useSynth(), workspace = libraryWorkspace || synth, tabPrefix = useId();
+  const boardOpened = useRef(workspace), synthOpened = useRef(synth);
   if (workspace) boardOpened.current = true;
-  const [view, setView] = useState<"board" | "plan">("board");
+  if (synth) synthOpened.current = true;
+  const [view, setView] = useState<"board" | "plan" | "questions">("board");
+  const [reveal, setReveal] = useState<{ key: string; nonce: number } | null>(null);
+  const planVisible = view === "plan" || (!synth && view === "questions");
+  const questionsVisible = !workspace || (synth ? view === "questions" : planVisible);
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const [loadProblem, setLoadProblem] = useState<string | null>(null);
@@ -111,7 +119,7 @@ function PlanningController({ chatId, tick, archived, frozen = false, workspace:
           <span className="faint">Only this chat · built in</span>
         </div>
       )}
-      <details hidden={workspace && view !== "plan"}>
+      <details hidden={workspace && !planVisible}>
         <summary>Planning isolation</summary>
         <p className="faint">
           This chat uses AI Team’s scoped planning tools and permitted project
@@ -154,8 +162,9 @@ function PlanningController({ chatId, tick, archived, frozen = false, workspace:
             </>
           ) : (
             <>
+              <div className="plan-head">
               <div className="plan-heading">
-                <h4>{bundle.plan.title}</h4>
+                {synth ? <h2>{bundle.plan.title}</h2> : <h4>{bundle.plan.title}</h4>}
                 <label>
                   Plan status
                   <select
@@ -176,12 +185,16 @@ function PlanningController({ chatId, tick, archived, frozen = false, workspace:
                   </select>
                 </label>
               </div>
+              <div hidden={!synth}>{synthOpened.current && <Suspense fallback={<p className="faint">Loading slice pattern…</p>}><SynthPlanHeader slices={bundle.slices} onReveal={key => {
+                setView("board"); setReveal(previous => ({ key, nonce: (previous?.nonce ?? 0) + 1 }));
+              }}/></Suspense>}</div>
+              </div>
               {bundle.plan.summary && (
-                <div hidden={workspace && view === "board"}>
+                <div hidden={workspace && !planVisible}>
                   <BoardMarkdown source={bundle.plan.summary} />
                 </div>
               )}
-              <div className="plan-progress">
+              <div className="plan-progress" hidden={synth}>
                 <span>
                   {done} of {bundle.slices.length} slices done
                 </span>
@@ -200,7 +213,8 @@ function PlanningController({ chatId, tick, archived, frozen = false, workspace:
               </div>
               {boardOpened.current && (
                 <>
-                  <nav className="plan-workspace-tabs" aria-label="Plan views" hidden={!workspace}>
+                  <nav className="plan-workspace-tabs" aria-label={synth ? undefined : "Plan views"} hidden={!workspace}>
+                    {synth ? <Suspense fallback={<span className="faint">Loading plan views…</span>}><SynthPlanTabs prefix={tabPrefix} view={view} questions={bundle.questions.filter(question => question.status === "open").length} onChange={setView}/></Suspense> : <>
                     <button
                       type="button"
                       aria-current={view === "board" ? "page" : undefined}
@@ -210,7 +224,7 @@ function PlanningController({ chatId, tick, archived, frozen = false, workspace:
                     </button>
                     <button
                       type="button"
-                      aria-current={view === "plan" ? "page" : undefined}
+                      aria-current={planVisible ? "page" : undefined}
                       onClick={() => setView("plan")}
                     >
                       Plan
@@ -226,12 +240,12 @@ function PlanningController({ chatId, tick, archived, frozen = false, workspace:
                         }{" "}
                         open questions
                       </button>
-                    )}
+                    )}</>}
                   </nav>
                   {workspace && locked && view === "board" && (
                     <p className="notice">
                       Approved work is frozen until this build releases the
-                      chat. Open Plan to read or answer questions.
+                      chat. Questions remain available; answers do not approve more work.
                     </p>
                   )}
                   {workspace && readOnly && (
@@ -240,9 +254,10 @@ function PlanningController({ chatId, tick, archived, frozen = false, workspace:
                       restore the chat to edit.
                     </p>
                   )}
-                  <div hidden={!workspace || view !== "board"}>
+                  <div id={`${tabPrefix}-panel-board`} role={synth ? "tabpanel" : undefined} aria-labelledby={synth ? `${tabPrefix}-board` : undefined} hidden={!workspace || view !== "board"}>
                     <PlanKanban
                       slices={bundle.slices}
+                      reveal={reveal}
                       revision={snapshot.revision}
                       save={save}
                       disabled={busy || locked || readOnly}
@@ -250,8 +265,10 @@ function PlanningController({ chatId, tick, archived, frozen = false, workspace:
                   </div>
                 </>
               )}
-              <div hidden={workspace && view !== "plan"}>
+              <div id={`${tabPrefix}-panel-questions`} role={synth ? "tabpanel" : undefined} aria-labelledby={synth ? `${tabPrefix}-questions` : undefined} hidden={!questionsVisible}>
                 <PlanQuestions questions={bundle.questions} revision={snapshot.revision} save={save} readOnly={readOnly} />
+              </div>
+              <div id={`${tabPrefix}-panel-plan`} role={synth ? "tabpanel" : undefined} aria-labelledby={synth ? `${tabPrefix}-plan` : undefined} hidden={workspace && !planVisible}>
                 {locked && (
                   <p className="notice">
                     Approved work is frozen until this build releases the chat.

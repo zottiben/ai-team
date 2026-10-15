@@ -53,7 +53,7 @@ for (const theme of ["dark", "light"] as const) {
     }
   });
   it(`${theme}: body, secondary text and LCDs meet small-text contrast`, () => {
-    for (const surface of ["--synth-floor", "--synth-void", "--synth-screen", "--plate-night", "--plate-midnight", "--plate-deck", "--synth-key", "--synth-key-hover"]) {
+    for (const surface of ["--synth-floor", "--synth-void", "--synth-screen", "--plate-night", "--plate-midnight", "--plate-deck", "--plate-cartridge", "--synth-key", "--synth-key-hover"]) {
       for (const ink of ["--synth-text", "--synth-text-muted"]) check(ink, surface);
     }
     for (const ink of ["--synth-lcd-text", "--synth-lcd-text-alt", "--synth-lcd-label"]) check(ink, "--synth-screen");

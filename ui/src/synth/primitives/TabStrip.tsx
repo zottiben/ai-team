@@ -1,7 +1,7 @@
 import { useRef } from "react";
 import { Led } from "./Led";
 
-export interface TabOption { id: string; label: string; panel: string; disabled?: boolean }
+export interface TabOption { id: string; label: string; panel: string; disabled?: boolean; badge?: number }
 export function TabStrip({ label, tabs, value, onChange }: {
   label: string; tabs: readonly TabOption[]; value: string | null; onChange: (id: string) => void;
 }) {
@@ -24,6 +24,6 @@ export function TabStrip({ label, tabs, value, onChange }: {
     {tabs.map(tab => <button key={tab.id} id={tab.id} type="button" role="tab" className="synth-key"
       aria-selected={value === tab.id} aria-controls={tab.panel} disabled={tab.disabled}
       tabIndex={focusable === tab.id ? 0 : -1}
-      onClick={() => onChange(tab.id)}><Led state={value === tab.id ? "on" : "off"} size={6} />{tab.label}</button>)}
+      onClick={() => onChange(tab.id)}><Led state={value === tab.id ? "on" : "off"} size={6} />{tab.label}{tab.badge !== undefined && <span className="synth-tab-badge">{tab.badge}</span>}</button>)}
   </div>;
 }

@@ -33,6 +33,7 @@
   --plate-night: linear-gradient(180deg, #371470, #2b0f57);
   --plate-midnight: linear-gradient(180deg, #261049, #1a0633);
   --plate-deck: linear-gradient(180deg, #2d1260, #25104c);
+  --plate-cartridge: linear-gradient(180deg, #34166a, #261049);
   --plate-magenta: linear-gradient(180deg, #d61b80, #c0126f);
   --plate-lavender: linear-gradient(180deg, #ecd6ff, #e0c3ff);
   --plate-ice: linear-gradient(180deg, #c9f6ff, #b5f2ff);
@@ -143,6 +144,7 @@
   --plate-night: linear-gradient(180deg, #f9efff, #e8d9f6);
   --plate-midnight: linear-gradient(180deg, #fff7fd, #f0e4f8);
   --plate-deck: linear-gradient(180deg, #fff0fa, #eedcf4);
+  --plate-cartridge: var(--plate-deck);
   --shadow-plate: inset 0 1px 0 rgba(255,255,255,.8), inset 0 -1px 0 rgba(74,42,107,.18), 0 8px 20px rgba(74,42,107,.12);
   --shadow-plate-light: inset 0 1px 0 rgba(255,255,255,.8), inset 0 -2px 0 rgba(74,42,107,.18), 0 10px 24px rgba(74,42,107,.16);
   --shadow-screen: inset 0 2px 5px rgba(74,42,107,.16), inset 0 0 0 1px var(--synth-lcd-edge);

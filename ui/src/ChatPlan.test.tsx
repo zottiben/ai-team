@@ -218,6 +218,26 @@ describe("chat-owned planning", () => {
     expect((screen.getByRole("textbox", { name: "Content" }) as HTMLTextAreaElement).value).toBe("My retained design");
   });
 
+  it("keeps one question editor through Synth subtabs and the legacy document", async () => {
+    setSynth(true); service.chatPlan.mockResolvedValue(plan());
+    render(<ChatPlanning {...props}/>);
+    expect(await screen.findByRole("heading", { level: 2, name: "Improve search" })).toBeTruthy();
+    const questions = await screen.findByRole("tab", { name: /^Open questions/ });
+    fireEvent.click(questions);
+    const answer = screen.getByRole("textbox", { name: "Your answer" });
+    fireEvent.change(answer, { target: { value: "Retain across all views" } });
+    expect(document.getElementById(questions.getAttribute("aria-controls")!)?.contains(answer)).toBe(true);
+    fireEvent.click(screen.getByRole("tab", { name: "Plan" }));
+    expect(answer.isConnected).toBe(true);
+    act(() => setSynth(false));
+    expect(screen.getByRole("textbox", { name: "Your answer" })).toBe(answer);
+    act(() => setSynth(true));
+    fireEvent.click(await screen.findByRole("tab", { name: /^Open questions/ }));
+    expect(screen.getByRole("textbox", { name: "Your answer" })).toBe(answer);
+    expect((answer as HTMLTextAreaElement).value).toBe("Retain across all views");
+    expect(service.changeChatPlan).not.toHaveBeenCalled();
+  });
+
   it("retains a Board drawer editor when switching back to the legacy document", async () => {
     setSynth(true);
     service.chatPlan.mockResolvedValue(plan());
