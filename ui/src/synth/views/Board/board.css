@@ -63,6 +63,20 @@
 [data-synth="true"] .plan-slice-drawer { color: var(--synth-text); background: var(--plate-midnight); border-color: var(--synth-hairline); border-radius: 18px; }
 [data-synth="true"] .chat-planning .plan-item { border-color: var(--synth-hairline); background: var(--plate-deck); border-radius: 14px; }
 [data-synth="true"] .plan-questions .plan-item { background: var(--synth-screen); box-shadow: var(--shadow-screen); }
+.plan-lane-cards[hidden] { display: none; }
+.synth-drag-help { font-size: 12px; }
+.synth-plan-grip { display: grid; place-items: center; flex: 0 0 32px; min-width: 32px; min-height: 32px; padding: 0; border: 1px solid var(--synth-hairline); border-radius: 6px; background: var(--synth-key); color: var(--synth-text-muted); cursor: grab; touch-action: none; }
+.synth-plan-grip svg { fill: currentColor; }
+.synth-plan-grip:disabled { cursor: default; opacity: .5; }
+[data-synth="true"] .plan-lane[data-over="true"] { box-shadow: inset 0 0 18px color-mix(in srgb, var(--synth-signal) 10%, transparent); }
+[data-synth="true"] .plan-slice-card[data-source="true"] { background: transparent; border: 1px dashed var(--synth-signal); box-shadow: none; }
+[data-synth="true"] .plan-slice-card[data-source="true"] > * { opacity: 0; }
+.synth-plan-drag-overlay { position: fixed; top: 0; left: 0; margin: 0; z-index: 90; pointer-events: none; }
+[data-synth="true"] .synth-plan-ghost { width: 100%; height: 100%; overflow: hidden; font-family: var(--synth-font-sans); transform: translateY(-3px) rotate(-1.5deg); box-shadow: var(--shadow-card-lift); animation: synth-plan-pickup 120ms var(--ease-out); }
+[data-synth="true"] .synth-plan-ghost .notice { color: var(--synth-text); background: var(--synth-screen); border-color: var(--st-attention); }
+.synth-plan-insertion { flex: 0 0 2px; min-height: 2px; background: var(--synth-selection); box-shadow: 0 0 8px var(--synth-selection); border-radius: 1px; }
+.synth-blocked-drop { padding: 16px; border: 1px solid var(--st-attention); border-radius: 14px; background: var(--synth-screen); }
+@keyframes synth-plan-pickup { from { transform: none; box-shadow: var(--shadow-card); } to { transform: translateY(-3px) rotate(-1.5deg); box-shadow: var(--shadow-card-lift); } }
 @media (max-width: 700px) {
   [data-synth="true"] .plan-head { padding: 14px; }
   .synth-plan-overview { grid-template-columns: minmax(0, 1fr); gap: 12px; }
@@ -71,8 +85,10 @@
 @media (pointer: coarse) {
   [data-synth="true"] .chat-planning :is(button, input, select) { min-height: 44px; }
   .synth-slice-pad { flex-basis: 44px; }
+  .synth-plan-grip { flex-basis: 44px; min-width: 44px; }
 }
 @media (prefers-reduced-motion: reduce) {
+  [data-synth="true"] .synth-plan-ghost { transform: none; animation: none; }
   [data-synth="true"] .plan-kanban[data-motion="true"] .plan-lane { transition: none; }
   [data-synth="true"] .plan-kanban[data-motion="true"] .plan-slice-card[data-revealed] { animation: none; }
 }

@@ -1,7 +1,11 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { useSynth } from "./ui-preferences";
 import { SynthProvider } from "./synth/SynthProvider";
-import { useMotionVisible } from "./synth/motion/useMotionVisible";
+import { useVisible } from "./synth/motion/useVisible";
+import { useReducedMotion } from "./synth/motion/useReducedMotion";
+import { BlockedDrop } from "./synth/views/Board/BlockedDrop";
+import { useStatusDrops } from "./synth/views/Board/useStatusDrops";
+import { useDisplayed } from "./synth/views/Board/owner";
 import { Led } from "./synth/primitives/Led";
 import { SegmentMeter } from "./synth/primitives/SegmentMeter";
 import { signalStyle } from "./synth/primitives/signal";
@@ -15,6 +19,8 @@ import {
   type SavePlan,
 } from "./PlanForms";
 import "./plan-library.css";
+
+const StatusDrag = lazy<typeof import("./synth/views/Board/StatusDrag").default>(() => import("./synth/views/Board/StatusDrag").catch(error => ({ default: () => <p role="alert" className="error">Status gestures could not load: {String(error)}. Use the slice status form instead.</p> })));
 
 export function PlanKanban({
   slices,
@@ -35,7 +41,10 @@ export function PlanKanban({
   const [selected, setSelected] = useState<string | null>(null);
   const [opened, setOpened] = useState<string[]>([]);
   const [adding, setAdding] = useState(false);
-  const synth = useSynth(), host = useRef<HTMLDivElement>(null), motion = useMotionVisible(host);
+  const synth = useSynth(), host = useRef<HTMLDivElement>(null), visible = useVisible(host), reduced = useReducedMotion(), motion = visible && !reduced;
+  const active = useDisplayed(host), help = useId(), [dragReady, setDragReady] = useState(false);
+  const view = { slices, revision, disabled: disabled || !active };
+  const drops = useStatusDrops(view, active, save, host, synth ? visible && dragReady : true);
   const handled = useRef<typeof reveal>(null);
   const [revealed, setRevealed] = useState<string | null>(null);
   useLayoutEffect(() => {
@@ -45,7 +54,7 @@ export function PlanKanban({
     if (!synth || !slice || document.hidden) return;
     const focus = () => {
       cancel();
-      const button = [...(host.current?.querySelectorAll<HTMLButtonElement>("[data-slice-open]") ?? [])].find(node => node.dataset.sliceOpen === slice.key);
+      const button = [...(host.current?.querySelectorAll<HTMLButtonElement>("[data-slice-open]") ?? [])].find(node => node.dataset.sliceOpen === slice.key && !node.matches(":disabled"));
       const released = document.activeElement === document.body && owner instanceof HTMLElement && !owner.getClientRects().length;
       if (document.hidden || !button?.getClientRects().length || (document.activeElement !== owner && !released)) return;
       button.scrollIntoView({ block: "nearest", inline: "center" }); button.focus({ preventScroll: true });
@@ -97,6 +106,10 @@ export function PlanKanban({
           />
         </fieldset>
       )}
+      {synth && <><p id={help} className="faint synth-drag-help">Drag a handle at least 4px, or Space · left/right · Space. Escape or Tab cancels. Within-column plan order stays fixed.</p>
+        <Suspense fallback={<p className="faint">Loading status gestures…</p>}><StatusDrag host={host} view={{ ...view, disabled: view.disabled || !visible || !!drops.proposal || drops.writing }}
+          expand={status => setCollapsed(previous => previous[status] ? { ...previous, [status]: false } : previous)} propose={drops.propose} ready={setDragReady}/></Suspense></>}
+      {drops.proposal && <div ref={drops.form}><BlockedDrop key={drops.proposal.id} proposal={drops.proposal.drop} revision={revision} disabled={disabled || !active} save={drops.saveBlocked} close={drops.close}/></div>}
       <div className={`plan-board-shell${selected ? " has-drawer" : ""}`}>
         <div ref={host} className="plan-kanban" role="region" aria-label="Plan board" data-motion={synth && motion}>
           {PLAN_STATUSES.map((status) => {
@@ -130,8 +143,7 @@ export function PlanKanban({
                   </button>
                 </header>
                 {synth && <SegmentMeter label="Slices · capped meter, not a limit" value={lane.length} segments={8} signal={statusSignals[status]}/>}
-                {!collapsed[status] && (
-                  <div className="plan-lane-cards">
+                  <div className="plan-lane-cards" hidden={!!collapsed[status]}>
                     {lane.length === 0 ? (
                       <p className="faint plan-lane-empty">{synth && status === "active" && <span className="synth-empty-jack" aria-hidden="true"/>}{synth && status === "active" ? "No slices marked active. Status is not execution." : "Nothing here."}</p>
                     ) : (
@@ -139,11 +151,17 @@ export function PlanKanban({
                         <article
                           key={slice.id}
                           className="plan-slice-card"
+                          data-slice-key={slice.key}
                           data-revealed={revealed === slice.key || undefined}
                           aria-current={
                             selected === slice.key ? "true" : undefined
                           }
                         >
+                          {synth && <div className="plan-slice-key"><span className="mono">{slice.key}</span><span className="plan-slice-state" aria-hidden="true"/>
+                            <button className="synth-plan-grip" type="button" data-slice-drag={slice.key} aria-label={`Move ${slice.key}`} aria-describedby={help}
+                              disabled={!dragReady || view.disabled || !visible || !!drops.proposal || drops.writing} title="Change status · Space or drag the handle">
+                              <svg aria-hidden="true" viewBox="0 0 10 16" width="10" height="16">{[3, 8, 13].map(y => <g key={y}><circle cx="3" cy={y} r="1"/><circle cx="7" cy={y} r="1"/></g>)}</svg>
+                            </button></div>}
                           <button
                             type="button"
                             className="plan-slice-open"
@@ -151,7 +169,7 @@ export function PlanKanban({
                             aria-label={`${slice.key} ${slice.title}`}
                             onClick={() => open(slice.key)}
                           >
-                            {synth ? <span className="plan-slice-key"><span className="mono">{slice.key}</span><span className="plan-slice-state" aria-hidden="true"/></span> : <span className="mono faint">{slice.key}</span>}
+                            {!synth && <span className="mono faint">{slice.key}</span>}
                             <strong>{slice.title}</strong>
                           </button>
                           {slice.branch && (
@@ -194,7 +212,6 @@ export function PlanKanban({
                       ))
                     )}
                   </div>
-                )}
               </section>
             );
           })}

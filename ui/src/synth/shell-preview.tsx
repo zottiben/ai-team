@@ -54,6 +54,16 @@ export function advanceBoard() {
   if (!boardFixture) throw Error("Board fixture not selected");
   boardFixture.advance(); chat.rev++; tickers.forEach(tick => tick());
 }
+export const boardState = () => boardFixture?.state();
+export function failBoardStatus(mode: "refuse" | "lost") {
+  if (!boardFixture || params.get("board-input") !== "true") throw Error("Synthetic Board input is not enabled");
+  boardFixture.failNext(mode);
+}
+export function setBoardFlags(flags: { archived?: boolean; frozen?: boolean }) {
+  if (!boardFixture) throw Error("Board fixture not selected");
+  boardFixture.flags(flags); if (flags.archived !== undefined) chat.archived = flags.archived;
+  chat.rev++; tickers.forEach(tick => tick());
+}
 let reviewRevision = 0, previewId = 100;
 export const reviewRequests: { method: string; path: string }[] = [];
 export const boardRequests: { method: string; path: string }[] = [];
@@ -91,6 +101,12 @@ window.fetch = async (input, init) => {
   const json = (data: unknown, status = 200) => new Response(JSON.stringify(data), { status, headers: { "Content-Type": "application/json" } });
   if (review && method !== "GET") reviewRequests.push({ method, path: url.pathname });
   if (boardFixture && method !== "GET") boardRequests.push({ method, path: url.pathname });
+  if (method === "POST" && url.pathname === "/api/chats/1/plan" && boardFixture && params.get("board-input") === "true") {
+    const body: unknown = JSON.parse(typeof init?.body === "string" ? init.body : request ? await request.text() : "null");
+    const before = boardFixture.read().revision, result = boardFixture.change(body);
+    if (boardFixture.read().revision !== before) { chat.rev++; tickers.forEach(tick => tick()); }
+    return json(result.body, result.status);
+  }
   if (method === "POST" && url.pathname === "/api/chats/1/draft/review" && teamReviews) {
     const target: unknown = JSON.parse(typeof init?.body === "string" ? init.body : request ? await request.text() : "null");
     const captured = teamReviews.review(target);

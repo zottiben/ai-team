@@ -84,7 +84,7 @@ export async function exercisePlanHeader() {
   const scroll = pattern.querySelector('.synth-slice-pattern__scroll'); scroll.scrollLeft = scroll.scrollWidth;
   const position = scroll.scrollLeft, preferences = await import('/src/ui-preferences.ts');
   preferences.setSynth(false); await delay(100); preferences.setSynth(true); await delay(100);
-  must(panel.querySelector('.synth-slice-pattern') === pattern && Math.abs(scroll.scrollLeft - position) < 2, "Skin switch reset the slice pattern owner or scroll");
+  must(panel.querySelector('.synth-slice-pattern') === pattern && Math.abs(scroll.scrollLeft - position) < 2, `Skin switch reset the slice pattern owner or scroll: ${JSON.stringify({ same: panel.querySelector('.synth-slice-pattern') === pattern, before: position, after: scroll.scrollLeft, maximum: scroll.scrollWidth - scroll.clientWidth })}`);
   must(document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1, "Board overflow escaped the viewport");
   const attention = panel.querySelectorAll('.synth-led[data-state="attention"][data-motion="true"]').length;
   must(attention <= 1, "More than one blocker attention pulse is active");

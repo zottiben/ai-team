@@ -17,8 +17,29 @@ export function fixtureBoard() {
       decisions: [], gotchas: [], log: [],
     },
   };
+  let failure: "refuse" | "lost" | null = null;
+  const requests: unknown[] = [];
   return {
     read: () => snapshot,
+    state: () => ({ snapshot: structuredClone(snapshot), requests: structuredClone(requests) }),
+    failNext: (mode: "refuse" | "lost") => { failure = mode; },
+    flags(flags: { archived?: boolean; frozen?: boolean }) { snapshot = { ...snapshot, ...flags }; },
+    change(body: unknown) {
+      requests.push(body);
+      if (!body || typeof body !== "object" || !("action" in body) || body.action !== "set_slice_status"
+        || !("key" in body) || typeof body.key !== "string" || !("status" in body) || !("expect_revision" in body)
+        || !Object.keys(body).every(key => ["action", "key", "status", "expect_revision", "reason"].includes(key))) return { status: 400, body: { error: "Only an exact synthetic status change is allowed." } };
+      const status = PLAN_STATUSES.find(status => status === body.status), slice = snapshot.bundle?.slices.find(slice => slice.key === body.key);
+      const reason = "reason" in body && typeof body.reason === "string" ? body.reason : null;
+      if (!status || !slice || body.expect_revision !== snapshot.revision || snapshot.frozen || snapshot.archived
+        || (status === "blocked" && (!reason?.trim() || reason.length > 16000))) return { status: 409, body: { error: "Synthetic status scope or blocking reason is stale or unavailable." } };
+      const fail = failure; failure = null;
+      if (fail === "refuse") return { status: 409, body: { error: "Synthetic status refused before writing." } };
+      snapshot = structuredClone(snapshot); snapshot.revision++;
+      const changed = snapshot.bundle!.slices.find(candidate => candidate.key === slice.key)!;
+      changed.status = status; changed.blocked_reason = status === "blocked" ? reason : null; changed.rev++;
+      return fail === "lost" ? { status: 500, body: { error: "Synthetic response lost after the status was stored." } } : { status: 200, body: snapshot };
+    },
     advance() {
       snapshot = structuredClone(snapshot); snapshot.revision++;
       snapshot.bundle!.sections[0] = { key: "scope", title: "Refreshed scope", body: "New synthetic scope", rev: 2 };
