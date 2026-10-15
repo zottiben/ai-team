@@ -65,6 +65,8 @@ pub struct Operation {
     pub id: i64,
     pub chat_id: i64,
     pub snapshot: Snapshot,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub evidence: Option<super::PreviewEvidence>,
     pub state: String,
     pub result: Option<String>,
     pub rev: i64,
@@ -278,6 +280,7 @@ pub async fn preview(
         }
     }
     let remote = publication(Path::new(&s.workspace), chat, s.head.as_deref(), &action).await?;
+    let evidence = super::evidence::checkout(&s, &action, remote.as_ref()).await?;
     store.record_checkout_preview(
         chat,
         &Snapshot {
@@ -289,6 +292,7 @@ pub async fn preview(
             remote,
             workspace_epoch: Some(s.workspace_epoch),
         },
+        Some(&evidence),
     )
 }
 /// Build the operation one explicit human push instruction authorised (`chat_push`).
@@ -329,6 +333,7 @@ pub(crate) async fn authorized_push(
             "origin changed since you asked for this push; ask again",
         ));
     }
+    let evidence = super::evidence::checkout(&s, &action, remote.as_ref()).await?;
     store.record_checkout_preview(
         chat,
         &Snapshot {
@@ -340,6 +345,7 @@ pub(crate) async fn authorized_push(
             remote,
             workspace_epoch: Some(s.workspace_epoch),
         },
+        Some(&evidence),
     )
 }
 

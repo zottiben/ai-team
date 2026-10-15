@@ -34,7 +34,9 @@ async fn inspection_keeps_already_drained_child_timestamps() {
         },
         remote: None,
     };
-    let op = store.record_checkout_preview(chat.id, &snapshot).unwrap();
+    let op = store
+        .record_checkout_preview(chat.id, &snapshot, None)
+        .unwrap();
     let owner = store
         .claim_checkout_operation(chat.id, op.id, op.rev, false)
         .unwrap();
@@ -107,8 +109,12 @@ async fn checkout_receipts_exclude_other_chats_and_unknown_spawn_intents_fail_cl
         },
         remote: None,
     };
-    let first = store.record_checkout_preview(chat.id, &snapshot).unwrap();
-    let second = store.record_checkout_preview(other.id, &snapshot).unwrap();
+    let first = store
+        .record_checkout_preview(chat.id, &snapshot, None)
+        .unwrap();
+    let second = store
+        .record_checkout_preview(other.id, &snapshot, None)
+        .unwrap();
     let owner = store
         .claim_checkout_operation(chat.id, first.id, first.rev, false)
         .unwrap();

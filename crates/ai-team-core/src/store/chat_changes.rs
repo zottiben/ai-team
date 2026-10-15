@@ -97,16 +97,38 @@ impl Store {
         &mut self,
         chat: i64,
         snapshot: &DeliverySnapshot,
+        evidence: &crate::chat_changes::PreviewEvidence,
     ) -> Result<Delivery> {
         let payload = serde_json::to_string(snapshot)?;
+        let preview = crate::chat_changes::evidence::encode(evidence)?;
         let id = self.db_mut().write(|tx| {
             check_target(tx, chat, &snapshot.target)?;
             check_workspace(tx, &snapshot.workspace_path)?;
-            tx.execute("INSERT INTO chat_delivery (chat_id,run_id,slice_key,workspace_path,snapshot_json,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?6)",
-                params![chat, snapshot.target.run_id, snapshot.target.slice_key, snapshot.workspace_path, payload, crate::now()])?;
+            tx.execute("INSERT INTO chat_delivery (chat_id,run_id,slice_key,workspace_path,snapshot_json,created_at,updated_at,preview_json) VALUES (?1,?2,?3,?4,?5,?6,?6,?7)",
+                params![chat, snapshot.target.run_id, snapshot.target.slice_key, snapshot.workspace_path, payload, crate::now(), preview])?;
             Ok(tx.last_insert_rowid())
         })?;
-        self.chat_delivery(chat, id)
+        let mut delivery = self.chat_delivery(chat, id)?;
+        delivery.evidence = Some(evidence.clone());
+        Ok(delivery)
+    }
+
+    pub fn delivery_preview_evidence(
+        &self,
+        chat: i64,
+        id: i64,
+    ) -> Result<Option<crate::chat_changes::PreviewEvidence>> {
+        let json: Option<String> = self
+            .db()
+            .conn()
+            .query_row(
+                "SELECT preview_json FROM chat_delivery WHERE chat_id=?1 AND id=?2",
+                params![chat, id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .ok_or_else(|| Error::invalid("no delivery approval in this chat"))?;
+        Ok(json.map(|value| serde_json::from_str(&value)).transpose()?)
     }
 
     pub(crate) fn claim_chat_delivery(
@@ -295,6 +317,7 @@ fn from_row(row: &Row<'_>) -> rusqlite::Result<Delivery> {
         id: row.get(0)?,
         chat_id: row.get(1)?,
         snapshot,
+        evidence: None,
         state: row.get(3)?,
         result: row.get(4)?,
         rev: row.get(5)?,

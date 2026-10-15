@@ -2,11 +2,13 @@
 
 pub mod checkout;
 mod delivery;
+pub(crate) mod evidence;
 mod files;
 mod recovery;
 mod retained;
 pub use delivery::{approve, preview, Delivery, DeliveryAction, DeliverySnapshot};
 pub(crate) use delivery::{available as delivery_available, origin};
+pub use evidence::{PreviewEvidence, PreviewFile};
 pub use files::{committed_file, committed_tree, CommitEntry, CommitFile, CommitFileRequest};
 pub use recovery::{
     acknowledge, inspect, CheckoutEvidence, DeliveryAcknowledgement, DeliveryInspection,

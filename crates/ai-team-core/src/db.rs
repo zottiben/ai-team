@@ -217,6 +217,11 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
         "bounded provider telemetry receipts",
         include_str!("migrations/048_telemetry.sql"),
     ),
+    (
+        49,
+        "immutable bounded approval preview evidence",
+        include_str!("migrations/049_preview_evidence.sql"),
+    ),
 ];
 
 /// Migrations that rebuild a table other tables point at.

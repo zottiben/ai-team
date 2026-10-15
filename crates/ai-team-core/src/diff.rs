@@ -13,10 +13,10 @@
 
 use std::fmt::Write as _;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// What happened to a line.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LineKind {
     Context,
@@ -28,7 +28,7 @@ pub enum LineKind {
 ///
 /// A context line has both. An added line has only a new number, a removed line only an
 /// old one - which is exactly why a comment has to name a side as well as a number.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Line {
     pub kind: LineKind,
     pub old: Option<i64>,
@@ -36,7 +36,7 @@ pub struct Line {
     pub text: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Hunk {
     /// The `@@ ... @@` line, with the trailing section heading git sometimes adds.
     pub header: String,
@@ -46,7 +46,7 @@ pub struct Hunk {
 }
 
 /// What happened to a file between the two commits.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FileStatus {
     Added,
@@ -55,7 +55,7 @@ pub enum FileStatus {
     Renamed,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileDiff {
     /// The path as it is after the change. A review talks about the code that now
     /// exists, so this is the name a comment refers to.

@@ -84,6 +84,57 @@ async fn exact_checkout_actions_preserve_work_and_never_create_verified_drafts()
         .to_string()
         .contains("exact-review limit"));
 }
+fn pinned_evidence(store: &Store, preview: &c::Operation, chat: i64, other: i64) {
+    let evidence = serde_json::to_value(preview).unwrap();
+    assert_eq!(
+        evidence["evidence"]["files"][0]["file"]["hunks"][0]["lines"][0]["text"], "first",
+        "the approval has no immutable hunk evidence"
+    );
+    let reopened = Store::open(store.path()).unwrap();
+    let captured = reopened
+        .checkout_preview_evidence(chat, preview.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(captured.files[0].file.hunks[0].lines[0].text, "first");
+    assert!(reopened
+        .checkout_preview_evidence(other, preview.id)
+        .is_err());
+    assert!(
+        reopened
+            .checkout_operation(chat, preview.id)
+            .unwrap()
+            .evidence
+            .is_none(),
+        "ordinary receipt reads must not hydrate captured source"
+    );
+    let conn = rusqlite::Connection::open(store.path()).unwrap();
+    assert!(conn
+        .execute(
+            "UPDATE chat_checkout_operation SET preview_json='{}' WHERE id=?1",
+            [preview.id]
+        )
+        .is_err());
+    conn.execute("INSERT INTO chat_checkout_operation(chat_id,workspace_path,snapshot_json,created_at,updated_at) SELECT chat_id,workspace_path,snapshot_json,created_at,updated_at FROM chat_checkout_operation WHERE id=?1", [preview.id]).unwrap();
+    let historical = conn.last_insert_rowid();
+    let oversized = serde_json::json!({"note": "🧪".repeat(150_000)}).to_string();
+    let rejected = conn.execute("INSERT INTO chat_checkout_operation(chat_id,workspace_path,snapshot_json,created_at,updated_at,preview_json) SELECT chat_id,workspace_path,snapshot_json,created_at,updated_at,?2 FROM chat_checkout_operation WHERE id=?1", rusqlite::params![preview.id, oversized]).unwrap_err();
+    assert!(
+        rejected.to_string().contains("CHECK constraint failed"),
+        "{rejected}"
+    );
+    assert!(reopened
+        .checkout_preview_evidence(chat, historical)
+        .unwrap()
+        .is_none());
+    assert!(
+        conn.execute(
+            "UPDATE chat_checkout_operation SET preview_json='{}' WHERE id=?1",
+            [historical]
+        )
+        .is_err(),
+        "unrecorded history cannot be backfilled"
+    );
+}
 async fn staging(store: &mut Store, repo: &Path, chat: i64, other: i64) {
     std::fs::write(repo.join("README.md"), "first\n").unwrap();
     let before = c::state(store, chat).await.unwrap();
@@ -128,6 +179,7 @@ async fn staging(store: &mut Store, repo: &Path, chat: i64, other: i64) {
     .unwrap();
     assert!(store.checkout_operation(other, preview.id).is_err());
     std::fs::write(repo.join("README.md"), "new bytes\n").unwrap();
+    pinned_evidence(store, &preview, chat, other);
     assert!(
         c::finding(store, chat, &finding).await.is_err(),
         "changed untracked bytes invalidate the anchor"

@@ -37,6 +37,8 @@ pub struct Delivery {
     pub id: i64,
     pub chat_id: i64,
     pub snapshot: DeliverySnapshot,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub evidence: Option<super::PreviewEvidence>,
     pub state: String,
     pub result: Option<String>,
     pub rev: i64,
@@ -121,7 +123,8 @@ pub async fn preview(
             snapshot.base_branch = Some(base);
         }
     }
-    store.record_chat_delivery_preview(chat, &snapshot)
+    let evidence = super::evidence::delivery(&snapshot, &draft.base_sha).await?;
+    store.record_chat_delivery_preview(chat, &snapshot, &evidence)
 }
 
 /// Kept inside a watched task by HTTP callers. An interrupted command keeps its durable

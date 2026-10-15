@@ -164,6 +164,7 @@ async fn chat_drafts_have_exact_review_and_separate_idempotent_delivery() {
     publication(&env).await;
     stale_destinations_and_integration().await;
     checkout_round_trip().await;
+    pinned_previews().await;
     abandoned_approval_before_attempt().await;
     ignored_files_and_acknowledgement().await;
     cancelled_publisher(&env).await;
@@ -259,6 +260,57 @@ async fn reviewed_dirty_draft() -> Fixture {
     f
 }
 
+async fn pinned_previews() {
+    let mut f = Fixture::new();
+    let preview = f.preview(DeliveryAction::Push).await;
+    assert_eq!(preview.evidence.as_ref().unwrap().files_total, Some(2));
+    let before = serde_json::to_value(preview.evidence.as_ref().unwrap()).unwrap();
+    std::fs::write(f.repo.join("README.md"), "different working bytes\n").unwrap();
+    let reopened = Store::open(f.store.path()).unwrap();
+    let evidence = reopened
+        .delivery_preview_evidence(f.chat, preview.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(serde_json::to_value(&evidence).unwrap(), before);
+    assert!(evidence
+        .files
+        .iter()
+        .flat_map(|entry| &entry.file.hunks)
+        .flat_map(|hunk| &hunk.lines)
+        .any(|line| line.text == "verified draft"));
+    assert!(
+        !f.repo.join("new.txt").exists(),
+        "preview must not check out committed files"
+    );
+    assert_eq!(git(&f.repo, &["rev-parse", "HEAD"]), f.base);
+    assert!(reopened
+        .delivery_preview_evidence(f.other, preview.id)
+        .is_err());
+    assert!(reopened
+        .chat_delivery(f.chat, preview.id)
+        .unwrap()
+        .evidence
+        .is_none());
+    let conn = rusqlite::Connection::open(f.store.path()).unwrap();
+    assert!(conn
+        .execute(
+            "UPDATE chat_delivery SET preview_json='{}' WHERE id=?1",
+            [preview.id]
+        )
+        .is_err());
+    conn.execute("INSERT INTO chat_delivery(chat_id,run_id,slice_key,workspace_path,snapshot_json,created_at,updated_at) SELECT chat_id,run_id,slice_key,workspace_path,snapshot_json,created_at,updated_at FROM chat_delivery WHERE id=?1", [preview.id]).unwrap();
+    let historical = conn.last_insert_rowid();
+    assert!(reopened
+        .delivery_preview_evidence(f.chat, historical)
+        .unwrap()
+        .is_none());
+    assert!(conn
+        .execute(
+            "UPDATE chat_delivery SET preview_json='{}' WHERE id=?1",
+            [historical]
+        )
+        .is_err());
+}
 async fn publication(env: &tempfile::TempDir) {
     let mut f = reviewed_dirty_draft().await;
     // Repository defaults must not expand an approval into publishing extra tags.
