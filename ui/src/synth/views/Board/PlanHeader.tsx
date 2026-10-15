@@ -26,7 +26,7 @@ export default function PlanHeader({ slices, onReveal }: { slices: PlanSlice[]; 
     </div>
     <div className="synth-plan-overview__count">
       <span className="synth-silk">Reported done</span>
-      <output aria-label="Reported slice count">{done}<span>/{slices.length}</span></output>
+      <output aria-label="Reported slice count" aria-live="off">{done}<span>/{slices.length}</span></output>
       <span>Not verification</span>
     </div>
   </div>;

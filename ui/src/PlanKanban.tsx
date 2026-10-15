@@ -6,6 +6,7 @@ import { useReducedMotion } from "./synth/motion/useReducedMotion";
 import { BlockedDrop } from "./synth/views/Board/BlockedDrop";
 import { useStatusDrops } from "./synth/views/Board/useStatusDrops";
 import { useDisplayed } from "./synth/views/Board/owner";
+import { useBoardMotion } from "./synth/views/Board/useBoardMotion";
 import { Led } from "./synth/primitives/Led";
 import { SegmentMeter } from "./synth/primitives/SegmentMeter";
 import { signalStyle } from "./synth/primitives/signal";
@@ -44,7 +45,8 @@ export function PlanKanban({
   const synth = useSynth(), host = useRef<HTMLDivElement>(null), visible = useVisible(host), reduced = useReducedMotion(), motion = visible && !reduced;
   const active = useDisplayed(host), help = useId(), [dragReady, setDragReady] = useState(false);
   const view = { slices, revision, disabled: disabled || !active };
-  const drops = useStatusDrops(view, active, save, host, synth ? visible && dragReady : true);
+  const feedback = useBoardMotion(host, synth && motion && !view.disabled, revision);
+  const drops = useStatusDrops(view, active, save, host, synth ? visible && dragReady : true, feedback);
   const handled = useRef<typeof reveal>(null);
   const [revealed, setRevealed] = useState<string | null>(null);
   useLayoutEffect(() => {
@@ -108,7 +110,7 @@ export function PlanKanban({
       )}
       {synth && <><p id={help} className="faint synth-drag-help">Drag a handle at least 4px, or Space · left/right · Space. Escape or Tab cancels. Within-column plan order stays fixed.</p>
         <Suspense fallback={<p className="faint">Loading status gestures…</p>}><StatusDrag host={host} view={{ ...view, disabled: view.disabled || !visible || !!drops.proposal || drops.writing }}
-          expand={status => setCollapsed(previous => previous[status] ? { ...previous, [status]: false } : previous)} propose={drops.propose} ready={setDragReady}/></Suspense></>}
+          expand={status => setCollapsed(previous => previous[status] ? { ...previous, [status]: false } : previous)} propose={drops.propose} returnCard={drops.returnCard} ready={setDragReady}/></Suspense></>}
       {drops.proposal && <div ref={drops.form}><BlockedDrop key={drops.proposal.id} proposal={drops.proposal.drop} revision={revision} disabled={disabled || !active} save={drops.saveBlocked} close={drops.close}/></div>}
       <div className={`plan-board-shell${selected ? " has-drawer" : ""}`}>
         <div ref={host} className="plan-kanban" role="region" aria-label="Plan board" data-motion={synth && motion}>
@@ -134,7 +136,7 @@ export function PlanKanban({
                       }))
                     }
                   >
-                    <span className="plan-lane-dot" aria-hidden="true" />
+                    {synth ? <Led state={lane.length ? feedback.event?.status === status ? "event" : "on" : "off"} signal={statusSignals[status]} eventId={feedback.event?.id}/> : <span className="plan-lane-dot" aria-hidden="true" />}
                     <strong>{statusLabel(status)}</strong>
                     <span className="plan-lane-count">{lane.length}</span>
                     <span aria-hidden="true">

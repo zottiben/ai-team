@@ -1,7 +1,7 @@
 import { PLAN_STATUSES, type ChatPlan } from "../plan-api";
 
 /** Synthetic, in-memory data for the real retained planning controller. */
-export function fixtureBoard() {
+export function fixtureBoard(emptyActive = false) {
   let snapshot: ChatPlan = {
     chat_id: 1, project_id: 1, revision: 4, archived: false, frozen: false,
     bundle: {
@@ -17,6 +17,7 @@ export function fixtureBoard() {
       decisions: [], gotchas: [], log: [],
     },
   };
+  if (emptyActive && snapshot.bundle) snapshot.bundle.slices = snapshot.bundle.slices.map(slice => slice.status === "active" ? { ...slice, status: "ready" } : slice);
   let failure: "refuse" | "lost" | null = null;
   const requests: unknown[] = [];
   return {

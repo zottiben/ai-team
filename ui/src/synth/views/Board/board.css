@@ -2,7 +2,8 @@
 
 [data-synth="true"] :is(#chat-pane-board, .plans-working-area) { background: var(--synth-floor); }
 [data-synth="true"] .chat-planning { color: var(--synth-text); font-family: var(--synth-font-sans); margin: 0; padding: 0; border: 0; background: transparent; box-shadow: none; }
-[data-synth="true"] .chat-planning .faint { color: var(--synth-text-muted); }
+[data-synth="true"] .synth-plan-portal { color: var(--synth-text); font-family: var(--synth-font-sans); color-scheme: var(--synth-color-scheme); }
+[data-synth="true"] :is(.chat-planning, .synth-plan-portal) .faint { color: var(--synth-text-muted); }
 [data-synth="true"] .plan-head { min-width: 0; padding: 18px 20px; border: 1px solid var(--synth-hairline); border-radius: 18px; background: var(--plate-night); box-shadow: var(--shadow-plate); }
 [data-synth="true"] .plan-head > .plan-heading { margin: 0 0 14px; align-items: start; }
 [data-synth="true"] .plan-head h2 { margin: 0; min-width: 0; flex: 1 1 260px; font-size: clamp(26px, 3vw, 36px); font-weight: 300; line-height: 1.15; overflow-wrap: anywhere; }
@@ -10,7 +11,7 @@
 [data-synth="true"] .chat-planning :is(input, textarea, select) { color: var(--synth-lcd-text); background: var(--synth-screen); border-color: var(--synth-lcd-edge); box-shadow: var(--shadow-screen); min-height: 32px; }
 [data-synth="true"] .chat-planning .button { color: var(--synth-text); background: var(--synth-key); border-color: var(--synth-hairline); box-shadow: var(--shadow-key); min-height: 32px; }
 [data-synth="true"] .chat-planning :is(button, a, input, textarea, select):focus-visible { outline: 2px solid var(--synth-focus); outline-offset: 2px; }
-[data-synth="true"] .chat-planning .notice { color: var(--synth-text); background: var(--synth-screen); border-color: var(--st-attention); }
+[data-synth="true"] :is(.chat-planning, .synth-plan-portal) .notice { color: var(--synth-text); background: var(--synth-screen); border-color: var(--st-attention); }
 .synth-plan-overview { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 22px; }
 .synth-plan-overview__pattern { min-width: 0; }
 .synth-plan-overview__pattern > p { color: var(--synth-text-muted); font-size: 13px; margin: 0 0 12px; }
@@ -35,6 +36,8 @@
 [data-synth="true"] .plan-kanban { gap: 14px; padding-bottom: 14px; min-height: min(480px, 65vh); }
 [data-synth="true"] .plan-lane { flex-basis: 244px; display: flex; flex-direction: column; border: 1px solid var(--synth-hairline); border-radius: 18px; background: var(--plate-midnight); overflow: hidden; padding: 8px; }
 [data-synth="true"] .plan-kanban[data-motion="true"] .plan-lane { transition: flex-basis 220ms var(--ease-out); }
+[data-synth="true"] .plan-kanban[data-flipping] .plan-lane { transition: none; }
+[data-synth="true"] .plan-kanban[data-motion="true"] .synth-segments i { transition: background-color 150ms var(--ease-out); }
 [data-synth="true"] .plan-lane header > button { padding: 8px 4px 12px; color: var(--synth-text-muted); font: 10px var(--synth-font-mono); }
 [data-synth="true"] .plan-lane-dot { width: 7px; height: 7px; background: var(--synth-signal); }
 [data-synth="true"] .plan-lane header strong { font-weight: 500; }
@@ -64,6 +67,11 @@
 [data-synth="true"] .chat-planning .plan-item { border-color: var(--synth-hairline); background: var(--plate-deck); border-radius: 14px; }
 [data-synth="true"] .plan-questions .plan-item { background: var(--synth-screen); box-shadow: var(--shadow-screen); }
 .plan-lane-cards[hidden] { display: none; }
+.synth-plan-settle-layer { position: fixed; inset: 0; z-index: 90; overflow: hidden; pointer-events: none; }
+[data-synth="true"] .synth-plan-settle-overlay { position: absolute; box-sizing: border-box; margin: 0; transform-origin: center; box-shadow: var(--shadow-card-lift); }
+[data-synth="true"] .plan-slice-card[data-settling] { border-style: dashed; background: transparent; box-shadow: none; }
+[data-synth="true"] .plan-slice-card[data-settling] > * { opacity: 0; }
+[data-synth="true"] .plan-slice-card[data-settling]:focus-within { outline: 2px solid var(--synth-selection); outline-offset: 2px; }
 .synth-drag-help { font-size: 12px; }
 .synth-plan-grip { display: grid; place-items: center; flex: 0 0 32px; min-width: 32px; min-height: 32px; padding: 0; border: 1px solid var(--synth-hairline); border-radius: 6px; background: var(--synth-key); color: var(--synth-text-muted); cursor: grab; touch-action: none; }
 .synth-plan-grip svg { fill: currentColor; }
@@ -83,12 +91,13 @@
   .synth-plan-overview__count { display: flex; align-items: baseline; justify-content: end; flex-wrap: wrap; }
 }
 @media (pointer: coarse) {
-  [data-synth="true"] .chat-planning :is(button, input, select) { min-height: 44px; }
+  [data-synth="true"] :is(.chat-planning, .synth-plan-portal) :is(button, input, select) { min-height: 44px; }
   .synth-slice-pad { flex-basis: 44px; }
   .synth-plan-grip { flex-basis: 44px; min-width: 44px; }
 }
 @media (prefers-reduced-motion: reduce) {
   [data-synth="true"] .synth-plan-ghost { transform: none; animation: none; }
-  [data-synth="true"] .plan-kanban[data-motion="true"] .plan-lane { transition: none; }
+  [data-synth="true"] .plan-kanban[data-motion="true"] .plan-lane, [data-synth="true"] .plan-kanban[data-motion="true"] .synth-segments i { transition: none; }
+  .synth-plan-settle-layer { display: none; }
   [data-synth="true"] .plan-kanban[data-motion="true"] .plan-slice-card[data-revealed] { animation: none; }
 }

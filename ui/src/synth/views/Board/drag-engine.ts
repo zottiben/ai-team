@@ -3,6 +3,7 @@ import { PLAN_STATUSES, type PlanStatus } from "../../../plan-api";
 import { statusLabel } from "../../../PlanForms";
 import { currentDrop, statusPosition, type DropView, type StatusDrop } from "./drop";
 import { statusSignals } from "./status";
+import { cardPose, type CardPose } from "./settle";
 
 import { displayed } from "./owner";
 const within = (point: { x: number; y: number }, box: DOMRect) => point.x >= box.left && point.x < box.right && point.y >= box.top && point.y < box.bottom;
@@ -12,7 +13,8 @@ type Engine = { destroy: () => void; readonly active: boolean };
 /** DOM-only feedback. React/store state changes only when a valid gesture proposes a status. */
 export function statusDrag(board: HTMLElement, callbacks: {
   read: () => DropView; expand: (status: PlanStatus) => void; announce: (message: string) => void;
-  propose: (drop: StatusDrop, handle: HTMLButtonElement, keyboard: boolean, event: Event | null) => void; ready: (ready: boolean) => void;
+  propose: (drop: StatusDrop, handle: HTMLButtonElement, keyboard: boolean, event: Event | null, pose: CardPose | null) => void;
+  returnCard: (drop: StatusDrop, event: Event | null, pose: CardPose | null) => void; ready: (ready: boolean) => void;
 }) {
   let disposed = false, engine: Engine | null = null;
   const reset = () => {
@@ -30,7 +32,7 @@ export function statusDrag(board: HTMLElement, callbacks: {
       if (key && handle?.dataset.sliceDrag === key && !cards.has(key)) cards.set(key, { card, handle });
     });
     const overlay = document.createElement("div"), insertion = document.createElement("div");
-    overlay.className = "synth-plan-drag-overlay"; overlay.inert = true; overlay.setAttribute("aria-hidden", "true"); overlay.style.visibility = "hidden";
+    overlay.className = "synth-plan-drag-overlay synth-plan-portal"; overlay.inert = true; overlay.setAttribute("aria-hidden", "true"); overlay.style.visibility = "hidden";
     insertion.className = "synth-plan-insertion"; insertion.setAttribute("aria-hidden", "true");
     document.body.append(overlay);
     let manager: DragDropManager;
@@ -124,6 +126,7 @@ export function statusDrag(board: HTMLElement, callbacks: {
       callbacks.announce(`${captured.key}: ${statusLabel(target)}, plan position ${statusPosition(view.slices, captured.key, target) ?? "unknown"}. Status only.`);
     });
     manager.monitor.addEventListener("dragend", event => {
+      const pose = captured ? cardPose(board, overlay) : null;
       const intent = captured; captured = null; clear();
       if (!intent || closed || disposed) return;
       // Finish with a fresh sensor lifetime even when no React revision changes
@@ -138,8 +141,12 @@ export function statusDrag(board: HTMLElement, callbacks: {
       const drop = target && { key: intent.key, from: intent.from, to: target, revision: intent.revision };
       if (!event.canceled && explicit && lane && source && drop && !source.handle.matches(":disabled") && displayed(source.card) && displayed(board) && within(point, board.getBoundingClientRect())
         && within(point, lane.getBoundingClientRect()) && within(point, new DOMRect(0, 0, innerWidth, innerHeight)) && currentDrop(callbacks.read(), drop)) {
-        callbacks.propose(drop, source.handle, intent.keyboard, native ?? null);
-      } else callbacks.announce("No status request was sent by this gesture.");
+        callbacks.propose(drop, source.handle, intent.keyboard, native ?? null, pose);
+      } else {
+        callbacks.announce("No status request was sent by this gesture.");
+        if (native && (explicit || (native.type === "keydown" && "code" in native && native.code === "Escape")))
+          callbacks.returnCard({ key: intent.key, from: intent.from, to: intent.from, revision: intent.revision }, native, pose);
+      }
     });
     const focus = (event: FocusEvent) => { if (captured && event.target !== document.body && event.target !== cards.get(captured.key)?.handle) reset(); };
     document.addEventListener("focusin", focus);

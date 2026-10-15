@@ -79,6 +79,8 @@ export async function exerciseBlockerCommands() {
   fixture.setBoardFlags({ frozen: false }); await until(() => !input.readOnly, 'Unfrozen proposal did not recover');
   const planTab = [...panel.querySelectorAll('[role="tab"]')].find(node => node.textContent.trim() === 'Plan'); planTab.click(); await delay(80);
   must(document.contains(input) && input.value === 'Synthetic retained reason' && input.readOnly, 'Hidden proposal lost or exposed its input');
+  form.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true, cancelable: true })); await delay(20);
+  must(document.contains(input) && field(form) === input && input.value === 'Synthetic retained reason', 'A hidden keyboard event discarded the retained proposal');
   [...panel.querySelectorAll('[role="tab"]')].find(node => node.textContent.trim() === 'Board').click();
   await until(() => !input.readOnly, 'Revealed proposal stayed locked');
   const preferences = await import('/src/ui-preferences.ts'); preferences.setSynth(false); await delay(80);
@@ -109,6 +111,71 @@ export async function exerciseLostBlockerResponse() {
   const apiRequests = performance.getEntriesByType('resource').filter(entry => new URL(entry.name).pathname.startsWith('/api/')).length;
   must(apiRequests === 0, 'Lost-response fixture reached an API');
   return { width: document.documentElement.clientWidth, unknownOutcomeRetained: true, noAutomaticRetry: true, cancelDidNotUndo: true, syntheticRequests: 1, apiRequests };
+}
+export async function exerciseBoardMotion() {
+  const { board, fixture, panel } = await setup();
+  must(!matchMedia('(prefers-reduced-motion: reduce)').matches, 'Motion preference is reduced; this probe cannot certify animated settlement');
+  must(!fixture.boardState().snapshot.bundle.slices.some(slice => slice.status === 'active'), 'Use board-empty-active=true to observe a real segment-fill transition');
+  const recorded = [], segments = [], original = Element.prototype.animate;
+  const segmentEnd = event => { if (event.propertyName === 'background-color' && event.target.matches('[data-status="active"] .synth-segments i')) segments.push(event.elapsedTime * 1000); };
+  board.addEventListener('transitionend', segmentEnd);
+  Element.prototype.animate = function(frames, options) {
+    const animation = original.call(this, frames, options);
+    if (this.classList.contains('synth-plan-settle-overlay')) {
+      const source = board.querySelector('[data-slice-key="S1"]');
+      const differences = [['', 'font-family'], ['', 'font-size'], ['', 'line-height'], ['.faint', 'color'], ['[data-slice-drag]', 'min-height']].filter(([selector, property]) => getComputedStyle(selector ? this.querySelector(selector) : this).getPropertyValue(property) !== getComputedStyle(selector ? source.querySelector(selector) : source).getPropertyValue(property));
+      const entry = { frames, duration: options.duration, ariaHidden: this.getAttribute('aria-hidden'), inert: this.inert, differences, finished: false, cancelled: false }; recorded.push(entry);
+      animation.finished.then(() => { entry.finished = true; }, () => { entry.cancelled = true; });
+    }
+    return animation;
+  };
+  try {
+    await start(board); await lane(board, 'ArrowRight', 'active'); await drop(board);
+    await until(() => fixture.boardState().snapshot.bundle.slices[0].status === 'active', 'Motion probe status was not accepted');
+    await until(() => recorded.length === 1, 'Accepted status did not receive a 200ms card settlement');
+    must(recorded[0].duration === 200 && recorded[0].frames.length === 2 && recorded[0].ariaHidden === 'true' && recorded[0].inert, 'Settlement lost its duration, transform or inert feedback contract');
+    must(recorded[0].differences.length === 0, `Portal lost its owning typography, colour or touch geometry: ${JSON.stringify(recorded[0].differences)}`);
+    must(board.querySelector('[data-status="active"] header .synth-led')?.dataset.state === 'event', 'Accepted destination did not flash its event LED');
+    await until(() => !document.querySelector('.synth-plan-settle-overlay') && !board.querySelector('[data-settling]'), 'Settlement did not retire');
+    must(recorded[0].finished && !recorded[0].cancelled, 'Accepted settlement was cancelled before its 200ms completion');
+    await until(() => segments.some(duration => Math.abs(duration - 150) < 1), 'Actual segment fill did not finish its 150ms transition');
+    await start(board); await lane(board, 'ArrowRight', 'in_review'); key('Escape');
+    await until(() => recorded.length === 2, 'Escape did not return the card with a 200ms settlement');
+    await until(() => !document.querySelector('.synth-plan-settle-overlay'), 'Cancelled gesture kept a settlement portal');
+    must(recorded[1].finished && !recorded[1].cancelled, 'Return settlement was cancelled before its 200ms completion');
+    must(document.activeElement === board.querySelector('[data-slice-drag="S1"]'), 'Cancelled motion lost logical handle focus');
+    must(fixture.boardState().requests.length === 1 && fixture.boardState().snapshot.bundle.slices[0].status === 'active', 'Cancelled motion changed recorded status');
+    await start(board); await lane(board, 'ArrowLeft', 'ready'); await lane(board, 'ArrowLeft', 'draft'); await drop(board);
+    await until(() => recorded.length === 3, 'Drop into the expanding Draft lane did not settle');
+    await until(() => !document.querySelector('.synth-plan-settle-overlay'), 'Draft settlement did not retire');
+    must(recorded[2].finished && !recorded[2].cancelled, 'Draft settlement did not finish');
+    const focused = board.querySelector('[data-status="draft"] [data-slice-drag="S1"]'), bounds = focused.getBoundingClientRect();
+    must(document.activeElement === focused && bounds.left >= 0 && bounds.right <= innerWidth && bounds.top >= 0 && bounds.bottom <= innerHeight, 'Expanding-lane settlement left its focused handle offscreen');
+    must(fixture.boardState().requests.length === 2, 'Motion added a status request');
+    must(panel.querySelector('[aria-label="Reported slice count"]').getAttribute('aria-live') === 'off', 'Decorative count introduced a second live announcement');
+    const duration = getComputedStyle(board.querySelector('.synth-segments i')).transitionDuration;
+    must(duration === '0.15s', `Segment fill did not use 150ms: ${duration}`);
+    must(performance.getEntriesByType('resource').filter(entry => new URL(entry.name).pathname.startsWith('/api/')).length === 0, 'Motion probe reached a real API');
+    return { width: document.documentElement.clientWidth, settlements: recorded.length, duration: recorded[0].duration, segmentDuration: segments[0], collapsedLaneFocus: true, syntheticRequests: 2, apiRequests: 0, note: 'DOM/Web Animation contract, not native physical input or frame-rate acceptance.' };
+  } finally { Element.prototype.animate = original; board.removeEventListener('transitionend', segmentEnd); }
+}
+export async function exerciseMotionOwnership() {
+  const { board, fixture, panel } = await setup();
+  await start(board); await lane(board, 'ArrowRight', 'active'); await drop(board);
+  await until(() => document.querySelector('.synth-plan-settle-layer'), 'Accepted settlement did not start');
+  const tab = label => [...panel.querySelectorAll('[role="tab"]')].find(node => node.textContent.trim() === label);
+  tab('Plan').focus(); tab('Plan').click();
+  await until(() => !document.querySelector('.synth-plan-settle-layer') && !board.querySelector('[data-settling]'), 'Hidden owner kept its settlement portal');
+  must(fixture.boardState().snapshot.bundle.slices[0].status === 'active', 'Hiding feedback changed recorded status');
+  tab('Board').focus(); tab('Board').click(); await until(() => board.getClientRects().length, 'Board did not become displayed'); board.scrollIntoView({ block: 'start' });
+  await start(board); await lane(board, 'ArrowRight', 'in_review'); await drop(board);
+  document.dispatchEvent(new WheelEvent('wheel', { deltaY: 20, bubbles: true }));
+  const target = await until(() => board.querySelector('[data-status="in_review"] [data-slice-drag="S1"]:not(:disabled)'), 'Second status did not settle'); await delay(100);
+  must(document.activeElement !== target && !document.querySelector('.synth-plan-settle-layer'), 'Late response stole newer scrolling intent');
+  must(fixture.boardState().requests.length === 2, 'Feedback lifecycle added a status request');
+  const apiRequests = performance.getEntriesByType('resource').filter(entry => new URL(entry.name).pathname.startsWith('/api/')).length;
+  must(apiRequests === 0, 'Ownership probe reached a real API');
+  return { width: document.documentElement.clientWidth, hiddenPortalRetired: true, newerScrollRetained: true, syntheticRequests: 2, apiRequests };
 }
 export async function exerciseBoardDisposal() {
   const { board, fixture, panel } = await setup(); await start(board);

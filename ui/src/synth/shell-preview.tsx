@@ -49,7 +49,7 @@ export function replaceTeamReview() {
   review.checkout = { ...review.checkout, workspace_epoch: review.changes.workspace_epoch };
   chat.rev++; tickers.forEach(tick => tick());
 }
-const boardFixture = params.get("board") === "true" ? (await import("./board-fixture")).fixtureBoard() : null;
+const boardFixture = params.get("board") === "true" ? (await import("./board-fixture")).fixtureBoard(params.get("board-empty-active") === "true") : null;
 export function advanceBoard() {
   if (!boardFixture) throw Error("Board fixture not selected");
   boardFixture.advance(); chat.rev++; tickers.forEach(tick => tick());
