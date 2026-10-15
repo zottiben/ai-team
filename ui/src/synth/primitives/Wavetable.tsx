@@ -1,4 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useReadout } from "../motion/readouts";
+import { useReducedMotion } from "../motion/useReducedMotion";
+import { useVisible } from "../motion/useVisible";
 import { Lcd } from "./Lcd";
 import { observation } from "./graph";
 import { signalStyle } from "./signal";
@@ -26,17 +29,22 @@ export function ridgePath(hits: DirectoryActivity["hits"], baseline: number): st
 
 export function Wavetable({ directories }: { directories: readonly DirectoryActivity[] | null }) {
   const [shown, setShown] = useState(directories);
+  const host = useRef<HTMLDivElement>(null), latest = useRef(directories);
+  latest.current = directories;
+  const visible = useVisible(host), reduced = useReducedMotion();
+  useReadout(host, () => setShown(latest.current), reduced && shown !== directories);
   useEffect(() => {
     // A missing source is not stale activity: clear it immediately.
     if (directories === null) { setShown(null); return; }
+    if (!visible || reduced || shown === directories) return;
     const timer = setTimeout(() => setShown(directories), 500);
     return () => clearTimeout(timer);
-  }, [directories]);
+  }, [directories, visible, reduced, shown]);
   const current = directories === null ? null : shown;
   const ridges = directoryRidges(current ?? []);
   const hits = ridges.reduce((sum, d) => sum + d.hits.reduce((n, h) => n + (usable(h) ? h.hits : 0), 0), 0);
   const omitted = ridges.reduce((sum, d) => sum + d.hits.filter(h => !usable(h)).length, 0);
-  return <Lcd className="synth-graph synth-wavetable" style={signalStyle("read")}>
+  return <Lcd ref={host} className="synth-graph synth-wavetable" style={signalStyle("read")}>
     <div className="synth-graph__heading"><span className="synth-silk">Directory activity</span><span>{current === null ? "Unavailable" : `${hits} hits`}</span></div>
     <svg viewBox="0 0 300 150" preserveAspectRatio="none" aria-hidden="true">
       {ridges.map((ridge, index) => {

@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 
 import { ChatOverview } from "./ChatOverview";
@@ -227,6 +227,41 @@ function sheet(over: Partial<ChatDetail> = {}, events: RunEvent[] = []) {
     />,
   );
 }
+
+it("never keeps another chat's snapshot visible while the next scope loads or fails", async () => {
+  stub();
+  const view = sheet();
+  await screen.findByText("Writing the subtract and its test");
+  view.rerender(<ChatOverview detail={detail({ id: 8, turns: [], active_node_id: null, state: "empty" })} status="Ready" tick={0} events={[]} elapsed={0} now={NOW} />);
+  expect(screen.queryByText("Writing the subtract and its test")).toBeNull();
+  expect(screen.queryByRole("group", { name: "Agent execution graph" })).toBeNull();
+  await screen.findByRole("alert");
+  expect(screen.queryByText("Arithmetic")).toBeNull();
+});
+
+it("renders the Synth rack from the existing scope, retains repository modes and never creates a second fetch owner", async () => {
+  const asked = stub({ live: live({ totals: { ...live().totals, usage: { tokens_in: 1200, tokens_out: 300, cache_read: 50, cache_write: 25 } } }) });
+  const props = { detail: detail(), status: "Working", tick: 0, events: [], elapsed: 288, now: NOW };
+  const view = render(<ChatOverview {...props} synth />);
+  const meters = await screen.findByRole("region", { name: "Chat meters" });
+  await waitFor(() => expect(within(meters).getByRole("meter", { name: "Covered" }).getAttribute("aria-valuetext")).toBe("100%"));
+  expect(within(meters).getByRole("meter", { name: "Edited" }).getAttribute("aria-valuetext")).toBe("50%");
+  expect(within(meters).getByText("Uncached input: 1200")).toBeTruthy();
+  expect(within(meters).getByText("Cache read: 50")).toBeTruthy();
+  expect(within(meters).getByText("Cache write: 25")).toBeTruthy();
+  expect(screen.getByText("Writing the subtract and its test")).toBeTruthy();
+  const modes = await screen.findByRole("group", { name: "Repository display" });
+  fireEvent.click(within(modes).getByRole("button", { name: "TREE" }));
+  expect(screen.getByText("4 displayed nodes · 4 walked files")).toBeTruthy();
+  const tree = document.querySelector(".synth-repository-tree");
+  view.rerender(<ChatOverview {...props} synth={false} />);
+  expect(document.querySelector(".synth-repository-tree")).toBe(tree);
+  view.rerender(<ChatOverview {...props} synth />);
+  expect(within(screen.getByRole("group", { name: "Repository display" })).getByRole("button", { name: "TREE" }).getAttribute("aria-pressed")).toBe("true");
+  expect(asked.filter(path => path.endsWith("/overview/map"))).toHaveLength(1);
+  expect(asked.filter(path => path.endsWith("/overview"))).toHaveLength(1);
+  expect(asked.filter(path => path.endsWith("/plan"))).toHaveLength(1);
+});
 
 it("does not hide a map failure when the live evidence succeeds", async () => {
   stub({ mapError: true });

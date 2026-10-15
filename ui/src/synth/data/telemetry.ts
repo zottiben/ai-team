@@ -12,14 +12,21 @@ export const count = (value: unknown): number | null => typeof value === "number
 /** One immutable chat feed, narrowed to an exact node, never the node's mutable session.
  * This bound is a display horizon, not permission to prune durable receipts. */
 export function measurements(events: readonly RunEvent[], node: number): Measurement[] {
-  const seen = new Set<number>();
-  const found: Measurement[] = [];
+  return measurementsByNode(events, new Set([node])).get(node) ?? [];
+}
+
+/** One pass for a rack of seats, rather than rescanning the conversation per graph. */
+export function measurementsByNode(events: readonly RunEvent[], nodes: ReadonlySet<number>): Map<number, Measurement[]> {
+  const seen = new Set<number>(), found = new Map<number, Measurement[]>();
   for (const event of events) {
     if (seen.has(event.id)) continue;
     seen.add(event.id);
-    if (event.node_run_id === node && measured(event)) found.push(event);
+    if (event.node_run_id === null || !nodes.has(event.node_run_id) || !measured(event)) continue;
+    const rows = found.get(event.node_run_id) ?? [];
+    rows.push(event);
+    found.set(event.node_run_id, rows);
   }
-  return found.slice(-RECEIPTS);
+  return new Map([...found].map(([node, rows]) => [node, rows.slice(-RECEIPTS)]));
 }
 
 function scope(event: Measurement): string | null {
@@ -82,29 +89,49 @@ export function observedRates(events: readonly Measurement[]): (number | null)[]
   return rates.slice(-SAMPLES);
 }
 
+type CompactionMeasurement = Measurement & { telemetry: Extract<Telemetry, { kind: "compaction" }> };
+export type CompactionEvidence = { event: CompactionMeasurement; correlation: "paired" | "start_only" | "end_only" | "missing_identity" | "ambiguous" };
+/** Explicit identity only, including duplicates/reversed/orphan receipts. Input is the
+ * exact-node, first-receipt-wins measurement projection, not the raw conversation. */
+export function compactionEvidence(events: readonly Measurement[]): CompactionEvidence[] {
+  const rows: CompactionEvidence[] = events.filter((event): event is CompactionMeasurement => event.telemetry.kind === "compaction")
+    .map(event => ({ event, correlation: "missing_identity" }));
+  const groups = new Map<string, CompactionEvidence[]>();
+  for (const row of rows) {
+    const key = series(row.event);
+    if (key === null) continue;
+    const group = groups.get(key) ?? []; group.push(row); groups.set(key, group);
+  }
+  for (const group of groups.values()) {
+    const first = group[0], last = group[1];
+    if (!first) continue;
+    if (group.length === 1) first.correlation = first.event.telemetry.phase === "started" ? "start_only" : "end_only";
+    else {
+      const paired = group.length === 2 && last && first.event.telemetry.phase === "started" && last.event.telemetry.phase !== "started"
+        && first.event.telemetry.reason === last.event.telemetry.reason;
+      for (const row of group) row.correlation = paired ? "paired" : "ambiguous";
+    }
+  }
+  return rows;
+}
+
 export type ContextTrace = { values: (number | null)[]; markers: number[]; latest: number | null };
-/** Sample-position axis, not elapsed time. Process/session changes and missing counts
+/** Model-step positions, not elapsed time. Process/session changes and missing counts
  * break the line. Estimated post-compaction counts never replace observed context. */
 export function contextTrace(events: readonly Measurement[]): ContextTrace {
   const values: (number | null)[] = [], markers: number[] = [];
-  const starts = new Map<string, { reason: string | null; duplicate: boolean }>();
+  const matched = new Set(compactionEvidence(events).filter(row => row.correlation === "paired" && row.event.telemetry.phase === "completed").map(row => row.event.id));
   let priorScope: string | null = null, latest: number | null = null;
   for (const event of events) {
     const metric = event.telemetry;
     if (metric.kind === "compaction") {
-      const key = series(event);
-      if (key === null) continue;
-      if (metric.phase === "started") starts.set(key, { reason: metric.reason, duplicate: starts.has(key) });
-      else {
-        const start = starts.get(key);
-        if (metric.phase === "completed" && start && !start.duplicate && start.reason === metric.reason && values.length > 0 && scope(event) === priorScope) markers.push(values.length - 1);
-        starts.delete(key);
-      }
+      if (matched.has(event.id) && values.length > 0 && scope(event) === priorScope) markers.push(values.length - 1);
       continue;
     }
-    const currentScope = scope(event);
-    if (currentScope === null || currentScope !== priorScope) values.push(null);
     latest = count(metric.tokens.context);
+    if (metric.phase !== "step") continue;
+    const currentScope = scope(event);
+    if (values.length > 0 && (currentScope === null || currentScope !== priorScope)) values.push(null);
     values.push(latest);
     priorScope = currentScope;
   }

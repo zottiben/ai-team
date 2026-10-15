@@ -21,6 +21,7 @@ import { setChatMode } from "./team-api";
 import { models, type ModelChoice, type Project, type Reasoning, type RunEvent } from "./api";
 import { SelectChevron } from "./SelectChevron";
 import { useSynth } from "./ui-preferences";
+import { useReadout } from "./synth/motion/readouts";
 import { snippetFrom, SNIPPET_LIMIT, withSnippets, type DraftSnippet } from "./draft-snippets";
 const SessionTabs = lazy(() => import("./synth/views/Session/SessionNavigation").then(m => ({ default: m.SessionTabs })));
 const PanelFrame = lazy(() => import("./synth/views/panels/PanelFrame"));
@@ -86,6 +87,7 @@ export function ChatView({
 }) {
   const synth = useSynth();
   const body = useRef<HTMLDivElement>(null);
+  const clockHost = useRef<HTMLElement>(null);
   const [detail, setDetail] = useState<ChatDetail | null>(null);
   const [events, setEvents] = useState<RunEvent[]>([]);
   const [panel, setPanel] = useState<ChatPanel | null>(initialPanel);
@@ -281,11 +283,7 @@ export function ChatView({
       )
     : 0;
 
-  useEffect(() => {
-    if (!running) return;
-    const timer = setInterval(() => setClock(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, [running]);
+  useReadout(clockHost, () => setClock(Date.now()), running);
 
   const attach = async (files: File[]) => {
     if (!files.length || busy || reading.current || detail?.archived) return;
@@ -411,6 +409,7 @@ export function ChatView({
 
   return (
     <main
+      ref={clockHost}
       className="chat-workspace"
       aria-label={`${project.name} conversation`}
       onDragOver={event => { if (event.dataTransfer.types.includes("Files")) event.preventDefault(); }}

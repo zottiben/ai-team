@@ -49,7 +49,7 @@ export function ChatContext({ detail, panel, opened, hidden, status, tick, busy,
     {/* Keep opened panels mounted: switching context must not discard review/plan drafts. */}
     {opened.has("overview") && <section id="chat-pane-overview" role={synth ? "tabpanel" : undefined} className="chat-context-pane" aria-label="Overview" hidden={panel !== "overview"}>
       <Suspense fallback={<p className="faint">Loading overview…</p>}>
-        <ChatOverview detail={detail} status={status} tick={tick} events={events} elapsed={elapsed} now={now} />
+        <ChatOverview detail={detail} status={status} tick={tick} events={events} elapsed={elapsed} now={now} synth={synth} />
       </Suspense>
     </section>}
     {opened.has("review") && <section id="chat-pane-review" role={synth ? "tabpanel" : undefined} className="chat-context-pane" aria-label="Review" hidden={panel !== "review"}>

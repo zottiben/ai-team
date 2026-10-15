@@ -37,9 +37,11 @@ const chat: ChatDetail = { id: 1, project_id: 1, title: "Shape the workspace", m
 if (params.get("work") === "true") chat.turns = (await import("./work-fixture")).fixtureRuns();
 const events: RunEvent[] = [{ id: 1, node_run_id: 1, actor: "human", kind: "note", summary: "Fixture message", message: "Keep this conversation and its unsent draft while exploring the workspace.", thinking: [], at: "2026-01-01" },
   { id: 2, node_run_id: 1, actor: "assistant", kind: "note", summary: "Fixture response", message: "This is an isolated **layout fixture**. Tabs and tools share the real application controller. Network access and all backend mutations are disabled.", thinking: [], at: "2026-01-01" }];
+const overview = params.get("overview") === "true" ? (await import("./overview-fixture")).fixtureOverview() : null;
+if (overview) { chat.turns = overview.turns; events.push(...overview.events); }
 const activityCount = Math.max(0, Math.min(5_000, Number(params.get("activity")) || 0));
 const activityMode = params.get("activity-mode") === "reads" ? "reads" : params.get("activity-mode") === "thinking" ? "thinking" : "tools";
-events.push(...fixtureActivity(activityCount, 2, activityMode));
+events.push(...fixtureActivity(activityCount, events.at(-1)?.id ?? 0, activityMode));
 export function appendActivity() {
   events.push(...fixtureActivity(1, events.at(-1)?.id ?? 0, activityMode));
   chat.rev += 1;
@@ -66,6 +68,8 @@ window.fetch = async (input, init) => {
     case "/api/chats": return json([chat]);
     case "/api/chats/1": return json(chat);
     case "/api/chats/1/events": return json(events.filter(event => event.id > Number(url.searchParams.get("after") ?? 0)).slice(0, 500));
+    case "/api/chats/1/overview": return overview ? json(overview.live) : json({ error: "Overview fixture not selected" }, 404);
+    case "/api/chats/1/overview/map": return overview ? json(overview.view) : json({ error: "Overview fixture not selected" }, 404);
     case "/api/chats/1/workspace": return json({ requests: [] });
     case "/api/chats/1/plan": return json({ chat_id: 1, project_id: 1, revision: 0, bundle: null });
     case "/api/chat-workspace-setups": return json([]);
