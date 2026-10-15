@@ -18,6 +18,7 @@ mod chat_plans;
 mod chat_teams;
 mod chat_workspaces;
 mod chats;
+mod editor;
 mod error;
 mod health;
 mod mcp;

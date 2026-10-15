@@ -202,6 +202,11 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
         "bounded host activity snapshots",
         include_str!("migrations/045_event_activity.sql"),
     ),
+    (
+        46,
+        "editor save notices",
+        include_str!("migrations/046_editor_saves.sql"),
+    ),
 ];
 
 /// Migrations that rebuild a table other tables point at.

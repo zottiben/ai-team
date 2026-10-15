@@ -24,6 +24,8 @@ mod chat_teams;
 mod chat_thinking;
 #[path = "server/chat_today.rs"]
 mod chat_today;
+#[path = "server/editor.rs"]
+mod editor;
 #[path = "server/mcp.rs"]
 mod mcp;
 #[path = "server/plan_library.rs"]

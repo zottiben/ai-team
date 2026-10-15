@@ -253,7 +253,16 @@ async fn drive(store: &mut Store, chat_id: i64, node_id: i64, recovering: bool) 
     } else {
         run.prompt
     };
-    let prompt = format!("{}{prompt}", store.chat_turn_context(chat_id, node_id)?);
+    // The operator's own edits in this checkout, at the start of a turn and nowhere else
+    // (Q67): a notice handed to a tool that is already running would be an instruction
+    // nobody sent.
+    let edits = store
+        .take_editor_save_notice(chat_id, node_id)?
+        .unwrap_or_default();
+    let prompt = format!(
+        "{}{edits}{prompt}",
+        store.chat_turn_context(chat_id, node_id)?
+    );
     // Read here rather than carried from the send path: a grant the chat no longer holds
     // must not reach the seat as a tool, even on a resumed attempt of the same turn.
     if !recovering || node.session_id.is_none() {

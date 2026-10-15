@@ -1,0 +1,1 @@
+import{l as e}from"./api.js";function t(t){return e(`/chats/${t}/overview`)}function n(t){return e(`/chats/${t}/overview/map`)}export{n,t};

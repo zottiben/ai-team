@@ -75,6 +75,23 @@
   --synth-cable-closed: rgba(253,244,255,.22);
   --synth-command-pad: linear-gradient(180deg, #301261, #261049);
   --synth-pad-shadow: inset 0 -3px 0 rgba(0,0,0,.35);
+
+  /* §11.3 code surface. Syntax is a palette like any other: a literal in the editor
+     theme is a buffer that stays dark when the window goes light. */
+  --code-surface: #0a0119;
+  --code-text: rgba(253,244,255,.82); --code-punctuation: rgba(224,195,255,.55);
+  --code-keyword: #b967ff; --code-variable: #e0c3ff; --code-string: #ff79c6;
+  --code-number: #ffd23f; --code-function: #2de2e6; --code-type: #b5f2ff;
+  --code-comment: #8a6aa8;
+  --code-selection: rgba(185,103,255,.25); --code-active-line: rgba(253,244,255,.05);
+  --code-gutter: rgba(224,195,255,.38); --code-gutter-active: #fdf4ff;
+  --code-caret: #fdf4ff;
+  --code-added: #2de2e6; --code-added-tint: rgba(45,226,230,.07); --code-removed: #ff6b35;
+  --code-added-glow: 0 0 6px rgba(45,226,230,.55);
+  --code-presence: #2de2e6; --code-presence-ink: #1a0633;
+  --code-presence-glow: 0 0 8px rgba(45,226,230,.6);
+  --map-line: rgba(185,103,255,.55); --map-added: #2de2e6; --map-removed: #ff6b35;
+  --map-window: rgba(253,244,255,.07); --map-window-ring: rgba(253,244,255,.35);
 }
 
 /* Daylight faceplates: the same sunset branding, with ink rather than neon text.
@@ -117,4 +134,21 @@
   --synth-cable-shadow: rgba(74,42,107,.22); --synth-cable-closed: rgba(41,18,63,.45);
   --synth-command-pad: linear-gradient(180deg, #f7efff, #e5d6f4);
   --synth-pad-shadow: inset 0 -3px 0 rgba(74,42,107,.22);
+
+  /* Daylight code: the same roles, ink instead of neon, each one dark enough to read
+     against the paper surface at 12.5px. */
+  --code-surface: #fffbfe;
+  --code-text: #29123f; --code-punctuation: #614775;
+  --code-keyword: #7134a5; --code-variable: #4a2a6b; --code-string: #9b205f;
+  --code-number: #795100; --code-function: #006168; --code-type: #245b83;
+  --code-comment: #6b5a7a;
+  --code-selection: rgba(113,52,165,.22); --code-active-line: rgba(41,18,63,.05);
+  --code-gutter: #705a82; --code-gutter-active: #29123f;
+  --code-caret: #29123f;
+  --code-added: #006168; --code-added-tint: rgba(0,97,104,.08); --code-removed: #963a1a;
+  --code-added-glow: 0 0 0 1px rgba(0,97,104,.25);
+  --code-presence: #006168; --code-presence-ink: #fffbfe;
+  --code-presence-glow: 0 0 0 1px rgba(0,97,104,.35);
+  --map-line: rgba(113,52,165,.5); --map-added: #006168; --map-removed: #963a1a;
+  --map-window: rgba(41,18,63,.07); --map-window-ring: rgba(41,18,63,.35);
 }

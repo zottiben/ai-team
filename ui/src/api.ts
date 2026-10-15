@@ -723,8 +723,6 @@ export function repoMap(project: string, workspace?: string | null): Promise<Rep
   return api<RepoMap>(`/map?${workspaceScope(project, workspace)}`);
 }
 
-export type FileBody = { path: string; text: string; editable: boolean };
-
 export type Hit = {
   path: string;
   language: string | null;
@@ -760,14 +758,6 @@ function scope(where: Where, extra: Record<string, string> = {}): string {
 
 export function tree(where: Where, path: string): Promise<TreeEntry[]> {
   return api<TreeEntry[]>(`/tree?${scope(where, { path })}`);
-}
-
-export function readFile(where: Where, path: string): Promise<FileBody> {
-  return api<FileBody>(`/file?${scope(where, { path })}`);
-}
-
-export function saveFile(where: Where, path: string, text: string): Promise<{ saved: string }> {
-  return post("/file", { ...where, path, text });
 }
 
 export function search(where: Where, q: string): Promise<Hit[]> {

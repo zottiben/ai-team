@@ -26,6 +26,7 @@ mod db;
 mod delivery;
 mod dialog;
 mod diff;
+pub mod editor;
 mod error;
 mod gates;
 mod guardrails;
@@ -83,6 +84,12 @@ pub use db::{latest_schema, Db};
 pub use delivery::{approve_delivery, delivery_status};
 pub use dialog::alert;
 pub use diff::{parse as parse_diff, patch_for, FileDiff, FileStatus, Hunk, Line, LineKind};
+pub use editor::{
+    discard_preserved as discard_preserved_file, head_text as file_at_head, open as open_file,
+    preserved as preserved_files, preview as preview_save, read_preserved as read_preserved_file,
+    save as save_file, BoundedText as EditorText, Eol, FileRevision, OpenedFile, PreservedEntry,
+    PreservedOriginal, Refusal, RefusalReason, SaveOutcome, SavePreview, Saved,
+};
 pub use error::{Error, Result};
 pub use gates::{all_passed, discover_gates, evidence, run_gates, Gate, GateKind, GateResult};
 pub use guardrails::Fallout;

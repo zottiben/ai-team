@@ -46,6 +46,7 @@ pub(crate) fn routes() -> Router<AppState> {
         .merge(crate::plan_library::routes())
         .merge(crate::chat_teams::routes())
         .merge(crate::chat_changes::routes())
+        .merge(crate::editor::routes())
         .merge(crate::toolbox::routes())
         .merge(crate::mcp::routes())
         .route("/events", get(stream))
@@ -72,7 +73,6 @@ pub(crate) fn routes() -> Router<AppState> {
         .merge(notification_routes())
         .route("/tree", get(tree))
         .route("/map", get(repo_map))
-        .route("/file", get(read_file).post(write_file))
         .route("/search", get(search))
         .route("/projects/{id}/repos", axum::routing::post(attach_repo))
         .route("/crew", get(crew))
@@ -399,82 +399,6 @@ async fn repo_map(
     };
 
     Ok(Json(ai_team_core::repo_map(&worktree, &owners)?))
-}
-
-#[derive(Debug, Serialize)]
-struct FileBody {
-    path: String,
-    text: String,
-    /// False when the bytes are not text. The editor refuses rather than rendering a
-    /// screenful of replacement characters and then offering to save them back.
-    editable: bool,
-}
-
-async fn read_file(
-    State(state): State<AppState>,
-    Query(query): Query<TreeQuery>,
-) -> Result<Json<FileBody>> {
-    let worktree = worktree_for(
-        &state,
-        &query.project,
-        query.node,
-        query.workspace.as_deref(),
-    )
-    .await?;
-    let path = ai_team_core::safe_join(&worktree, &query.path)?;
-    let bytes = std::fs::read(&path).map_err(|error| {
-        crate::error::Error::Core(ai_team_core::Error::invalid(format!(
-            "could not read {}: {error}",
-            query.path
-        )))
-    })?;
-
-    // Decoded strictly, not lossily: a lossy read followed by a save would replace every
-    // undecodable byte with U+FFFD and quietly corrupt the file.
-    match String::from_utf8(bytes) {
-        Ok(text) => Ok(Json(FileBody {
-            path: query.path,
-            text,
-            editable: true,
-        })),
-        Err(_) => Ok(Json(FileBody {
-            path: query.path,
-            text: String::new(),
-            editable: false,
-        })),
-    }
-}
-
-#[derive(Debug, Deserialize)]
-struct SaveRequest {
-    project: String,
-    #[serde(default)]
-    workspace: Option<String>,
-    #[serde(default)]
-    node: Option<i64>,
-    path: String,
-    text: String,
-}
-
-async fn write_file(
-    State(state): State<AppState>,
-    JsonBody(request): JsonBody<SaveRequest>,
-) -> Result<Json<serde_json::Value>> {
-    let worktree = worktree_for(
-        &state,
-        &request.project,
-        request.node,
-        request.workspace.as_deref(),
-    )
-    .await?;
-    let path = ai_team_core::safe_join(&worktree, &request.path)?;
-    std::fs::write(&path, request.text).map_err(|error| {
-        crate::error::Error::Core(ai_team_core::Error::invalid(format!(
-            "could not save {}: {error}",
-            request.path
-        )))
-    })?;
-    Ok(Json(serde_json::json!({ "saved": request.path })))
 }
 
 /// One provider, as the settings page needs it.

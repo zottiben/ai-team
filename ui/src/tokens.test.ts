@@ -96,6 +96,7 @@ it("every token the shell uses actually exists", () => {
       "--seat-mark",
       "--workspace-depth",
       "--synth-signal",
+      "--presence-line",
     ]);
     const unknown = [...new Set(used)].filter(
       (token) => !defined.has(token) && !supplied.has(token),

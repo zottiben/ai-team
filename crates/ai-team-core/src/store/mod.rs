@@ -18,6 +18,7 @@ mod chats;
 pub(crate) mod update;
 mod workspace_setup;
 pub(crate) use chats::followups::acknowledge as acknowledge_chat_followup;
+mod editor_notices;
 mod events;
 mod interrupted;
 mod mcp;

@@ -23,6 +23,15 @@ pub fn rfc3339_in(seconds: i64) -> String {
         .unwrap_or_default()
 }
 
+/// The same format, for a filesystem timestamp that is already milliseconds since the
+/// epoch. Second precision, like every other stamp this writes.
+pub(crate) fn rfc3339_from_ms(millis: i64) -> String {
+    OffsetDateTime::from_unix_timestamp(millis.div_euclid(1_000))
+        .ok()
+        .and_then(|at| at.format(&Rfc3339).ok())
+        .unwrap_or_default()
+}
+
 /// `ACME-1234 - Reusable Date Range Picker` -> `acme-1234-reusable-date-range-picker`
 pub fn slugify(input: &str) -> String {
     let mut out = String::with_capacity(input.len());

@@ -50,6 +50,13 @@ async fn plan(store: &mut Store, control: &mut TeamControl) -> Result<()> {
     }
     let run = store.run(control.run_id)?;
     let context = store.chat_turn_context(control.chat_id, control.node_id)?;
+    // See `chat::drive`: the operator's editor saves reach a turn as it starts.
+    let context = format!(
+        "{context}{}",
+        store
+            .take_editor_save_notice(control.chat_id, control.node_id)?
+            .unwrap_or_default()
+    );
     let prompt = format!("{context}Ground this operator request for the planner. Produce a delegation brief, not source changes.\n\nOperator request:\n{}", run.prompt);
     let brief = take_turn(store, control, control.node_id, prompt).await?;
     if brief.trim().is_empty() {
