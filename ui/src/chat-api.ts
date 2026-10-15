@@ -38,7 +38,8 @@ export type ChatTurn = {
   team: TeamRun | null;
   members: TeamMember[];
   run: Run;
-  node: NodeRun & { usage: Usage; started_at: string | null };
+  /** `ended_at` is sent with every turn; optional here so older readers stay valid. */
+  node: NodeRun & { usage: Usage; started_at: string | null; ended_at?: string | null };
 };
 export type ChatFollowup = {
   image_count?: number;

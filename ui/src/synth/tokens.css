@@ -27,7 +27,7 @@
   --sig-verdict: #ff6b35; --sig-fix: #b967ff; --sig-result: #ffd23f; --sig-activity: #fff0fa;
   --st-working: #ffd23f; --st-done: #2de2e6; --st-attention: #ff6b35; --st-info: #b967ff; --st-idle: rgba(253,244,255,.18);
   --git-modified: #ffd23f; --git-added: #2de2e6; --git-deleted: #ff6b35; --git-untracked: #b5f2ff;
-  --run-done: #2de2e6; --run-live: #ffd23f; --run-cancelled: rgba(253,244,255,.3);
+  --run-done: #2de2e6; --run-live: #ffd23f; --run-cancelled: rgba(253,244,255,.3); --run-ink: var(--vc-midnight);
   --slice-draft: rgba(253,244,255,.45); --slice-ready: #b5f2ff; --slice-active: #ffd23f; --slice-review: #b967ff;
   --slice-blocked: #ff6b35; --slice-done: #2de2e6; --slice-deferred: #8a6aa8;
   --plate-night: linear-gradient(180deg, #371470, #2b0f57);
@@ -132,7 +132,7 @@
   --sig-verdict: #963a1a; --sig-fix: #7134a5; --sig-result: #795100; --sig-activity: #29123f;
   --st-working: #795100; --st-done: #006168; --st-attention: #963a1a; --st-info: #7134a5; --st-idle: rgba(41,18,63,.3);
   --git-modified: #795100; --git-added: #006168; --git-deleted: #963a1a; --git-untracked: #245b83;
-  --run-done: #006168; --run-live: #795100; --run-cancelled: #705a82;
+  --run-done: #006168; --run-live: #795100; --run-cancelled: #705a82; --run-ink: #fffbfe;
   --slice-draft: #705a82; --slice-ready: #245b83; --slice-active: #795100; --slice-review: #7134a5;
   --slice-blocked: #963a1a; --slice-done: #006168; --slice-deferred: #705a82;
   --plate-night: linear-gradient(180deg, #f9efff, #e8d9f6);

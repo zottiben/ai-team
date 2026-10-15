@@ -2,6 +2,13 @@ import { post, type NodeRun } from "./api";
 import type { Chat } from "./chat-api";
 import type { ChatPlan } from "./plan-api";
 
+/** One phase, one sentence. Beside the type it names, so every surface reads it here. */
+export const TEAM_PHASES = {
+  grounding: "Grounding the request", planning: "Writing the plan",
+  awaiting_approval: "Awaiting your approval", building: "Building approved slices",
+  blocked: "Needs attention", finished: "Execution ended",
+};
+
 export type TeamRun = {
   run_id: number;
   chat_id: number;

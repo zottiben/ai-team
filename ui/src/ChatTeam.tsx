@@ -5,16 +5,12 @@ import { chatPlan } from "./plan-api";
 import { inspectRetained, keepRetained, retainedFile, type RetainedFile, type RetainedInspection } from "./changes-api";
 import { FileView } from "./ReviewFile";
 import {
-  approveTeam, closeTeam, continueTeam, reviewTeam, teamCommand,
+  approveTeam, closeTeam, continueTeam, reviewTeam, teamCommand, TEAM_PHASES,
   type BuildReview, type TeamBuild,
 } from "./team-api";
 import "./chat-team.css";
 
-export const TEAM_PHASES = {
-  grounding: "Grounding the request", planning: "Writing the plan",
-  awaiting_approval: "Awaiting your approval", building: "Building approved slices",
-  blocked: "Needs attention", finished: "Execution ended",
-};
+export { TEAM_PHASES };
 
 export function ChatTeam({ detail, busy, command, events, now }: {
   detail: ChatDetail;

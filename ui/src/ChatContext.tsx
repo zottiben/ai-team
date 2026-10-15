@@ -1,4 +1,4 @@
-import { lazy, Suspense } from "react";
+import { lazy, Suspense, useRef } from "react";
 import { ChatTeam, TEAM_PHASES } from "./ChatTeam";
 import type { ChatDetail } from "./chat-api";
 import type { RunEvent } from "./api";
@@ -7,6 +7,7 @@ const PanelSelector = lazy(() => import("./synth/views/Session/SessionNavigation
 const ChatChanges = lazy(() => import("./ChatChanges").then(module => ({ default: module.ChatChanges })));
 const ChatOverview = lazy(() => import("./ChatOverview").then(module => ({ default: module.ChatOverview })));
 const ChatPlanning = lazy(() => import("./ChatPlan").then(module => ({ default: module.ChatPlanning })));
+const WorkPanel = lazy(() => import("./synth/views/panels/WorkPanel"));
 
 export const CHAT_PANELS = {
   overview: "Overview",
@@ -36,6 +37,8 @@ export function ChatContext({ detail, panel, opened, hidden, status, tick, busy,
   onClose: () => void;
 }) {
   const activeTeam = detail.turns.find(turn => turn.team?.control_node_id === detail.active_node_id)?.team;
+  const workOpened = useRef(false);
+  if (synth && opened.has("work")) workOpened.current = true;
   return <aside id="chat-context" className="chat-context" aria-label="Chat context" hidden={hidden || panel === null}
     onKeyDown={event => { if (event.key === "Escape" && !event.defaultPrevented) { event.stopPropagation(); onClose(); } }}>
     <header className="chat-context-heading">
@@ -59,23 +62,30 @@ export function ChatContext({ detail, panel, opened, hidden, status, tick, busy,
       </Suspense>
     </section>}
     {opened.has("work") && <section id="chat-pane-work" role={synth ? "tabpanel" : undefined} className="chat-context-pane" aria-label="Work" hidden={panel !== "work"}>
+      {/* Team execution is rendered in the same place for both skins: a review, a close
+          form or a retained inspection must survive the flag, not be remounted by it. */}
       {(detail.mode === "team" || detail.team_builds.length > 0) && <ChatTeam detail={detail} busy={busy} command={command} events={events} now={now} />}
-      <section className="chat-overview-card">
-        <h3>Turns</h3>
-        {!detail.turns.length ? <p className="faint">No turns yet.</p> : <ol className="chat-turn-list">
-          {detail.turns.map(turn => <li key={turn.run.id}>
-            <span>{turn.run.prompt}</span>
-            <span className="status" data-status={turn.team ? turn.run.status : turn.node.status}>{turn.team ? TEAM_PHASES[turn.team.phase] : turn.node.status}</span>
-            <span className="faint">run #{turn.run.id} · {turn.node.model}</span>
-          </li>)}
-        </ol>}
-      </section>
-      <section className="chat-overview-card">
-        <h3>Recent activity</h3>
-        {!events.length ? <p className="faint">No activity yet.</p> : <ol className="chat-turn-list">
-          {events.slice(-20).map(event => <li key={event.id}><span>{event.summary}</span><span className="faint">{event.at} · turn #{event.node_run_id}</span></li>)}
-        </ol>}
-      </section>
+      <div hidden={!synth}>{workOpened.current && <Suspense fallback={<p className="faint">Loading work…</p>}>
+        <WorkPanel detail={detail} events={events} now={now} visible={synth && panel === "work" && !hidden} />
+      </Suspense>}</div>
+      <div hidden={synth}>
+        <section className="chat-overview-card">
+          <h3>Turns</h3>
+          {!detail.turns.length ? <p className="faint">No turns yet.</p> : <ol className="chat-turn-list">
+            {detail.turns.map(turn => <li key={turn.run.id}>
+              <span>{turn.run.prompt}</span>
+              <span className="status" data-status={turn.team ? turn.run.status : turn.node.status}>{turn.team ? TEAM_PHASES[turn.team.phase] : turn.node.status}</span>
+              <span className="faint">run #{turn.run.id} · {turn.node.model}</span>
+            </li>)}
+          </ol>}
+        </section>
+        <section className="chat-overview-card">
+          <h3>Recent activity</h3>
+          {!events.length ? <p className="faint">No activity yet.</p> : <ol className="chat-turn-list">
+            {events.slice(-20).map(event => <li key={event.id}><span>{event.summary}</span><span className="faint">{event.at} · turn #{event.node_run_id}</span></li>)}
+          </ol>}
+        </section>
+      </div>
     </section>}
   </aside>;
 }
