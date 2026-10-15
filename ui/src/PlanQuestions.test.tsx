@@ -1,0 +1,71 @@
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { expect, it, vi } from "vitest";
+import { PlanQuestions } from "./PlanQuestions";
+import type { PlanQuestion } from "./plan-api";
+
+const question: PlanQuestion = { id: 9, body: "Original question", status: "open", answer: null, slice_key: "S1" };
+it("requires deliberate review before keeping an answer against a new revision", async () => {
+  const save = vi.fn().mockResolvedValue(false);
+  const view = render(<PlanQuestions questions={[question]} revision={4} save={save}/>);
+  const input = screen.getByLabelText("Your answer");
+  fireEvent.change(input, { target: { value: "My original answer" } });
+  view.rerender(<PlanQuestions questions={[{ ...question, body: "Changed question" }]} revision={8} save={save}/>);
+  expect(screen.getByText("Original question", { selector: "p" })).toBeTruthy();
+  expect((screen.getByRole("button", { name: "Answer question" }) as HTMLButtonElement).disabled).toBe(true);
+  expect(save).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Keep answer for current question" }));
+  expect(screen.getByLabelText("Your answer")).toBe(input);
+  fireEvent.click(screen.getByRole("button", { name: "Answer question" }));
+  await waitFor(() => expect(save).toHaveBeenCalledWith({ action: "answer_question", question_id: 9, answer: "My original answer" }, 8));
+});
+it("retains a missing question only while its unsent answer exists", async () => {
+  const save = vi.fn().mockResolvedValue(false);
+  const view = render(<PlanQuestions questions={[question]} revision={4} save={save}/>);
+  const input = screen.getByLabelText("Your answer");
+  fireEvent.change(input, { target: { value: "Keep despite removal" } });
+  view.rerender(<PlanQuestions questions={[]} revision={8} save={save}/>);
+  expect(screen.getByLabelText("Your answer")).toBe(input);
+  expect((screen.getByRole("button", { name: "Answer question" }) as HTMLButtonElement).disabled).toBe(true);
+  expect(screen.queryByRole("button", { name: "Keep answer for current question" })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Discard answer draft" }));
+  await waitFor(() => expect(screen.queryByText("Original question")).toBeNull());
+  expect(save).not.toHaveBeenCalled();
+});
+it("does not erase newer answer text when an older submission completes", async () => {
+  let finish!: (ok: boolean) => void;
+  const save = vi.fn(() => new Promise<boolean>(resolve => { finish = resolve; }));
+  render(<PlanQuestions questions={[question]} revision={4} save={save}/>);
+  const input = screen.getByLabelText("Your answer");
+  fireEvent.change(input, { target: { value: "Submitted answer" } });
+  fireEvent.click(screen.getByRole("button", { name: "Answer question" }));
+  fireEvent.change(input, { target: { value: "Newer unsent answer" } });
+  await act(async () => finish(true));
+  expect((input as HTMLTextAreaElement).value).toBe("Newer unsent answer");
+  expect(save).toHaveBeenCalledWith({ action: "answer_question", question_id: 9, answer: "Submitted answer" }, 4);
+});
+it("captures a new question's revision and only clears its submitted draft", async () => {
+  let finish!: (ok: boolean) => void;
+  const save = vi.fn(() => new Promise<boolean>(resolve => { finish = resolve; }));
+  const view = render(<PlanQuestions questions={[]} revision={4} save={save}/>);
+  fireEvent.click(screen.getByRole("button", { name: "Ask a question" }));
+  const input = screen.getByLabelText("Question");
+  fireEvent.change(input, { target: { value: "Original new question" } });
+  view.rerender(<PlanQuestions questions={[]} revision={8} save={save}/>);
+  expect((screen.getByRole("button", { name: "Save question" }) as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.click(screen.getByRole("button", { name: "Keep question for current revision" }));
+  fireEvent.click(screen.getByRole("button", { name: "Save question" }));
+  fireEvent.change(input, { target: { value: "Newer question draft" } });
+  await act(async () => finish(true));
+  expect((screen.getByLabelText("Question") as HTMLTextAreaElement).value).toBe("Newer question draft");
+  expect(save).toHaveBeenCalledWith({ action: "open_question", body: "Original new question" }, 8);
+});
+it("keeps read-only answers selectable without admitting a write", () => {
+  const save = vi.fn().mockResolvedValue(false);
+  const view = render(<PlanQuestions questions={[question]} revision={4} save={save}/>);
+  const input = screen.getByLabelText("Your answer");
+  fireEvent.change(input, { target: { value: "Retained draft" } });
+  view.rerender(<PlanQuestions questions={[question]} revision={4} save={save} readOnly/>);
+  expect((input as HTMLTextAreaElement).readOnly).toBe(true);
+  fireEvent.submit(input.closest("form")!);
+  expect(save).not.toHaveBeenCalled();
+});

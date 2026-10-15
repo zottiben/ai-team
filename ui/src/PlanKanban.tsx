@@ -7,6 +7,7 @@ import {
   statusLabel,
   type SavePlan,
 } from "./PlanForms";
+import "./plan-library.css";
 
 export function PlanKanban({
   slices,

@@ -4,12 +4,14 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ChatPlanning } from "./ChatPlan";
 import type { ChatPlan } from "./plan-api";
 import { useLayoutEffect } from "react";
 import { SliceStatus } from "./PlanForms";
+import { setSynth } from "./ui-preferences";
 
 const service = vi.hoisted(() => ({
   chatPlan: vi.fn(),
@@ -66,6 +68,7 @@ const plan = (): ChatPlan => ({
 const props = { chatId: 7, tick: 0, archived: false, onChanged: vi.fn() };
 
 beforeEach(() => {
+  setSynth(false);
   vi.clearAllMocks();
   service.chatPlan.mockResolvedValue(empty());
 });
@@ -99,6 +102,18 @@ describe("chat-owned planning", () => {
     expect(screen.getByRole("button", { name: "Add slice" }).closest("fieldset")?.disabled).toBe(true);
     expect((screen.getByRole("textbox", { name: "Your answer" }) as HTMLTextAreaElement).disabled).toBe(false);
     expect((screen.getByRole("button", { name: "Ask a question" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("keeps answered history readable when the chat is archived", async () => {
+    const archived = plan(); archived.bundle!.questions[0]!.status = "answered";
+    archived.bundle!.questions[0]!.answer = "Recorded choice";
+    service.chatPlan.mockResolvedValue(archived);
+    render(<ChatPlanning {...props} archived/>);
+    const history = await screen.findByRole("button", { name: "Answered questions (1)" });
+    expect(history.matches(":disabled")).toBe(false);
+    fireEvent.click(history);
+    expect(await screen.findByText("Recorded choice")).toBeTruthy();
+    expect(service.changeChatPlan).not.toHaveBeenCalled();
   });
 
   it("does not fill Overview with the engine's empty outline placeholders", async () => {
@@ -178,6 +193,76 @@ describe("chat-owned planning", () => {
       ),
     );
     await screen.findByRole("alert");
+  });
+
+  it("retains separate section editors and their original field values", async () => {
+    const initial = plan();
+    initial.bundle!.sections.push({ key: "design", title: "Design", body: "Original design", rev: 1 });
+    service.chatPlan.mockResolvedValue(initial);
+    const view = render(<ChatPlanning {...props}/>);
+    fireEvent.click(await screen.findByRole("button", { name: "Edit Scope" }));
+    const scope = screen.getByRole("textbox", { name: "Content" });
+    fireEvent.change(scope, { target: { value: "My retained scope" } });
+    fireEvent.click(screen.getByRole("button", { name: "Edit Design" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Content" }), { target: { value: "My retained design" } });
+    fireEvent.click(screen.getByRole("button", { name: "Edit Scope" }));
+    expect(screen.getByRole("textbox", { name: "Content" })).toBe(scope);
+    expect((scope as HTMLTextAreaElement).value).toBe("My retained scope");
+    const newer = structuredClone(initial); newer.revision = 8;
+    newer.bundle!.sections[0]!.title = "Another writer's title";
+    service.chatPlan.mockResolvedValue(newer);
+    view.rerender(<ChatPlanning {...props} tick={1}/>);
+    await screen.findByRole("button", { name: "Edit Another writer's title" });
+    expect((screen.getByRole("textbox", { name: "Section title" }) as HTMLInputElement).value).toBe("Scope");
+    fireEvent.click(screen.getByRole("button", { name: "Edit Design" }));
+    expect((screen.getByRole("textbox", { name: "Content" }) as HTMLTextAreaElement).value).toBe("My retained design");
+  });
+
+  it("retains a Board drawer editor when switching back to the legacy document", async () => {
+    setSynth(true);
+    service.chatPlan.mockResolvedValue(plan());
+    render(<ChatPlanning {...props}/>);
+    fireEvent.click(await screen.findByRole("button", { name: "S1 Search field" }));
+    const drawer = screen.getByRole("complementary", { name: "Slice S1" });
+    fireEvent.click(within(drawer).getByRole("button", { name: "Edit S1" }));
+    const scope = within(drawer).getByLabelText("Scope");
+    fireEvent.change(scope, { target: { value: "Retained drawer work" } });
+    act(() => setSynth(false));
+    expect(scope.isConnected).toBe(true);
+    expect(drawer.closest("[hidden]")).not.toBeNull();
+    act(() => setSynth(true));
+    expect(within(screen.getByRole("complementary", { name: "Slice S1" })).getByLabelText("Scope")).toBe(scope);
+    expect((scope as HTMLTextAreaElement).value).toBe("Retained drawer work");
+    expect(service.changeChatPlan).not.toHaveBeenCalled();
+  });
+
+  it("keeps an answer bound to the revision at which writing began", async () => {
+    service.chatPlan.mockResolvedValue(plan());
+    const view = render(<ChatPlanning {...props}/>);
+    const answer = await screen.findByLabelText("Your answer");
+    fireEvent.change(answer, { target: { value: "My original answer" } });
+    service.chatPlan.mockResolvedValue({ ...plan(), revision: 8 });
+    view.rerender(<ChatPlanning {...props} tick={1}/>);
+    await waitFor(() => expect(service.chatPlan).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect((screen.getByRole("button", { name: "Answer question" }) as HTMLButtonElement).disabled).toBe(true));
+    expect((answer as HTMLTextAreaElement).value).toBe("My original answer");
+    expect(service.changeChatPlan).not.toHaveBeenCalled();
+  });
+
+  it("retains an unsent answer when another writer resolves its question", async () => {
+    service.chatPlan.mockResolvedValue(plan());
+    const view = render(<ChatPlanning {...props}/>);
+    const answer = await screen.findByLabelText("Your answer");
+    fireEvent.change(answer, { target: { value: "My unsent answer" } });
+    const newer = plan(); newer.revision = 8;
+    newer.bundle!.questions[0]!.status = "answered"; newer.bundle!.questions[0]!.answer = "A recorded answer";
+    service.chatPlan.mockResolvedValue(newer);
+    view.rerender(<ChatPlanning {...props} tick={1}/>);
+    await screen.findByText("Answered questions (1)");
+    expect(answer.isConnected).toBe(true);
+    expect((answer as HTMLTextAreaElement).value).toBe("My unsent answer");
+    expect((screen.getByRole("button", { name: "Answer question" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(service.changeChatPlan).not.toHaveBeenCalled();
   });
 
   it("does not let an older in-flight refresh erase a successful write", async () => {

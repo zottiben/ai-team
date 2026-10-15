@@ -49,8 +49,14 @@ export function replaceTeamReview() {
   review.checkout = { ...review.checkout, workspace_epoch: review.changes.workspace_epoch };
   chat.rev++; tickers.forEach(tick => tick());
 }
+const boardFixture = params.get("board") === "true" ? (await import("./board-fixture")).fixtureBoard() : null;
+export function advanceBoard() {
+  if (!boardFixture) throw Error("Board fixture not selected");
+  boardFixture.advance(); chat.rev++; tickers.forEach(tick => tick());
+}
 let reviewRevision = 0, previewId = 100;
 export const reviewRequests: { method: string; path: string }[] = [];
+export const boardRequests: { method: string; path: string }[] = [];
 export function moveReviewFile(path: string) {
   if (!review) throw Error("Review fixture not selected");
   const file = review.checkout.unstaged.find(file => file.path === path);
@@ -84,6 +90,7 @@ window.fetch = async (input, init) => {
   const url = new URL(request?.url ?? String(input), location.href), method = init?.method ?? request?.method ?? "GET";
   const json = (data: unknown, status = 200) => new Response(JSON.stringify(data), { status, headers: { "Content-Type": "application/json" } });
   if (review && method !== "GET") reviewRequests.push({ method, path: url.pathname });
+  if (boardFixture && method !== "GET") boardRequests.push({ method, path: url.pathname });
   if (method === "POST" && url.pathname === "/api/chats/1/draft/review" && teamReviews) {
     const target: unknown = JSON.parse(typeof init?.body === "string" ? init.body : request ? await request.text() : "null");
     const captured = teamReviews.review(target);
@@ -106,7 +113,7 @@ window.fetch = async (input, init) => {
     case "/api/chats/1/changes": return review ? json(review.changes) : json({ error: "Review fixture not selected" }, 404);
     case "/api/chats/1/checkout": return review ? json(review.checkout) : json({ error: "Review fixture not selected" }, 404);
     case "/api/chats/1/workspace": return json({ requests: [] });
-    case "/api/chats/1/plan": return json({ chat_id: 1, project_id: 1, revision: 0, bundle: null });
+    case "/api/chats/1/plan": return json(boardFixture?.read() ?? { chat_id: 1, project_id: 1, revision: 0, bundle: null });
     case "/api/chat-workspace-setups": return json([]);
     case "/api/doctor": return json({ needs_setup: false });
     case "/api/notifications": return json({ items: [], unread: 0 });

@@ -1,21 +1,21 @@
 import { useEffect, useRef, useState } from "react";
 import { BoardMarkdown } from "./BoardMarkdown";
 import { PlanKanban } from "./PlanKanban";
+import { PlanEditors, usePlanEditors } from "./PlanEditors";
+import { PlanQuestions } from "./PlanQuestions";
 import { chatPlan, changeChatPlan, PLAN_STATUSES } from "./plan-api";
 import type {
   ChatPlan as Snapshot,
-  PlanQuestion,
   PlanStatus,
 } from "./plan-api";
 import {
   CreatePlan,
-  SectionForm,
-  SliceForm,
   SliceStatus,
   statusLabel,
 } from "./PlanForms";
 import type { SavePlan } from "./PlanForms";
 import "./chat-planning.css";
+import { useSynth } from "./ui-preferences";
 
 type Props = {
   chatId: number;
@@ -26,17 +26,16 @@ type Props = {
   onChanged: () => void;
 };
 export function ChatPlanning(props: Props) { return <PlanningController key={props.chatId} {...props}/>; }
-function PlanningController({ chatId, tick, archived, frozen = false, workspace = false, onChanged }: Props) {
+function PlanningController({ chatId, tick, archived, frozen = false, workspace: libraryWorkspace = false, onChanged }: Props) {
+  const synth = useSynth(), workspace = libraryWorkspace || synth;
+  const boardOpened = useRef(workspace);
+  if (workspace) boardOpened.current = true;
   const [view, setView] = useState<"board" | "plan">("board");
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const [loadProblem, setLoadProblem] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [reload, setReload] = useState(0);
-  const [editor, setEditor] = useState<{
-    kind: "section" | "slice";
-    key?: string;
-  } | null>(null);
   const alive = useRef(true);
   const saving = useRef(false);
   useEffect(() => {
@@ -98,6 +97,7 @@ function PlanningController({ chatId, tick, archived, frozen = false, workspace 
   const readOnly = archived || snapshot?.archived === true;
   const locked = frozen || snapshot?.frozen === true;
   const bundle = snapshot?.bundle;
+  const editors = usePlanEditors(bundle, snapshot?.revision ?? 0);
   const done =
     bundle?.slices.filter((slice) => slice.status === "done").length ?? 0;
   return (
@@ -141,7 +141,7 @@ function PlanningController({ chatId, tick, archived, frozen = false, workspace 
         </p>
       ) : (
         <fieldset
-          disabled={busy || (readOnly && !workspace)}
+          disabled={busy}
           className="plan-controls"
         >
           {!bundle ? (
@@ -198,9 +198,9 @@ function PlanningController({ chatId, tick, archived, frozen = false, workspace 
                   </small>
                 )}
               </div>
-              {workspace && (
+              {boardOpened.current && (
                 <>
-                  <nav className="plan-workspace-tabs" aria-label="Plan views">
+                  <nav className="plan-workspace-tabs" aria-label="Plan views" hidden={!workspace}>
                     <button
                       type="button"
                       aria-current={view === "board" ? "page" : undefined}
@@ -228,19 +228,19 @@ function PlanningController({ chatId, tick, archived, frozen = false, workspace 
                       </button>
                     )}
                   </nav>
-                  {locked && view === "board" && (
+                  {workspace && locked && view === "board" && (
                     <p className="notice">
                       Approved work is frozen until this build releases the
                       chat. Open Plan to read or answer questions.
                     </p>
                   )}
-                  {readOnly && (
+                  {workspace && readOnly && (
                     <p className="notice">
                       This chat is archived. Its plan and board remain readable;
                       restore the chat to edit.
                     </p>
                   )}
-                  <div hidden={view !== "board"}>
+                  <div hidden={!workspace || view !== "board"}>
                     <PlanKanban
                       slices={bundle.slices}
                       revision={snapshot.revision}
@@ -251,9 +251,7 @@ function PlanningController({ chatId, tick, archived, frozen = false, workspace 
                 </>
               )}
               <div hidden={workspace && view !== "plan"}>
-                <fieldset disabled={readOnly} className="plan-controls">
-                  <PlanQuestions questions={bundle.questions} save={save} />
-                </fieldset>
+                <PlanQuestions questions={bundle.questions} revision={snapshot.revision} save={save} readOnly={readOnly} />
                 {locked && (
                   <p className="notice">
                     Approved work is frozen until this build releases the chat.
@@ -269,7 +267,7 @@ function PlanningController({ chatId, tick, archived, frozen = false, workspace 
                     <h4>Scope & notes</h4>
                     <button
                       className="button"
-                      onClick={() => setEditor({ kind: "section" })}
+                      onClick={() => editors.open("section")}
                     >
                       Add section
                     </button>
@@ -283,7 +281,7 @@ function PlanningController({ chatId, tick, archived, frozen = false, workspace 
                           <button
                             className="button"
                             onClick={() =>
-                              setEditor({ kind: "section", key: section.key })
+                              editors.open("section", section.key)
                             }
                           >
                             Edit {section.title}
@@ -292,22 +290,12 @@ function PlanningController({ chatId, tick, archived, frozen = false, workspace 
                         <BoardMarkdown source={section.body} />
                       </article>
                     ))}
-                  {editor?.kind === "section" && (
-                    <SectionForm
-                      key={`section-${editor.key ?? "new"}`}
-                      section={bundle.sections.find(
-                        (section) => section.key === editor.key,
-                      )}
-                      revision={snapshot.revision}
-                      save={save}
-                      close={() => setEditor(null)}
-                    />
-                  )}
+                  <PlanEditors kind="section" editors={editors} revision={snapshot.revision} save={save}/>
                   <div className="plan-heading">
                     <h4>Work slices</h4>
                     <button
                       className="button"
-                      onClick={() => setEditor({ kind: "slice" })}
+                      onClick={() => editors.open("slice")}
                     >
                       Add slice
                     </button>
@@ -326,7 +314,7 @@ function PlanningController({ chatId, tick, archived, frozen = false, workspace 
                         <button
                           className="button"
                           onClick={() =>
-                            setEditor({ kind: "slice", key: slice.key })
+                            editors.open("slice", slice.key)
                           }
                         >
                           Edit {slice.key}
@@ -347,17 +335,7 @@ function PlanningController({ chatId, tick, archived, frozen = false, workspace 
                       <SliceStatus slice={slice} revision={snapshot.revision} save={save} />
                     </article>
                   ))}
-                  {editor?.kind === "slice" && (
-                    <SliceForm
-                      key={`slice-${editor.key ?? "new"}`}
-                      slice={bundle.slices.find(
-                        (slice) => slice.key === editor.key,
-                      )}
-                      revision={snapshot.revision}
-                      save={save}
-                      close={() => setEditor(null)}
-                    />
-                  )}
+                  <PlanEditors kind="slice" editors={editors} revision={snapshot.revision} save={save}/>
                 </fieldset>
                 {bundle.decisions.length > 0 && (
                   <details>
@@ -408,116 +386,5 @@ function PlanningController({ chatId, tick, archived, frozen = false, workspace 
         </fieldset>
       )}
     </section>
-  );
-}
-
-function PlanQuestions({
-  questions,
-  save,
-}: {
-  questions: PlanQuestion[];
-  save: SavePlan;
-}) {
-  const [asking, setAsking] = useState(false);
-  const [body, setBody] = useState("");
-  const open = questions.filter((question) => question.status === "open");
-  const resolved = questions.filter((question) => question.status !== "open");
-  return (
-    <section className="plan-questions" aria-label="Plan questions">
-      <div className="plan-heading">
-        <h4>Questions {open.length > 0 && `(${open.length} open)`}</h4>
-        <button className="button" onClick={() => setAsking(!asking)}>
-          {asking ? "Cancel question" : "Ask a question"}
-        </button>
-      </div>
-      <p className="faint">
-        Human decisions for this plan. An answer does not approve a tool, start
-        a run, or resume a stopped turn.
-      </p>
-      {asking && (
-        <form
-          className="plan-form"
-          onSubmit={(event) => {
-            event.preventDefault();
-            void save({ action: "open_question", body }).then((ok) => {
-              if (ok) {
-                setBody("");
-                setAsking(false);
-              }
-            });
-          }}
-        >
-          <label>
-            Question
-            <textarea
-              value={body}
-              onChange={(event) => setBody(event.target.value)}
-              required
-              maxLength={16000}
-            />
-          </label>
-          <div>
-            <button className="button">Save question</button>
-          </div>
-        </form>
-      )}
-      {open.map((question) => (
-        <Question key={question.id} question={question} save={save} />
-      ))}
-      {resolved.length > 0 && (
-        <details>
-          <summary>Answered questions ({resolved.length})</summary>
-          {resolved.map((question) => (
-            <article className="plan-item" key={question.id}>
-              <BoardMarkdown source={question.body} />
-              {question.answer && <BoardMarkdown source={question.answer} />}
-            </article>
-          ))}
-        </details>
-      )}
-    </section>
-  );
-}
-
-function Question({
-  question,
-  save,
-}: {
-  question: PlanQuestion;
-  save: SavePlan;
-}) {
-  const [answer, setAnswer] = useState("");
-  return (
-    <article className="plan-item">
-      {question.slice_key && (
-        <span className="faint">{question.slice_key}</span>
-      )}
-      <BoardMarkdown source={question.body} />
-      <form
-        className="plan-form"
-        onSubmit={(event) => {
-          event.preventDefault();
-          void save({
-            action: "answer_question",
-            question_id: question.id,
-            answer,
-          });
-        }}
-      >
-        <label>
-          Your answer
-          <textarea
-            value={answer}
-            onChange={(event) => setAnswer(event.target.value)}
-            required
-            maxLength={16000}
-            rows={2}
-          />
-        </label>
-        <div>
-          <button className="button">Answer question</button>
-        </div>
-      </form>
-    </article>
   );
 }

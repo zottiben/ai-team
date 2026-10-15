@@ -51,17 +51,20 @@ export function CreatePlan({ save }: { save: SavePlan }) {
 }
 
 export function SectionForm({
-  section,
+  section: suppliedSection,
   revision,
+  initialRevision,
   save,
   close,
 }: {
   section?: PlanSection;
   revision: number;
+  initialRevision?: number;
   save: SavePlan;
   close: () => void;
 }) {
-  const [baseRevision] = useState(revision);
+  const [baseRevision] = useState(initialRevision ?? revision);
+  const [section] = useState(suppliedSection);
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
@@ -126,17 +129,20 @@ export function SectionForm({
 }
 
 export function SliceForm({
-  slice,
+  slice: suppliedSlice,
   revision,
+  initialRevision,
   save,
   close,
 }: {
   slice?: PlanSlice;
   revision: number;
+  initialRevision?: number;
   save: SavePlan;
   close: () => void;
 }) {
-  const [baseRevision] = useState(revision);
+  const [baseRevision] = useState(initialRevision ?? revision);
+  const [slice] = useState(suppliedSlice);
   const trailer = slice?.scope_md.lastIndexOf("\n\nTouches: ") ?? -1;
   const scope =
     trailer < 0 ? slice?.scope_md : slice?.scope_md.slice(0, trailer);
