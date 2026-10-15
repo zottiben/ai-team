@@ -3,6 +3,7 @@ import { FileView } from "./ReviewFile";
 import { useSynth } from "./ui-preferences";
 import { DeliveryChain } from "./synth/views/Review/DeliveryChain";
 import { ChangeScope } from "./synth/views/Review/ChangeScope";
+import { ExactApproval } from "./synth/views/Review/ExactApproval";
 import { useCheckoutFiles, type CheckoutFile } from "./synth/views/Review/checkout-files";
 import { useReviewFix } from "./useReviewFix";
 import { checkoutState, checkoutPreview, checkoutApprove, checkoutInspect, checkoutAcknowledge, type CheckoutAction, type CheckoutState, type CheckoutOperation, type CheckoutInspection } from "./checkout-api";
@@ -10,7 +11,7 @@ const labels={stage:"Stage file",unstage:"Unstage file",commit:"Manual commit",p
 type Props = {chatId:number;tick:number;disabled:boolean;working?:boolean;otherBusy?:boolean;disabledReason?:string;onChanged:()=>void;onFeedback?:(text:string)=>void};
 export function ChatCheckout(props: Props) { return <CheckoutController key={props.chatId} {...props}/>; }
 function CheckoutController({chatId,tick,disabled,working=false,otherBusy=false,disabledReason,onChanged,onFeedback}: Props) {
-  const synth=useSynth(), sequence=useRef(0);
+  const synth=useSynth(), sequence=useRef(0), host=useRef<HTMLElement>(null);
   const [opened,setOpened]=useState(synth);
   const [untrackedOpen,setUntrackedOpen]=useState(!synth), [untrackedMounted,setUntrackedMounted]=useState(!synth);
   const [showAll,setShowAll]=useState(!synth), [expanded,setExpanded]=useState<number>();
@@ -60,7 +61,7 @@ function CheckoutController({chatId,tick,disabled,working=false,otherBusy=false,
       </div>
     </Fragment>;
   };
-  return <section aria-label="Working checkout actions">
+  return <section ref={host} tabIndex={-1} aria-label="Working checkout actions">
     {problem&&<p className="error" role="alert">{problem}</p>}
     {!data?<p>Reading working checkout…</p>:<>
       <p className="mono" hidden={synth}>{data.workspace} · {data.branch??"detached"} · {data.head??"unborn HEAD"}</p>
@@ -90,12 +91,17 @@ function CheckoutController({chatId,tick,disabled,working=false,otherBusy=false,
       <form onSubmit={e=>{e.preventDefault();propose({kind:"commit",message});}}><label>Manual commit message<textarea value={message} onChange={e=>setMessage(e.target.value)} maxLength={16000}/></label><p className="faint">Commit the reviewed index only; unstaged/untracked files are kept. Hooks and signing are disabled for this bounded operator action. No verification, push or PR is implied.</p><button className="button" disabled={blocked||!data.staged.length||!message.trim()}>Preview manual commit</button></form>
       <div className="chat-controls"><button className="button" disabled={blocked||!data.head||!data.branch} onClick={()=>propose({kind:"push"})}>Preview checkout push</button><button className="button" disabled={blocked||!data.head||!data.branch} onClick={()=>propose({kind:"pull_request"})}>Preview checkout draft PR</button></div>
       {data.findings.length>0&&<details><summary>Recorded checkout feedback</summary><p className="faint">Historical lines may have changed. New inline submissions start an agent turn; older recorded-only feedback can still be copied to your draft. No publication is approved.</p>{data.findings.map(f=><div className="notice" key={f.id}><p className="mono">{f.path} · {f.area} · {f.side} line {f.line} · {f.head??"unborn"}</p><p>{f.body}</p>{onFeedback&&<button className="button" onClick={()=>onFeedback(`Checkout review at ${f.head??"unborn HEAD"} (${f.fingerprint}): ${f.path}, ${f.area}, ${f.side} line ${f.line}:\n${f.body}\n\nInspect the current file before acting; this feedback is not publication approval.`)}>Use feedback in next message</button>}</div>)}</details>}
-      {preview&&<section className="notice" aria-label="Checkout action approval"><h4>{labels[preview.snapshot.action.kind]} — exact approval</h4><p className="mono">{preview.snapshot.workspace} · {preview.snapshot.branch??"detached"} · {preview.snapshot.head??"unborn HEAD"}</p>
+      {preview&&<ExactApproval family="checkout" receipt={preview} label="Checkout action approval" returnFocus={host} summary={<>
+        <h4>{labels[preview.snapshot.action.kind]} — exact approval</h4><p className="mono">{preview.snapshot.workspace} · {preview.snapshot.branch??"detached"} · {preview.snapshot.head??"unborn HEAD"}</p>
+        <p className="mono">Checkout generation {preview.snapshot.workspace_epoch??"unrecorded"} · fingerprint {preview.snapshot.fingerprint}</p>
         {"path" in preview.snapshot.action&&<p className="mono">{preview.snapshot.action.path}</p>}{"message" in preview.snapshot.action&&<pre>{preview.snapshot.action.message}</pre>}
-        {preview.snapshot.remote&&<><p className="mono">{preview.snapshot.remote.url} · {preview.snapshot.remote.branch}</p>{preview.snapshot.remote.base&&<p className="mono">PR base: {preview.snapshot.remote.repository} · {preview.snapshot.remote.base} · {preview.snapshot.remote.base_sha}</p>}<p>Only this committed snapshot is published, never dirty files or your current branch ref. No merge. Push and draft PR need separate approvals.</p></>}
-        <button className="button button--primary" disabled={blocked||!approvalCurrent} onClick={()=>void command(async()=>{const r=await checkoutApprove(chatId,preview);setPreview(null);if(r.state!=="done")throw Error(r.result??"Inspect checkout outcome");if(preview.snapshot.action.kind==="commit"){const committed=preview.snapshot.action.message;setMessage(current=>current===committed?"":current);}})}>Approve: {labels[preview.snapshot.action.kind]}</button><button className="button" disabled={busy} onClick={()=>setPreview(null)}>Dismiss checkout approval</button>
+        {"commit" in preview.snapshot.action&&<p className="mono">Branch target: {preview.snapshot.action.branch} · {preview.snapshot.action.commit}</p>}
+        {preview.snapshot.remote&&<><p className="mono">{preview.snapshot.remote.url} · {preview.snapshot.remote.branch}</p>{preview.snapshot.remote.base&&<p className="mono">PR base: {preview.snapshot.remote.repository} · {preview.snapshot.remote.base} · {preview.snapshot.remote.base_sha}</p>}<p>Only this pinned commit goes to the named remote ref. Dirty working files are excluded. No merge. Push and draft PR need separate approvals.</p></>}
+      </>}>{ready=><>
+        {lockReason&&<p className="notice">{lockReason}</p>}
+        <button className="button button--primary" disabled={blocked||!approvalCurrent||!ready} onClick={()=>void command(async()=>{const r=await checkoutApprove(chatId,preview);setPreview(null);if(r.state!=="done")throw Error(r.result??"Inspect checkout outcome");if(preview.snapshot.action.kind==="commit"){const committed=preview.snapshot.action.message;setMessage(current=>current===committed?"":current);}})}>Approve: {labels[preview.snapshot.action.kind]}</button><button className="button" disabled={busy} onClick={()=>setPreview(null)}>Dismiss checkout approval</button>
         {!approvalCurrent&&<p>{preview.snapshot.workspace_epoch == null ? "Checkout generation was not recorded; request a fresh preview." : "This preview is stale. Changed since preview — review again."}</p>}
-      </section>}
+      </>}</ExactApproval>}
       {!!data.operations.length&&<details open={data.operations.some(o=>o.state==="running"||o.state==="inspection")}><summary>Checkout action history</summary>{data.operations.map(o=><div className="notice" key={o.id}><strong>{labels[o.snapshot.action.kind]} · {o.state}</strong><p>{o.result??"Command is running or interrupted. No automatic retry."}</p>{o.state==="done"&&o.snapshot.action.kind==="pull_request"&&o.result?.startsWith("https://")&&<a href={o.result} target="_blank" rel="noreferrer">Open draft PR</a>}{(o.state==="running"||o.state==="inspection")&&<button className="button" disabled={busy} onClick={()=>void command(async()=>{setInspection(await checkoutInspect(chatId,o));setReason("");})}>Drain and inspect checkout action #{o.id}</button>}</div>)}</details>}
       {inspection&&<form className="notice" onSubmit={e=>{e.preventDefault();void command(async()=>{await checkoutAcknowledge(chatId,inspection,reason);setInspection(null);});}}><h4>Keep inspected checkout state</h4><p>Local command groups drained. Inspect files, index, history and remote effects before acknowledging. A remote effect may still be delayed. This releases the reservation without certifying success, changing files or retrying the action.</p><p className="mono">{inspection.checkout.head} · {inspection.checkout.staged.length} staged · {inspection.checkout.unstaged.length} unstaged · {inspection.checkout.untracked.length} untracked</p><label>Reason for keeping the state<input value={reason} onChange={e=>setReason(e.target.value)} maxLength={4000}/></label><button className="button" disabled={busy||!reason.trim()}>Acknowledge checkout state</button></form>}
     </>}

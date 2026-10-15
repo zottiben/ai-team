@@ -1,4 +1,5 @@
 import { api, post, type FileDiff, type RunEvent } from "./api";
+import type { PreviewEvidence } from "./preview-api";
 
 export type DraftTarget = { run_id: number; slice_key: string; revision: number };
 export type Draft = {
@@ -9,6 +10,7 @@ export type DeliveryAction = "integrate" | "push" | "pull_request";
 export type Delivery = {
   id: number; chat_id: number; rev: number; state: "preview" | "running" | "done" | "refused" | "inspection" | "acknowledged";
   result: string | null;
+  evidence?: PreviewEvidence | null;
   snapshot: {
     target: DraftTarget; action: DeliveryAction; commit_sha: string;
     workspace_path: string; workspace_epoch?: number | null; checkout_head: string; checkout_branch: string;

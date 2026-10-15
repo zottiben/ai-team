@@ -60,6 +60,48 @@ export async function exerciseReview() {
     retainedRows: current.querySelectorAll(".diff__line").length, draftRetained: true, missingAnchorDisabled: true, apiRequests };
 }
 
+export async function exerciseApproval() {
+  must(document.visibilityState === "visible", "Visible viewport required for confirmation checks");
+  const tab = await until(() => [...document.querySelectorAll('[role="tab"]')].find(node => node.textContent.includes("Review")), "Review tab unavailable");
+  tab.click();
+  const path = "src/feature-1/a-long-but-real-fixture-path/module-1.ts";
+  const stage = await until(() => button(document, `Stage ${path}`), "Stage preview source unavailable");
+  const card = stage.parentElement.querySelector(".diff");
+  card.querySelector('[aria-label="comment on new line 1"]').click();
+  const draft = await until(() => card.querySelector("textarea"), "Source comment did not open");
+  fill(draft, "Keep this unsent source comment across the captured preview.");
+  stage.scrollIntoView({ block: "center" }); stage.click();
+  const dialog = await until(() => document.querySelector('[role="dialog"][aria-label="Checkout action approval"]'), "Exact confirmation did not open");
+  await until(() => document.activeElement === dialog.querySelector("[data-approval-heading]"), "Confirmation did not focus its non-executing heading");
+  must(!dialog.querySelector(".diff__add"), "Captured evidence offered a new repair action");
+  must(dialog.textContent.includes("const next1 = true;"), "Captured hunks are absent");
+  const identity = [...dialog.querySelectorAll("p")].find(node => node.textContent.includes("fingerprint"))?.textContent;
+  const { moveReviewFile, reviewRequests } = await import("/src/synth/shell-preview.tsx");
+  moveReviewFile(path);
+  await until(() => dialog.isConnected && dialog.textContent.includes("Changed since preview"), "A refresh lost the confirmation or failed to invalidate approval");
+  const approve = must(button(dialog, "Approve: Stage file"), "Confirmation button absent");
+  must(approve.disabled, "Changed checkout retained approval");
+  approve.click();
+  must(dialog.textContent.includes(identity), "Current state replaced the captured fingerprint");
+  must(dialog.textContent.includes("const next1 = true;"), "Refreshing discarded captured code");
+  const retained = document.querySelector(`textarea[aria-label="comment on ${path} new line 1"]`);
+  must(retained?.value.includes("unsent source comment"), "Preview/refresh lost the original comment body");
+  must(button(retained.closest("form"), "Send to agent").disabled, "Moved source comment acquired a new sender");
+  await delay(200); // Let the finite entry and resize placement finish; not a frame-time claim.
+  must(dialog.isConnected, "Moving the trigger offscreen dismissed a still-visible confirmation");
+  const rect = dialog.getBoundingClientRect();
+  must(rect.left >= 7 && rect.right <= document.documentElement.clientWidth - 7 && rect.top >= 7 && rect.bottom <= innerHeight - 7,
+    `Confirmation escaped the viewport: ${JSON.stringify({left:rect.left,right:rect.right,top:rect.top,bottom:rect.bottom,width:document.documentElement.clientWidth,height:innerHeight})}`);
+  document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+  await until(() => !dialog.isConnected, "Escape did not dismiss the confirmation");
+  must(document.activeElement === button(document, "Inspect captured checkout approval"), "Escape lost the confirmation trigger");
+  must(reviewRequests.length === 1 && reviewRequests[0].path.endsWith("/checkout/preview"), `Unexpected fixture command: ${JSON.stringify(reviewRequests)}`);
+  const apiRequests = performance.getEntriesByType("resource").filter(entry => new URL(entry.name).pathname.startsWith("/api/")).length;
+  must(apiRequests === 0, "Confirmation reached a real backend");
+  must(document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1, "Confirmation caused page overflow");
+  return { width: document.documentElement.clientWidth, theme: document.documentElement.dataset.theme, capturedHunks: true, staleDisabled: true, commentRetained: true, syntheticPreviews: reviewRequests.length, apiRequests };
+}
+
 // A synthetic visible scroll probe, not native input, INP or whole-app CPU certification.
 export async function measureReviewScroll() {
   must(document.visibilityState === "visible", "Visible viewport required for the scroll probe");

@@ -1,9 +1,9 @@
 [data-synth="true"] .chat-changes { background: var(--plate-night); color: var(--synth-text); border: 0; border-radius: var(--r-plate); box-shadow: var(--shadow-plate); min-width: 0; }
 [data-synth="true"] .chat-changes h3, [data-synth="true"] .chat-changes h4 { font-size: 10px; text-transform: uppercase; letter-spacing: .15em; }
 [data-synth="true"] .chat-changes :is(.faint, small) { color: var(--synth-text-muted); }
-[data-synth="true"] .chat-changes .button, [data-synth="true"] .diff .button { min-height: 32px; max-width: 100%; white-space: normal; overflow-wrap: anywhere; padding: 6px 10px; color: var(--synth-text); background: var(--synth-key); border: 1px solid var(--synth-floor); border-radius: var(--r-key); box-shadow: var(--shadow-key); font: 600 11px var(--synth-font-sans); }
-[data-synth="true"] .chat-changes .button--primary, [data-synth="true"] .diff .button--primary { background: var(--synth-danger); color: var(--synth-text-on-danger); }
-[data-synth="true"] .chat-changes .notice { background: var(--synth-screen); border-color: var(--synth-alert-ring); border-radius: var(--r-screen); overflow-wrap: anywhere; }
+[data-synth="true"] .chat-changes .button, [data-synth="true"] .diff .button, [data-synth="true"] .synth-exact-approval .button { min-height: 32px; max-width: 100%; white-space: normal; overflow-wrap: anywhere; padding: 6px 10px; color: var(--synth-text); background: var(--synth-key); border: 1px solid var(--synth-floor); border-radius: var(--r-key); box-shadow: var(--shadow-key); font: 600 11px var(--synth-font-sans); }
+[data-synth="true"] .chat-changes .button--primary, [data-synth="true"] .diff .button--primary, [data-synth="true"] .synth-exact-approval .button--primary { background: var(--synth-danger); color: var(--synth-text-on-danger); }
+[data-synth="true"] .chat-changes .notice, [data-synth="true"] .synth-exact-approval .notice { background: var(--synth-screen); border-color: var(--synth-alert-ring); border-radius: var(--r-screen); overflow-wrap: anywhere; }
 [data-synth="true"] .chat-changes :is(textarea, input, select) { color: var(--synth-lcd-text-alt); background: var(--synth-screen); border-color: var(--synth-hairline); }
 [data-synth="true"] .chat-changes summary { min-height: 32px; cursor: pointer; }
 [data-synth="true"] .chat-changes pre { white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -80,9 +80,24 @@
 [data-synth="true"] .diff__compose textarea { background: var(--synth-screen); color: var(--synth-text); border-color: var(--synth-comment-ring); font: 12px/1.5 var(--synth-font-sans); }
 [data-synth="true"] .diff__comment { color: var(--synth-text); background: var(--synth-screen); border-color: var(--synth-comment-ring); }
 [data-synth="true"] .synth-diff-row:focus-visible, [data-synth="true"] .synth-diff-scroll:focus-visible { outline: 2px solid var(--synth-focus); outline-offset: -2px; }
+[data-synth="true"] .synth-exact-approval { background: var(--plate-night); color: var(--synth-text); border: 1px solid var(--synth-hairline); border-radius: var(--r-plate); box-shadow: var(--shadow-plate); padding: 16px; font: 12px/1.5 var(--synth-font-sans); overflow: auto; overscroll-behavior: contain; }
+[data-synth="true"] .synth-exact-approval h3, [data-synth="true"] .synth-exact-approval h4 { font-size: 11px; text-transform: uppercase; letter-spacing: .12em; }
+[data-synth="true"] .synth-exact-approval :is(p, dd, pre) { overflow-wrap: anywhere; }
+[data-synth="true"] .synth-exact-approval pre { white-space: pre-wrap; }
+[data-synth="true"] .synth-exact-approval .faint { color: var(--synth-text-muted); }
+[data-synth="true"] .synth-exact-approval dl { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 3fr); gap: 6px; }
+[data-synth="true"] .synth-exact-approval dd { margin: 0; }
+[data-synth="true"] .synth-exact-approval [data-approval-heading]:focus-visible { outline: 2px solid var(--synth-focus); outline-offset: 3px; }
+[data-synth="true"] .synth-approval-evidence { margin-block: 12px; padding-block: 8px; border-block: 1px solid var(--synth-hairline); }
+[data-synth="true"] .synth-approval-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 10px; }
+[data-synth="true"] .synth-approval-controls p { flex-basis: 100%; }
+@media (prefers-reduced-motion: no-preference) {
+  [data-synth="true"] .synth-exact-approval { animation: synth-approval-enter 150ms var(--ease-standard); }
+  @keyframes synth-approval-enter { from { opacity: 0; transform: scale(.98); } to { opacity: 1; transform: scale(1); } }
+}
 @media (max-width: 500px) { [data-synth="true"] .diff__compose { margin-left: 8px; } }
 @media (pointer: coarse) {
-  [data-synth="true"] .chat-changes .button, [data-synth="true"] .diff .button, [data-synth="true"] .diff__toggle,
+  [data-synth="true"] .chat-changes .button, [data-synth="true"] .diff .button, [data-synth="true"] .synth-exact-approval .button, [data-synth="true"] .diff__toggle,
   [data-synth="true"] .diff__viewed, [data-synth="true"] .chat-changes summary,
   [data-synth="true"] .synth-diff-navigation :is(input, select) { min-height: 44px; }
   [data-synth="true"] .diff__line { grid-template-columns: 30px 30px 44px minmax(0, 1fr); min-height: 44px; }

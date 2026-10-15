@@ -142,6 +142,27 @@ it("shows first-three Synth files and retains visible comments and Viewed across
  expect(api.checkoutPreview).not.toHaveBeenCalled();expect(api.checkoutApprove).not.toHaveBeenCalled();
  Reflect.deleteProperty(HTMLElement.prototype,"scrollIntoView");
 });
+it("opens a Synth confirmation with captured hunks that do not follow refreshed files",async()=>{
+ setSynth(true); const initial=state(), file=initial.unstaged[0]; if(!file)throw Error("fixture");
+ const captured:CheckoutOperation={...op(),snapshot:{...op().snapshot,action:{kind:"stage",path:"kept.txt"}},evidence:{basis:"Captured index/worktree",files_total:1,omitted_files:0,note:null,files:[{area:"unstaged",file,revision:"captured-file",reason:null,hunks_omitted:false}]}};
+ api.checkoutPreview.mockResolvedValue(captured);
+ const view=render(<ChatCheckout {...props}/>);
+ fireEvent.click(await screen.findByRole("button",{name:"Stage kept.txt"}));
+ const dialog=await screen.findByRole("dialog",{name:"Checkout action approval"});
+ expect(within(dialog).getByText("new")).toBeTruthy();
+ expect(within(dialog).queryByRole("button",{name:/comment on/})).toBeNull();
+ expect(api.checkoutApprove).not.toHaveBeenCalled();
+ api.checkoutState.mockResolvedValue({...initial,fingerprint:"changed-bytes",unstaged:[{...file,hunks:file.hunks.map(hunk=>({...hunk,lines:hunk.lines.map(line=>({...line,text:"refreshed replacement"}))}))}]});
+ view.rerender(<ChatCheckout {...props} tick={1}/>);
+ await within(dialog).findByText(/Changed since preview/);
+ expect(within(dialog).getByText("new")).toBeTruthy();
+ expect(within(dialog).queryByText("refreshed replacement")).toBeNull();
+ expect((within(dialog).getByRole("button",{name:"Approve: Stage file"}) as HTMLButtonElement).disabled).toBe(true);
+ fireEvent.keyDown(document,{key:"Escape"});
+ expect(screen.queryByRole("dialog",{name:"Checkout action approval"})).toBeNull();
+ expect(document.activeElement).toBe(screen.getByRole("button",{name:"Inspect captured checkout approval"}));
+ expect(api.checkoutApprove).not.toHaveBeenCalled();
+});
 it("does not inspect busy ticks repeatedly or offer checkout writes",async()=>{
  const view=render(<ChatCheckout {...props} disabled/>);expect((await screen.findByRole("button",{name:"Stage new.txt"}) as HTMLButtonElement).disabled).toBe(true);view.rerender(<ChatCheckout {...props} disabled tick={1}/>);view.rerender(<ChatCheckout {...props} disabled tick={2}/>);expect(api.checkoutState).toHaveBeenCalledTimes(1);expect(api.checkoutApprove).not.toHaveBeenCalled();
 });

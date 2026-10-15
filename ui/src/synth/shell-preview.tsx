@@ -39,12 +39,15 @@ const events: RunEvent[] = [{ id: 1, node_run_id: 1, actor: "human", kind: "note
   { id: 2, node_run_id: 1, actor: "assistant", kind: "note", summary: "Fixture response", message: "This is an isolated **layout fixture**. Tabs and tools share the real application controller. Network access and all backend mutations are disabled.", thinking: [], at: "2026-01-01" }];
 const overview = params.get("overview") === "true" ? (await import("./overview-fixture")).fixtureOverview() : null;
 if (overview) { chat.turns = overview.turns; events.push(...overview.events); }
-const review = params.get("review") === "true" ? (await import("./review-fixture")).fixtureReview() : null;
+const reviewFixture = params.get("review") === "true" ? await import("./review-fixture") : null;
+const review = reviewFixture?.fixtureReview() ?? null;
+let reviewRevision = 0, previewId = 100;
+export const reviewRequests: { method: string; path: string }[] = [];
 export function moveReviewFile(path: string) {
   if (!review) throw Error("Review fixture not selected");
   const file = review.checkout.unstaged.find(file => file.path === path);
   if (!file) throw Error("Unknown fixture file");
-  review.checkout = { ...review.checkout, fingerprint: "fixture-after-external-stage", staged: [...review.checkout.staged, file], unstaged: review.checkout.unstaged.filter(file => file.path !== path) };
+  review.checkout = { ...review.checkout, fingerprint: `fixture-after-external-stage-${++reviewRevision}`, staged: [...review.checkout.staged, file], unstaged: review.checkout.unstaged.filter(file => file.path !== path) };
   review.changes = { ...review.changes, staged: review.checkout.staged, unstaged: review.checkout.unstaged };
   chat.rev += 1;
   tickers.forEach(tick => tick());
@@ -72,6 +75,13 @@ window.fetch = async (input, init) => {
   const request = input instanceof Request ? input : null;
   const url = new URL(request?.url ?? String(input), location.href), method = init?.method ?? request?.method ?? "GET";
   const json = (data: unknown, status = 200) => new Response(JSON.stringify(data), { status, headers: { "Content-Type": "application/json" } });
+  if (review && method !== "GET") reviewRequests.push({ method, path: url.pathname });
+  if (method === "POST" && url.pathname === "/api/chats/1/checkout/preview" && review && reviewFixture) {
+    const body: unknown = JSON.parse(typeof init?.body === "string" ? init.body : request ? await request.text() : "null");
+    if (!body || typeof body !== "object" || !("fingerprint" in body) || !("action" in body)) return json({ error: "Invalid synthetic preview" }, 400);
+    const captured = reviewFixture.fixturePreview(review.checkout, body.fingerprint, body.action, ++previewId);
+    return captured ? json(captured) : json({ error: "The synthetic preview does not match this fixture." }, 400);
+  }
   if (method !== "GET") return json({ error: "Fixture only: backend mutations and processes are disabled." }, 403);
   switch (url.pathname) {
     case "/api/projects": return json([project]);

@@ -1,6 +1,28 @@
 import type { FileDiff } from "../api";
-import type { CheckoutState } from "../checkout-api";
+import type { CheckoutAction, CheckoutOperation, CheckoutState } from "../checkout-api";
 import type { Changes } from "../changes-api";
+
+export function fixturePreview(state: CheckoutState, fingerprint: unknown, value: unknown, id: number): CheckoutOperation | null {
+  if (fingerprint !== state.fingerprint || !value || typeof value !== "object" || !("kind" in value)) return null;
+  let action: CheckoutAction;
+  if ((value.kind === "stage" || value.kind === "unstage") && "path" in value && typeof value.path === "string") action = { kind: value.kind, path: value.path };
+  else if (value.kind === "commit" && "message" in value && typeof value.message === "string" && value.message.trim() && state.staged.length) action = { kind: "commit", message: value.message };
+  else return null;
+  const selected = "path" in action ? action.path : null;
+  const files = [...state.staged.map(file => ({ area: "staged", file, revision: state.staged_revisions?.[file.path] ?? state.fingerprint, reason: null as string | null })),
+    ...(action.kind === "stage" ? [...state.unstaged.map(file => ({ area: "unstaged", file, revision: state.unstaged_revisions?.[file.path] ?? state.fingerprint, reason: null })),
+      ...state.untracked_files.map(entry => ({ area: "untracked", file: entry.file, revision: entry.fingerprint, reason: entry.reason }))] : [])]
+    .filter(entry => selected === null || entry.file.path === selected).map(entry => {
+      const pinned = structuredClone(entry);
+      const omitted = new TextEncoder().encode(JSON.stringify(pinned)).length > 500_000;
+      if (omitted) { pinned.file.hunks = []; pinned.reason = "Synthetic preview omission: inspect the large fixture in the main diff. No backend action is available."; }
+      return { ...pinned, hunks_omitted: omitted };
+    });
+  if (!files.length) return null;
+  return { id, chat_id: 1, rev: 1, state: "preview", result: null,
+    snapshot: { workspace: state.workspace, workspace_epoch: state.workspace_epoch, head: state.head, branch: state.branch, fingerprint: state.fingerprint, action, remote: null },
+    evidence: { basis: "Synthetic captured fixture — no Git, process or backend request", files_total: files.length, omitted_files: 0, files, note: "This fixture never executes approvals." } };
+}
 
 export function fixtureReview(lines = 10_000): { checkout: CheckoutState; changes: Changes } {
   const files: FileDiff[] = Array.from({ length: 6 }, (_, n) => ({

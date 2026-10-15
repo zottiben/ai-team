@@ -14,13 +14,15 @@ export function popoverPosition(anchor: Pick<DOMRect, "top" | "right">, width: n
   };
 }
 
-export function Popover({ anchor, label, children, onClose, width = 448, className = "", initialFocus }: {
+export function Popover({ anchor, label, children, onClose, width = 448, className = "", initialFocus, role, closeOnBlur = false }: {
   anchor: RefObject<HTMLButtonElement | null>;
   label: string;
   children: ReactNode;
   onClose: () => void;
   width?: number;
   className?: string;
+  role?: "dialog";
+  closeOnBlur?: boolean;
   /** Optional child selector, focused only after the initially hidden portal is placed. */
   initialFocus?: string;
 }) {
@@ -35,7 +37,7 @@ export function Popover({ anchor, label, children, onClose, width = 448, classNa
       const next = popoverPosition(rect, width, panel.current?.offsetHeight ?? 0, window.innerWidth, window.innerHeight);
       setPosition(old => old && old.top === next.top && old.left === next.left && old.width === next.width && old.maxHeight === next.maxHeight ? old : next);
     };
-    const outside = (event: PointerEvent) => {
+    const outside = (event: Event) => {
       if (event.target instanceof Node && !panel.current?.contains(event.target) && !anchor.current?.contains(event.target)) close.current();
     };
     const key = (event: KeyboardEvent) => {
@@ -52,22 +54,24 @@ export function Popover({ anchor, label, children, onClose, width = 448, classNa
     window.addEventListener("resize", place);
     window.addEventListener("scroll", place, true);
     document.addEventListener("pointerdown", outside);
+    if (closeOnBlur) document.addEventListener("focusin", outside);
     document.addEventListener("keydown", key);
     return () => {
       observer?.disconnect();
       window.removeEventListener("resize", place);
       window.removeEventListener("scroll", place, true);
       document.removeEventListener("pointerdown", outside);
+      if (closeOnBlur) document.removeEventListener("focusin", outside);
       document.removeEventListener("keydown", key);
     };
-  }, [anchor, width]);
+  }, [anchor, width, closeOnBlur]);
   const placed = position !== null;
   useLayoutEffect(() => {
     if (!placed) return;
     const target = initialFocus ? panel.current?.querySelector<HTMLElement>(initialFocus) : null;
     (target ?? panel.current)?.focus({ preventScroll: true });
   }, [placed, initialFocus]);
-  return createPortal(<section ref={panel} tabIndex={-1} aria-label={label} className={`anchored-popover ${className}`}
+  return createPortal(<section ref={panel} role={role} tabIndex={-1} aria-label={label} className={`anchored-popover ${className}`}
     style={position ?? { visibility: "hidden" }}>
     {children}
   </section>, document.body);

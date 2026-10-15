@@ -1,6 +1,7 @@
-import { lazy, Suspense, useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 const ChatCheckout = lazy(() => import("./ChatCheckout").then(m => ({ default: m.ChatCheckout })));
 import { FileView } from "./ReviewFile";
+import { ExactApproval } from "./synth/views/Review/ExactApproval";
 import { useReviewFix } from "./useReviewFix";
 import {
   acknowledgeDelivery, approveDelivery, chatChanges, committedFile, committedTree, inspectDelivery, previewDelivery, reviewDraft,
@@ -15,6 +16,7 @@ type Props = { chatId: number; tick: number; disabled: boolean; working?: boolea
 export function ChatChanges(props: Props) { return <ChangesController key={props.chatId} {...props}/>; }
 function ChangesController({ chatId, tick, disabled, working, disabledReason, onChanged, onFeedback }: Props) {
   const submitFix = useReviewFix(chatId);
+  const host = useRef<HTMLElement>(null);
   const [submitted, setSubmitted] = useState(false);
   const [changes, setChanges] = useState<Changes | null>(null);
   const [review, setReview] = useState<DraftReview | null>(null);
@@ -51,7 +53,7 @@ function ChangesController({ chatId, tick, disabled, working, disabledReason, on
     && preview.snapshot.checkout_head === changes.head && preview.snapshot.checkout_branch === changes.branch
     && preview.snapshot.commit_sha === selected.commit_sha && preview.snapshot.target.run_id === selected.target.run_id
     && preview.snapshot.target.slice_key === selected.target.slice_key && preview.snapshot.target.revision === selected.target.revision;
-  return <section className="chat-overview-card chat-changes" aria-label="Changes and delivery">
+  return <section ref={host} tabIndex={-1} className="chat-overview-card chat-changes" aria-label="Changes and delivery">
     <div className="chat-changes-heading"><h3>Changes and delivery</h3>
       <button className="button" disabled={busy} onClick={() => { setProblem(null); setRefresh((n) => n + 1); }}>Refresh changes</button></div>
     {problem && <p role="alert" className="error">{problem}</p>}
@@ -104,10 +106,11 @@ function ChangesController({ chatId, tick, disabled, working, disabledReason, on
         <div className="chat-controls">{(Object.keys(ACTIONS) as DeliveryAction[]).map((action) => <button key={action} className="button" disabled={unavailable || !fresh}
           onClick={() => void command(async () => { setPreview(await previewDelivery(chatId, selected.target, action)); })}>Preview: {ACTIONS[action]}</button>)}</div>
       </section>}
-      {preview && <section className="notice" aria-label="Delivery approval">
+      {preview && <ExactApproval family="delivery" receipt={preview} label="Delivery approval" returnFocus={host} summary={<>
         <h4>{ACTIONS[preview.snapshot.action]} — exact approval</h4>
         <dl>
           <dt>Draft</dt><dd className="mono">{preview.snapshot.commit_sha}</dd>
+          <dt>Scope</dt><dd>run #{preview.snapshot.target.run_id} · {preview.snapshot.target.slice_key} · draft revision {preview.snapshot.target.revision} · checkout generation {preview.snapshot.workspace_epoch ?? "unrecorded"}</dd>
           <dt>Checkout</dt><dd className="mono">{preview.snapshot.workspace_path} · {preview.snapshot.checkout_branch} · {preview.snapshot.checkout_head}</dd>
           {preview.snapshot.remote_url && <><dt>Destination</dt><dd className="mono">{preview.snapshot.remote_url} · {preview.snapshot.delivery_branch}</dd></>}
           {preview.snapshot.base_branch && <><dt>PR base</dt><dd className="mono">{preview.snapshot.github_repo} · {preview.snapshot.base_branch} · {preview.snapshot.base_sha}</dd></>}
@@ -116,13 +119,15 @@ function ChangesController({ chatId, tick, disabled, working, disabledReason, on
           ? "Fast-forward this clean checkout only. Dirty files or divergent history cause refusal; nothing is stashed, reset or cherry-picked."
           : preview.snapshot.action === "push" ? "Publish only this commit to the named ref. Do not open or merge a PR."
             : "Create an unmerged draft PR for the already published commit. Do not retarget an existing PR or request a merge."}</p>
+      </>}>{ready => <>
+        {unavailable && <p className="notice">{disabled ? disabledReason ?? "Finish or close the current execution before delivery." : busy ? "An existing request is pending. No additional delivery action is available." : "A draft delivery is unresolved. Inspect it before another action."}</p>}
         {!approvalCurrent && <p className="notice">{preview.snapshot.workspace_epoch == null ? "Checkout generation was not recorded; request a fresh preview." : "Changed since preview — review again. This approval no longer matches the current checkout generation and draft."}</p>}
-        <button className="button button--primary" disabled={unavailable || !approvalCurrent} onClick={() => void command(async () => {
+        <button className="button button--primary" disabled={unavailable || !approvalCurrent || !ready} onClick={() => void command(async () => {
           const result = await approveDelivery(chatId, preview); setPreview(null);
           if (result.state !== "done") throw new Error(result.result ?? "Delivery did not finish; inspect its recorded state.");
         })}>Approve: {ACTIONS[preview.snapshot.action]}</button>
         <button className="button" disabled={busy} onClick={() => setPreview(null)}>Dismiss delivery</button>
-      </section>}
+      </>}</ExactApproval>}
       {changes.deliveries.some((d) => d.state !== "preview") && <section aria-label="Delivery evidence"><h4>Recent delivery evidence</h4><p className="faint">Up to 100 outcomes; unresolved deliveries stay first. Full history remains in this chat's execution evidence.</p>
         {changes.deliveries.filter((d) => d.state !== "preview").map((d) => <div className="notice" key={d.id}>
           <strong>{ACTIONS[d.snapshot.action]} · {d.state}</strong><p className="mono">{d.snapshot.commit_sha}</p>

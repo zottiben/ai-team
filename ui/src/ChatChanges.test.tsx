@@ -1,5 +1,6 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { beforeEach, expect, it, vi } from "vitest";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { setSynth } from "./ui-preferences";
 import { ChatChanges } from "./ChatChanges";
 import type { Changes, Delivery, DraftReview, DeliveryInspection } from "./changes-api";
 
@@ -13,7 +14,9 @@ const changes = (): Changes => ({ workspace_path: "/repo", workspace_epoch: 9, h
 const review = (): DraftReview => ({ draft, findings: [], files: [{ path: "feature.rs", old_path: null, status: "added", binary: false, additions: 1, deletions: 0, hunks: [{ header: "@@ -0,0 +1 @@", old_start: 0, new_start: 1, lines: [{ kind: "added", old: null, new: 1, text: "verified code" }] }] }] });
 const delivery = (): Delivery => ({ id: 9, chat_id: 4, rev: 1, state: "preview", result: null, snapshot: { target, action: "push", commit_sha: "commit-sha", workspace_path: "/repo", workspace_epoch: 9, checkout_head: "base-sha", checkout_branch: "main", remote_url: "ssh://git@example/repo", delivery_branch: "chat-4/commit-sha", github_repo: null, base_branch: null, base_sha: null } });
 const props = { chatId: 4, tick: 0, disabled: false, onChanged: vi.fn() };
+afterEach(() => { act(() => setSynth(false)); });
 beforeEach(() => {
+  act(() => setSynth(false));
   vi.clearAllMocks();
   service.chatChanges.mockResolvedValue(changes());
   service.reviewDraft.mockResolvedValue(review());
@@ -96,6 +99,22 @@ it("requires separate preview and approval with the exact destination and revisi
   expect(screen.getByText(/ssh:\/\/git@example\/repo/)).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "Approve: Push draft" }));
   await waitFor(() => expect(service.approveDelivery).toHaveBeenCalledWith(4, delivery()));
+});
+it("uses the captured delivery hunks and existing exact approval controller in Synth", async () => {
+  act(() => setSynth(true));
+  const file = review().files[0]; if (!file) throw Error("fixture");
+  const captured: Delivery = { ...delivery(), evidence: { basis: "Captured verified range", files_total: 1, omitted_files: 0, note: null,
+    files: [{ area: "commit", file: { ...file, path: "captured-only.rs" }, revision: "commit-sha", reason: null, hunks_omitted: false }] } };
+  service.previewDelivery.mockResolvedValue(captured);
+  render(<ChatChanges {...props}/>); await openReview();
+  fireEvent.click(screen.getByRole("button", { name: "Preview: Push draft" }));
+  const dialog = await screen.findByRole("dialog", { name: "Delivery approval" });
+  expect(within(dialog).getByText("captured-only.rs")).toBeTruthy();
+  expect(within(dialog).getByText(/draft revision 7/)).toBeTruthy();
+  expect(within(dialog).queryByRole("button", { name: /comment on/ })).toBeNull();
+  expect(service.approveDelivery).not.toHaveBeenCalled();
+  fireEvent.click(within(dialog).getByRole("button", { name: "Approve: Push draft" }));
+  await waitFor(() => expect(service.approveDelivery).toHaveBeenCalledWith(4, captured));
 });
 it("keeps refusals visible and refreshes durable results rather than claiming success", async () => {
   service.approveDelivery.mockResolvedValue({ ...delivery(), state: "refused", result: "Origin changed; review again" });
