@@ -128,11 +128,12 @@ export async function exerciseSyntax() {
     must(document.activeElement === add, "Syntax arrival stole line focus");
     const built = new Worker("/dist/diff-syntax-worker.js", { type: "module" });
     try {
-      await new Promise((resolve, reject) => {
-        const timer = setTimeout(() => reject(Error("Built syntax worker timed out")), 5000);
+      const grammars = [["example.ts", 'const fixture = "safe";'], ["example.rs", "fn main() { let number = 1; }"], ["example.json", '{"number": 1}'], ["example.php", "<?php echo 'hello'; ?>"], ["example.yaml", "number: 1"], ["Dockerfile", "FROM alpine"], ["example.md", "# Heading"]];
+      for (const [index, [path, text]] of grammars.entries()) await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(Error(`Built syntax worker timed out for ${path}`)), 5000);
         built.onerror = event => { clearTimeout(timer); reject(Error(`Built syntax worker failed: ${event.message}`)); };
-        built.onmessage = event => { clearTimeout(timer); if (event.data.result.state === "ready" && event.data.result.lines.h0l0?.some(span => span.role === "keyword")) resolve(); else reject(Error(`Built worker returned no grammar: ${JSON.stringify(event.data)}`)); };
-        built.postMessage({ id: 991, input: { path: "example.ts", lines: [{ key: "h0l0", kind: "added", text: 'const fixture = "safe";', display: true }] } });
+        built.onmessage = event => { clearTimeout(timer); if (event.data.id === 991 + index && event.data.result.state === "ready" && event.data.result.lines.h0l0?.length > 0 && (index !== 0 || event.data.result.lines.h0l0.some(span => span.role === "keyword"))) resolve(); else reject(Error(`Built worker returned no grammar for ${path}: ${JSON.stringify(event.data)}`)); };
+        built.postMessage({ id: 991 + index, input: { path, lines: [{ key: "h0l0", kind: "added", text, display: true }] } });
       });
     } finally { built.terminate(); }
     const beforeHide = retired;
@@ -145,7 +146,7 @@ export async function exerciseSyntax() {
     must(document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1, "Syntax caused horizontal overflow");
     const apiRequests = performance.getEntriesByType("resource").filter(entry => new URL(entry.name).pathname.startsWith("/api/")).length;
     must(apiRequests === 0, "Syntax reached a real backend");
-    return { width: document.documentElement.clientWidth, theme: document.documentElement.dataset.theme, chunks: messages.length, maximumRows: Math.max(...messages.map(message => message.rows)), builtWorker: true, exactText: true, hiddenWorkerRetired: true, apiRequests };
+    return { width: document.documentElement.clientWidth, theme: document.documentElement.dataset.theme, chunks: messages.length, maximumRows: Math.max(...messages.map(message => message.rows)), builtWorker: true, builtGrammars: 7, exactText: true, hiddenWorkerRetired: true, apiRequests };
   } finally { Worker.prototype.postMessage = original; Worker.prototype.terminate = originalTerminate; }
 }
 

@@ -12,6 +12,6 @@ export function SeatModule({ module, selected, onSelect }: { module: PatchModule
     <button className="synth-patch-module__select" type="button" aria-pressed={selected} onClick={onSelect}>{moduleLabel(module)}</button>
     <p className="mono">{draft ? draft.build_status : agent?.node.status}</p>
     <p className="faint">{draft ? `Lease: ${draft.lease_state}` : `${agent?.node.provider}/${agent?.node.model}`}</p>
-    <Jack label="Inspect evidence" signal={draft ? "diff" : "plan"} armed={selected} onClick={onSelect}/>
+    <Jack label="Inspect evidence" aria-label={`Inspect ${moduleLabel(module)}`} signal={draft ? "diff" : "plan"} armed={selected} onClick={onSelect}/>
   </article>;
 }

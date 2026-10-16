@@ -8,7 +8,8 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:native": "npm run build && node scripts/verify-synth-native.mjs"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.3",

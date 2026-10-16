@@ -8,6 +8,7 @@ it("renders exact evidence and hands controls back without dispatching a command
   const fixture = fixtureTeamOverview(), work = vi.fn(), review = vi.fn();
   render(<PatchBay {...fixture} onWork={work} onReview={review}/>);
   expect(screen.getByText(/Read-only evidence/)).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Inspect frontend · node #3" })).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "backend · node #2" }));
   const inspector = screen.getByRole("region", { name: "Patch inspector" });
   expect(within(inspector).getByText("/fixture/draft-1")).toBeTruthy();
