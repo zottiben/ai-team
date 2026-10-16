@@ -5,6 +5,7 @@ import { useMeasuredRows } from "../../../virtual/useMeasuredRows";
 import { trackerRows, type ActivityLane, type TrackerRow } from "./rows";
 import { LANES, ReadGroup, ToolRow, type Disclosure } from "./ToolRow";
 import { ThinkingRow } from "./ThinkingRow";
+import type { ActiveScope } from "../activity-motion";
 const Skin = lazy(() => import("./TrackerSkin"));
 
 export type EventDisclosure = { open: boolean; onToggle: (open: boolean) => void };
@@ -18,8 +19,8 @@ function visibleLane(row: TrackerRow, lanes: ReadonlySet<ActivityLane>) {
 
 /** One list owns display/scroll state for BOTH skins. Switching decoration must not
  * replace human/prose DOM, follow-up receipts, or the parent chat's controller. */
-export default function Tracker({ events, synth, visible, pattern, eventKey, renderEvent, empty, tail, followRequest = 0 }: {
-  events: RunEvent[]; synth: boolean; visible: boolean; pattern: boolean; followRequest?: number;
+export default function Tracker({ events, synth, visible, pattern, eventKey, renderEvent, empty, tail, followRequest = 0, active = null, ready = true }: {
+  events: RunEvent[]; synth: boolean; visible: boolean; pattern: boolean; followRequest?: number; active?: ActiveScope | null; ready?: boolean;
   eventKey: (event: RunEvent) => string | number;
   renderEvent: (event: RunEvent, disclosure: EventDisclosure) => ReactNode;
   empty: ReactNode; tail: ReactNode;
@@ -32,6 +33,7 @@ export default function Tracker({ events, synth, visible, pattern, eventKey, ren
   const [opened, setOpened] = useState<ReadonlySet<string>>(new Set());
   const [focused, setFocused] = useState<string | number | null>(null);
   const [jump, setJump] = useState<number | null>(null);
+  const [jumpRequest, setJumpRequest] = useState(0);
   const [selectedEvent, setSelectedEvent] = useState<number | null>(null);
   const pendingJump = useRef<{ id: number; scrolled: boolean } | null>(null);
   const seenSkin = useRef(synth);
@@ -81,11 +83,19 @@ export default function Tracker({ events, synth, visible, pattern, eventKey, ren
     if (jump === null) return;
     const timer = setTimeout(() => { setJump(null); setSelectedEvent(null); pendingJump.current = null; }, 600);
     return () => clearTimeout(timer);
-  }, [jump]);
+  }, [jump, jumpRequest]);
+  useLayoutEffect(() => {
+    const cancelHidden = () => {
+      if (visible && document.visibilityState === "visible") return;
+      pendingJump.current = null; setJump(null); setSelectedEvent(null);
+    };
+    cancelHidden(); document.addEventListener("visibilitychange", cancelHidden);
+    return () => document.removeEventListener("visibilitychange", cancelHidden);
+  }, [visible]);
   const reveal = (id: number, event: number) => {
     holdingJump.current = true;
     pendingJump.current = { id, scrolled: false };
-    setFollowing(false); setJump(id); setSelectedEvent(event);
+    setFollowing(false); setJump(id); setJumpRequest(request => request + 1); setSelectedEvent(event);
     const target = projected.find(row => row.id === id);
     if (target?.kind === "thinking") { setLanes(old => new Set([...old, "think"])); toggle([`think:${event}`], true); }
     if (target?.kind === "reads") setLanes(old => new Set([...old, "read"]));
@@ -120,10 +130,10 @@ export default function Tracker({ events, synth, visible, pattern, eventKey, ren
       const precise = target.querySelector<HTMLElement>(`[data-read-id="${selectedEvent}"], [data-thinking-id="${selectedEvent}"]`) ?? target;
       precise.focus({ preventScroll: true }); pendingJump.current = null;
     }
-  }, [entries, rows, visible, windowed, virtualizer, selectedEvent]);
+  }, [entries, rows, visible, windowed, virtualizer, selectedEvent, jumpRequest]);
 
   return <SynthProvider><div className="chat-transcript-shell" data-tracker={synth || undefined}>
-    {synth && <Suspense fallback={null}><Skin rows={projected} pattern={pattern} lanes={lanes} onLane={lane => setLanes(old => { const next = new Set(old); if (next.has(lane)) next.delete(lane); else next.add(lane); return next; })} onSelect={reveal}/></Suspense>}
+    {synth && <Suspense fallback={null}><Skin rows={projected} pattern={pattern} active={active} list={list} viewport={scroll} visible={visible} eventKey={eventKey} ready={ready} lanes={lanes} onLane={lane => setLanes(old => { const next = new Set(old); if (next.has(lane)) next.delete(lane); else next.add(lane); return next; })} onSelect={reveal}/></Suspense>}
     <div ref={scroll} className="chat-transcript" onWheelCapture={() => { holdingJump.current = false; }} onPointerDownCapture={() => { holdingJump.current = false; }} onKeyDownCapture={event => {
       if (["ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown", " "].includes(event.key)) holdingJump.current = false;
     }} onScroll={() => {
@@ -140,7 +150,8 @@ export default function Tracker({ events, synth, visible, pattern, eventKey, ren
             style={item.start === undefined ? undefined : { position: "absolute", top: 0, width: "100%", transform: `translateY(${item.start}px)` }}>
             <div className="synth-tracker-message-label" hidden={!synth || row.kind !== "event"}>{row.kind === "event" ? `${row.event.actor === "human" ? "You" : row.event.actor ?? "Notice"}${row.event.node_run_id !== null ? ` · node ${row.event.node_run_id}` : ""}` : null}</div>
             <div className="tracker-content">
-              {row.kind === "event" ? renderEvent(row.event, { open: opened.has(`think:${row.id}`), onToggle: open => toggle([`think:${row.id}`], open) })
+              {jump === row.id && <span key={jumpRequest} className="synth-tracker-focus" aria-hidden="true"/>}
+            {row.kind === "event" ? renderEvent(row.event, { open: opened.has(`think:${row.id}`), onToggle: open => toggle([`think:${row.id}`], open) })
                 : row.kind === "tool" ? <ToolRow row={row} disclosure={disclosure}/>
                   : row.kind === "thinking" ? <ThinkingRow events={row.events} disclosure={disclosure}/>
                     : <><div className="synth-tracker-read-heading">Read ×{row.tools.length} · recorded operations</div><ReadGroup rows={row.tools} disclosure={disclosure}/></>}

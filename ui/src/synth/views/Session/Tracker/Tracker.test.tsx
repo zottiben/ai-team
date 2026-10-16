@@ -1,5 +1,5 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { beforeEach, describe, expect, it } from "vitest";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { RunEvent } from "../../../../api";
 import Tracker, { type EventDisclosure } from "./Tracker";
 
@@ -79,6 +79,28 @@ describe("shared tracker rendering", () => {
     expect(screen.getByRole("button", { name: /new/ })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: /new/ }));
     expect(scroll.scrollTop).toBe(1000);
+  });
+
+  it("keeps a repeated exact jump owned by its newest request and cancels hidden ownership", async () => {
+    const events = [tool(1, "tool_call", "a"), tool(2, "tool_result", "a")];
+    const view = render(<Tracker {...props} pattern events={events}/>);
+    await screen.findByRole("group", { name: "Activity lanes" });
+    const pad = document.querySelector<HTMLButtonElement>('[data-pattern-id="1"] button');
+    if (!pad) throw new Error("Pattern step unavailable");
+    vi.useFakeTimers();
+    try {
+      fireEvent.click(pad);
+      act(() => { vi.advanceTimersByTime(400); });
+      fireEvent.click(pad);
+      act(() => { vi.advanceTimersByTime(250); });
+      expect(document.querySelector('[data-row-id="1"]')?.getAttribute("data-jump")).toBe("true");
+      act(() => { vi.advanceTimersByTime(350); });
+      expect(document.querySelector('[data-row-id="1"]')?.getAttribute("data-jump")).toBeNull();
+      fireEvent.click(pad);
+      view.rerender(<Tracker {...props} pattern events={events} visible={false}/>);
+      view.rerender(<Tracker {...props} pattern events={events}/>);
+      expect(document.querySelector(".synth-tracker-focus")).toBeNull();
+    } finally { vi.useRealTimers(); }
   });
 
   it("shows recorded native edit counts without inventing counts for writes", async () => {

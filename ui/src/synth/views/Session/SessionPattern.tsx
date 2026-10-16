@@ -4,6 +4,9 @@ import { HwButton } from "../../primitives/HwButton";
 import { signalStyle } from "../../primitives/signal";
 import { LANES, LANE_NAMES } from "./Tracker/ToolRow";
 import type { ActivityLane, TrackerRow } from "./Tracker/rows";
+import { currentPending, type ActiveScope } from "./activity-motion";
+import { usePatternMotion } from "./useReceiptMotion";
+import { useMotionVisible } from "../../motion/useMotionVisible";
 
 export type PatternEntry = { id: number; row: number; lane: ActivityLane; label: string; duration: number | null };
 export function patternEntries(rows: TrackerRow[]): PatternEntry[] {
@@ -17,13 +20,22 @@ export function patternEntries(rows: TrackerRow[]): PatternEntry[] {
   });
 }
 
-export function SessionPattern({ rows, onSelect }: { rows: TrackerRow[]; onSelect: (row: number, event: number) => void }) {
+function CurrentGlow() {
+  const host = useRef<HTMLSpanElement>(null), motion = useMotionVisible(host);
+  return <span ref={host} className="synth-current-step" data-motion={motion} aria-hidden="true"/>;
+}
+
+export function SessionPattern({ rows, active = null, ready = true, onSelect }: { rows: TrackerRow[]; active?: ActiveScope | null; ready?: boolean; onSelect: (row: number, event: number) => void }) {
   const [limit, setLimit] = useState<48 | 96 | "all">(48);
   const all = useMemo(() => patternEntries(rows), [rows]);
-  const offset = limit === "all" ? 0 : Math.max(0, all.length - limit);
-  const steps = useMemo(() => all.slice(offset), [all, offset]);
-  const scroll = useRef<HTMLDivElement>(null);
   const [focused, setFocused] = useState<number | null>(null);
+  const focusOrdinal = useMemo(() => all.findIndex(step => step.id === focused), [all, focused]);
+  const tailOffset = limit === "all" ? 0 : Math.max(0, all.length - limit);
+  const offset = focusOrdinal < 0 ? tailOffset : Math.min(tailOffset, focusOrdinal);
+  const steps = useMemo(() => all.slice(offset, limit === "all" ? undefined : offset + limit), [all, offset, limit]);
+  const scroll = useRef<HTMLDivElement>(null);
+  usePatternMotion(rows, scroll, offset, limit, ready);
+  const current = useMemo(() => currentPending(rows, active), [rows, active]);
   const focusedIndex = useMemo(() => steps.findIndex(step => step.id === focused), [steps, focused]);
   const rangeExtractor = useCallback((range: Parameters<typeof defaultRangeExtractor>[0]) => {
     const normal = defaultRangeExtractor(range);
@@ -35,7 +47,7 @@ export function SessionPattern({ rows, onSelect }: { rows: TrackerRow[]; onSelec
   const columns = windowed ? virtual.getVirtualItems().map(item => ({ index: item.index, start: item.start })) : steps.map((_, index) => ({ index, start: index * 44 }));
   const longest = useMemo(() => steps.reduce((max, step) => Math.max(max, step.duration ?? 0), 0), [steps]);
   return <section className="synth-session-pattern" aria-label="Session pattern">
-    <div className="synth-pattern-heading"><span className="synth-silk">Session pattern · {steps.length} of {all.length} mapped steps</span>
+    <div className="synth-pattern-heading"><span className="synth-silk">Session pattern · {steps.length} of {all.length} mapped steps{offset < tailOffset ? " · held for keyboard focus" : ""}</span>
       <div role="group" aria-label="Pattern range">{([48, 96, "all"] as const).map(value => <HwButton key={value} latched={limit === value} onClick={() => setLimit(value)}>{value === "all" ? "All" : value}</HwButton>)}</div>
     </div>
     <div className="synth-sequence">
@@ -44,10 +56,10 @@ export function SessionPattern({ rows, onSelect }: { rows: TrackerRow[]; onSelec
         <div style={{ width: steps.length * 44, height: "var(--synth-sequence-height)", position: "relative" }}>
           {columns.map(column => { const step = steps[column.index]; if (!step) return null;
             const opacity = step.duration === null ? 1 : .55 + .45 * (longest ? Math.log1p(step.duration) / Math.log1p(longest) : 0);
-            const label = `${LANE_NAMES[step.lane]} · ${step.label} · ${step.duration === null ? "duration unavailable" : `${step.duration} ms runtime`}`;
-            return <div key={step.id} className="synth-sequence-column" onFocusCapture={() => setFocused(step.id)} onBlurCapture={event => { if (!event.currentTarget.contains(event.relatedTarget)) setFocused(null); }} style={{ transform: `translateX(${column.start}px)` }}>
+            const label = `${LANE_NAMES[step.lane]} · ${step.label} · ${step.duration === null ? "duration unavailable" : `${step.duration} ms runtime`}${current === step.id ? " · latest pending observation in the active turn; not proof of liveness" : ""}`;
+            return <div key={step.id} data-pattern-id={step.id} className="synth-sequence-column" onFocusCapture={() => setFocused(step.id)} onBlurCapture={event => { if (!event.currentTarget.contains(event.relatedTarget)) setFocused(null); }} style={{ transform: `translateX(${column.start}px)` }}>
               <span aria-hidden="true">{(offset + column.index + 1) % 8 === 0 ? offset + column.index + 1 : ""}</span>
-              {LANES.map(lane => lane === step.lane ? <button type="button" key={lane} className="synth-step" style={signalStyle(lane)} aria-label={label} title={label} onClick={() => onSelect(step.row, step.id)}><span style={{ opacity }} aria-hidden="true"/></button> : <span key={lane} className="synth-step-empty" aria-hidden="true"/>)}
+              {LANES.map(lane => lane === step.lane ? <button type="button" key={lane} className="synth-step" style={signalStyle(lane)} aria-label={label} title={label} aria-current={current === step.id ? "step" : undefined} onClick={() => onSelect(step.row, step.id)}><span style={{ opacity }} aria-hidden="true">{current === step.id && <CurrentGlow/>}</span></button> : <span key={lane} className="synth-step-empty" aria-hidden="true"/>)}
             </div>;
           })}
         </div>

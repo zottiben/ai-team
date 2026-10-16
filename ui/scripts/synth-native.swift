@@ -1,7 +1,7 @@
 import AppKit
 import WebKit
 @MainActor final class Probe: NSObject, NSApplicationDelegate, WKNavigationDelegate {
-    var window: NSWindow!; var web: WKWebView!; var phase = Int(ProcessInfo.processInfo.environment["SYNTH_PROBE_START"] ?? "0") ?? 0
+    var window: NSWindow!; var web: WKWebView!; var phase = Int(ProcessInfo.processInfo.environment["SYNTH_PROBE_START"] ?? "0") ?? 0; var completed = 0
     let cases = [
         (1280, "team-overview=true&theme=dark", "/synth-patch.checks.js", "exercisePatchBay"),
         (390, "tools=true&tool-input=true&theme=light", "/synth-tools.checks.js", "exerciseTools"),
@@ -11,6 +11,8 @@ import WebKit
         (390, "activity=5000&activity-mode=reads&theme=light", "/synth-tracker.checks.js", "exerciseGroupedTracker"),
         (1280, "activity=5000&activity-mode=thinking&theme=dark", "/synth-tracker.checks.js", "exerciseGroupedTracker"),
         (390, "activity=5000&theme=light", "/synth-tracker.checks.js", "exerciseOutput"),
+        (1280, "activity=5000&activity-motion=true&theme=dark", "/synth-arrival.checks.js", "exerciseReceiptMotion"),
+        (390, "activity=5000&activity-motion=true&theme=light", "/synth-arrival.checks.js", "exerciseReceiptMotion"),
         (1280, "overview=true&theme=dark", "/synth-overview.checks.js", "exerciseOverview"),
         (390, "review=true&theme=light", "/synth-review.checks.js", "exerciseReview"),
         (1280, "review=true&theme=dark", "/synth-review.checks.js", "exerciseApproval"),
@@ -36,7 +38,7 @@ import WebKit
         web = WKWebView(frame: NSRect(x: 0, y: 0, width: 1280, height: 900), configuration: config)
         web.navigationDelegate = self; web.autoresizingMask = [.width, .height]
         window = NSWindow(contentRect: web.frame, styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-        window.title = "Isolated Synth probe · no processes or files"; window.contentView = web; window.makeKeyAndOrderFront(nil); NSApp.activate(); load()
+        window.title = "Isolated Synth probe · synthetic inputs only"; window.contentView = web; window.makeKeyAndOrderFront(nil); NSApp.activate(); load()
         DispatchQueue.main.asyncAfter(deadline: .now() + 240) { self.fail("timeout") }
     }
     func load() {
@@ -50,12 +52,13 @@ import WebKit
             do {
                 let status = try await web.evaluateJavaScript("JSON.stringify({visibility:document.visibilityState,url:location.href})")
                 FileHandle.standardError.write(Data("WK status: \(status ?? "none")\n".utf8))
-                if let state = status as? String, state.contains("\"visibility\":\"hidden\"") { fail("Native viewport is hidden; visible verification blocked") }
+                guard let state = status as? String, state.contains("\"visibility\":\"visible\"") else { fail("Native viewport is not visible; visible verification blocked") }
                 let c = cases[phase]
                 let value = try await web.callAsyncJavaScript("return await (await import('\(c.2)')).\(c.3)();", arguments: [:], in: nil, contentWorld: .page)
                 let data = try JSONSerialization.data(withJSONObject: value ?? [:], options: [.sortedKeys])
                 FileHandle.standardOutput.write(Data(("WK synthetic \(c.3): " + String(decoding: data, as: UTF8.self) + "\n").utf8))
-                phase += 1; if phase == cases.count { window.close(); exit(0) }; load()
+                phase += 1; completed += 1
+                if phase == cases.count { FileHandle.standardOutput.write(Data("WK complete: \(completed) visible synthetic checks\n".utf8)); window.close(); exit(0) }; load()
             } catch {
                 let debug = try? await web.evaluateJavaScript("JSON.stringify({top:document.querySelector('.chat-transcript')?.scrollTop,height:document.querySelector('.chat-transcript')?.scrollHeight,viewport:document.querySelector('.chat-transcript')?.clientHeight,follow:document.querySelector('.chat-follow')?.outerHTML,active:document.activeElement?.outerHTML.slice(0,300)})")
                 FileHandle.standardError.write(Data("WK diagnostic: \(debug ?? "none")\n".utf8)); fail(String(describing: error))

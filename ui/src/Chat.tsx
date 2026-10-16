@@ -262,6 +262,8 @@ export function ChatView({
     return receipt ? `followup:${receipt.id}` : event.id;
   }, [receipts]);
   const activeTurn = detail?.turns.find(turn => turn.node.id === detail.active_node_id);
+  const patternScope = useMemo(() => detail?.state === "running" && !detail.stop_requested && activeTurn?.node.status === "running" && activeTurn.node.session_id
+    ? { node: activeTurn.node.id, session: activeTurn.node.session_id } : null, [detail?.state, detail?.stop_requested, activeTurn?.node.id, activeTurn?.node.status, activeTurn?.node.session_id]);
   const thinkingValue: Reasoning | "" = active ? activeTurn?.node.reasoning ?? "" : detail?.reasoning ?? newReasoning;
   // Which model's limits apply. An existing chat's are its own; a new one's come from the
   // picker, split on the first `/` because a model id may contain more of them.
@@ -295,7 +297,7 @@ export function ChatView({
       )
     : 0;
 
-  useReadout(clockHost, () => setClock(Date.now()), running);
+  useReadout(clockHost, () => setClock(Date.now()), running && (!synth || tool === null && !wideBoard));
 
   const attach = async (files: File[]) => {
     if (!files.length || busy || reading.current || detail?.archived) return;
@@ -545,7 +547,7 @@ export function ChatView({
       <div ref={body} className="chat-body" data-context={panel !== null && tool === null && !wideBoard} data-synth-board={wideBoard || undefined}>
       <div className="chat-conversation" hidden={wideBoard}>
       <div className="chat-panel" hidden={tool !== null}>
-          <Suspense fallback={<p>Loading conversation…</p>}><Tracker events={messageEvents} followRequest={followRequest} synth={synth} visible={tool === null && !wideBoard} pattern={panel === "overview"}
+          <Suspense fallback={<p>Loading conversation…</p>}><Tracker events={messageEvents} active={patternScope} ready={detail !== null} followRequest={followRequest} synth={synth} visible={tool === null && !wideBoard} pattern={panel === "overview"}
             eventKey={eventKey} renderEvent={(event, disclosure) => {
               const turn = detail?.turns.find(turn => turn.node.id === event.node_run_id);
               const followup = event.actor === "human" ? receipts.get(event.node_run_id) : undefined;
@@ -560,7 +562,7 @@ export function ChatView({
             </div>} tail={<>
               <CancelledInstructions items={detail?.followups}/>
               {active && detail?.live_text && <article className="chat-message" aria-label="Assistant response in progress"><BoardMarkdown source={detail.live_text}/></article>}
-              {running && (synth ? <Suspense fallback={<p>Working…</p>}><LiveRow stopping={!!detail?.stop_requested} elapsed={elapsed}/></Suspense> : <div className="chat-working" role="status"><span className="chat-pulse"/>{detail?.stop_requested ? "Stopping the current turn…" : "Working…"}<span className="faint">{Number.isFinite(elapsed) ? elapsed : 0}s</span></div>)}
+              {running && (synth ? <Suspense fallback={<p>Working…</p>}><LiveRow stopping={!!detail?.stop_requested} started={activeTurn?.node.started_at} now={clock}/></Suspense> : <div className="chat-working" role="status"><span className="chat-pulse"/>{detail?.stop_requested ? "Stopping the current turn…" : "Working…"}<span className="faint">{Number.isFinite(elapsed) ? elapsed : 0}s</span></div>)}
             </>}/></Suspense>
       </div>
       {detail && Object.entries(openedTools).map(([workspace, opened]) => <section key={workspace} className="chat-tools-panel" hidden={tool === null || workspace !== detail.workspace_path} aria-label="Chat checkout tools">

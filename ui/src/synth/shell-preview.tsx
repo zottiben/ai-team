@@ -96,6 +96,22 @@ export function moveReviewFile(path: string) {
 }
 const activityCount = Math.max(0, Math.min(5_000, Number(params.get("activity")) || 0));
 const activityMode = params.get("activity-mode") === "reads" ? "reads" : params.get("activity-mode") === "thinking" ? "thinking" : "tools";
+const activityMotion = params.get("activity-motion") === "true";
+if (activityMotion) {
+  const turn = (await import("./work-fixture")).fixtureRuns()[0]!;
+  const now = new Date().toISOString();
+  turn.run = { ...turn.run, status: "running", started_at: now, ended_at: null };
+  turn.node = { ...turn.node, provider: chat.provider, model: chat.model, status: "running", session_id: "fixture-session", started_at: now };
+  chat.turns = [turn]; chat.active_node_id = turn.node.id; chat.state = "running";
+}
+export function setActivityRunning(running: boolean) {
+  if (!activityMotion) throw Error("Only the isolated activity-motion fixture can change its synthetic turn");
+  const turn = chat.turns[0]!;
+  turn.run.status = turn.node.status = running ? "running" : "done";
+  turn.run.ended_at = turn.node.ended_at = running ? null : new Date().toISOString();
+  chat.active_node_id = running ? turn.node.id : null;
+  chat.state = running ? "running" : "idle"; chat.rev++; tickers.forEach(tick => tick());
+}
 events.push(...fixtureActivity(activityCount, events.at(-1)?.id ?? 0, activityMode));
 export function appendActivity() {
   events.push(...fixtureActivity(1, events.at(-1)?.id ?? 0, activityMode));

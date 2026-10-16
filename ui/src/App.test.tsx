@@ -373,7 +373,8 @@ it("new chat stays in the chosen project", async () => {
   await screen.findByRole("heading", { name: "Demo project / New chat" });
 });
 
-it("preserves onboarding, project registration, and Settings entry points", async () => {
+it.each([false, true])("preserves onboarding, project registration, and Settings entry points (Synth %s)", async synth => {
+  (await import("./ui-preferences")).setSynth(synth);
   state.setup = true;
   render(<App />);
   await screen.findByRole("heading", { name: "Welcome setup" });
@@ -383,7 +384,8 @@ it("preserves onboarding, project registration, and Settings entry points", asyn
   await screen.findByRole("heading", { name: "Register projects" });
 });
 
-it("keeps only Source and Team in project tools, with explicit checkout ownership", async () => {
+it.each([false, true])("keeps only Source and Team in project tools, with explicit checkout ownership (Synth %s)", async synth => {
+  (await import("./ui-preferences")).setSynth(synth);
   render(<App />);
   fireEvent.click(await screen.findByRole("button", { name: "More tools" }));
   fireEvent.click(within(screen.getByRole("navigation", { name: "More tools" })).getByRole("button", { name: "Project tools" }));
@@ -415,7 +417,8 @@ it("keeps schedule and less frequent tools accessible without replacing chat nav
   await screen.findByRole("heading", { name: "Today content" });
 });
 
-it("opens Today work and review in their exact owning chats", async () => {
+it.each([false, true])("opens Today work and review in their exact owning chats (Synth %s)", async synth => {
+  (await import("./ui-preferences")).setSynth(synth);
   render(<App />);
   await screen.findByRole("heading", { name: "Demo project / New chat" });
   fireEvent.click(screen.getByRole("button", { name: "More tools" }));
@@ -448,7 +451,8 @@ it("does not depend on a legacy run lookup when Today opens a chat", async () =>
   ).not.toBeNull();
 });
 
-it("opens chat notifications in their originating conversation, not legacy work", async () => {
+it.each([false, true])("opens chat notifications in their originating conversation, not legacy work (Synth %s)", async synth => {
+  (await import("./ui-preferences")).setSynth(synth);
   render(<App />);
   await screen.findByRole("button", { name: "First conversation" });
   fireEvent.click(screen.getByRole("button", { name: "Other project" }));
@@ -458,7 +462,8 @@ it("opens chat notifications in their originating conversation, not legacy work"
   expect(screen.queryByRole("combobox", { name: "Project checkout" })).toBeNull();
 });
 
-it("still opens legacy notifications in their recorded checkout", async () => {
+it.each([false, true])("still opens legacy notifications in their recorded checkout (Synth %s)", async synth => {
+  (await import("./ui-preferences")).setSynth(synth);
   render(<App />);
   await screen.findByRole("button", { name: "First conversation" });
   fireEvent.click(screen.getByRole("button", { name: "Open notification" }));

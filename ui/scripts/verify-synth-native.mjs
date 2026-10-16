@@ -47,7 +47,7 @@ try {
   const binary = join(temporary, 'synth-native');
   await run('swiftc', ['-parse-as-library', join(root, 'scripts/synth-native.swift'), '-o', binary], process.env, 120000);
   await run(binary, [], { ...process.env, SYNTH_FIXTURE_URL: `http://127.0.0.1:${address.port}`, SYNTH_PROBE_START: '0' }, 250000);
-  console.log('PASS: 26 visible WKWebView synthetic checks. Not physical input, installed-app, CPU/INP or release certification.');
+  console.log('PASS: visible WKWebView synthetic suite. Not physical input, installed-app, CPU/INP or release certification.');
 } finally {
   await server?.close();
   await rm(temporary, { recursive: true, force: true });

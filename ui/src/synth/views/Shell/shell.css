@@ -49,6 +49,8 @@
 :root[data-synth="true"] .chat-thread-list button:hover, :root[data-synth="true"] .chat-project-name:hover { background: var(--synth-key-hover); color: var(--synth-text); }
 :root[data-synth="true"] .chat-sidebar [aria-current="page"] { background: var(--synth-key); color: var(--synth-text); box-shadow: var(--shadow-key); }
 :root[data-synth="true"] .chat-sidebar .chat-pulse { background: var(--st-working); animation: none; }
+/* Generic stored statuses are not a visibility-owned proof of current activity. */
+:root[data-synth="true"] .status::before { animation: none; }
 :root[data-synth="true"] .chat-header { background: var(--plate-midnight); color: var(--synth-text); padding: 16px 22px 12px; flex-wrap: wrap; gap: 12px; }
 :root[data-synth="true"] .chat-heading { flex: 1 1 240px; }
 :root[data-synth="true"] .chat-heading > .faint { color: var(--synth-label); text-transform: uppercase; letter-spacing: .12em; font-size: 10px; }
