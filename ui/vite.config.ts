@@ -20,7 +20,12 @@ export default defineConfig({
   },
   worker: {
     format: "es",
-    rollupOptions: { output: { entryFileNames: "diff-syntax-worker.js", chunkFileNames: "diff-syntax-[name].js", assetFileNames: "diff-syntax-[name][extname]" } },
+    rollupOptions: { output: {
+      entryFileNames: "diff-syntax-worker.js", chunkFileNames: "diff-syntax-[name].js", assetFileNames: "diff-syntax-[name][extname]",
+      // A lazy grammar must not import its shared classes from the worker entry:
+      // WebKit can instantiate that entry twice, breaking CodeMirror identities.
+      codeSplitting: { groups: [{ name: "engine", test: /\/node_modules\/(?:@codemirror\/(?:state|view|language|autocomplete|commands|search|lint)\/|@lezer\/(?:common|lr|highlight)\/|(?:style-mod|w3c-keyname|crelt)\/|@marijn\/find-cluster-break\/)/ }] },
+    } },
   },
   server: {
     // `npm run dev` proxies to a server started with `ait ui --port 7788 --no-open`, so

@@ -241,7 +241,12 @@ export default function App() {
   }} />;
 
   return (
-    <div className="chat-shell" data-sidebar-collapsed={collapsed} onClickCapture={() => { interacted.current = true; }} onKeyDownCapture={() => { interacted.current = true; }}>
+    <div className="chat-shell" data-sidebar-collapsed={collapsed} onClickCapture={() => { interacted.current = true; }} onKeyDownCapture={event => {
+      interacted.current = true;
+      if (synth && !event.repeat && !event.nativeEvent.isComposing && (event.metaKey || event.ctrlKey) && event.shiftKey && !event.altKey && event.key.toLowerCase() === "n" && !(event.target instanceof Element && event.target.closest('[role="dialog"], [role="alertdialog"], [role="listbox"], [role="menu"]'))) {
+        event.preventDefault(); event.stopPropagation(); newChat();
+      }
+    }}>
       <nav className="app-rail" aria-label="Application">
         <button type="button" aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"} title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
           aria-expanded={!collapsed} aria-controls="chat-sidebar" onClick={() => setCollapsed(value => !value)}>
@@ -559,7 +564,7 @@ export default function App() {
           </main>
         )}
       </div>
-      {synth && <Suspense fallback={null}><SynthTitleBar context={setup ? "Setup" : page === "chat" ? project?.name ?? "Chats" : page === "plans" ? "Board · all projects" : page === "tools" ? "Project tools" : page === "team" ? "Default team" : page.charAt(0).toUpperCase() + page.slice(1)} version={updates.available?.current} /></Suspense>}
+      {synth && <Suspense fallback={null}><SynthTitleBar chat={!setup && page === "chat" ? chatId : null} project={project?.id ?? null} context={setup ? "Setup" : page === "chat" ? project?.name ?? "Chats" : page === "plans" ? "Board · all projects" : page === "tools" ? "Project tools" : page === "team" ? "Default team" : page.charAt(0).toUpperCase() + page.slice(1)} version={updates.available?.current} /></Suspense>}
     </div>
   );
 }

@@ -1,6 +1,7 @@
 import { EditorView } from "@codemirror/view";
 import type { EditorState, Extension } from "@codemirror/state";
 import { Suspense, lazy, useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 import {
   search as runSearch,
@@ -86,6 +87,8 @@ export function Editor({
 }) {
   const synth = useSynth();
   const [open, setOpen] = useState<Buffer[]>([]);
+  const [surfaceHost] = useState(() => { const host = document.createElement("div"); host.style.display = "contents"; return host; });
+  const mountSurface = useCallback((node: HTMLDivElement | null) => { if (node && surfaceHost.parentNode !== node) node.append(surfaceHost); }, [surfaceHost]);
   const [active, setActive] = useState<string | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const [pending, setPending] = useState<Pending | null>(null);
@@ -312,8 +315,12 @@ export function Editor({
       />
     );
 
+  // The portal target outlives both skins. Move its host, not the CodeMirror owner:
+  // a state cache alone preserves undo but still detaches active input and observers.
+  const mount = <div style={{ display: "contents" }} ref={mountSurface}/>;
+  const portal = current?.editable ? createPortal(surface, surfaceHost) : null;
   if (synth) {
-    return (
+    return <>{portal}
       <Suspense fallback={<p className="empty">Loading editor…</p>}>
         <SynthWorkspace
           where={scope}
@@ -328,7 +335,7 @@ export function Editor({
           reverting={reverting}
           receipt={receipt}
           busy={busy}
-          surface={surface}
+          surface={mount}
           onOpen={(path) => void openPath(path)}
           onSelect={setActive}
           onClose={closePath}
@@ -345,10 +352,10 @@ export function Editor({
           onSteer={onSteer}
         />
       </Suspense>
-    );
+    </>;
   }
 
-  return (
+  return <>{portal}
     <div className="editor">
       <div className="editor__side">
         <Search where={scope} onOpen={(path) => void openPath(path)} />
@@ -470,7 +477,7 @@ export function Editor({
         {current === null ? (
           <p className="empty">Open a file from the tree, or search for one.</p>
         ) : current.editable ? (
-          surface
+          mount
         ) : (
           // Refused rather than rendered: a lossy read followed by a save would replace
           // every undecodable byte and quietly corrupt the file.
@@ -480,7 +487,7 @@ export function Editor({
         )}
       </div>
     </div>
-  );
+  </>;
 }
 
 function LegacyPreview({
@@ -621,7 +628,7 @@ function Surface({
         stateFor(
           text,
           (value) => latest.current(value),
-          languageServer(where, path),
+          [...languageServer(where, path), EditorView.contentAttributes.of({ "aria-label": `Source ${path}` })],
           [],
           separator,
         ),

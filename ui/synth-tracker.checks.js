@@ -1,4 +1,5 @@
 // Bounded DOM/layout probes for the network-disabled real-App fixture only.
+import { shellFixture } from './synth-fixture.checks.js';
 const pause = () => new Promise(resolve => setTimeout(resolve, 40));
 async function until(test, label) {
   for (let i = 0; i < 125; i++) { const value = test(); if (value) return value; await pause(); }
@@ -52,12 +53,15 @@ export async function exerciseGroupedTracker() {
 export async function exerciseOutput() {
   await checkTracker();
   document.querySelector('.chat-follow')?.click();
-  const { appendShellPhase } = await import('/src/synth/shell-preview.tsx');
+  const { appendShellPhase } = await shellFixture();
   const id = appendShellPhase('start', '');
   const row = await until(() => document.querySelector(`[data-row-id="${id}"]`), 'Missing sampled-output call');
   appendShellPhase('partial', 'Synthetic first tail');
   const disclosure = await until(() => [...row.querySelectorAll('details')].find(item => item.textContent.includes('Sampled shell output')), 'Missing sampled output');
-  disclosure.querySelector('summary').click(); disclosure.querySelector('summary').focus();
+  disclosure.querySelector('summary').click();
+  // Pin keyboard focus without scheduling WebKit's deferred focus scroll after the
+  // explicit viewport movement below. This check, not the operator, owns that focus.
+  disclosure.querySelector('summary').focus({ preventScroll: true });
   await until(() => disclosure.open, 'Output disclosure did not open');
   const pre = disclosure.querySelector('pre'), scroll = document.querySelector('.chat-transcript');
   scroll.scrollTop = scroll.scrollHeight / 2;
@@ -82,7 +86,7 @@ export async function exerciseTracker() {
   await until(() => document.querySelector('.chat-follow'), 'Scrolling away did not hold the tracker');
   await pause();
   const held = scroll.scrollTop;
-  const { appendActivity } = await import('/src/synth/shell-preview.tsx');
+  const { appendActivity } = await shellFixture();
   appendActivity();
   await until(() => /↓ [1-9]/.test(document.querySelector('.chat-follow')?.textContent ?? ''), 'New activity key did not count arrivals');
   assert(Math.abs(scroll.scrollTop - held) < 2, 'An arrival moved the held viewport');

@@ -1,0 +1,40 @@
+const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+const assert = (test, message) => { if (!test) throw new Error(message); };
+async function until(test, message) { for (let i = 0; i < 120; i++) { const value = test(); if (value) return value; await wait(50); } throw new Error(message); }
+const tab = name => [...document.querySelectorAll('[role="tab"]')].find(node => node.textContent === name);
+export async function exercisePatchBay() {
+  assert(!document.hidden, 'Visible viewport required; hidden native acceptance is blocked');
+  const overview = await until(() => tab('Overview'), 'Overview tab unavailable'); overview.click();
+  const bay = await until(() => document.querySelector('.synth-patch-bay'), 'Team patch bay unavailable');
+  assert(document.querySelectorAll('.synth-patch-bay').length === 1, 'Duplicate fixture or patch-bay owner');
+  assert(document.querySelector('.chat-body').dataset.synthBoard === 'true', 'Team evidence did not use the retained wide panel');
+  const button = await until(() => [...bay.querySelectorAll('button')].find(node => node.textContent === 'frontend · node #3'), 'Exact member unavailable');
+  button.scrollIntoView({ block: 'center', inline: 'center' }); button.focus(); button.click();
+  const inspector = await until(() => bay.querySelector('[aria-label="Patch inspector"]'), 'Inspector unavailable');
+  await until(() => inspector.textContent.includes('Latest reported prompt/context: 1400'), 'Wrong seat context');
+  assert(inspector.textContent.includes('estimated after: 1000'), 'Explicit compaction estimate missing');
+  assert(bay.querySelectorAll('[data-patch-id]').length === 5, 'Wrong module cardinality');
+  await until(() => bay.querySelectorAll('.synth-patch-cables path').length >= 6, 'Cable geometry not observed');
+  const selected = button;
+  document.querySelector('.chat-context-heading > button').click();
+  await until(() => document.querySelector('[aria-label="Message"]').getClientRects().length > 0, 'Closing team view did not reveal retained composer');
+  overview.click(); await until(() => selected.getClientRects().length > 0, 'Retained module not displayed');
+  assert(selected.getAttribute('aria-pressed') === 'true', 'Selection lost across panel visibility');
+  const { setSynth } = await import('/src/ui-preferences.ts');
+  setSynth(false); await wait(50); setSynth(true); await until(() => selected.getClientRects().length, 'Skin return failed');
+  assert(bay === document.querySelector('.synth-patch-bay') && selected.getAttribute('aria-pressed') === 'true', 'Skin switch replaced evidence owner');
+  const src = [...document.scripts].find(script => script.src.includes('/src/synth/shell-preview.tsx'))?.src;
+  assert(src, 'Exact fixture entry missing'); const fixture = await import(src);
+  fixture.advanceTeamTelemetry();
+  await until(() => inspector.textContent.includes('Latest reported prompt/context: 1600'), 'Live receipt never reached its exact inspector');
+  await until(() => document.querySelector('.synth-title-metrics')?.textContent.includes('Prompt 1600'), 'Title did not sample the same receipt');
+  assert(document.querySelector('.synth-title-metrics').textContent.includes('Tokens 735'), 'Live cumulative observation changed completed accounting');
+  fixture.removeTeamMember();
+  await until(() => !bay.querySelector('[aria-label="Patch inspector"]'), 'Missing selected member borrowed another inspector');
+  assert(bay.textContent.includes('missing selection is not replaced'), 'Missing exact selection not disclosed');
+  assert(fixture.fixtureCommands.length === 0, 'Evidence inspection attempted a backend command');
+  assert(document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1, 'Patch bay overflowed the page');
+  const api = performance.getEntriesByType('resource').filter(entry => new URL(entry.name).pathname.startsWith('/api/'));
+  assert(api.length === 0, 'A real API request escaped the fixture');
+  return { modulesBefore: 5, relationships: 6, retainedSelection: true, liveContext: 1600, canonicalTokens: 735, missingSelection: true, commands: 0, apiRequests: api.length };
+}

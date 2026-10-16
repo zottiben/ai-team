@@ -28,6 +28,8 @@ const PanelFrame = lazy(() => import("./synth/views/panels/PanelFrame"));
 const Tracker = lazy(() => import("./synth/views/Session/Tracker/Tracker"));
 const LiveRow = lazy(() => import("./synth/views/Session/Tracker/LiveRow"));
 const ComposerDeck = lazy(() => import("./synth/views/Session/ComposerDeck"));
+const Shortcuts = lazy(() => import("./synth/views/Session/Shortcuts"));
+import { publishChatDisplay, releaseChatDisplay } from "./synth/data/chat-display";
 import {
   archiveChat,
   restoreChat,
@@ -90,10 +92,16 @@ export function ChatView({
   const clockHost = useRef<HTMLElement>(null);
   const [detail, setDetail] = useState<ChatDetail | null>(null);
   const [events, setEvents] = useState<RunEvent[]>([]);
+  const displayOwner = useRef(Symbol("chat display"));
+  useLayoutEffect(() => {
+    if (detail?.id === id) publishChatDisplay(displayOwner.current, { detail, events });
+  }, [detail, events, id]);
+  useLayoutEffect(() => { const owner = displayOwner.current; return () => releaseChatDisplay(owner); }, []);
   const [panel, setPanel] = useState<ChatPanel | null>(initialPanel);
   const [openedPanels, setOpenedPanels] = useState<ReadonlySet<ChatPanel>>(new Set(initialPanel ? [initialPanel] : []));
   const [tool, setTool] = useState<"editor" | "terminal" | null>(null);
-  const wideBoard = synth && panel === "board" && tool === null;
+  const wideContext = synth && (panel === "board" || panel === "overview" && detail?.mode === "team");
+  const wideBoard = wideContext && tool === null;
   const [openedTools, setOpenedTools] = useState<Record<string, { editor: boolean; terminal: boolean }>>({});
   const [newWorkspace, setNewWorkspace] = useState<string | null>(null);
   const [workspacePending, setWorkspacePending] = useState(false);
@@ -135,12 +143,16 @@ export function ChatView({
     if (panel) document.getElementById(`chat-context-${panel}`)?.focus();
     setPanel(null);
   };
-  const pendingComposerFocus = useRef(false);
-  const revealComposer = () => { pendingComposerFocus.current = true; setTool(null); };
+  const pendingComposerFocus = useRef(false), pendingSteerFocus = useRef(false);
+  const [shortcutHint, setShortcutHint] = useState("");
+  const revealComposer = () => { pendingComposerFocus.current = true; setTool(null); if (wideContext) setPanel(null); };
   useLayoutEffect(() => {
-    if (!pendingComposerFocus.current || (synth && tool !== null)) return;
+    if (!pendingComposerFocus.current || synth && (tool !== null || wideBoard)) return;
     pendingComposerFocus.current = false;
-    composer.current?.focus();
+    if (pendingSteerFocus.current) {
+      pendingSteerFocus.current = false;
+      body.current?.querySelector<HTMLButtonElement>(".synth-steer:not(:disabled)")?.focus();
+    } else composer.current?.focus();
   });
   const closeTool = () => {
     if (synth) {
@@ -454,7 +466,7 @@ export function ChatView({
         </div>
         {detail && (
           <div className="chat-header-actions">
-            {(["editor", "terminal"] as const).map((name) => <button key={name} className="button" aria-pressed={tool === name} aria-current={synth && tool === name ? "true" : undefined} aria-controls={`chat-tool-${name}-${encodeURIComponent(detail.workspace_path)}`} onClick={() => {
+            {(["editor", "terminal"] as const).map((name) => <button key={name} className="button" data-chat-tool={name} aria-keyshortcuts={synth ? name === "editor" ? "Meta+E Control+E" : "Meta+` Control+`" : undefined} aria-pressed={tool === name} aria-current={synth && tool === name ? "true" : undefined} aria-controls={`chat-tool-${name}-${encodeURIComponent(detail.workspace_path)}`} onClick={() => {
               setTool(tool === name ? null : name);
               setOpenedTools((opened) => ({ ...opened, [detail.workspace_path]: { editor: false, terminal: false, ...opened[detail.workspace_path], [name]: true } }));
             }}>{name === "editor" ? "Editor" : "Terminal"}</button>)}
@@ -610,11 +622,11 @@ export function ChatView({
           }
           rows={3}
           value={message}
-          onChange={(event) => setMessage(event.target.value)}
+          onChange={(event) => { setMessage(event.target.value); setShortcutHint(""); }}
           onKeyDown={(event) => {
             if (
               event.key === "Enter" &&
-              !event.shiftKey &&
+              !event.shiftKey && !event.altKey && !event.defaultPrevented &&
               !event.nativeEvent.isComposing
             ) {
               event.preventDefault();
@@ -623,6 +635,7 @@ export function ChatView({
             }
           }}
         />
+        {synth && shortcutHint && <small role="status">{shortcutHint}</small>}
         <div className="chat-composer-bottom">
           <div className="chat-composer-options">
           <input ref={imagePicker} type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden aria-label="Choose images" onChange={event => { const files = Array.from(event.target.files ?? []); event.target.value = ""; void attach(files); }}/>
@@ -731,6 +744,12 @@ export function ChatView({
       </form>
       </div>
       </div>
+      {synth && <Suspense fallback={null}><Shortcuts host={clockHost} panel={panel} onPanel={openPanel} onSteer={() => {
+        if (!canQueue || !hasDraft || busy) return;
+        setShortcutHint("Stop and steer focused. Press Enter to confirm the current draft; no request has been sent.");
+        if (tool !== null || wideBoard) { pendingSteerFocus.current = true; revealComposer(); }
+        else body.current?.querySelector<HTMLButtonElement>(".synth-steer:not(:disabled)")?.focus();
+      }}/></Suspense>}
       {synth && detail && <Suspense fallback={null}><PanelFrame host={body} active={panel !== null && tool === null && !wideBoard} /></Suspense>}
       {detail && <ChatContext detail={detail} panel={panel} opened={openedPanels} hidden={tool !== null} synth={synth} onSelect={openPanel}
         status={LABELS[detail.state]} tick={tick} busy={busy} command={command} events={events} elapsed={elapsed} now={clock}

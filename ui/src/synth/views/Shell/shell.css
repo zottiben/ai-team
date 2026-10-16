@@ -2,17 +2,26 @@
 
 /* Chrome only. Existing page/controller interiors keep their own palette until
    their slice is integrated; no legacy theme tokens are overwritten. */
-:root[data-synth="true"] .chat-shell { grid-template-columns: 60px 256px minmax(0, 1fr); grid-template-rows: 52px minmax(0, 1fr); background: var(--synth-floor); font-family: var(--synth-font-sans); color-scheme: var(--synth-color-scheme); }
-:root[data-synth="true"] .chat-shell[data-sidebar-collapsed="true"] { grid-template-columns: 60px minmax(0, 1fr); grid-template-rows: 52px minmax(0, 1fr); }
+:root[data-synth="true"] .chat-shell { grid-template-columns: 60px 256px minmax(0, 1fr); grid-template-rows: minmax(52px, auto) minmax(0, 1fr); background: var(--synth-floor); font-family: var(--synth-font-sans); color-scheme: var(--synth-color-scheme); }
+:root[data-synth="true"] .chat-shell[data-sidebar-collapsed="true"] { grid-template-columns: 60px minmax(0, 1fr); grid-template-rows: minmax(52px, auto) minmax(0, 1fr); }
 :root[data-synth="true"] .chat-shell .app-rail { grid-column: 1; grid-row: 2; background: var(--synth-void); gap: 12px; padding: 12px 8px; }
 :root[data-synth="true"] .chat-shell .chat-sidebar { grid-column: 2; grid-row: 2; background: var(--synth-panel); color: var(--synth-text); border-color: var(--synth-hairline); padding: 18px 12px 12px; }
 :root[data-synth="true"] .chat-shell .chat-main { grid-column: 3; grid-row: 2; }
 :root[data-synth="true"] .chat-shell[data-sidebar-collapsed="true"] .chat-main { grid-column: 2; }
-.synth-titlebar { grid-row: 1; grid-column: 1 / -1; display: flex; align-items: center; gap: 12px; min-width: 0; padding: 8px 18px; background: var(--plate-midnight); color: var(--synth-text); border-bottom: 2px solid transparent; border-image: var(--vc-sunset-stripe) 1; font-family: var(--synth-font-sans); }
+.synth-titlebar { position: relative; grid-row: 1; grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 12px; min-width: 0; padding: 8px 18px; background: var(--plate-midnight); color: var(--synth-text); border-bottom: 2px solid transparent; border-image: var(--vc-sunset-stripe) 1; font-family: var(--synth-font-sans); }
 .synth-titlebar > strong { font-size: 17px; font-weight: 500; white-space: nowrap; }
 .synth-logo { display: inline-flex; width: 32px; height: 32px; flex: none; border-radius: 9px; background: var(--vc-logo); color: var(--vc-midnight); box-shadow: var(--synth-primary-glow); }
 .synth-titlebar__context { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 12px var(--synth-font-mono); color: var(--synth-label); }
 .synth-titlebar__version { margin-left: auto; font: 11px var(--synth-font-mono); color: var(--synth-text-muted); white-space: nowrap; }
+.synth-title-metrics { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; font-size: 11px; margin-left: auto; min-width: 0; }
+.synth-title-metrics[hidden] { display: none !important; }
+.synth-title-metrics > div:first-child { display: grid; gap: 3px; overflow-wrap: anywhere; }
+.synth-title-vu { display: grid; grid-template-columns: repeat(2, 72px); gap: 8px; }
+.synth-title-vu .synth-meter { font-size: 9px; }
+.synth-title-vu .synth-segments { min-height: 6px; height: 6px; }
+.synth-title-metrics summary { min-height: 32px; min-width: 32px; display: grid; place-items: center; cursor: pointer; color: var(--synth-text); }
+.synth-title-metrics details p { position: absolute; z-index: 20; inset-inline-end: 8px; top: 100%; margin: 0; width: min(440px, calc(100vw - 16px)); padding: 14px; background: var(--synth-screen); color: var(--synth-text); border: 1px solid var(--synth-lcd-edge); border-radius: 12px; box-shadow: var(--shadow-screen); font: 13px/1.5 var(--synth-font-sans); }
+@media (pointer: coarse) { .synth-title-metrics summary { min-height: 44px; min-width: 44px; } }
 :root[data-synth="true"] .app-rail button { width: 40px; height: 40px; border-radius: var(--r-rail); color: var(--synth-text-muted); }
 :root[data-synth="true"] .app-rail button:hover { background: var(--synth-key-hover); color: var(--synth-text); }
 :root[data-synth="true"] .app-rail button[aria-current="page"] { background: var(--synth-key); color: var(--synth-accent); box-shadow: var(--shadow-key); position: relative; }

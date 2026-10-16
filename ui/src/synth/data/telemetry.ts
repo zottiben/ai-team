@@ -46,14 +46,14 @@ function stamp(event: Measurement): number | null {
 
 /** Reported completed output / 15s wall bucket. Empty is unknown, not measured zero.
  * The last bucket is explicitly partial; this is not instantaneous generation speed. */
-export function completedRates(events: readonly Measurement[], now: number): (number | null)[] {
+export function completedRates(events: readonly Measurement[], now: number, counter: "input" | "output" = "output"): (number | null)[] {
   const values: (number | null)[] = Array.from({ length: BUCKETS }, () => null);
   if (!Number.isFinite(now)) return values;
   const last = Math.floor(now / BUCKET_MS);
   const invalid = new Set<number>();
   for (const event of events) {
     if (event.telemetry.kind !== "usage" || event.telemetry.phase !== "step") continue;
-    const at = stamp(event), output = count(event.telemetry.tokens.output);
+    const at = stamp(event), output = count(event.telemetry.tokens[counter]);
     if (at === null || at > now) continue;
     const index = Math.floor(at / BUCKET_MS) - last + BUCKETS - 1;
     if (index < 0 || index >= BUCKETS || invalid.has(index)) continue;

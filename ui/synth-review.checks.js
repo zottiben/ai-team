@@ -1,3 +1,4 @@
+import { shellFixture } from './synth-fixture.checks.js';
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 const must = (value, message) => { if (!value) throw Error(message); return value; };
 async function until(check, message) {
@@ -41,7 +42,7 @@ export async function exerciseReview() {
   overview.click(); await delay(100); review.click(); await delay(150);
   must(diff.contains(draft) && draft.value.includes("exact line 8000"), "Panel changes lost the comment");
   button(diff.closest(".diff"), "Show comment").click(); await delay(200);
-  const { moveReviewFile } = await import("/src/synth/shell-preview.tsx");
+  const { moveReviewFile } = await shellFixture();
   moveReviewFile("src/large.ts");
   await until(() => current.textContent.includes("Retained unsent comment"), "A moved file lost its retained comment");
   const retained = current.querySelector('textarea[aria-label="comment on src/large.ts new line 8000"]');
@@ -77,7 +78,7 @@ export async function exerciseApproval() {
   must(!dialog.querySelector(".diff__add"), "Captured evidence offered a new repair action");
   must(dialog.textContent.includes("const next1 = true;"), "Captured hunks are absent");
   const identity = [...dialog.querySelectorAll("p")].find(node => node.textContent.includes("fingerprint"))?.textContent;
-  const { moveReviewFile, reviewRequests } = await import("/src/synth/shell-preview.tsx");
+  const { moveReviewFile, reviewRequests } = await shellFixture();
   moveReviewFile(path);
   await until(() => dialog.isConnected && dialog.textContent.includes("Changed since preview"), "A refresh lost the confirmation or failed to invalidate approval");
   const approve = must(button(dialog, "Approve: Stage file"), "Confirmation button absent");
@@ -129,8 +130,8 @@ export async function exerciseSyntax() {
     try {
       await new Promise((resolve, reject) => {
         const timer = setTimeout(() => reject(Error("Built syntax worker timed out")), 5000);
-        built.onerror = () => { clearTimeout(timer); reject(Error("Built syntax worker failed")); };
-        built.onmessage = event => { clearTimeout(timer); if (event.data.result.state === "ready" && event.data.result.lines.h0l0?.some(span => span.role === "keyword")) resolve(); else reject(Error("Built worker returned no grammar")); };
+        built.onerror = event => { clearTimeout(timer); reject(Error(`Built syntax worker failed: ${event.message}`)); };
+        built.onmessage = event => { clearTimeout(timer); if (event.data.result.state === "ready" && event.data.result.lines.h0l0?.some(span => span.role === "keyword")) resolve(); else reject(Error(`Built worker returned no grammar: ${JSON.stringify(event.data)}`)); };
         built.postMessage({ id: 991, input: { path: "example.ts", lines: [{ key: "h0l0", kind: "added", text: 'const fixture = "safe";', display: true }] } });
       });
     } finally { built.terminate(); }
@@ -167,7 +168,7 @@ export async function exerciseTeamReview() {
   button(document, "Return to retained review S1 · run 14 · revision 1 · generation 3").click();
   panel = await until(() => { const p=active(); return p?.textContent.includes("Review S1") && p; }, "Retained draft did not reopen");
   must(panel.contains(finding) && panel.contains(inline) && finding.value.includes("original S1") && inline.value.includes("original S1"), "Switching drafts lost the original input owners");
-  const { replaceTeamReview, reviewRequests } = await import("/src/synth/shell-preview.tsx");
+  const { replaceTeamReview, reviewRequests } = await shellFixture();
   replaceTeamReview();
   await until(() => button(panel, "Send finding for repair")?.disabled, "A newer generation was borrowed for an old finding");
   button(document, "Review S1").click();

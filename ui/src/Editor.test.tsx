@@ -1,9 +1,11 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, it, vi } from "vitest";
 
 import { Editor } from "./Editor";
-import { hasGrammar, languageName } from "./codemirror";
+import { hasGrammar, languageName, themeSlot } from "./codemirror";
+import { EditorView } from "@codemirror/view";
+import { undo } from "@codemirror/commands";
 import { setSynth } from "./ui-preferences";
 
 afterEach(() => {
@@ -202,8 +204,23 @@ it("opens a file from the tree and shows its text", async () => {
 
   await user.click(await screen.findByText("README.md"));
   expect(await shown(container)).toBe("# hello");
+  EditorView.findFromDOM(container.querySelector(".cm-editor")!)?.dispatch({ effects: themeSlot.reconfigure([]) });
+  expect(screen.getByRole("textbox", { name: "Source README.md" })).toBe(container.querySelector(".cm-content"));
 });
 
+it("retains the actual CodeMirror owner and undo across skins", async () => {
+  stub({ "README.md": "Original" });
+  const { container } = render(<Editor project="widget" node={null}/>);
+  fireEvent.click(await screen.findByText("README.md")); await shown(container);
+  const content = screen.getByRole("textbox", { name: "Source README.md" }), view = EditorView.findFromDOM(content)!;
+  act(() => view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: "Changed" } }));
+  act(() => setSynth(true));
+  await waitFor(() => expect(container.querySelector(".synth-editor")).not.toBeNull());
+  expect(screen.getByRole("textbox", { name: "Source README.md" })).toBe(content);
+  act(() => setSynth(false));
+  expect(screen.getByRole("textbox", { name: "Source README.md" })).toBe(content);
+  act(() => { expect(undo(view)).toBe(true); }); expect(view.state.doc.toString()).toBe("Original");
+});
 it("a file's name lines up with a folder's, past the same caret slot", async () => {
   // A file's caret slot held one space, which collapses to nothing, so every file name
   // sat a caret's width left of the folder names above it. The slot's width is the

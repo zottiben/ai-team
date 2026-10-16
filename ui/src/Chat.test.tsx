@@ -466,6 +466,7 @@ describe("Synth workspace", () => {
     service.sendChat.mockResolvedValue({});
     render(<ChatView {...props()} />);
     await screen.findByRole("heading", { name: "Chat 1" });
+    if (synth) fireEvent.click(await screen.findByRole("tab", { name: "Board" }));
     fireEvent.click(screen.getByRole("button", { name: "Terminal" }));
     fireEvent.click(await screen.findByRole("button", { name: "Fixture selection" }));
 
@@ -537,6 +538,8 @@ describe("persistent conversation", () => {
     fireEvent.keyDown(message, { key: "Enter" });
     expect(service.stopChat).not.toHaveBeenCalled();
     fireEvent.change(message, { target: { value: "Check the error path too" } });
+    fireEvent.keyDown(message, { key: "Enter", metaKey: true, altKey: true });
+    expect(service.queueChatFollowup).not.toHaveBeenCalled();
     expect(screen.queryByRole("button", { name: "Stop turn" })).toBeNull();
     const queue = screen.getByRole("button", { name: "Queue follow-up" });
     expect(queue.closest(".chat-composer-actions")).toBe(stop.closest(".chat-composer-actions"));

@@ -19,6 +19,7 @@ import "./chat-overview.css";
 /** The columns a plan tally reads as, in the order work moves through them. */
 const STAGES: PlanStatus[] = ["draft", "ready", "active", "in_review", "blocked", "done", "deferred"];
 const OverviewRack = lazy(() => import("./synth/views/panels/OverviewRack"));
+const PatchBay = lazy(() => import("./synth/views/PatchBay/PatchBay"));
 const RepositoryView = lazy(() => import("./synth/views/panels/RepositoryView"));
 const AgentTelemetry = lazy(() => import("./synth/views/panels/AgentTelemetry"));
 const TouchCounts = lazy(() => import("./synth/views/panels/AgentTelemetry").then(module => ({ default: module.TouchCounts })));
@@ -53,8 +54,10 @@ export function ChatOverview({
   elapsed,
   now,
   synth = false,
+  onSelect,
 }: {
   synth?: boolean;
+  onSelect?: (panel: "work" | "review") => void;
   detail: ChatDetail;
   status: string;
   tick: number;
@@ -78,6 +81,8 @@ export function ChatOverview({
   const problem = failure?.scope === scope ? failure.value : null;
   const mapProblem = mapFailure?.scope === scope ? mapFailure.value : null;
   const [mapDetailsOpen, setMapDetailsOpen] = useState(false);
+  const [agentDetailsOpen, setAgentDetailsOpen] = useState(false);
+  const [rackDetailsOpen, setRackDetailsOpen] = useState(false);
   const synthOpened = useRef(false);
   if (synth) synthOpened.current = true;
   const node = detail.active_node_id ?? detail.turns.at(-1)?.node.id ?? null;
@@ -107,7 +112,7 @@ export function ChatOverview({
     Promise.all([chatOverview(detail.id), chatPlan(detail.id)])
       .then(([found, planned]) => {
         if (!current) return;
-        if (found.chat_id !== detail.id || planned.chat_id !== detail.id || found.workspace !== detail.workspace_path) throw new Error("Overview snapshot no longer matches this chat and checkout.");
+        if (found.chat_id !== detail.id || planned.chat_id !== detail.id || found.workspace !== detail.workspace_path || found.mode !== detail.mode) throw new Error("Overview snapshot no longer matches this chat and checkout.");
         setSnapshot({ scope, value: { live: found, plan: planned } });
         setProblem(null);
       })
@@ -132,7 +137,11 @@ export function ChatOverview({
 
   return (
     <div ref={host} className="chat-overview-content">
-      <div hidden={!synth}>{synthOpened.current && <Suspense fallback={<p className="faint">Loading Synth rack…</p>}><OverviewRack detail={detail} status={status} events={events} history={node === null ? NO_MEASUREMENTS : history.get(node) ?? NO_MEASUREMENTS} live={live} view={view} elapsed={elapsed} now={now} /></Suspense>}</div>
+      <div hidden={!synth || detail.mode !== "team"}>{synthOpened.current && detail.mode === "team" && <Suspense fallback={<p className="faint">Loading team evidence…</p>}><PatchBay detail={detail} live={live} events={events} onWork={onSelect ? () => onSelect("work") : undefined} onReview={onSelect ? () => onSelect("review") : undefined}/></Suspense>}</div>
+      <div hidden={!synth}><details open={detail.mode !== "team" || rackDetailsOpen} onToggle={event => { if (detail.mode === "team") setRackDetailsOpen(event.currentTarget.open); }}>
+        <summary hidden={detail.mode !== "team"}>Repository and session telemetry</summary>
+        {synthOpened.current && <Suspense fallback={<p className="faint">Loading Synth rack…</p>}><OverviewRack detail={detail} status={status} events={events} history={node === null ? NO_MEASUREMENTS : history.get(node) ?? NO_MEASUREMENTS} live={live} view={view} elapsed={elapsed} now={now} /></Suspense>}
+      </details></div>
       <section className="chat-overview-card" hidden={synth}>
         <h3>Execution</h3>
         <strong>{status}</strong>
@@ -239,6 +248,8 @@ export function ChatOverview({
         )}
       </section>
 
+      <details open={!synth || detail.mode !== "team" || agentDetailsOpen} onToggle={event => { if (synth && detail.mode === "team") setAgentDetailsOpen(event.currentTarget.open); }}>
+      <summary hidden={!synth || detail.mode !== "team"}>Agent files and activity details</summary>
       <section className="chat-overview-card" aria-label="Agents and files">
         <h3>Agents</h3>
         {live === null ? (
@@ -273,6 +284,7 @@ export function ChatOverview({
         )}
       </section>
 
+      </details>
       {detail.turns.length > 0 && <section className="chat-overview-card" aria-label="Recent turns">
         <h3>Recent turns</h3>
         <ol className="chat-turn-list">{detail.turns.slice(-5).reverse().map(turn => <li key={turn.run.id}>

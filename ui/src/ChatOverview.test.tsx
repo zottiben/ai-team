@@ -228,6 +228,11 @@ function sheet(over: Partial<ChatDetail> = {}, events: RunEvent[] = []) {
   );
 }
 
+it("rejects a different-mode snapshot even when chat and checkout match", async () => {
+  stub({ live: live({ mode: "team" }) }); sheet();
+  expect(await screen.findByRole("alert")).toBeTruthy();
+  expect(screen.queryByText("Writing the subtract and its test")).toBeNull();
+});
 it("never keeps another chat's snapshot visible while the next scope loads or fails", async () => {
   stub();
   const view = sheet();

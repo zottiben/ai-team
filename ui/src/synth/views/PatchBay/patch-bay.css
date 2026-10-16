@@ -1,0 +1,18 @@
+.synth-patch-bay { display: grid; gap: 14px; min-width: 0; font-family: var(--synth-font-sans); color: var(--synth-text); }
+.synth-patch-bay .faint { color: var(--synth-text-muted); }
+.synth-patch-toolbar { display: flex; gap: 12px; align-items: end; flex-wrap: wrap; }
+.synth-patch-toolbar label { display: grid; gap: 5px; font: 11px var(--synth-font-mono); }
+.synth-patch-toolbar select { min-height: 32px; max-width: 100%; color: var(--synth-lcd-text); background: var(--synth-screen); border: 1px solid var(--synth-lcd-edge); border-radius: var(--r-key); }
+.synth-patch-viewport { max-height: 60vh; overflow: auto; margin-block: 14px; border: 1px solid var(--synth-lcd-edge); border-radius: 14px; background: var(--synth-void); }
+.synth-patch-canvas { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 45px; padding: 22px; position: relative; }
+.synth-patch-column { display: flex; flex-direction: column; gap: 20px; min-width: 0; }
+.synth-patch-cables { position: absolute; inset: 0; pointer-events: none; }
+.synth-patch-module { position: relative; padding: 14px; background: var(--plate-midnight); border: 1px solid var(--synth-hairline); border-radius: 18px; box-shadow: var(--shadow-plate); min-width: 0; }
+.synth-patch-module[data-selected] { border-color: var(--synth-selection); }
+.synth-patch-module__head { display: flex; justify-content: space-between; gap: 10px; }
+.synth-patch-module__select { display: block; width: 100%; padding-block: 10px; min-height: 32px; color: var(--synth-text); background: transparent; border: 0; text-align: start; font: 600 16px var(--synth-font-sans); overflow-wrap: anywhere; cursor: pointer; }
+.synth-patch-module p { font-size: 12px; overflow-wrap: anywhere; }
+.synth-patch-bay dl { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 8px 14px; font-size: 13px; }
+.synth-patch-bay dd { margin: 0; overflow-wrap: anywhere; }
+.synth-patch-bay :is(button, select, [tabindex]):focus-visible { outline: 2px solid var(--synth-focus); outline-offset: 2px; }
+@media (pointer: coarse) { .synth-patch-bay :is(button, select) { min-height: 44px; } }

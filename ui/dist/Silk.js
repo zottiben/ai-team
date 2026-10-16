@@ -1,1 +1,1 @@
-import{T as e}from"./app.js";var t=e();function n({className:e=``,...n}){return(0,t.jsx)(`span`,{...n,className:`synth-silk ${e}`})}export{n as t};
+import{E as e}from"./app.js";var t=e();function n({className:e=``,...n}){return(0,t.jsx)(`span`,{...n,className:`synth-silk ${e}`})}export{n as t};

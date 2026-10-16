@@ -67,6 +67,21 @@ it("the heavy views are split out rather than merged in", () => {
   expect(chunks).toContain("Terminal.js");
 });
 
+it("worker grammar chunks never reimport the worker entry as a shared library", () => {
+  // WebKit can instantiate a worker entry again when a lazy grammar imports it.
+  // CodeMirror extension identities then differ and every built grammar is rejected.
+  const chunks = readdirSync(DIST).filter(name => name.startsWith("diff-syntax-") && name.endsWith(".js"));
+  expect(chunks.length).toBeGreaterThan(1);
+  for (const name of chunks) {
+    const module = ts.createSourceFile(name, readFileSync(join(DIST, name), "utf8"), ts.ScriptTarget.Latest, false, ts.ScriptKind.JS);
+    for (const statement of module.statements) {
+      if (!ts.isImportDeclaration(statement) && !ts.isExportDeclaration(statement)) continue;
+      const specifier = statement.moduleSpecifier;
+      if (specifier && ts.isStringLiteral(specifier)) expect(specifier.text, `${name} imports the worker entry`).not.toBe("./diff-syntax-worker.js");
+    }
+  }
+});
+
 it("no single chunk is large enough to stall a slow machine", () => {
   // A megabyte of JavaScript is about a second of parsing on a tired laptop, and this is
   // a tool that sits open all day next to a compiler.

@@ -37,8 +37,11 @@ const chat: ChatDetail = { id: 1, project_id: 1, title: "Shape the workspace", m
 if (params.get("work") === "true") chat.turns = (await import("./work-fixture")).fixtureRuns();
 const events: RunEvent[] = [{ id: 1, node_run_id: 1, actor: "human", kind: "note", summary: "Fixture message", message: "Keep this conversation and its unsent draft while exploring the workspace.", thinking: [], at: "2026-01-01" },
   { id: 2, node_run_id: 1, actor: "assistant", kind: "note", summary: "Fixture response", message: "This is an isolated **layout fixture**. Tabs and tools share the real application controller. Network access and all backend mutations are disabled.", thinking: [], at: "2026-01-01" }];
-const overview = params.get("overview") === "true" ? (await import("./overview-fixture")).fixtureOverview() : null;
+const teamOverview = params.get("team-overview") === "true" ? (await import("./team-overview-fixture")).fixtureTeamOverview() : null;
+const overview = teamOverview ?? (params.get("overview") === "true" ? (await import("./overview-fixture")).fixtureOverview() : null);
 if (overview) { chat.turns = overview.turns; events.push(...overview.events); }
+if (teamOverview) Object.assign(chat, teamOverview.detail);
+export const tools = params.get("tools") === "true" ? (await import("./tools-fixture")).toolsFixture(params.get("tool-input") === "true") : null;
 const reviewFixture = params.get("review") === "true" ? await import("./review-fixture") : null;
 const review = reviewFixture?.fixtureReview() ?? null;
 const teamReviews = review && params.get("team-review") === "true" ? (await import("./team-review-fixture")).fixtureTeamReviews() : null;
@@ -65,6 +68,21 @@ export function setBoardFlags(flags: { archived?: boolean; frozen?: boolean }) {
   chat.rev++; tickers.forEach(tick => tick());
 }
 let reviewRevision = 0, previewId = 100;
+export const fixtureCommands: { method: string; path: string }[] = [];
+export function advanceTeamTelemetry() {
+  if (!teamOverview) throw new Error("Only the isolated two-seat fixture can change its telemetry.");
+  const at = new Date().toISOString();
+  events.push({ id: (events.at(-1)?.id ?? 0) + 1, node_run_id: 3, actor: "frontend", kind: "note", summary: "Synthetic live receipt", message: null, thinking: [], at,
+    session_id: "fixture-seat-next", telemetry_only: true, observation: { at, clock_id: "fixture-next-reader", elapsed_ms: 1000 },
+    telemetry: { kind: "usage", phase: "live", sequence: 3, tokens: { input: 200, output: 5, cache_read: 1400, cache_write: 0, context: 1600, context_source: "complete_parts" } } });
+  chat.rev++; tickers.forEach(tick => tick());
+}
+export function removeTeamMember() {
+  if (!teamOverview) throw new Error("Only the isolated two-seat fixture can change its evidence.");
+  chat.turns[0]!.members = chat.turns[0]!.members.filter(member => member.node.id !== 3);
+  teamOverview.live.seats = teamOverview.live.seats.filter(seat => seat.node_id !== 3);
+  chat.rev++; tickers.forEach(tick => tick());
+}
 export const reviewRequests: { method: string; path: string }[] = [];
 export const boardRequests: { method: string; path: string }[] = [];
 export function moveReviewFile(path: string) {
@@ -99,6 +117,7 @@ window.fetch = async (input, init) => {
   const request = input instanceof Request ? input : null;
   const url = new URL(request?.url ?? String(input), location.href), method = init?.method ?? request?.method ?? "GET";
   const json = (data: unknown, status = 200) => new Response(JSON.stringify(data), { status, headers: { "Content-Type": "application/json" } });
+  if (method !== "GET") fixtureCommands.push({ method, path: url.pathname });
   if (review && method !== "GET") reviewRequests.push({ method, path: url.pathname });
   if (boardFixture && method !== "GET") boardRequests.push({ method, path: url.pathname });
   if (method === "POST" && url.pathname === "/api/chats/1/plan" && boardFixture && params.get("board-input") === "true") {
@@ -117,6 +136,11 @@ window.fetch = async (input, init) => {
     if (!body || typeof body !== "object" || !("fingerprint" in body) || !("action" in body)) return json({ error: "Invalid synthetic preview" }, 400);
     const captured = reviewFixture.fixturePreview(review.checkout, body.fingerprint, body.action, ++previewId);
     return captured ? json(captured) : json({ error: "The synthetic preview does not match this fixture." }, 400);
+  }
+  if (tools) {
+    const body: unknown = method === "GET" ? null : JSON.parse(typeof init?.body === "string" ? init.body : request ? await request.clone().text() : "null");
+    const result = await tools.request(url, method, body && typeof body === "object" && !Array.isArray(body) ? body as Record<string, unknown> : null);
+    if (result) return json(result.data, result.status);
   }
   if (method !== "GET") return json({ error: "Fixture only: backend mutations and processes are disabled." }, 403);
   switch (url.pathname) {
