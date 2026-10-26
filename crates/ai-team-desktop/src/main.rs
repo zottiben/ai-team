@@ -67,10 +67,12 @@ fn run() -> Result<()> {
     runtime.spawn(async move {
         // The same database the CLI writes, so the window and the terminal are two
         // views of one thing rather than two applications that agree by accident.
+        let db_path = ai_team_core::default_db_path().ok();
         let options = ServeOptions {
-            store: ai_team_core::default_db_path()
-                .ok()
-                .and_then(|path| ai_team_core::Store::open(&path).ok()),
+            store: db_path
+                .as_ref()
+                .and_then(|path| ai_team_core::Store::open(path).ok()),
+            db_path,
             // The window's Update button replaces the binary this server runs in, and
             // here that binary is the app's, not `ait`. Saying so is what keeps an
             // update from installing the CLI into `ai-team.app` and leaving an app that

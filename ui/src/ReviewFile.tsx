@@ -67,7 +67,8 @@ export function FileView({
   const initialFold = useRef(initiallyCollapsed);
   const rows = useMemo(() => diffRows(file), [file]);
   const [writing, setWriting] = useState<Writing | null>(null);
-  const input = useRef<HTMLTextAreaElement>(null), focusedWriting = useRef<Writing | null>(null);
+  const [commentOpen, setCommentOpen] = useState(true);
+  const input = useRef<HTMLTextAreaElement>(null), returnCommentFocus = useRef(false);
   const [body, setBody] = useState("");
   const [attemptedBody, setAttemptedBody] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -82,10 +83,13 @@ export function FileView({
   const scope = commentScope ?? progress.source;
   const anchorChanged = writing !== null && (writing.source !== progress.source || writing.scope !== scope);
   useLayoutEffect(() => {
-    if (synth && writing && writing !== focusedWriting.current && !anchorChanged) input.current?.focus();
-    focusedWriting.current = writing;
-  }, [writing, synth, anchorChanged]);
-  const collapsed = progress.collapsed && !(synth && writing && !anchorChanged), { viewed } = progress;
+    if (returnCommentFocus.current) {
+      returnCommentFocus.current = false;
+      // Closing enables the fallback toggle; focus only after that DOM commit.
+      (host.current?.querySelector<HTMLButtonElement>('.diff__line[data-selected="true"] .diff__add') ?? host.current?.querySelector<HTMLButtonElement>(".diff__toggle"))?.focus({ preventScroll: true });
+    } else if (synth && commentOpen && writing && !anchorChanged) input.current?.focus({ preventScroll: true });
+  }, [writing, synth, anchorChanged, commentOpen]);
+  const collapsed = progress.collapsed && !(synth && writing && commentOpen && !anchorChanged), { viewed } = progress;
   useEffect(() => { if (!progress.collapsed) initialFold.current = false; }, [progress.collapsed]);
   const stateCallback = useRef(onState); stateCallback.current = onState;
   const drafting = writing !== null;
@@ -103,7 +107,14 @@ export function FileView({
   // owning request controller, not a fresh diff, retains its idempotency identity.
   const retry = !!writing?.replaySafe && attemptedBody !== null && body === attemptedBody;
   const canSubmit = !saving && !!body.trim() && (retry || (!anchorChanged && !!onComment));
-  const composer = writing && <form key="compose" className="diff__compose" onSubmit={event => {
+  const closeComment = () => {
+    if (saving) return;
+    returnCommentFocus.current = true;
+    setCommentOpen(false);
+  };
+  const resumeComment = () => { setCommentOpen(true); progress.open(); };
+  const composer = writing && <form key="compose" className="diff__compose" hidden={!commentOpen}
+    onKeyDown={event => { if (synth && event.key === "Escape" && !saving) { event.preventDefault(); event.stopPropagation(); closeComment(); } }} onSubmit={event => {
     event.preventDefault();
     if (!canSubmit) return;
     setSaving(true); setProblem(null); setAttemptedBody(body);
@@ -111,14 +122,15 @@ export function FileView({
       if (saved !== false) { setBody(""); setWriting(null); setAttemptedBody(null); }
     }).catch((error: unknown) => setProblem(String(error))).finally(() => setSaving(false));
   }}>
-    {synth && <p className="synth-comment-label">Comment · {writing.anchor.side} line {writing.anchor.line_start}{commentTarget === "agent" ? " → agent" : ""}</p>}
+    {synth && <header className="synth-comment-heading"><p className="synth-comment-label">Comment · {writing.anchor.side} line {writing.anchor.line_start}{commentTarget === "agent" ? " → agent" : ""}</p>
+      <button type="button" className="button" aria-label="Close comment" title="Close and keep draft" disabled={saving} onClick={closeComment}>×</button></header>}
     {anchorChanged && <div className="notice"><strong>{retry ? "Comment anchor changed. Only the original captured request can be retried." : "Comment anchor changed — review and select a current line before sending."}</strong>
       <p>Your draft is retained at {writing.anchor.file_path} · {writing.anchor.side} line {writing.anchor.line_start}.</p>
       <pre>{writing.lineText.slice(0, 4000)}{writing.lineText.length > 4000 ? "\nOriginal line excerpt truncated." : ""}</pre></div>}
     {retry && !saving && <p className="faint">Retry uses the original request, checkout and anchor; it does not submit against changed lines.</p>}
     {!onComment && !retry && <p className="faint">Comment submission is currently unavailable. Your draft is retained.</p>}
     <textarea ref={input} aria-label={`comment on ${writing.anchor.file_path} ${writing.anchor.side} line ${writing.anchor.line_start}`} value={body}
-      onChange={event => { if (!saving) setBody(event.target.value); }} disabled={saving} rows={2} maxLength={32000} />
+      onChange={event => { if (!saving) setBody(event.target.value); }} disabled={saving} rows={synth ? 4 : 2} maxLength={32000} />
     {problem && <p className="error" role="alert">{problem}</p>}
     <button type="submit" className="button button--primary" disabled={!canSubmit}>{synth && commentTarget === "agent" ? "Send to agent" : "Comment"}</button>
     <button type="button" className="button" disabled={saving} onClick={() => { setWriting(null); setBody(""); setAttemptedBody(null); setProblem(null); }}>Cancel comment</button>
@@ -128,7 +140,7 @@ export function FileView({
     <section ref={host} className="diff">
       <div className="diff__head">
         {synth && <Led state="on" signal={untracked ? "read" : file.status === "modified" ? "working" : file.status === "removed" ? "attention" : file.status === "renamed" ? "info" : "done"}/>}
-        <button type="button" className="diff__toggle" aria-label={`${collapsed ? "Expand" : "Collapse"} ${file.path}`} aria-expanded={!collapsed} disabled={synth && drafting && !anchorChanged} title={synth && drafting && !anchorChanged ? "Close the comment before collapsing this file" : undefined} onClick={progress.toggle}>
+        <button type="button" className="diff__toggle" aria-label={`${collapsed ? "Expand" : "Collapse"} ${file.path}`} aria-expanded={!collapsed} disabled={synth && drafting && commentOpen && !anchorChanged} title={synth && drafting && commentOpen && !anchorChanged ? "Close the comment before collapsing this file" : undefined} onClick={progress.toggle}>
           <span aria-hidden="true">{collapsed ? "▸" : "▾"}</span><span className="mono" title={file.path}><bdi dir="ltr">{file.path}</bdi></span>
         </button>
         {file.old_path !== null && <span className="faint mono">was {file.old_path}</span>}
@@ -161,16 +173,19 @@ export function FileView({
         </div>
       )}
 
+      {writing && !commentOpen && <button type="button" className="button synth-comment-resume" onClick={resumeComment}>Resume comment</button>}
       {anchorChanged && composer}
       <div hidden={collapsed}>
-        {(!collapsed || drafting) && <DiffView rows={rows} path={file.path} source={progress.source} synth={synth} pinned={writing && !anchorChanged ? writing.rowKey : null}
+        {(!collapsed || drafting) && <DiffView rows={rows} path={file.path} source={progress.source} synth={synth} pinned={writing && !anchorChanged ? writing.rowKey : null} onShowComment={resumeComment}
           renderLine={(row, syntax) => {
             const { line } = row, side = line.kind === "removed" ? "old" : "new";
             const number = side === "old" ? line.old : line.new, key = `${side}:${number}`;
             const on = mine.filter(comment => comment.side === side && comment.line_start === number);
             return <>
               <LineRow line={line} synth={synth} syntax={syntax} selected={writing?.rowKey === row.key && !anchorChanged} onAdd={onComment && number !== null ? () => {
-                if (saving || (writing?.key === key && !anchorChanged)) return;
+                if (saving) return;
+                setCommentOpen(true);
+                if (writing?.key === key && !anchorChanged) return;
                 setAttemptedBody(null);
                 setWriting({ rowKey: row.key, key, source: progress.source, scope, lineText: line.text,
                   anchor: { file_path: file.path, side, line_start: number, line_end: number }, submit: onComment, replaySafe: retryCapturedRequest });

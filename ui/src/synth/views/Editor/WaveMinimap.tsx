@@ -47,13 +47,13 @@ export default function WaveMinimap({ lengths, added, removed, viewport, onJump 
   viewport: { from: number; to: number } | null;
   onJump: (line: number) => void;
 }) {
-  const host = useRef<HTMLDivElement>(null);
+  const host = useRef<HTMLDivElement>(null), plot = useRef<HTMLDivElement>(null);
   const dragging = useRef(false);
   const rows = bars(lengths, added, removed);
   const total = Math.max(lengths.length, 1);
 
   const lineAt = (clientY: number): number => {
-    const box = host.current?.getBoundingClientRect();
+    const box = plot.current?.getBoundingClientRect();
     if (box === undefined || box.height === 0) return 1;
     const fraction = Math.min(1, Math.max(0, (clientY - box.top) / box.height));
     return Math.min(total, Math.max(1, Math.round(fraction * total)));
@@ -96,6 +96,7 @@ export default function WaveMinimap({ lengths, added, removed, viewport, onJump 
       if (event.key === "End") { event.preventDefault(); onJump(total); }
     }}
   >
+    <div ref={plot} className="synth-minimap__plot" style={{ height: Math.max(rows.length, 1) * 4 }}>
     <svg
       className="synth-minimap__wave"
       viewBox={`0 0 ${WIDTH} ${Math.max(rows.length, 1)}`}
@@ -120,5 +121,6 @@ export default function WaveMinimap({ lengths, added, removed, viewport, onJump 
       style={{ top: `${window.top}%`, height: `${window.height}%` }}
       aria-hidden="true"
     />}
+    </div>
   </div>;
 }

@@ -1,4 +1,5 @@
-import { Accessibility, DragDropManager, Draggable, Droppable, Feedback, KeyboardSensor, PointerActivationConstraints, PointerSensor } from "@dnd-kit/dom";
+import { Accessibility, Cursor, DragDropManager, Draggable, Droppable, Feedback, KeyboardSensor, PointerActivationConstraints, PointerSensor, PreventSelection } from "@dnd-kit/dom";
+import { DOMRectangle } from "@dnd-kit/dom/utilities";
 import { PLAN_STATUSES, type PlanStatus } from "../../../plan-api";
 import { statusLabel } from "../../../PlanForms";
 import { currentDrop, statusPosition, type DropView, type StatusDrop } from "./drop";
@@ -37,14 +38,13 @@ export function statusDrag(board: HTMLElement, callbacks: {
     document.body.append(overlay);
     let manager: DragDropManager;
     try { manager = new DragDropManager({
-      plugins: defaults => [...defaults.filter(plugin => plugin !== Accessibility && plugin !== Feedback), Feedback.configure({ dropAnimation: null, keyboardTransition: null })],
+      // The app paints its inert overlay. These optional plugins inject page-wide
+      // styles at pickup/drop; retain the toolkit's sensors, collision and scrolling.
+      plugins: defaults => defaults.filter(plugin => plugin !== Accessibility && plugin !== Feedback && plugin !== Cursor && plugin !== PreventSelection),
       sensors: [PointerSensor.configure({ activationConstraints: [new PointerActivationConstraints.Distance({ value: 4 })] }), KeyboardSensor.configure({
         keyboardCodes: { start: ["Space"], end: ["Space"], cancel: ["Escape", "Tab"], left: ["ArrowLeft"], right: ["ArrowRight"], up: ["ArrowUp"], down: ["ArrowDown"] },
       })],
     }); } catch (error) { overlay.remove(); throw error; }
-    const feedback = manager.registry.plugins.get(Feedback);
-    if (!feedback) { manager.destroy(); overlay.remove(); throw Error("Status drag feedback is unavailable; use the status form."); }
-    feedback.overlay = overlay;
     const droppables: Droppable[] = [], entities: Draggable[] = [];
     try {
       lanes.forEach((element, id) => droppables.push(new Droppable({ id, element }, manager)));
@@ -52,7 +52,7 @@ export function statusDrag(board: HTMLElement, callbacks: {
     } catch (error) {
       entities.forEach(entity => entity.destroy()); droppables.forEach(entity => entity.destroy()); manager.destroy(); overlay.remove(); throw error;
     }
-    let captured: { key: string; from: PlanStatus; revision: number; keyboard: boolean; pointer: number | null } | null = null;
+    let captured: { key: string; from: PlanStatus; revision: number; keyboard: boolean; pointer: number | null; left: number; top: number; width: number; height: number } | null = null;
     let keyboardLane: PlanStatus | null = null, lastTarget: PlanStatus | null = null;
     const clear = () => {
       if (frame !== null) cancelAnimationFrame(frame); frame = null;
@@ -75,20 +75,37 @@ export function statusDrag(board: HTMLElement, callbacks: {
       // 0.5.1 otherwise suppresses collision updates at unchanged coordinates.
       manager.collisionObserver.forceUpdate();
     };
+    const paint = () => {
+      if (!captured) return;
+      const { x, y } = manager.dragOperation.position.delta;
+      const left = captured.left + x, top = captured.top + y;
+      overlay.style.transform = `translate3d(${left}px, ${top}px, 0)`;
+      const shape = DOMRectangle.from(new DOMRect(left, top, captured.width, captured.height));
+      if (!manager.dragOperation.shape?.current.equals(shape)) manager.dragOperation.shape = shape;
+    };
     const geometry = () => {
       frame = null;
       if (closed || !captured) return;
       if (document.hidden || !board.getClientRects().length) { reset(); return; }
       if (captured.keyboard) keyboardPosition();
       else { droppables.forEach(target => target.refreshShape()); manager.collisionObserver.forceUpdate(); }
-      frame = requestAnimationFrame(geometry);
+      paint();
     };
+    const schedule = () => { if (!closed && !disposed && captured && frame === null) frame = requestAnimationFrame(geometry); };
+    const geometryChanges = new ResizeObserver(schedule);
+    lanes.forEach(lane => geometryChanges.observe(lane));
+    const scrolled = (event: Event) => {
+      const target = event.target;
+      if (target === document || target instanceof Node && (board.contains(target) || target.contains(board))) schedule();
+    };
+    document.addEventListener("scroll", scrolled, { capture: true, passive: true });
     manager.monitor.addEventListener("beforedragstart", event => {
       const view = callbacks.read(), matches = view.slices.filter(slice => slice.key === event.operation.source?.id), source = matches[0];
       const node = source && cards.get(source.key), input = event.operation.activatorEvent, keyboard = input?.type === "keydown";
       const pointer = input && "pointerId" in input && typeof input.pointerId === "number" ? input.pointerId : null;
       if (closed || disposed || view.disabled || !Number.isSafeInteger(view.revision) || view.revision < 0 || matches.length !== 1 || !source || !node || node.handle.matches(":disabled") || !displayed(node.card) || (!keyboard && pointer === null)) { event.preventDefault(); return; }
-      captured = { key: source.key, from: source.status, revision: view.revision, keyboard, pointer }; keyboardLane = source.status;
+      const box = node.card.getBoundingClientRect();
+      captured = { key: source.key, from: source.status, revision: view.revision, keyboard, pointer, left: box.left, top: box.top, width: box.width, height: box.height }; keyboardLane = source.status;
       const copy = node.card.cloneNode(true);
       if (!(copy instanceof HTMLElement)) { event.preventDefault(); captured = null; return; }
       copy.removeAttribute("id"); copy.removeAttribute("data-revealed"); copy.removeAttribute("data-slice-key"); copy.classList.add("synth-plan-ghost");
@@ -96,15 +113,17 @@ export function statusDrag(board: HTMLElement, callbacks: {
       copy.querySelectorAll<HTMLElement>("button,a,input,select,textarea,[tabindex]").forEach(node => { node.tabIndex = -1; node.removeAttribute("href"); });
       copy.querySelectorAll<HTMLElement>("[data-motion]").forEach(node => { node.dataset.motion = "false"; });
       overlay.style.setProperty("--synth-signal", `var(--${statusSignals[source.status]})`);
-      overlay.replaceChildren(copy); overlay.style.visibility = "visible";
+      overlay.style.width = `${box.width}px`; overlay.style.height = `${box.height}px`;
+      overlay.replaceChildren(copy); paint(); overlay.style.visibility = "visible";
     });
     manager.monitor.addEventListener("dragstart", () => {
       if (!captured) return;
       cards.get(captured.key)?.card.setAttribute("data-source", "true"); board.dataset.dragging = "true";
       callbacks.announce(`${captured.key} picked up. Left and right choose a status; plan order remains fixed.`);
-      frame = requestAnimationFrame(geometry);
+      schedule();
     });
     manager.monitor.addEventListener("dragmove", event => {
+      schedule();
       if (!captured?.keyboard || !event.by || !event.nativeEvent) return;
       event.preventDefault();
       const key = "key" in event.nativeEvent ? event.nativeEvent.key : null;
@@ -158,7 +177,7 @@ export function statusDrag(board: HTMLElement, callbacks: {
         const active = captured !== null; captured = null;
         manager.actions.stop({ canceled: true }); clear();
         entities.forEach(entity => entity.destroy()); droppables.forEach(entity => entity.destroy()); manager.destroy(); overlay.remove();
-        document.removeEventListener("focusin", focus); board.removeAttribute("data-status-drag");
+        document.removeEventListener("focusin", focus); document.removeEventListener("scroll", scrolled, true); geometryChanges.disconnect(); board.removeAttribute("data-status-drag");
         if (active && displayed(board)) callbacks.announce("Gesture cancelled. No status request was sent.");
       },
     };

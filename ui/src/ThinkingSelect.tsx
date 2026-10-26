@@ -97,7 +97,7 @@ export function ThinkingSelect({
         </select>
         <SelectChevron />
       </label>}
-      {provider && model && <button type="button" className="button" aria-label="Refresh thinking levels" disabled={disabled || (!supported && !problem)} onClick={() => setRetry(value => value + 1)}>Refresh levels</button>}
+      {provider && model && <button type="button" className="button" aria-label="Refresh thinking levels" title="Refresh thinking levels" disabled={disabled || (!supported && !problem)} onClick={() => setRetry(value => value + 1)}>{synth ? "↻" : "Refresh levels"}</button>}
       {capabilities?.fallback_reason && <small className="faint">{capabilities.fallback_reason}. These levels apply to {capabilities.provider}/{capabilities.model}, the policy fallback. Your requested thinking is unchanged.</small>}
       {kept && (
         <small className="faint">

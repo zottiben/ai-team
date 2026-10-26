@@ -17,6 +17,7 @@ import { type Theme } from "./theme";
 import { SynthToggle } from "./SynthToggle";
 import { useSynth } from "./ui-preferences";
 const SynthPreview = lazy(() => import("./synth/SynthPreview"));
+const PalettePicker = lazy(() => import("./synth/PalettePicker"));
 
 /**
  * Everything that used to need a text editor or a CLI.
@@ -222,8 +223,7 @@ export function Settings({
         <h3>Appearance</h3>
         <SynthToggle />
         <p className="faint">Opt-in ui.synth preview, stored locally. The existing theme and chat state are kept; this does not change your machine profile.</p>
-        {synth && <Suspense fallback={<p>Loading Synth preview…</p>}><SynthPreview /></Suspense>}
-        <div className="settings__row">
+        <div className="settings__row" role="group" aria-label="Colour mode">
           {(["system", "dark", "light"] as const).map((option) => (
             <button
               type="button"
@@ -236,6 +236,12 @@ export function Settings({
             </button>
           ))}
         </div>
+        {synth && <>
+          <Suspense fallback={<p>Loading palettes…</p>}><PalettePicker /></Suspense>
+          <details className="synth-component-preview"><summary>Component preview</summary>
+            <Suspense fallback={<p>Loading Synth preview…</p>}><SynthPreview /></Suspense>
+          </details>
+        </>}
       </section>
 
       <section className="settings__group">

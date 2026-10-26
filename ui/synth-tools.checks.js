@@ -16,6 +16,8 @@ export async function exerciseTools() {
   assert(viewUrl, 'Loaded CodeMirror module unavailable');
   const { EditorView } = await import(viewUrl), view = EditorView.findFromDOM(content);
   assert(view, 'Live CodeMirror owner missing');
+  await document.fonts.ready;
+  (await import('/synth-visual.checks.js')).inspectEditorVisuals();
   const proposed = 'export const total = 2;\n'; view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: proposed } });
   await until(() => button('Save ⌘S') && !button('Save ⌘S').disabled, 'Edit did not reach retained buffer');
   assert(tools.text('calc.ts') !== proposed && tools.commands.length === 0, 'Typing wrote without approval');
@@ -32,6 +34,8 @@ export async function exerciseTools() {
   chord('`');
   const term = await until(() => document.querySelector('.xterm'), 'Real xterm renderer unavailable');
   await until(() => document.querySelector('.xterm-helper-textarea'), 'Terminal input unavailable');
+  await until(() => document.querySelector('.xterm-screen')?.getBoundingClientRect().height > 0, 'Terminal grid unavailable');
+  await (await import('/synth-visual.checks.js')).inspectTerminalVisuals();
   const before = tools.commands.filter(command => command.path === '/terminals/7/resize').length;
   chord('1'); await until(() => document.querySelector('[role="tab"][aria-selected="true"]')?.textContent === 'Overview', 'Panel shortcut failed');
   await sleep(180);

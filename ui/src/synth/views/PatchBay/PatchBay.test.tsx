@@ -18,6 +18,26 @@ it("renders exact evidence and hands controls back without dispatching a command
   expect(work).toHaveBeenCalledOnce(); expect(review).toHaveBeenCalledOnce();
   expect(screen.queryByRole("button", { name: /Solo|Mute|Add seat|Approve/ })).toBeNull();
 });
+it("keeps one canvas owner while its inspector and controls live in the sidebar", () => {
+  const fixture = fixtureTeamOverview(), host = document.createElement("div");
+  host.scrollIntoView = vi.fn(); document.body.append(host);
+  const view = render(<PatchBay {...fixture} inspectorHost={host} compact/>);
+  try {
+    const canvas = view.container.querySelector(".synth-patch-canvas");
+    expect(view.container.querySelector(".synth-patch-inspector")).toBeNull();
+    fireEvent.change(within(host).getByLabelText("Canvas width"), { target: { value: "1.25" } });
+    fireEvent.click(screen.getByRole("button", { name: "frontend · node #3" }));
+    const inspector = within(host).getByRole("region", { name: "Patch inspector" });
+    expect(host.scrollIntoView).toHaveBeenCalledOnce();
+    view.rerender(<PatchBay {...fixture} events={[...fixture.events]} inspectorHost={host} compact/>);
+    expect(view.container.querySelector(".synth-patch-canvas")).toBe(canvas);
+    expect((canvas as HTMLElement).style.minWidth).toBe("600px");
+    expect(within(host).getByRole("region", { name: "Patch inspector" })).toBe(inspector);
+    expect(host.scrollIntoView).toHaveBeenCalledOnce();
+    expect(screen.getByRole("button", { name: "frontend · node #3" }).getAttribute("aria-pressed")).toBe("true");
+  } finally { view.unmount(); host.remove(); }
+});
+
 it("retains selected exact nodes through hidden presentation but resets a new owner", () => {
   const fixture = fixtureTeamOverview();
   const tree = (hidden: boolean, id = 1) => <div hidden={hidden}><PatchBay {...fixture} detail={{ ...fixture.detail, id }}/></div>;

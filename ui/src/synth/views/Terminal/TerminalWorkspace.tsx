@@ -310,7 +310,7 @@ export default function TerminalWorkspace({
           {synth && <ProcessRack
             deck={deck}
             rate={() => rates.current.get(Number(displayed))?.series() ?? []}
-            active={selected !== AGENT_TAB}
+            active={agentActive && selected !== AGENT_TAB && sessions.some(session => String(session.id) === displayed && !session.done)}
             agent={agent}
             renderer={renderer}
             dropped={dropped[Number(displayed)] ?? 0}

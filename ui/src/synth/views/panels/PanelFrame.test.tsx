@@ -22,9 +22,9 @@ afterEach(() => {
   cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals();
   keys.forEach((key, i) => { const descriptor = saved[i]; if (descriptor) Object.defineProperty(HTMLElement.prototype, key, descriptor); else Reflect.deleteProperty(HTMLElement.prototype, key); });
 });
-function Fixture({ active = true }: { active?: boolean }) {
+function Fixture({ active = true, panel = "overview" }: { active?: boolean; panel?: "overview" | "review" | "work" }) {
   const host = useRef<HTMLDivElement>(null);
-  return <div ref={host}><textarea aria-label="Draft" /><PanelFrame host={host} active={active} /><aside id="chat-context">Panel</aside></div>;
+  return <div ref={host}><textarea aria-label="Draft" /><PanelFrame host={host} active={active} panel={panel} /><aside id="chat-context">Panel</aside></div>;
 }
 
 it("clamps preferences to 360px, 60% viewport and remaining conversation space", () => {
@@ -34,6 +34,18 @@ it("clamps preferences to 360px, 60% viewport and remaining conversation space",
   expect(panelBounds(NaN, 1280, 900).width).toBe(400);
   expect(panelBounds(400, 899, 899).stacked).toBe(true);
   expect(panelBounds(400, 900, 584).stacked).toBe(true);
+});
+
+it("uses the screen-specific defaults until the operator chooses a retained width", () => {
+  const view = render(<Fixture />);
+  expect(screen.getByRole("separator").getAttribute("aria-valuenow")).toBe("400");
+  view.rerender(<Fixture panel="review" />);
+  expect(screen.getByRole("separator").getAttribute("aria-valuenow")).toBe("660");
+  view.rerender(<Fixture panel="work" />);
+  expect(screen.getByRole("separator").getAttribute("aria-valuenow")).toBe("640");
+  fireEvent.keyDown(screen.getByRole("separator"), { key: "ArrowRight" });
+  view.rerender(<Fixture panel="overview" />);
+  expect(screen.getByRole("separator").getAttribute("aria-valuenow")).toBe("630");
 });
 
 it("resizes by keyboard, persists a bounded width and keeps the draft node", () => {

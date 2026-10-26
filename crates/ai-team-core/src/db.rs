@@ -5,6 +5,10 @@
 //! the same reason the frontend is: a binary installed with `cargo install` has no repo
 //! next to it, and a schema it cannot find is a schema it cannot apply.
 
+mod terminal_receipts;
+#[cfg(test)]
+mod terminal_upgrade_tests;
+
 use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior};
@@ -222,6 +226,16 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
         "immutable bounded approval preview evidence",
         include_str!("migrations/049_preview_evidence.sql"),
     ),
+    (
+        50,
+        "upgrade development terminal receipts without replay",
+        include_str!("migrations/050_terminal_receipt_upgrade.sql"),
+    ),
+    (
+        51,
+        "snapshot queued solo models",
+        include_str!("migrations/051_followup_models.sql"),
+    ),
 ];
 
 /// Migrations that rebuild a table other tables point at.
@@ -232,7 +246,7 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
 /// `PRAGMA` refuses to change inside a transaction, so the switch has to happen out here
 /// rather than in the script. `foreign_key_check` then has to pass before the commit, or
 /// the migration is rolled back with enforcement still intact.
-const REBUILDS: &[i64] = &[43];
+const REBUILDS: &[i64] = &[43, 50];
 
 /// The number of `v_` views the schema ships. Asserted in tests, because a view silently
 /// dropped from a migration is a demo that quietly stops working.
@@ -392,7 +406,11 @@ impl Db {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        tx.execute_batch(sql)?;
+        if version == 50 {
+            terminal_receipts::migrate(&tx, sql)?;
+        } else {
+            tx.execute_batch(sql)?;
+        }
         tx.execute(
             "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?1, ?2, ?3)",
             rusqlite::params![version, name, now()],

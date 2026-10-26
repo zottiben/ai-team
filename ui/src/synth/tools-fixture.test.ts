@@ -19,6 +19,13 @@ it("limits synthetic saves to an enabled exact in-memory preview", async () => {
     expect(await tools.request(new URL("http://fixture/api/editor/open?project=other"), "GET", null)).toBeNull();
   }
 });
+it("exposes optional synthetic pad/history visuals without granting command execution", async () => {
+  const tools = toolsFixture(true, true);
+  expect((await tools.request(url("/terminals/pads"), "GET", null))?.data).toHaveLength(5);
+  expect((await tools.request(url("/terminals/commands"), "GET", null))?.data).toMatchObject({ running: [], history: expect.arrayContaining([expect.objectContaining({ request_id: "synthetic-1", state: "finished" })]) });
+  expect(await tools.request(url("/terminals/pads/1/run"), "POST", { project: "demo", workspace: "/fixture/demo", confirmed: "fixture status" })).toBeNull();
+  expect(tools.commands).toEqual([]);
+});
 it("keeps terminal input literal and rejects implicit process creation", async () => {
   const tools = toolsFixture(true);
   expect(await tools.request(url("/terminals"), "POST", { project: "demo", workspace: "/fixture/demo" })).toBeNull();

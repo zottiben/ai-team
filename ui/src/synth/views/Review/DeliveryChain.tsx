@@ -68,8 +68,8 @@ export function DeliveryChain({ data, locked, working, commitMessage }: {
         <Led state={push ? "on" : "off"} signal={push?.state === "done" ? pushScope === "current" && sameCommit ? "done" : "info" : "attention"}/></Lcd></li>
     </ol>
     {locked && <p className="notice" role="note">{locked}{working && " Counts are the retained inspection snapshot, not live edit progress."}</p>}
-    <p className="faint synth-review-explainer">Links show preview availability, not approval. Each action is rechecked separately; push does not create a PR.</p>
     <details><summary>Checkout identity and publication evidence</summary>
+      <p className="faint synth-review-explainer">Links show preview availability, not approval. Each action is rechecked separately; push does not create a PR.</p>
       <dl><dt>Workspace generation</dt><dd>{data.workspace_epoch}</dd><dt>Full HEAD</dt><dd className="mono">{data.head ?? "Unborn"}</dd><dt>Checkout fingerprint</dt><dd className="mono">{data.fingerprint}</dd></dl>
       {push ? <p className="mono">Latest push receipt #{push.id}: {push.state} · {pushedCommit(push) ?? "commit unrecorded"} · {push.snapshot.remote?.branch ?? "destination unrecorded"}</p>
         : <p>No push receipt in this page of history. A grant in a human chat message may still exist; this view does not inspect or revoke it.</p>}

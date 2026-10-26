@@ -1,1 +1,1 @@
-import{E as e}from"./app.js";import{r as t}from"./Led.js";import{t as n}from"./PresetSelector.js";/* empty css          *//* empty css      *//* empty css        */var r=e();function i(e){return(0,r.jsx)(t,{children:(0,r.jsx)(n,{...e})})}export{i as default};
+import{t as e}from"./jsx-runtime.js";import{r as t}from"./Led.js";import{t as n}from"./PresetSelector.js";/* empty css          *//* empty css      *//* empty css        */var r=e();function i(e){return(0,r.jsx)(t,{children:(0,r.jsx)(n,{...e})})}export{i as default};

@@ -2,6 +2,9 @@
 
 mod context;
 pub(crate) mod followups;
+mod model;
+#[cfg(test)]
+mod model_tests;
 
 use rusqlite::{params, OptionalExtension, Row};
 
@@ -464,10 +467,10 @@ impl Store {
         let project = self.project(chat.project_id)?;
         let agent = self.turn_seat(&chat, project.team_id, options.settings.take())?;
         let resolution = registry.resolve(&agent)?;
-        if request_id.starts_with("schedule/")
+        if (request_id.starts_with("schedule/") || request_id.starts_with("followup/"))
             && (resolution.provider != agent.provider || resolution.model != agent.model)
         {
-            return Err(Error::invalid("this schedule's model is no longer allowed; it will not silently use another provider or model"));
+            return Err(Error::invalid("this scheduled or queued model is no longer allowed; it will not silently use another provider or model"));
         }
         let guard = match project.team_id {
             Some(team) => self.team(team)?.guardrails,
@@ -498,7 +501,7 @@ impl Store {
             if let Some(review) = &options.review { super::planning::review::validate(tx, &chat, review)?; }
             super::chat_schedules::check_admission(tx, &chat, message, request_id, &agent)?;
             followups::check_admission(tx, id, message, options.followup)?;
-            let (session, cursor) = context::previous_session(tx, id, chat.mode == ChatMode::Team, &workspace)?;
+            let (session, cursor) = context::previous_session(tx, id, chat.mode == ChatMode::Team, &workspace, resolution.provider)?;
             tx.execute(
                 "INSERT INTO run (project_id, team_id, prompt, trigger, status, workspace_path,
                     parallel_width, max_repairs, on_failure, started_at, created_at, updated_at)
@@ -755,6 +758,11 @@ pub(super) fn check_chat_admission(
     }
     if !switching {
         super::chat_workspaces::pending(tx, current.id)?;
+    }
+    if current.provider != expected.provider || current.model != expected.model {
+        return Err(Error::invalid(
+            "this chat's model changed; refresh before sending",
+        ));
     }
     if current.reasoning != expected.reasoning {
         return Err(Error::invalid(

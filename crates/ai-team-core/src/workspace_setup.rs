@@ -61,21 +61,36 @@ pub async fn run(db: &Path, project: i64, id: i64) -> Result<Setup> {
         return Ok(setup);
     }
     let owner = store.claim_workspace_setup(project, id, setup.rev, false)?;
-    let outcome = owner.track(prepare(&owner, &setup)).await;
-    settle(&owner, project, id, outcome)?;
+    let checked = owner.track(preflight(&owner, &setup)).await;
+    let acquisition_started = checked.is_ok();
+    let outcome = match checked {
+        Ok(excluded) => owner.track(prepare(&owner, &setup, &excluded)).await,
+        Err(error) => Err(Error::invalid(format!(
+            "AWT acquisition was not started: {error}"
+        ))),
+    };
+    settle(&owner, project, id, acquisition_started, outcome)?;
     Store::open(db)?.workspace_setup(project, id)
 }
-fn settle(owner: &Ownership, project: i64, id: i64, outcome: Result<()>) -> Result<()> {
+fn settle(
+    owner: &Ownership,
+    project: i64,
+    id: i64,
+    acquisition_started: bool,
+    outcome: Result<()>,
+) -> Result<()> {
     let mut store = Store::open(&owner.db)?;
     let setup = store.workspace_setup(project, id)?;
     let (state,detail)=match outcome {
         Ok(()) if owner.quiescent() => ("ready","AWT checkout and detected locked dependencies are ready. The lease is retained; no agent has started.".into()),
         Ok(()) => ("inspection","Setup finished with uncertain child lifetime; inspect before use.".into()),
-        Err(error) => (if setup.workspace_path.is_none() || !owner.quiescent() { "inspection" } else { "failed" },error.to_string()),
+        Err(error) => (if (acquisition_started && setup.workspace_path.is_none()) || !owner.quiescent() { "inspection" } else { "failed" },error.to_string()),
     };
     store.finish_workspace_setup(owner, state, &detail)
 }
-async fn prepare(owner: &Arc<Ownership>, setup: &Setup) -> Result<()> {
+// Everything here is observational. A refusal with drained children must not leave
+// the repository fenced as though an unlocated worktree had been acquired.
+async fn preflight(owner: &Ownership, setup: &Setup) -> Result<Vec<String>> {
     let repo = Path::new(&setup.repo_path);
     let chosen = branch(setup);
     step(
@@ -86,20 +101,28 @@ async fn prepare(owner: &Arc<Ownership>, setup: &Setup) -> Result<()> {
     )
     .await?;
     let pool = Worktrees::at(repo).pool().await?;
-    Store::open(&owner.db)?.check_setup_pool(&pool)?;
+    let excluded = Store::open(&owner.db)?.setup_pool_exclusions(&pool)?;
+    if !excluded.is_empty() {
+        let help = step(owner, repo, "awt", &["get", "--help"]).await?;
+        if !help
+            .lines()
+            .any(|line| line.split_whitespace().next() == Some("--exclude"))
+        {
+            return Err(Error::invalid("AWT lacks --exclude support for active or retained app work; update awt before acquisition"));
+        }
+    }
+    Ok(excluded)
+}
+async fn prepare(owner: &Arc<Ownership>, setup: &Setup, excluded: &[String]) -> Result<()> {
+    let repo = Path::new(&setup.repo_path);
+    let chosen = branch(setup);
     // Do not use Lease here: its Drop returns and cleans the checkout on errors.
-    let output = step(
-        owner,
-        repo,
-        "awt",
-        &[
-            "get",
-            "--lease",
-            "--lease-holder",
-            &holder(&owner.db, setup.id)?,
-        ],
-    )
-    .await?;
+    let holder = holder(&owner.db, setup.id)?;
+    let mut args = vec!["get", "--lease", "--lease-holder", &holder];
+    for path in excluded {
+        args.extend(["--exclude", path]);
+    }
+    let output = step(owner, repo, "awt", &args).await?;
     let path = Worktrees::at(repo)
         .resolve(Path::new(output.trim()))
         .await?;
@@ -107,6 +130,12 @@ async fn prepare(owner: &Arc<Ownership>, setup: &Setup) -> Result<()> {
         return Err(Error::invalid(
             "awt returned the main checkout instead of an isolated worktree",
         ));
+    }
+    if excluded
+        .iter()
+        .any(|excluded| crate::same_worktree(excluded, &path.to_string_lossy()))
+    {
+        return Err(Error::invalid("AWT returned an excluded checkout; keep the setup fence and inspect without resetting it"));
     }
     verify_lease(&owner.db, setup, &path).await?;
     Store::open(&owner.db)?.setup_path(owner, &path)?;
@@ -250,9 +279,7 @@ async fn step(owner: &Ownership, cwd: &Path, program: &str, args: &[&str]) -> Re
     Store::open(&owner.db)?.setup_step(owner, &label, passed, &tail)?;
     let result = result?;
     if !passed {
-        return Err(Error::invalid(format!(
-            "setup `{label}` failed; its checkout and lease are retained:\n{tail}"
-        )));
+        return Err(Error::invalid(format!("setup `{label}` failed:\n{tail}")));
     }
     if program == "awt" && result.truncated {
         return Err(Error::invalid(
@@ -335,6 +362,6 @@ pub async fn retry_dependencies(db: &Path, project: i64, id: i64, revision: i64)
         if current.as_deref()!=Some(branch(&setup).as_str()) { return Err(Error::invalid("the setup branch changed or was never created; inspect the retained checkout manually, not by resetting it")); }
         dependencies(&owner,&path).await
     }).await;
-    settle(&owner, project, id, result)?;
+    settle(&owner, project, id, true, result)?;
     Store::open(db)?.workspace_setup(project, id)
 }

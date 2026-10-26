@@ -31,6 +31,7 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/chats/{id}/events", get(events))
         .route("/chats/{id}/images/{node}/{index}", get(image))
         .route("/chats/{id}/thinking", post(thinking))
+        .route("/chats/{id}/model", post(model))
         .route("/chats/{id}/messages", post(send))
         .route("/chats/{id}/followups", post(queue_followup))
         .route("/chats/{id}/followups/cancel", post(cancel_followup))
@@ -126,6 +127,35 @@ async fn thinking(
         id,
         input.reasoning,
         input.expect_revision,
+    )?))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ModelSelection {
+    provider: Provider,
+    model: String,
+    expect_revision: i64,
+}
+
+async fn model(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Json(input): Json<ModelSelection>,
+) -> Result<Json<Chat>> {
+    // Catalogue discovery is offline, with MCP disabled; no health/inference probe.
+    let (registry, choice) = tokio::task::spawn_blocking(move || {
+        let registry = ModelRegistry::load()?;
+        let choice = registry.models()?.into_iter().find(|choice| {
+            choice.provider == input.provider && choice.model == input.model
+        }).ok_or_else(|| ai_team_core::Error::invalid("that exact model is not available on an allowed provider; refresh the catalogue in Settings"))?;
+        Ok::<_, ai_team_core::Error>((registry, choice))
+    }).await.map_err(|_| ai_team_core::Error::invalid("the model catalogue did not finish"))??;
+    Ok(Json(state.store()?.lock().set_chat_model(
+        id,
+        &choice,
+        input.expect_revision,
+        &registry,
     )?))
 }
 

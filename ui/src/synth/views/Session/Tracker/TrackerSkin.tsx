@@ -20,7 +20,6 @@ export default function TrackerSkin({ rows, pattern, active, list, viewport, vis
     <div className="synth-tracker-filters" role="group" aria-label="Activity lanes">
       <span className="synth-silk">Tracker</span>
       {LANES.map(lane => <HwButton key={lane} latched={lanes.has(lane)} onClick={() => onLane(lane)}>{LANE_NAMES[lane]}</HwButton>)}
-      <small>Messages, notices and errors stay visible.</small>
     </div>
   </div>;
 }

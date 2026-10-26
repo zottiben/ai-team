@@ -31,7 +31,7 @@ export function useReceiptMotion(rows: readonly TrackerRow[], list: RefObject<HT
   return eligible;
 }
 
-export function usePatternMotion(rows: readonly TrackerRow[], viewport: RefObject<HTMLDivElement | null>, offset: number, range: number | "all", ready = true) {
+export function usePatternMotion(rows: readonly TrackerRow[], viewport: RefObject<HTMLDivElement | null>, offset: number, range: number | "all", ready = true, columnWidth = 44) {
   const eligible = useMotionVisible(viewport) && ready;
   const previous = useRef<{ highwater: number; offset: number; range: number | "all"; ready: boolean } | null>(null);
   useLayoutEffect(() => {
@@ -50,10 +50,10 @@ export function usePatternMotion(rows: readonly TrackerRow[], viewport: RefObjec
         // New columns pop at their recorded position; shifting them too can push
         // them beyond the clip and cancel both effects before the first paint.
         if (Number(element.dataset.patternId) > before.highwater) continue;
-        targets.push({ element, frames: [{ translate: `${shift * 44}px 0` }, { translate: "0 0" }], duration: 160, kind: "pattern" });
+        targets.push({ element, frames: [{ translate: `${shift * columnWidth}px 0` }, { translate: "0 0" }], duration: 160, kind: "pattern" });
       }
       cancel = finiteMotion(owner, targets);
     });
     return () => { disposed = true; cancel(); };
-  }, [rows, viewport, offset, range, eligible, ready]);
+  }, [rows, viewport, offset, range, eligible, ready, columnWidth]);
 }

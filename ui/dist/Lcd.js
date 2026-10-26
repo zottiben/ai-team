@@ -1,1 +1,1 @@
-import{E as e}from"./app.js";var t=e();function n({grid:e=!1,variant:n,className:r=``,...i}){return(0,t.jsx)(`div`,{...i,className:`synth-lcd ${r}`,"data-grid":e||void 0,"data-variant":n})}export{n as t};
+import{t as e}from"./jsx-runtime.js";var t=e();function n({grid:e=!1,variant:n,className:r=``,...i}){return(0,t.jsx)(`div`,{...i,className:`synth-lcd ${r}`,"data-grid":e||void 0,"data-variant":n})}export{n as t};

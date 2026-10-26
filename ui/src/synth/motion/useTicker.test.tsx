@@ -6,11 +6,12 @@ import { Led } from "../primitives/Led";
 import { Cable } from "../primitives/Cable";
 import { Scope } from "../primitives/Scope";
 import { SynthProvider } from "../SynthProvider";
+import ActivityEqualizer from "../views/Session/ActivityEqualizer";
 
 function environment() {
   let reduced = false, id = 0;
   const listeners = new Set<() => void>(), frames = new Map<number, FrameRequestCallback>();
-  const observers: { target: Element | null; change: (visible: boolean) => void; disconnect: ReturnType<typeof vi.fn> }[] = [];
+  const observers: { target: Element | null; change: (visible: boolean | boolean[]) => void; disconnect: ReturnType<typeof vi.fn> }[] = [];
   vi.stubGlobal("matchMedia", () => ({ matches: reduced,
     addEventListener: (_name: string, fn: () => void) => listeners.add(fn),
     removeEventListener: (_name: string, fn: () => void) => listeners.delete(fn),
@@ -24,13 +25,13 @@ function environment() {
       this.change = visible => {
         if (!this.target) return;
         const rect = this.target.getBoundingClientRect();
-        const entry: IntersectionObserverEntry = { target: this.target, time: 0, isIntersecting: visible, intersectionRatio: visible ? 1 : 0,
+        const entry: IntersectionObserverEntry = { target: this.target, time: 0, isIntersecting: false, intersectionRatio: 0,
           boundingClientRect: rect, intersectionRect: rect, rootBounds: rect };
-        callback([entry], this as unknown as IntersectionObserver);
+        callback((Array.isArray(visible) ? visible : [visible]).map(value => ({ ...entry, isIntersecting: value, intersectionRatio: value ? 1 : 0 })), this as unknown as IntersectionObserver);
       };
       observers.push(this);
     }
-    change: (visible: boolean) => void;
+    change: (visible: boolean | boolean[]) => void;
     observe(target: Element) { this.target = target; }
   });
   return { frames, observers, listeners,
@@ -64,6 +65,40 @@ it("stops all rAF work offscreen, hidden, reduced or unmounted and releases obse
   view.unmount(); expect(env.frames.size).toBe(0);
   expect(env.observers.every(o => o.disconnect.mock.calls.length === 1)).toBe(true);
   expect(env.listeners.size).toBe(0);
+});
+
+it("uses the latest entry when a visibility batch hides and reveals the same owner", () => {
+ const env=environment(),tick=vi.fn();const view=render(<Visual tick={tick}/>);
+ act(()=>env.observers[0]?.change([false,true]));expect(env.frames.size).toBe(1);
+ act(()=>env.observers[0]?.change([true,false]));expect(env.frames.size).toBe(0);view.unmount();
+});
+
+it("scrolls a reported line without new data, freezes hidden/reduced owners and resets across nodes", () => {
+ const env=environment();const view=render(<Scope label="Tokens" unit="tokens" samples={[10,20,5]} flow active identity={1}/>);
+ env.visible(true);env.visible(true);env.frame(0);const path=()=>view.container.querySelector('.synth-graph__line')?.getAttribute('d');
+ const first=path();env.frame(100);expect(path()).not.toBe(first);
+ env.visible(false);expect(env.frames.size).toBe(0);const frozen=path();env.frame(1000);expect(path()).toBe(frozen);
+ env.visible(true);env.visible(true);env.frame(2000);expect(path()).toBe(frozen);
+ env.reduced(true);expect(env.frames.size).toBe(0);
+ view.rerender(<Scope label="Tokens" unit="tokens" samples={[]} flow active identity={2}/>);expect(path()).toBe('');
+ view.unmount();expect(env.frames.size).toBe(0);
+});
+
+it("never runs an inactive flow, and freezes immediately when its chat stops", () => {
+  const env = environment(), samples = [10, 20, 5];
+  const view = render(<Scope label="Tokens" unit="tokens" samples={samples} flow active={false}/>);
+  env.visible(true); env.visible(true);
+  expect(env.frames.size).toBe(0);
+  view.rerender(<Scope label="Tokens" unit="tokens" samples={samples} flow active/>);
+  env.frame(0); env.frame(100);
+  const graph = view.container.querySelector<HTMLElement>(".synth-graph")!;
+  const phase = graph.style.backgroundPositionX;
+  view.rerender(<Scope label="Tokens" unit="tokens" samples={samples} flow active={false}/>);
+  expect(env.frames.size).toBe(0);
+  env.frame(1000); expect(graph.style.backgroundPositionX).toBe(phase);
+  view.rerender(<Scope label="Tokens" unit="tokens" samples={[10, 20, 8]} flow active={false}/>);
+  expect(graph.textContent).toContain("8 tokens");
+  expect(env.frames.size).toBe(0);
 });
 
 it("keeps reduced-motion readouts discrete and stops their clock offscreen or hidden", () => {
@@ -114,6 +149,40 @@ it("does not replay an old LED event flash when it scrolls back into view", () =
   view.rerender(<Led state="event" eventId={2} />);
   expect(view.container.querySelector(".synth-led")?.getAttribute("data-motion")).toBe("true");
   view.unmount(); expect(vi.getTimerCount()).toBe(0);
+});
+
+it("animates decorative EQ segments at20Hz only while active and clears them on stop", () => {
+  const env = environment(), view = render(<ActivityEqualizer active={false}/>);
+  const pattern = () => [...view.container.querySelectorAll("rect")].map(rect => `${rect.dataset.lit}/${rect.dataset.peak}`).join();
+  const idle = pattern();
+  expect(view.container.querySelectorAll("rect")).toHaveLength(72);
+  env.visible(true); expect(env.frames.size).toBe(0);
+  view.rerender(<ActivityEqualizer active/>); env.visible(true); env.frame(0);
+  const initial = pattern(); expect(initial).not.toBe(idle);
+  env.frame(20); expect(pattern()).toBe(initial);
+  env.frame(100); env.frame(200); expect(pattern()).not.toBe(initial);
+  view.rerender(<ActivityEqualizer active={false}/>);
+  expect(env.frames.size).toBe(0); expect(pattern()).toBe(idle);
+  env.frame(2000); expect(pattern()).toBe(idle);
+  view.unmount(); expect(env.frames.size).toBe(0);
+});
+
+it("keeps a static working EQ with reduced motion and freezes offscreen or document-hidden", () => {
+  const env = environment(); env.reduced(true);
+  const view = render(<ActivityEqualizer active/>);
+  const pattern = () => view.container.innerHTML;
+  const still = pattern(); env.visible(true); env.frame(1000);
+  expect(env.frames.size).toBe(0); expect(pattern()).toBe(still);
+  expect(view.container.querySelector('[data-lit="true"]')).not.toBeNull();
+  env.reduced(false); env.visible(true); env.frame(0); env.frame(100);
+  env.visible(false); expect(env.frames.size).toBe(0);
+  const hidden = pattern(); env.frame(1000); expect(pattern()).toBe(hidden);
+  env.visible(true);
+  vi.spyOn(document, "hidden", "get").mockReturnValue(true);
+  act(() => document.dispatchEvent(new Event("visibilitychange")));
+  expect(env.frames.size).toBe(0); env.frame(2000); expect(pattern()).toBe(hidden);
+  view.unmount(); expect(env.frames.size).toBe(0);
+  expect(env.listeners.size).toBe(0);
 });
 
 it("settles cables under reduced motion without a frame and stops completed springs", () => {

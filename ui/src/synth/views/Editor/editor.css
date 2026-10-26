@@ -1,12 +1,14 @@
 /* SPEC §11. Every colour is a token; the measurements are the spec's. */
 
-.synth-editor {
+[data-synth="true"] .synth-editor {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  min-height: 0;
+  min-height: min-content;
   height: 100%;
-  padding: 12px;
+  padding: 0;
+  background: var(--synth-floor);
+  box-shadow: none;
 }
 
 .synth-editor__toolbar {
@@ -19,8 +21,8 @@
 .synth-editor__badge {
   padding: 2px 8px;
   border-radius: var(--r-key);
-  background: var(--plate-lavender);
-  color: var(--vc-midnight);
+  background: var(--vc-violet);
+  color: var(--synth-signal-ink);
   font: 600 11px var(--synth-font-sans);
   letter-spacing: .04em;
   text-transform: uppercase;
@@ -46,19 +48,26 @@
 
 .synth-editor__grid {
   display: grid;
-  grid-template-columns: 250px 1fr 76px minmax(300px, 360px);
+  grid-template-columns: 250px minmax(0, 1fr) 76px minmax(300px, 360px);
   gap: 10px;
-  min-height: 0;
+  min-height: 360px;
   flex: 1;
 }
-/* The monitor is the first thing to go: the code and its map are the tool. */
+@media (min-width: 1181px) {
+  .chat-workspace[data-synth-tool="editor"] > :is(.chat-header, .chat-toolbar, .chat-notice, .chat-body) { width: calc(100% - 332px); }
+  .chat-workspace[data-synth-tool="editor"] .synth-editor__grid { grid-template-columns: 250px minmax(0, 1fr) 76px; }
+  .chat-workspace[data-synth-tool="editor"] .synth-editor__monitor { position: absolute; top: 0; right: 0; bottom: 0; width: 320px; padding: 16px 12px; border-left: 1px solid var(--synth-hairline); }
+}
+/* Stack retained controls instead of losing them at the smaller viewport. */
 @media (max-width: 1180px) {
-  .synth-editor__grid { grid-template-columns: 250px 1fr 76px; }
-  .synth-editor__monitor { display: none; }
+  [data-synth="true"] .synth-editor { height: auto; min-height: 100%; }
+  .synth-editor__grid { grid-template-columns: 250px minmax(0, 1fr) 76px; grid-template-rows: minmax(360px, 55vh) auto; flex: none; }
+  .synth-editor__monitor { grid-column: 1 / -1; }
 }
 @media (max-width: 900px) {
-  .synth-editor__grid { grid-template-columns: 1fr; }
-  .synth-editor__browser, .synth-minimap { display: none; }
+  .synth-editor__grid { grid-template-columns: minmax(0, 1fr) 52px; grid-template-rows: 240px minmax(360px, 55vh) auto; }
+  .synth-editor__browser { grid-column: 1 / -1; }
+  .synth-editor__grid .synth-minimap { width: 52px; }
 }
 
 .synth-editor__browser {
@@ -98,7 +107,7 @@
   display: flex;
   flex-direction: column;
   gap: 2px;
-  font-size: 11px;
+  font: 11px var(--synth-font-mono);
   color: var(--synth-text-muted);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -131,6 +140,7 @@
   align-items: center;
   gap: 6px;
   height: 28px;
+  font: 12px var(--synth-font-mono);
   padding-right: 6px;
   border-radius: var(--r-pad);
   cursor: pointer;
@@ -178,7 +188,8 @@
   background: var(--synth-key);
 }
 .synth-editor__tab[data-active] { background: var(--synth-screen); }
-.synth-editor__tab-key, .synth-editor__tab-close {
+.synth-editor__tab-key, .synth-editor__tab-close,
+.chat-shell .synth-editor__tab-key, .chat-shell .synth-editor__tab-close {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -207,7 +218,7 @@
   align-items: center;
   padding: 4px 8px;
   background: var(--synth-screen);
-  font-size: 11px;
+  font: 11px var(--synth-font-mono);
   color: var(--synth-text-muted);
 }
 .synth-editor__crumb-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -271,6 +282,7 @@
   touch-action: none;
 }
 .synth-minimap:focus-visible { outline: 2px solid var(--synth-focus); }
+.synth-minimap__plot { position: relative; max-height: 100%; }
 .synth-minimap__wave { width: 100%; height: 100%; display: block; }
 .synth-minimap__bar { fill: var(--map-line); }
 .synth-minimap__bar[data-kind="added"] { fill: var(--map-added); }
@@ -287,17 +299,17 @@
 .synth-editor__monitor {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 14px;
   min-height: 0;
   overflow: auto;
-  padding: 8px;
-  border-radius: var(--r-card);
-  background: var(--plate-midnight);
-  box-shadow: var(--shadow-card);
 }
+.synth-editor__monitor-state, .synth-editor__overlap { padding: 18px; border-radius: var(--r-plate); background: var(--plate-midnight); box-shadow: var(--shadow-plate); }
+.synth-editor__monitor-state { display: flex; flex-direction: column; gap: 12px; background: var(--plate-night); }
+.synth-editor__overlap h3 { margin: 0 0 12px; }
 .synth-editor__elapsed { display: flex; align-items: baseline; justify-content: space-between; }
-.synth-editor__elapsed-value { font-size: 18px; color: var(--synth-lcd-text); }
-.synth-editor__pattern { display: flex; flex-direction: column; gap: 2px; }
+.synth-editor__elapsed-value { font: 300 32px/1 var(--synth-font-sans); color: var(--synth-lcd-text); }
+.synth-editor__pattern { display: flex; flex-direction: column; gap: 2px; padding: 10px; border-radius: var(--r-screen); background: var(--synth-screen); box-shadow: var(--shadow-screen); }
+.synth-editor__pattern > .synth-silk { margin-bottom: 8px; color: var(--synth-lcd-label); font-size: 8px; }
 .synth-editor__lane { display: grid; grid-template-columns: repeat(24, 1fr); gap: 2px; }
 .synth-editor__cell {
   height: 6px;
@@ -309,11 +321,14 @@
 .synth-editor__lane[data-lane="bash"] .synth-editor__cell[data-on] { background: var(--lane-bash); }
 .synth-editor__lane[data-lane="mcp"] .synth-editor__cell[data-on] { background: var(--lane-mcp); }
 .synth-editor__lane[data-lane="other"] .synth-editor__cell[data-on] { background: var(--lane-think); }
+.synth-editor__now { padding: 12px; background: var(--synth-screen); border-radius: var(--r-screen); }
+.synth-editor__now h3 { margin: 0 0 8px; color: var(--synth-lcd-label); }
 .synth-editor__now p { margin: 2px 0; font-size: 12px; word-break: break-word; }
 .synth-editor__files { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
 .synth-editor__files li { font-size: 11.5px; word-break: break-all; }
 .synth-editor__file { display: flex; align-items: center; gap: 6px; }
-.synth-editor__monitor-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.synth-editor__monitor-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.synth-editor__monitor-actions > button { flex: 1; }
 
 .synth-editor__status {
   display: flex;
@@ -322,7 +337,7 @@
   padding: 4px 8px;
   border-radius: var(--r-pad);
   background: var(--synth-void);
-  font-size: 11.5px;
+  font: 11.5px var(--synth-font-mono);
   color: var(--synth-text-muted);
 }
 .synth-editor__status-branch { color: var(--synth-accent); }

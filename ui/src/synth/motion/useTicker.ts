@@ -11,7 +11,7 @@ export function useTicker(element: RefObject<Element | null>, tick: Tick, fps: n
     const observable = typeof IntersectionObserver !== "undefined";
     const sub = subscribe((now, dt) => callback.current(now, dt), fps, !observable);
     const observer = observable ? new IntersectionObserver(entries => {
-      const entry = entries.find(e => e.target === element.current);
+      const entry = entries.filter(e => e.target === element.current).at(-1);
       if (entry) sub.visible(entry.isIntersecting);
     }) : null;
     observer?.observe(element.current);

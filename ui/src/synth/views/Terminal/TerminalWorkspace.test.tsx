@@ -75,6 +75,20 @@ vi.mock("@xterm/addon-webgl", () => ({
   },
 }));
 
+it("freezes the terminal scope when the owning chat is idle without closing the shell", async () => {
+  const view = render(<TerminalWorkspace project="widget" node={null} agentActive={false}/>);
+  await waitFor(() => expect(xterm.instances).toBe(1));
+  const scope = view.container.querySelector(".synth-graph[data-active]")!;
+  expect(scope.getAttribute("data-active")).toBe("false");
+  const input = xterm.input;
+  view.rerender(<TerminalWorkspace project="widget" node={null} agentActive/>);
+  expect(scope.getAttribute("data-active")).toBe("true");
+  view.rerender(<TerminalWorkspace project="widget" node={null} agentActive={false}/>);
+  expect(scope.getAttribute("data-active")).toBe("false");
+  expect(xterm.instances).toBe(1); expect(xterm.input).toBe(input);
+  expect(server.calls.some(call => call.url.includes("/close"))).toBe(false);
+});
+
 it("retains the xterm instance and input owner across skins", async () => {
   act(() => setSynth(true));
   render(<TerminalPane project="p" node={null} />);

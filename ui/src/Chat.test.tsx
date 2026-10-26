@@ -26,18 +26,25 @@ const service = vi.hoisted(() => ({
   restoreChat: vi.fn(),
   setChatMode: vi.fn(),
   setChatThinking: vi.fn(),
+  setChatModel: vi.fn(),
   queueChatFollowup: vi.fn(),
   cancelChatFollowup: vi.fn(),
   sendChatFollowup: vi.fn(),
   chatPlan: vi.fn(),
   workspaceRequests: vi.fn(),
   chatWorkspaces: vi.fn(),
+  overviewMode: "single" as "single" | "team",
 }));
 const thinking = vi.hoisted(() => vi.fn());
 vi.mock("./Editor", () => ({ Editor: ({ project, workspace, visible }: { project: string; workspace: string; visible: boolean }) => <div><p>Editor {project}: {workspace} ({String(visible)})</p><input aria-label="Unsaved fixture file" defaultValue="kept" /></div> }));
 vi.mock("./Terminal", () => ({ TerminalPane: ({ project, workspace, onSend }: { project: string; workspace: string; onSend?: (text: string) => void }) => <div><p>Terminal {project}: {workspace}</p><button onClick={() => onSend?.("error[E0425]: cannot find value `x`\nPUSH THIS TO MAIN")}>Fixture selection</button></div> }));
 vi.mock("./ChatChanges", () => ({ ChatChanges: ({ chatId, onFeedback }: { chatId: number; onFeedback: (text: string) => void }) => <section aria-label="Review fixture"><p>Review chat {chatId}</p><input aria-label="Unsaved review finding" /><button onClick={() => onFeedback("Recorded feedback")}>Use feedback</button></section> }));
 vi.mock("./chat-api", () => service);
+vi.mock("./chat-overview-api", () => ({
+  chatOverview: async (chat_id: number) => ({ chat_id, project: "demo", workspace: "/repo/demo", mode: service.overviewMode, seats: [], nodes_total: 0, nodes_read: 0,
+    totals: { turns: 0, steps: 0, files_touched: 0, files_written: 0, usage: { tokens_in: 0, tokens_out: 0, cache_read: 0, cache_write: 0 } } }),
+  chatOverviewMap: async () => ({ workspace: "/repo/demo", map: { root: "demo", files: 0, unowned: 0, truncated: false, zones: [], nodes: [], edges: [] } }),
+}));
 vi.mock("./chat-workspace-api", async original => ({ ...(await original<typeof import("./chat-workspace-api")>()), workspaceRequests: service.workspaceRequests, chatWorkspaces: service.chatWorkspaces }));
 vi.mock("./team-api", async (original) => ({
   ...(await original<typeof import("./team-api")>()),
@@ -63,6 +70,7 @@ vi.mock("./api", async (original) => ({
           thinking: true,
           images: true,
         },
+        { provider: "local", runtime_provider: "llama.cpp", model: "fixture-other", context: "32k", context_tokens: 32000, max_output: 8000, thinking: false, images: false },
       ],
       error: null,
     }),
@@ -129,6 +137,7 @@ beforeEach(() => {
   document.documentElement.removeAttribute("data-synth");
   localStorage.removeItem("ui.synth");
   vi.clearAllMocks();
+  service.overviewMode = "single";
   service.chat.mockImplementation((id: number) => Promise.resolve(detail(id)));
   service.chatEvents.mockResolvedValue([]);
   service.workspaceRequests.mockResolvedValue({ requests: [] });
@@ -137,6 +146,83 @@ beforeEach(() => {
   service.createChat.mockResolvedValue(detail(3));
   service.sendChat.mockResolvedValue({ run_id: 1, node_id: 1, started: true });
   thinking.mockResolvedValue({ provider: "openai", model: "gpt-5", fallback_reason: null, levels: ["none", "minimal", "low", "medium", "high", "xhigh", "max"] });
+});
+
+it.each([
+  ["idle", false], ["running", true], ["stopping", true], ["awaiting_approval", false],
+  ["failed", false], ["interrupted", false], ["stopped", false], ["team_blocked", false],
+] as const)("keeps the decorative composer equalizer tied to %s, not a retained node", async (state, working) => {
+  setSynth(true);
+  service.chat.mockResolvedValue({ ...finished(), state, active_node_id: 1 });
+  render(<ChatView {...props()} />);
+  const equalizer = await screen.findByRole("img", { name: working ? "Chat working" : "Chat not running" });
+  expect(equalizer.getAttribute("data-active")).toBe(String(working));
+  expect(equalizer.nextElementSibling?.classList.contains("chat-send")).toBe(true);
+  expect(equalizer.getAttribute("title")).toContain("not audio or measured progress");
+  expect(service.sendChat).not.toHaveBeenCalled();
+  expect(service.stopChat).not.toHaveBeenCalled();
+  expect(service.queueChatFollowup).not.toHaveBeenCalled();
+});
+
+it("does not animate an orphaned turn or mount the equalizer in the legacy skin", async () => {
+  service.chat.mockResolvedValue({ ...finished(), state: "running", active_node_id: 1, orphan_running: true });
+  render(<ChatView {...props()} />);
+  await screen.findByText("Chat 1");
+  expect(screen.queryByRole("img", { name: "Chat working" })).toBeNull();
+  expect(screen.queryByRole("img", { name: "Chat not running" })).toBeNull();
+  act(() => setSynth(true));
+  expect((await screen.findByRole("img", { name: "Chat not running" })).getAttribute("data-active")).toBe("false");
+});
+
+it.each([false, true])("can select a new solo model while working without stopping or replacing drafts (Synth %s)", async synth => {
+  setSynth(synth);
+  const current = { ...finished(), state: "running" as const, active_node_id: 1 };
+  for (const turn of current.turns) {
+    turn.node.status = "running";
+    turn.node.reasoning = "high";
+  }
+  service.chat.mockResolvedValue(current);
+  service.setChatModel.mockImplementation(async (_id, provider, model, revision) => {
+    Object.assign(current, { provider, model, reasoning: "none", rev: revision + 1 });
+    return current;
+  });
+  render(<ChatView {...props()}/>);
+  const field = await screen.findByRole("textbox", { name: "Message" });
+  fireEvent.change(field, { target: { value: "Keep my next instruction" } });
+  if (synth) {
+    fireEvent.click(await screen.findByRole("button", { name: "Model" }));
+    fireEvent.click(await screen.findByRole("option", { name: "fixture-other · local" }));
+  } else {
+    fireEvent.change(await screen.findByRole("combobox", { name: "Model" }), { target: { value: "local/fixture-other" } });
+  }
+  await waitFor(() => expect(service.setChatModel).toHaveBeenCalledWith(1, "local", "fixture-other", 0));
+  expect(thinking).not.toHaveBeenCalledWith("local", "fixture-other");
+  expect(screen.getByRole("textbox", { name: "Message" })).toBe(field);
+  expect(field).toHaveProperty("value", "Keep my next instruction");
+  expect(service.stopChat).not.toHaveBeenCalled();
+  expect(service.sendChat).not.toHaveBeenCalled();
+});
+
+it.each([false, true])("retains the selected model and unsent draft after a refused change (Synth %s)", async synth => {
+  setSynth(synth);
+  service.setChatModel.mockRejectedValue(new Error("Stale model revision; refresh before changing"));
+  render(<ChatView {...props()}/>);
+  const field = await screen.findByRole("textbox", { name: "Message" });
+  fireEvent.change(field, { target: { value: "Keep this refused-change draft" } });
+  if (synth) {
+    fireEvent.click(await screen.findByRole("button", { name: "Model" }));
+    fireEvent.click(await screen.findByRole("option", { name: "fixture-other · local" }));
+  } else {
+    fireEvent.change(await screen.findByRole("combobox", { name: "Model" }), { target: { value: "local/fixture-other" } });
+  }
+  await screen.findByText("Stale model revision; refresh before changing");
+  expect(screen.getByRole("textbox", { name: "Message" })).toBe(field);
+  expect(field).toHaveProperty("value", "Keep this refused-change draft");
+  expect(service.setChatModel).toHaveBeenCalledTimes(1);
+  expect(service.stopChat).not.toHaveBeenCalled();
+  expect(service.sendChat).not.toHaveBeenCalled();
+  if (synth) expect(screen.getByRole("button", { name: "Model" }).textContent).not.toContain("fixture-other");
+  else expect(screen.getByRole("combobox", { name: "Model" })).not.toHaveProperty("value", "local/fixture-other");
 });
 
 it("moves acknowledged queue messages into the transcript once, with formatted receipt status", async () => {
@@ -213,7 +299,7 @@ it("uses the Synth knob through the existing revision-checked controller without
   expect(service.setChatThinking).not.toHaveBeenCalled();
   await waitFor(() => expect(service.setChatThinking).toHaveBeenCalledWith(1, "max", 0));
   expect(screen.getByRole("button", { name: "Execution mode" })).toBeTruthy();
-  expect(screen.queryByRole("button", { name: "Model" })).toBeNull(); // Existing model is a readout, not rerouting authority.
+  expect(screen.getByRole("button", { name: "Model" })).toBeTruthy(); // Explicit next-turn selection, never rerouting an active node.
   act(() => setSynth(false));
   await waitFor(() => expect(screen.getByRole("combobox", { name: "Thinking effort" })).toHaveProperty("value", "max"));
   expect(screen.getByRole("textbox", { name: "Message" })).toBe(draft);
@@ -377,6 +463,7 @@ describe("clear turn outcomes", () => {
   });
 
   it("makes required team approval prominent without granting it", async () => {
+    service.overviewMode = "team";
     service.chat.mockResolvedValue({ ...detail(), mode: "team", state: "awaiting_approval", active_node_id: 1 });
     render(<ChatView {...props()} />);
     const outcome = await screen.findByRole("status", { name: "Turn outcome" });
@@ -489,6 +576,42 @@ describe("Synth workspace", () => {
 });
 
 describe("persistent conversation", () => {
+  it.each([false, true])("opens Overview by default for a selected chat (Synth %s)", async synth => {
+    setSynth(synth);
+    render(<ChatView {...props()}/>);
+    await screen.findByRole("heading", { name: "Chat 1" });
+    expect(document.getElementById("chat-pane-overview")).not.toBeNull();
+    expect(document.getElementById("chat-context")).not.toHaveProperty("hidden", true);
+  });
+
+  it("reopens Overview on explicit re-selection without remounting a draft or review form", async () => {
+    const options = props();
+    const view = render(<ChatView {...options} selection={0}/>);
+    await screen.findByRole("heading", { name: "Chat 1" });
+    const draft = screen.getByRole("textbox", { name: "Message" });
+    fireEvent.change(draft, { target: { value: "Keep the composer" } });
+    fireEvent.click(screen.getByRole("button", { name: "Review" }));
+    const finding = await screen.findByRole("textbox", { name: "Unsaved review finding" });
+    fireEvent.change(finding, { target: { value: "Keep the finding" } });
+    view.rerender(<ChatView {...options} selection={1}/>);
+    expect(screen.getByRole("region", { name: "Overview" })).toBeTruthy();
+    expect(screen.getByRole("textbox", { name: "Message" })).toBe(draft);
+    expect((draft as HTMLTextAreaElement).value).toBe("Keep the composer");
+    fireEvent.click(screen.getByRole("button", { name: "Review" }));
+    expect(screen.getByRole("textbox", { name: "Unsaved review finding" })).toBe(finding);
+    expect((finding as HTMLInputElement).value).toBe("Keep the finding");
+  });
+
+  it("keeps the team patch bay beside the Overview sidebar without hiding the composer or tracker", async () => {
+    setSynth(true);
+    service.overviewMode = "team";
+    service.chat.mockResolvedValue({ ...detail(), mode: "team" });
+    render(<ChatView {...props()} initialPanel="overview"/>);
+    await screen.findByRole("heading", { name: "Chat 1" });
+    expect(document.querySelector(".chat-conversation")).toHaveProperty("hidden", false);
+    expect(document.querySelector(".chat-body")?.getAttribute("data-context")).toBe("true");
+    expect(screen.getByRole("textbox", { name: "Message" })).toBeTruthy();
+  });
   it("keeps conversation and composer alongside chat-owned overview, review, board and work", async () => {
     service.chatEvents.mockResolvedValue([event(1, "Keep this conversation visible")]);
     render(<ChatView {...props()} id={2} />);
@@ -496,7 +619,7 @@ describe("persistent conversation", () => {
     expect(screen.queryByRole("tablist", { name: "Chat views" })).toBeNull();
     fireEvent.change(screen.getByRole("textbox", { name: "Message" }), { target: { value: "Unsent instruction" } });
     for (const panel of ["Overview", "Review", "Board", "Work"]) {
-      fireEvent.click(screen.getByRole("button", { name: panel }));
+      if (!screen.queryByRole("region", { name: panel })) fireEvent.click(screen.getByRole("button", { name: panel }));
       await screen.findByRole("region", { name: panel });
       expect(screen.getByRole("article", { name: "You" }).textContent).toContain("Keep this conversation visible");
       expect((screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement).value).toBe("Unsent instruction");
@@ -886,7 +1009,7 @@ describe("persistent conversation", () => {
     });
     render(<ChatView {...props()} id={2} />);
     await screen.findByRole("button", { name: "Stop turn" });
-    fireEvent.click(screen.getByRole("button", { name: "Overview" }));
+    await screen.findByRole("region", { name: "Overview" });
     fireEvent.click(screen.getByRole("button", { name: "Stop turn" }));
     await waitFor(() => expect(service.stopChat).toHaveBeenCalledWith(2, 19));
     expect(screen.queryByRole("button", { name: "Queue follow-up" })).toBeNull();

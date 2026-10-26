@@ -64,12 +64,14 @@ export function Screen({ session, effects, synth = true, label, handlers = {} }:
       const text = term.getSelection();
       const at = term.getSelectionPosition();
       if (text.trim() === "" || !at || host.current === null) { setSelection(null); return; }
-      const rowHeight = host.current.clientHeight / Math.max(1, term.rows);
-      const columnWidth = host.current.clientWidth / Math.max(1, term.cols);
+      const grid = term.element?.querySelector(".xterm-screen")?.getBoundingClientRect() ?? host.current.getBoundingClientRect();
+      const frame = host.current.closest(".synth-screen")?.getBoundingClientRect() ?? grid;
+      const rowHeight = grid.height / Math.max(1, term.rows);
+      const columnWidth = grid.width / Math.max(1, term.cols);
       const viewport = at.start.y - (term.buffer.active.viewportY ?? 0);
       setSelection({ text,
-        top: Math.max(0, Math.min(host.current.clientHeight, viewport * rowHeight)),
-        left: Math.max(0, Math.min(host.current.clientWidth, at.start.x * columnWidth)),
+        top: grid.top - frame.top + Math.max(0, Math.min(grid.height, viewport * rowHeight)),
+        left: grid.left - frame.left + Math.max(0, Math.min(grid.width, at.start.x * columnWidth)),
       });
     });
     const stop = streamOutput(session, {
@@ -132,7 +134,9 @@ export function Screen({ session, effects, synth = true, label, handlers = {} }:
       <p>{inputProblem}</p>
       <button type="button" className="button synth-key" onClick={() => setInputAttempt((attempt) => attempt + 1)}>Enable input after inspection</button>
     </div>}
-    <div className="synth-screen__well terminal__host" ref={host} aria-label={label} />
+    <div className="synth-screen__well terminal__host" aria-label={label}>
+      <div className="synth-screen__mount" ref={host} />
+    </div>
     {selection && <SelectionToolbar text={selection.text} top={selection.top} left={selection.left} onSend={callbacks.current.onSend} />}
   </div>;
 }

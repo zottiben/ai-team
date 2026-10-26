@@ -120,6 +120,7 @@ export function useWorkspaceSetup(
 export function WorkspaceSetup(props: {
   state: ReturnType<typeof useWorkspaceSetup>;
   disabled: boolean;
+  allowCreate?: boolean;
   onSelect: (path: string) => void;
 }) {
   return <Suspense fallback={<p className="faint">Loading setup controls…</p>}><Form {...props} /></Suspense>;

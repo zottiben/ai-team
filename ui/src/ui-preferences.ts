@@ -1,6 +1,8 @@
 import { useSyncExternalStore } from "react";
+import { validSynthPalette, type SynthPalette } from "./synth-palettes";
 
 const SYNTH = "ui.synth";
+const PALETTE = "ui.synth.palette";
 const CHANGED = "ai-team:ui-preferences";
 
 export function storedSynth(): boolean {
@@ -11,6 +13,7 @@ export function storedSynth(): boolean {
 /** Applied before React; scoped tokens also reach portals under document.body. */
 export function initializeSynth(): void {
   document.documentElement.dataset.synth = String(storedSynth());
+  document.documentElement.dataset.synthPalette = storedPalette();
 }
 
 export function synthEnabled(): boolean {
@@ -26,6 +29,33 @@ export function setSynth(enabled: boolean): boolean {
   catch { persisted = false; }
   window.dispatchEvent(new Event(CHANGED));
   return persisted;
+}
+
+function storedPalette(): SynthPalette {
+  try {
+    const value = localStorage.getItem(PALETTE);
+    return validSynthPalette(value) ? value : "vice-city";
+  } catch { return "vice-city"; }
+}
+
+export function synthPalette(): SynthPalette {
+  const value = document.documentElement.dataset.synthPalette;
+  return validSynthPalette(value) ? value : storedPalette();
+}
+
+/** The palette does not opt into Synth or change Light/Dark/System. */
+export function setSynthPalette(palette: SynthPalette): boolean {
+  if (!validSynthPalette(palette)) return false;
+  document.documentElement.dataset.synthPalette = palette;
+  let persisted = true;
+  try { localStorage.setItem(PALETTE, palette); }
+  catch { persisted = false; }
+  window.dispatchEvent(new Event(CHANGED));
+  return persisted;
+}
+
+export function useSynthPalette(): SynthPalette {
+  return useSyncExternalStore(subscribe, synthPalette, () => "vice-city");
 }
 
 /**
@@ -57,10 +87,9 @@ export function useScreenEffects(): boolean {
 
 function subscribe(changed: () => void): () => void {
   const storage = (event: StorageEvent) => {
-    if (event.key === SYNTH || event.key === EFFECTS || event.key === null) {
-      initializeSynth();
-      changed();
-    }
+    if (event.key === SYNTH || event.key === null) document.documentElement.dataset.synth = String(storedSynth());
+    if (event.key === PALETTE || event.key === null) document.documentElement.dataset.synthPalette = storedPalette();
+    if (event.key === SYNTH || event.key === PALETTE || event.key === EFFECTS || event.key === null) changed();
   };
   window.addEventListener(CHANGED, changed);
   window.addEventListener("storage", storage);

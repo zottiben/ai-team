@@ -1,12 +1,18 @@
 // Vite-only, in-memory files and a synthetic terminal buffer. Never opens a PTY or disk.
 import type { FileRevision } from "../editor-api";
+import type { TerminalCommand, TerminalPad } from "../api";
 const initial = { "calc.ts": "export const total = 1;\n", "notes.md": "Synthetic editor and terminal fixture.\n" };
 const bytes = (text: string) => new TextEncoder().encode(text);
 async function revision(text: string): Promise<FileRevision> {
   const digest = await crypto.subtle.digest("SHA-256", bytes(text));
   return { hash: [...new Uint8Array(digest)].map(value => value.toString(16).padStart(2, "0")).join(""), bytes: bytes(text).length, device: 1, inode: 7, modified_ms: 1 };
 }
-export function toolsFixture(input: boolean) {
+export function toolsFixture(input: boolean, rich = false) {
+  const pads: TerminalPad[] = rich ? ["Status", "Diff", "Tests", "Build", "Log"].map((label, position) => ({ id: position + 1, position, revision: 1, label, command: `fixture ${label.toLowerCase()} # synthetic, never executed` })) : [];
+  const history: TerminalCommand[] = pads.slice(0, 3).map((pad, index) => ({ id: pad.id, request_id: `synthetic-${pad.id}`, token: `synthetic-${pad.id}`, pad_id: pad.id, revision: 1,
+    label: pad.label, command: pad.command, worktree: "/fixture/demo", dispatch: "started", refusal: null, session_id: null,
+    claimed_at: "2026-01-01T00:00:00Z", started_at: "2026-01-01T00:00:00Z", finished_at: "2026-01-01T00:00:01Z",
+    exit_code: index === 2 ? 1 : 0, duration_ms: 1000, lines: 3, lines_exact: true, state: "finished" }));
   const baseline = new Map(Object.entries(initial)), disk = new Map(baseline), previews = new Map<string, string>();
   let output = "Synthetic terminal · no process is running.\r\nfixture> ";
   const commands: { path: string; body: Record<string, unknown> }[] = [];
@@ -29,7 +35,7 @@ export function toolsFixture(input: boolean) {
         }
         commands.push({ path: route, body }); return ok({});
       }
-      if (route === "/terminals/pads" && method === "GET" && url.searchParams.get("project") === "demo") return ok([]);
+      if (route === "/terminals/pads" && method === "GET" && url.searchParams.get("project") === "demo") return ok(pads);
       if (!scoped) return null;
       if (method === "GET") {
         if (route === "/tree") return ok(path ? [] : [...disk.keys()].map(path => ({ path, name: path, dir: false })));
@@ -40,7 +46,7 @@ export function toolsFixture(input: boolean) {
         if (route === "/editor/baseline") return ok({ path, text: baseline.get(path) ?? null, tracked: disk.has(path) });
         if (route === "/editor/open" && disk.has(path)) { const text = disk.get(path)!; return ok({ path, text, editable: true, reason: null, revision: await revision(text), eol: "lf", line_separator: "\n", encoding: "utf-8", bytes: bytes(text).length }); }
         if (route === "/terminals") return ok([{ id: 7, worktree: "/fixture/demo", done: false, status: null, kind: "shell", label: "Synthetic session · no process", duration_ms: 0 }]);
-        if (route === "/terminals/commands") return ok({ worktree: "/fixture/demo", running: [], history: [] });
+        if (route === "/terminals/commands") return ok({ worktree: "/fixture/demo", running: [], history });
       }
       if (method === "POST") {
         if (route === "/lsp/diagnostics") return ok({ analysed: false, diagnostics: null });

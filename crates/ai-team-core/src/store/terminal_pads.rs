@@ -73,8 +73,10 @@ impl Dispatch {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct TerminalCommandRow {
     pub id: i64,
+    /// Migrated pre-intent receipts use a reserved `legacy:` ID that cannot be pressed.
     pub request_id: String,
     pub token: String,
+    /// Zero on a historical receipt whose pad/revision was never recorded.
     pub pad_id: i64,
     pub revision: i64,
     pub label: String,
@@ -85,6 +87,7 @@ pub struct TerminalCommandRow {
     pub refusal: Option<String>,
     /// The pty, once one is confirmed started. `None` on a row that never got that far.
     pub session_id: Option<i64>,
+    /// Empty on a historical receipt without an observed intent-claim time.
     pub claimed_at: String,
     pub started_at: Option<String>,
     pub finished_at: Option<String>,

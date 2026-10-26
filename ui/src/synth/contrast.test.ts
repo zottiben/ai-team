@@ -1,13 +1,21 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, it } from "vitest";
+import { SYNTH_PALETTES, type SynthPalette } from "../synth-palettes";
 
 const css = readFileSync(join(import.meta.dirname, "tokens.css"), "utf8");
 const blocks = [...css.replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/([^{}]+)\{([^{}]+)\}/g)];
 const tokens = (body: string) => [...body.matchAll(/(--[\w-]+):\s*([^;]+);/g)].map(m => [m[1]!, m[2]!] as const);
 const base = tokens(blocks[0]?.[2] ?? "");
-function palette(theme: "dark" | "light") {
+function palette(theme: "dark" | "light", family: SynthPalette) {
   const values = new Map([...base, ...theme === "light" ? tokens(blocks[1]?.[2] ?? "") : []]);
+  if (family !== "vice-city") {
+    for (const block of blocks.slice(2)) {
+      if (!block[1]?.includes(`[data-synth-palette="${family}"]`)) continue;
+      if (theme === "dark" && block[1].includes('[data-theme="light"]')) continue;
+      for (const [name, value] of tokens(block[2] ?? "")) values.set(name, value);
+    }
+  }
   const resolve = (name: string): string => {
     const value = values.get(name);
     if (!value) throw new Error(`Missing colour token ${name}`);
@@ -31,15 +39,15 @@ function contrast(fg: string, bg: string, opacity = 1) {
   const a = luminance(blended), b = luminance(background);
   return (Math.max(a, b) + .05) / (Math.min(a, b) + .05);
 }
-for (const theme of ["dark", "light"] as const) {
-  const resolve = palette(theme);
+for (const { id: family } of SYNTH_PALETTES) for (const theme of ["dark", "light"] as const) {
+  const resolve = palette(theme, family);
   const check = (ink: string, surface: string, minimum = 4.5) => {
     const background = resolve(surface);
     const stops = background.startsWith("linear-gradient") ? background.match(/#[a-f\d]{6}/gi) ?? [] : [background];
     expect(stops.length).toBeGreaterThan(0);
     for (const stop of stops) expect(contrast(resolve(ink), stop), `${theme}: ${ink} on ${surface} (${stop})`).toBeGreaterThanOrEqual(minimum);
   };
-  it(`${theme}: diff text and gutters remain readable over added, removed and selected rows`, () => {
+  it(`${family} ${theme}: diff text and gutters remain readable over added, removed and selected rows`, () => {
     const surface = resolve("--code-surface");
     const over = (ink: string, alpha: number) => {
       const foreground = colour(resolve(ink)), background = colour(surface), opacity = (foreground[3] ?? 1) * alpha;
@@ -52,13 +60,13 @@ for (const theme of ["dark", "light"] as const) {
       }
     }
   });
-  it(`${theme}: body, secondary text and LCDs meet small-text contrast`, () => {
+  it(`${family} ${theme}: body, secondary text and LCDs meet small-text contrast`, () => {
     for (const surface of ["--synth-floor", "--synth-void", "--synth-screen", "--plate-night", "--plate-midnight", "--plate-deck", "--plate-cartridge", "--synth-key", "--synth-key-hover"]) {
       for (const ink of ["--synth-text", "--synth-text-muted"]) check(ink, surface);
     }
     for (const ink of ["--synth-lcd-text", "--synth-lcd-text-alt", "--synth-lcd-label"]) check(ink, "--synth-screen");
   });
-  it(`${theme}: shell labels and command/status labels remain readable`, () => {
+  it(`${family} ${theme}: shell labels and command/status labels remain readable`, () => {
     check("--synth-label", "--plate-midnight");
     check("--synth-accent", "--synth-key");
     for (const ink of ["--lane-think", "--lane-read", "--lane-edit", "--lane-bash", "--lane-mcp", "--st-working", "--st-attention"]) {
@@ -68,12 +76,15 @@ for (const theme of ["dark", "light"] as const) {
     check("--synth-focus", "--synth-floor", 3);
     check("--synth-focus", "--synth-key", 3);
   });
-  it(`${theme}: code syntax and line numbers meet small-text contrast`, () => {
+  it(`${family} ${theme}: filled tracker lane pills keep readable ink`, () => {
+    for (const lane of ["think", "read", "edit", "bash", "mcp", "guard", "live"]) check("--synth-signal-ink", `--lane-${lane}`);
+  });
+  it(`${family} ${theme}: code syntax and line numbers meet small-text contrast`, () => {
     for (const role of ["text", "punctuation", "keyword", "variable", "string", "number", "function", "type", "comment", "gutter", "gutter-active"]) {
       check(`--code-${role}`, "--code-surface");
     }
   });
-  it(`${theme}: the terminal palette stays readable on the screen it paints on`, () => {
+  it(`${family} ${theme}: the terminal palette stays readable on the screen it paints on`, () => {
     // A terminal is almost entirely small text, so this is the surface where a
     // decorative colour costs legibility outright. `black` and `brightBlack` are left
     // out on purpose: in any ANSI palette they are the near-background shades programs
@@ -85,7 +96,7 @@ for (const theme of ["dark", "light"] as const) {
       check(`--synth-term-${ink}`, "--synth-term-bg");
     }
   });
-  it(`${theme}: branded faceplates and primary/danger keys keep their own contrast`, () => {
+  it(`${family} ${theme}: branded faceplates and primary/danger keys keep their own contrast`, () => {
     for (const surface of ["--plate-lavender", "--plate-ice", "--plate-flamingo", "--plate-yellow"]) {
       check("--vc-midnight", surface); check("--vc-text-muted", surface);
     }

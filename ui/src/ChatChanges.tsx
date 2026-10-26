@@ -4,6 +4,7 @@ import { ExactApproval } from "./synth/views/Review/ExactApproval";
 import { DraftReviewPanel } from "./synth/views/Review/DraftReview";
 import { captureReview, currentReview, deliveryActions as ACTIONS, openReviewView, reviewDraftState, type ReviewViews } from "./synth/views/Review/drafts";
 import { useReviewFix } from "./useReviewFix";
+import { PanelLoading } from "./PanelLoading";
 import {
   acknowledgeDelivery, approveDelivery, chatChanges, inspectDelivery, previewDelivery, reviewDraft,
   type Changes, type Delivery, type DeliveryInspection,
@@ -50,7 +51,7 @@ function ChangesController({ chatId, mode, tick, disabled, working, disabledReas
     <div className="chat-changes-heading"><h3>Changes and delivery</h3>
       <button className="button" disabled={busy} onClick={() => { setProblem(null); setRefresh((n) => n + 1); }}>Refresh changes</button></div>
     {problem && <p role="alert" className="error">{problem}</p>}
-    {!changes ? <p className="faint">Reading actual Git changes…</p> : <>
+    {!changes ? problem ? <p className="faint">Changes unavailable. Refresh to retry.</p> : <PanelLoading>Reading actual Git changes…</PanelLoading> : <>
       {changes.issues.length > 0 && <div className="notice"><strong>Checkout or draft inspection is incomplete</strong><ul>{changes.issues.map((issue, n) => <li key={n}>{issue}</li>)}</ul></div>}
       <details open>
         <summary>Working checkout · {changes.branch ?? "detached"} · {changes.staged.length} staged · {changes.unstaged.length} unstaged · {changes.untracked.length} untracked</summary>

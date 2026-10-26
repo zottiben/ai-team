@@ -61,13 +61,13 @@ export function terminalTheme(root: Element = document.documentElement): Termina
 /**
  * Watch for a theme change and hand back the new values.
  *
- * Light and dark are an attribute on the root element, and so is the skin itself, so a
- * pane that resolved its colours once at mount goes stale the moment either changes.
+ * Mode, palette and skin are root attributes. Repaint the existing canvas without
+ * replacing its terminal, buffer or process.
  */
 export function onThemeChange(listener: (theme: TerminalTheme) => void): () => void {
   if (typeof MutationObserver === "undefined") return () => {};
   const root = document.documentElement;
   const observer = new MutationObserver(() => listener(terminalTheme(root)));
-  observer.observe(root, { attributes: true, attributeFilter: ["data-theme", "data-synth"] });
+  observer.observe(root, { attributes: true, attributeFilter: ["data-theme", "data-synth", "data-synth-palette"] });
   return () => observer.disconnect();
 }

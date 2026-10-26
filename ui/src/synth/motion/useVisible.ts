@@ -9,7 +9,9 @@ export function useVisible(element: RefObject<Element | null>): boolean {
     visibility();
     document.addEventListener("visibilitychange", visibility);
     const observer = typeof IntersectionObserver === "undefined" ? null : new IntersectionObserver(entries => {
-      const entry = entries.find(e => e.target === element.current);
+      // A quick hide/reveal can queue both observations before delivery. The first
+      // one would leave a visible retained pane disabled until another intersection.
+      const entry = entries.filter(e => e.target === element.current).at(-1);
       if (entry) setVisible(entry.isIntersecting);
     });
     if (element.current) observer?.observe(element.current);

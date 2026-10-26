@@ -44,6 +44,36 @@ function stamp(event: Measurement): number | null {
   return Number.isFinite(value) ? value : null;
 }
 
+/** Live, model-reported counters, never accumulated spend or a rate. Receipt order
+ * is not elapsed time. Reader changes and compaction always break; response
+ * boundaries also break the default view, while level plots may join their values. */
+export function tokenTrace(events: readonly Measurement[], view: "responses" | "levels" = "responses") {
+  const channels = ["input", "output", "context", "cache_read", "cache_write"] as const;
+  const values: Record<typeof channels[number], (number | null)[]> = { input: [], output: [], context: [], cache_read: [], cache_write: [] };
+  const gap = () => { for (const channel of channels) values[channel].push(null); };
+  let previous: string | null = null, at: string | null = null;
+  for (const event of events.slice(-RECEIPTS)) {
+    const metric = event.telemetry;
+    if (metric.kind === "compaction") {
+      if (values.input.length) gap();
+      previous = null; at = null;
+      continue;
+    }
+    // Level plots may join reported values across response resets, never derive
+    // deltas across them. Session/reader/unknown identity and compaction still break.
+    const key = view === "levels" ? scope(event) : series(event);
+    if (values.input.length && (key === null || key !== previous)) gap();
+    for (const channel of channels) {
+      const value = count(metric.tokens[channel]);
+      values[channel].push(metric.phase === "live" && value === 0 ? null : value);
+    }
+    previous = key;
+    at = stamp(event) === null ? null : event.observation?.at ?? null;
+  }
+  return { input: values.input.slice(-SAMPLES), output: values.output.slice(-SAMPLES), context: values.context.slice(-SAMPLES),
+    cache_read: values.cache_read.slice(-SAMPLES), cache_write: values.cache_write.slice(-SAMPLES), at };
+}
+
 /** Reported completed output / 15s wall bucket. Empty is unknown, not measured zero.
  * The last bucket is explicitly partial; this is not instantaneous generation speed. */
 export function completedRates(events: readonly Measurement[], now: number, counter: "input" | "output" = "output"): (number | null)[] {

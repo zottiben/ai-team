@@ -268,6 +268,51 @@ it("renders the Synth rack from the existing scope, retains repository modes and
   expect(asked.filter(path => path.endsWith("/plan"))).toHaveLength(1);
 });
 
+it("follows live token receipts for the displayed node without a new fetch owner or cross-node values", async () => {
+  const asked = stub();
+  const receipt: RunEvent = { id: 1, node_run_id: 4, session_id: "session", kind: "note", actor: "assistant", summary: "Usage", message: null, thinking: [], at: "2026-10-06T09:04:00Z",
+    observation: { clock_id: "reader", elapsed_ms: 1000, at: "2026-10-06T09:04:00Z" }, telemetry_only: true,
+    telemetry: { kind: "usage", phase: "live", sequence: 1, tokens: { input: 12, output: 7, cache_read: 328, cache_write: 0, context: 340, context_source: "complete_parts" } } };
+  const props = { detail: detail(), status: "Working", tick: 0, events: [receipt], elapsed: 288, now: NOW };
+  const view = render(<ChatOverview {...props} synth />);
+  const scope = await screen.findByRole("region", { name: "Live token scope" });
+  const channel = (name: string) => within(scope).getByRole("group", { name });
+  expect(within(channel("Input tokens")).getByText("12 input tokens")).toBeTruthy();
+  expect(within(channel("Output tokens")).getByText("7 output tokens")).toBeTruthy();
+  expect(within(channel("Context window")).getByText("340 prompt tokens")).toBeTruthy();
+  expect(within(channel("Cache read tokens")).getByText("328 cached tokens")).toBeTruthy();
+  expect(within(channel("Cache write tokens")).getByText("new cache tokens unavailable")).toBeTruthy();
+  expect(within(scope).getByText(/Model capacity is not reported/)).toBeTruthy();
+  const next: RunEvent = { ...receipt, id: 2, telemetry: { kind: "usage", phase: "live", sequence: 1, tokens: { input: 18, output: 25, cache_read: 382, cache_write: 0, context: 400, context_source: "complete_parts" } } };
+  const foreign: RunEvent = { ...next, id: 3, node_run_id: 99, telemetry: { kind: "usage", phase: "live", sequence: 1,
+    tokens: { input: 999, output: 999, cache_read: 0, cache_write: 0, context: 999, context_source: "complete_parts" } } };
+  view.rerender(<ChatOverview {...props} events={[receipt, next, foreign]} synth />);
+  await waitFor(() => expect(within(channel("Output tokens")).getByText("25 output tokens")).toBeTruthy(), { timeout: 2500 });
+  expect(within(channel("Input tokens")).getByText("18 input tokens")).toBeTruthy();
+  expect(within(channel("Context window")).getByText("400 prompt tokens")).toBeTruthy();
+  view.rerender(<ChatOverview {...props} detail={detail({ active_node_id: 5 })} synth />);
+  expect(within(scope).queryByText("400 prompt tokens")).toBeNull();
+  expect(within(scope).getAllByText("No samples")).toHaveLength(10);
+  view.rerender(<ChatOverview {...props} synth={false} />);
+  expect(screen.queryByRole("region", { name: "Live token scope" })).toBeNull();
+  expect(document.querySelector(".synth-token-scope")).toBe(scope);
+  expect(asked.filter(path => path.endsWith("/overview"))).toHaveLength(1);
+  expect(asked).toHaveLength(3);
+});
+
+it("stops every scope for settled, interrupted and awaiting-approval chats even with an active-node pointer", async () => {
+  stub();
+  const props = { detail: detail(), status: "Working", tick: 0, events: [], elapsed: 288, now: NOW, synth: true };
+  const view = render(<ChatOverview {...props}/>);
+  await screen.findByRole("region", { name: "Live token scope" });
+  const scopes = () => [...view.container.querySelectorAll(".synth-graph[data-active]")];
+  await waitFor(() => expect(scopes()).toHaveLength(8));
+  for (const state of ["running", "stopping", "idle", "awaiting_approval", "failed", "interrupted"] as const) {
+    view.rerender(<ChatOverview {...props} detail={detail({ state, active_node_id: 4 })}/>);
+    expect(scopes().every(scope => scope.getAttribute("data-active") === String(state === "running" || state === "stopping"))).toBe(true);
+  }
+});
+
 it("does not hide a map failure when the live evidence succeeds", async () => {
   stub({ mapError: true });
   sheet();

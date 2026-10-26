@@ -1,18 +1,43 @@
 .synth-patch-bay { display: grid; gap: 14px; min-width: 0; font-family: var(--synth-font-sans); color: var(--synth-text); }
-.synth-patch-bay .faint { color: var(--synth-text-muted); }
+.synth-patch-bay > .synth-plate { min-width: 0; }
+.synth-patch-bay > .synth-plate > .faint { color: var(--synth-text-muted); font-size: 12px; line-height: 1.5; }
+.synth-patch-inspector { display: grid; gap: 12px; min-width: 0; color: var(--synth-text); font-family: var(--synth-font-sans); }
+.synth-patch-inspector > .synth-plate { min-width: 0; }
+.synth-patch-inspector :is(p, dl) { font-size: 12px; line-height: 1.5; }
+.synth-patch-inspector .synth-plate__header { margin-inline: 0; }
+.synth-patch-inspector .mono { font: 11px/1.5 var(--synth-font-mono); overflow-wrap: anywhere; }
+.synth-patch-inspector .faint { color: var(--vc-text-muted); }
+[data-synth="true"] .chat-team-overview { flex: 0 1 280px; min-height: 56px; overflow: auto; margin: 0 24px 12px; overscroll-behavior: contain; }
+[data-synth="true"] .chat-team-overview .synth-plate { padding: 12px; }
+[data-synth="true"] .chat-team-overview .synth-patch-viewport { margin-block: 4px 0; max-height: none; }
+[data-synth="true"] .chat-team-overview .synth-patch-canvas { padding: 12px 16px 40px; gap: 20px; }
+[data-synth="true"] .chat-team-overview .synth-patch-module { min-height: 140px; padding: 10px; }
+[data-synth="true"] .chat-team-overview .synth-patch-module__select { font-size: 13px; padding-block: 6px; }
+[data-synth="true"] .chat-team-overview .synth-patch-module__readout { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; padding: 4px; margin-bottom: 8px; }
+[data-synth="true"] .chat-team-overview .synth-patch-module__readout p { margin: 0; font-size: 11px; }
+[data-synth="true"] .chat-team-overview .synth-patch-module__readout .synth-silk { font-size: 8px; letter-spacing: 0; }
+[data-synth="true"] .chat-team-overview .synth-patch-module__readout .synth-muted { display: none; }
+[data-synth="true"] .chat-workspace[data-synth-patch] .chat-transcript-shell { flex: 1 1 0; min-height: 180px; }
+[data-synth="true"] .chat-workspace[data-synth-patch] .chat-transcript { min-height: 120px; }
+[data-synth="true"] .chat-workspace[data-synth-patch] .chat-composer-area { flex: none; }
+@media (max-width: 650px) { [data-synth="true"] .chat-team-overview { margin-inline: 12px; flex: none; height: 250px; } }
 .synth-patch-toolbar { display: flex; gap: 12px; align-items: end; flex-wrap: wrap; }
 .synth-patch-toolbar label { display: grid; gap: 5px; font: 11px var(--synth-font-mono); }
 .synth-patch-toolbar select { min-height: 32px; max-width: 100%; color: var(--synth-lcd-text); background: var(--synth-screen); border: 1px solid var(--synth-lcd-edge); border-radius: var(--r-key); }
-.synth-patch-viewport { max-height: 60vh; overflow: auto; margin-block: 14px; border: 1px solid var(--synth-lcd-edge); border-radius: 14px; background: var(--synth-void); }
-.synth-patch-canvas { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 45px; padding: 22px; position: relative; }
-.synth-patch-column { display: flex; flex-direction: column; gap: 20px; min-width: 0; }
-.synth-patch-cables { position: absolute; inset: 0; pointer-events: none; }
-.synth-patch-module { position: relative; padding: 14px; background: var(--plate-midnight); border: 1px solid var(--synth-hairline); border-radius: 18px; box-shadow: var(--shadow-plate); min-width: 0; }
-.synth-patch-module[data-selected] { border-color: var(--synth-selection); }
+.synth-patch-viewport { max-height: 60vh; overflow: auto; margin-block: 14px; border: 1px solid var(--synth-lcd-edge); border-radius: var(--r-screen); background-color: var(--synth-void); background-image: radial-gradient(var(--synth-lcd-edge) 1px, transparent 1px); background-size: 18px 18px; }
+.synth-patch-canvas { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 45px; padding: 22px 22px 64px; position: relative; isolation: isolate; }
+.synth-patch-column { display: flex; flex-direction: column; gap: 20px; min-width: 0; position: relative; z-index: 0; }
+.synth-patch-cables { position: absolute; inset: 0; z-index: 1; pointer-events: none; }
+.synth-patch-module { display: flex; flex-direction: column; position: relative; padding: 14px; min-height: 220px; border: 1px solid var(--synth-hairline); border-radius: var(--r-plate); min-width: 0; }
+.synth-patch-module[data-selected] { outline: 2px solid var(--synth-selection); outline-offset: 3px; }
+.synth-patch-module__head > .synth-silk { padding: 4px 8px; border-radius: var(--r-key); background: var(--vc-midnight); color: var(--vc-pearl); }
+.synth-patch-module__readout { margin-block: 4px 12px; padding: 12px; font: 11px/1.5 var(--synth-font-mono); }
+.synth-patch-module__readout p { margin-block: 8px 0; }
+.synth-patch-module .synth-jack { align-self: center; margin-top: auto; color: inherit; }
 .synth-patch-module__head { display: flex; justify-content: space-between; gap: 10px; }
-.synth-patch-module__select { display: block; width: 100%; padding-block: 10px; min-height: 32px; color: var(--synth-text); background: transparent; border: 0; text-align: start; font: 600 16px var(--synth-font-sans); overflow-wrap: anywhere; cursor: pointer; }
+.synth-patch-module__select { display: block; width: 100%; padding-block: 10px; min-height: 32px; color: inherit; background: transparent; border: 0; text-align: start; font: 600 16px var(--synth-font-sans); overflow-wrap: anywhere; cursor: pointer; }
 .synth-patch-module p { font-size: 12px; overflow-wrap: anywhere; }
-.synth-patch-bay dl { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 8px 14px; font-size: 13px; }
-.synth-patch-bay dd { margin: 0; overflow-wrap: anywhere; }
-.synth-patch-bay :is(button, select, [tabindex]):focus-visible { outline: 2px solid var(--synth-focus); outline-offset: 2px; }
-@media (pointer: coarse) { .synth-patch-bay :is(button, select) { min-height: 44px; } }
+.synth-patch-bay dl, .synth-patch-inspector dl { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 8px 14px; font-size: 13px; }
+.synth-patch-bay dd, .synth-patch-inspector dd { margin: 0; overflow-wrap: anywhere; }
+.synth-patch-bay :is(button, select, [tabindex]):focus-visible, .synth-patch-inspector :is(button, select, summary, [tabindex]):focus-visible { outline: 2px solid var(--synth-focus); outline-offset: 2px; }
+@media (pointer: coarse) { :is(.synth-patch-bay, .synth-patch-inspector) :is(button, select, summary) { min-height: 44px; } }

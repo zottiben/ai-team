@@ -31,8 +31,9 @@ fn row(r: &Row<'_>) -> rusqlite::Result<Setup> {
 impl Store {
     /// AWT cannot see pinned chats, pre-spawn reservations or retained app work.
     /// A clean idle checkout can still hold commits/drafts a chat must not lose.
-    /// Refuse get if any such pool slot lacks a lease protecting it from reuse.
-    pub(crate) fn check_setup_pool(&self, pool: &[crate::PoolEntry]) -> Result<()> {
+    /// Pass these paths to AWT's locked exclusion check, including leased pins:
+    /// another holder releasing its lease must not make a chat's path disposable.
+    pub(crate) fn setup_pool_exclusions(&self, pool: &[crate::PoolEntry]) -> Result<Vec<String>> {
         let conn = self.db().conn();
         let mut query = conn.prepare("SELECT workspace_path FROM chat
             UNION SELECT workspace_path FROM run WHERE status IN ('queued','planning','running') AND supervisor_pid IS NOT NULL AND workspace_path IS NOT NULL
@@ -41,19 +42,20 @@ impl Store {
         let protected = query
             .query_map([], |row| row.get::<_, String>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut excluded = Vec::new();
         for entry in pool
             .iter()
-            .filter(|entry| !entry.main && entry.status != "linked" && entry.lease_holder.is_none())
+            .filter(|entry| !entry.main && entry.status != "linked")
         {
             super::chat_changes::check_workspace(conn, &entry.path)?;
             if protected
                 .iter()
                 .any(|path| crate::same_worktree(path, &entry.path))
             {
-                return Err(Error::invalid(format!("AWT pool slot {} has active or retained app work without a protecting lease; inspect it before acquisition", entry.path)));
+                excluded.push(entry.path.clone());
             }
         }
-        Ok(())
+        Ok(excluded)
     }
     pub fn workspace_setup_revision(&self) -> Result<i64> {
         Ok(self.db().conn().query_row(

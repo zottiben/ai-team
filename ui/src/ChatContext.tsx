@@ -1,5 +1,6 @@
 import { lazy, Suspense, useRef } from "react";
 import { TEAM_PHASES } from "./team-api";
+import { PanelLoading } from "./PanelLoading";
 import type { ChatDetail } from "./chat-api";
 import type { RunEvent } from "./api";
 
@@ -19,8 +20,9 @@ export const CHAT_PANELS = {
 export type ChatPanel = keyof typeof CHAT_PANELS;
 
 /** The command surfaces belong to this chat, never the project's latest run. */
-export function ChatContext({ detail, panel, opened, hidden, status, tick, busy, command, events, elapsed, now, onChanged, onFeedback, onClose, synth = false, onSelect }: {
+export function ChatContext({ detail, panel, opened, hidden, status, tick, busy, command, events, elapsed, now, onChanged, onFeedback, onClose, synth = false, onSelect, patchHost }: {
   synth?: boolean;
+  patchHost?: HTMLElement;
   onSelect?: (panel: ChatPanel) => void;
   detail: ChatDetail;
   panel: ChatPanel | null;
@@ -48,27 +50,27 @@ export function ChatContext({ detail, panel, opened, hidden, status, tick, busy,
     </header>
     {/* Keep opened panels mounted: switching context must not discard review/plan drafts. */}
     {opened.has("overview") && <section id="chat-pane-overview" role={synth ? "tabpanel" : undefined} className="chat-context-pane" aria-label="Overview" hidden={panel !== "overview"}>
-      <Suspense fallback={<p className="faint">Loading overview…</p>}>
-        <ChatOverview detail={detail} status={status} tick={tick} events={events} elapsed={elapsed} now={now} synth={synth} onSelect={onSelect} />
+      <Suspense fallback={<PanelLoading>Loading overview…</PanelLoading>}>
+        <ChatOverview detail={detail} status={status} tick={tick} events={events} elapsed={elapsed} now={now} synth={synth} onSelect={onSelect} patchHost={patchHost} />
       </Suspense>
     </section>}
     {opened.has("review") && <section id="chat-pane-review" role={synth ? "tabpanel" : undefined} className="chat-context-pane" aria-label="Review" hidden={panel !== "review"}>
-      <Suspense fallback={<p className="faint">Loading changes…</p>}>
+      <Suspense fallback={<PanelLoading>Loading changes…</PanelLoading>}>
         <ChatChanges chatId={detail.id} mode={detail.mode} tick={tick} disabled={detail.archived || detail.active_node_id !== null}
           working={detail.state === "running" || detail.state === "stopping"}
           disabledReason={detail.archived ? "Archived chat — checkout actions are read-only." : undefined} onChanged={onChanged} onFeedback={onFeedback} />
       </Suspense>
     </section>}
     {opened.has("board") && <section id="chat-pane-board" role={synth ? "tabpanel" : undefined} className="chat-context-pane" aria-label="Board" hidden={panel !== "board"}>
-      <Suspense fallback={<p className="faint">Loading board…</p>}>
+      <Suspense fallback={<PanelLoading>Loading board…</PanelLoading>}>
         <ChatPlanning chatId={detail.id} tick={tick} archived={detail.archived} frozen={activeTeam?.approved_revision != null} onChanged={onChanged} />
       </Suspense>
     </section>}
     {opened.has("work") && <section id="chat-pane-work" role={synth ? "tabpanel" : undefined} className="chat-context-pane" aria-label="Work" hidden={panel !== "work"}>
       {/* Team execution is rendered in the same place for both skins: a review, a close
           form or a retained inspection must survive the flag, not be remounted by it. */}
-      {(detail.mode === "team" || detail.team_builds.length > 0) && <Suspense fallback={<p className="faint">Loading team execution…</p>}><ChatTeam detail={detail} busy={busy} command={command} events={events} now={now} /></Suspense>}
-      <div hidden={!synth}>{workOpened.current && <Suspense fallback={<p className="faint">Loading work…</p>}>
+      {(detail.mode === "team" || detail.team_builds.length > 0) && <Suspense fallback={<PanelLoading>Loading team execution…</PanelLoading>}><ChatTeam detail={detail} busy={busy} command={command} events={events} now={now} /></Suspense>}
+      <div hidden={!synth}>{workOpened.current && <Suspense fallback={<PanelLoading>Loading work…</PanelLoading>}>
         <WorkPanel detail={detail} events={events} now={now} visible={synth && panel === "work" && !hidden} />
       </Suspense>}</div>
       <div hidden={synth}>

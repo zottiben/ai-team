@@ -31,6 +31,33 @@ it("uses p95 rate and max context scales, clips spikes, and splits lines/fills a
   expect(describeSeries([0], "tok/s")).toBe("0 tok/s");
 });
 
+it("fits the entire reported token range without changing the existing rate scale", () => {
+  const samples = [...Array.from({ length: 19 }, () => 10), 10_000];
+  const view = render(<Scope label="Tokens" unit="tokens" samples={samples} />);
+  expect(view.container.querySelector(".synth-graph__line")?.getAttribute("d")).toBe(plot(samples, ceiling(samples, "rate")).line);
+  view.rerender(<Scope label="Tokens" unit="tokens" samples={samples} scale="extent" />);
+  expect(view.container.querySelector(".synth-graph__line")?.getAttribute("d")).toBe(plot(samples, ceiling(samples, "context")).line);
+  expect(screen.getByText("10,000 tokens")).toBeDefined();
+});
+
+it("keeps earlier real peaks on the extent scale when a live bucket is revised down", () => {
+  const view = render(<Scope label="Tokens" unit="tokens" samples={[100]} scale="extent" flow/>);
+  view.rerender(<Scope label="Tokens" unit="tokens" samples={[10]} scale="extent" flow/>);
+  expect(view.container.querySelector(".synth-graph__line")?.getAttribute("d")).not.toContain(" 2.00");
+  expect(screen.getByText("10 tokens")).toBeDefined();
+});
+
+it("keeps an explicitly marked last-value hold when a flowing tail is unavailable", () => {
+  const view = render(<Scope label="Tokens" unit="tokens" samples={[10,null]} flow identity={1}/>);
+  expect(screen.getByText("tokens unavailable")).toBeDefined();
+  expect(view.container.querySelector(".synth-graph__hold")?.getAttribute("d")).toContain("L300.00");
+  view.rerender(<Scope label="Tokens" unit="tokens" samples={[null]} flow identity={2}/>);
+  expect(view.container.querySelector(".synth-graph__hold")?.getAttribute("d")).toBe("");
+  view.rerender(<Scope label="Tokens" unit="tokens" samples={[5]} flow identity={2}/>);
+  expect(screen.getByText("5 tokens")).toBeDefined();
+  expect(view.container.querySelector(".synth-graph__hold")?.getAttribute("d")).toBe("");
+});
+
 it("draws isolated observations on either side of a gap as round-cap points", () => {
   const paths = plot([1, null, 3], 4);
   expect(paths.line).toBe("M0.00 59.00L0.00 59.00M300.00 21.00L300.00 21.00");

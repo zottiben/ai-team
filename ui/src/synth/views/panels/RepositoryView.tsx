@@ -22,7 +22,7 @@ function RepositoryView({ map, seats }: { map: RepoMap; seats: ChatSeat[] | null
         {data?.points.map((point, index) => Number.isFinite(point.hits) ? <circle key={point.path}
           cx={5 + index / Math.max(1, data.points.length - 1) * 290} cy={95 - point.hits / maximum * 85} r={2} /> : null)}
       </svg>
-      <p>X: displayed file order. Y: recorded touches, 0–{maximum}. Not timing or throughput.</p>
+      <span className="synth-sr-only">X: displayed file order. Y: recorded touches, 0–{maximum}. Not timing or throughput.</span>
       {data === null && <p>Activity unavailable</p>}
       <details><summary>Exact plotted values and ownership</summary><ul>{data?.points.map(point => <li key={point.path}>{point.path} · {Number.isFinite(point.hits) ? point.hits : "unknown"} touches · {point.owner ?? "unowned"}</li>)}</ul></details>
     </Lcd>}
@@ -32,7 +32,7 @@ function RepositoryView({ map, seats }: { map: RepoMap; seats: ChatSeat[] | null
         <span>{node.dir ? "Directory" : "File"} · {node.path || "(root)"}</span><span>{node.owner ?? "unowned"} · weight {node.weight}</span>
       </li>)}</ul>
     </Lcd>}
-    <p className="faint">Wave X is file order within each directory; height is recorded read/write touches. XY and Tree use the same bounded map, not simulated activity. {data ? `${data.omitted} touched paths absent from the displayed map.` : "Touch data has not loaded."} {map.truncated && "Checkout walk was truncated."}</p>
+    <span className="synth-muted" title="The map is bounded to 700 nodes and 50,000 walked files. Omitted touches are outside the displayed map.">{map.truncated ? "Truncated map" : ""}{data?.omitted ? ` · ${data.omitted} paths omitted` : ""}</span>
   </div>;
 }
 

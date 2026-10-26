@@ -13,7 +13,12 @@ export async function exerciseReceiptMotion() {
   await until(() => document.querySelector('.synth-pattern-heading')?.textContent.includes('of 5000 mapped'), 'Complete 5000-step history did not load');
   sequence.scrollLeft = sequence.scrollWidth;
   [...sequence.querySelectorAll('button')].at(-1).scrollIntoView({ block: 'nearest', inline: 'nearest' });
-  document.querySelector('.chat-follow')?.click(); await pause(); await pause();
+  document.querySelector('.chat-follow')?.click();
+  if (innerWidth < 900) document.querySelector('[aria-label="Collapse sidebar"]')?.click();
+  document.querySelector('.chat-transcript-shell').scrollIntoView({ block: 'center' });
+  await pause(); await pause();
+  const transcriptBounds = document.querySelector('.chat-transcript').getBoundingClientRect();
+  must(sequence.getBoundingClientRect().top >= 0 && transcriptBounds.top < innerHeight && transcriptBounds.bottom <= innerHeight, 'Reveal both the pattern and transcript before checking visible arrival motion');
   const original = Element.prototype.animate, recorded = [];
   Element.prototype.animate = function(frames, options) {
     const animation = original.call(this, frames, options);

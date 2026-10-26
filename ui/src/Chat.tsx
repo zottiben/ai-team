@@ -24,10 +24,12 @@ import { useSynth } from "./ui-preferences";
 import { useReadout } from "./synth/motion/readouts";
 import { snippetFrom, SNIPPET_LIMIT, withSnippets, type DraftSnippet } from "./draft-snippets";
 const SessionTabs = lazy(() => import("./synth/views/Session/SessionNavigation").then(m => ({ default: m.SessionTabs })));
+const HeaderIcon = lazy(() => import("./synth/views/Session/SessionNavigation").then(m => ({ default: m.HeaderIcon })));
 const PanelFrame = lazy(() => import("./synth/views/panels/PanelFrame"));
 const Tracker = lazy(() => import("./synth/views/Session/Tracker/Tracker"));
 const LiveRow = lazy(() => import("./synth/views/Session/Tracker/LiveRow"));
 const ComposerDeck = lazy(() => import("./synth/views/Session/ComposerDeck"));
+const ActivityEqualizer = lazy(() => import("./synth/views/Session/ActivityEqualizer"));
 const Shortcuts = lazy(() => import("./synth/views/Session/Shortcuts"));
 import { publishChatDisplay, releaseChatDisplay } from "./synth/data/chat-display";
 import {
@@ -42,6 +44,7 @@ import {
   stopChat,
   queueChatFollowup,
   setChatThinking,
+  setChatModel,
   type ChatDetail,
   type ChatFollowup,
   type ImageInput,
@@ -76,7 +79,8 @@ export function ChatView({
   onChanged,
   onArchived,
   onSettings,
-  initialPanel = null,
+  initialPanel = "overview",
+  selection = 0,
 }: {
   id: number | null;
   project: Project;
@@ -86,6 +90,7 @@ export function ChatView({
   onArchived: () => void;
   onSettings: () => void;
   initialPanel?: ChatPanel | null;
+  selection?: number;
 }) {
   const synth = useSynth();
   const body = useRef<HTMLDivElement>(null);
@@ -100,8 +105,15 @@ export function ChatView({
   const [panel, setPanel] = useState<ChatPanel | null>(initialPanel);
   const [openedPanels, setOpenedPanels] = useState<ReadonlySet<ChatPanel>>(new Set(initialPanel ? [initialPanel] : []));
   const [tool, setTool] = useState<"editor" | "terminal" | null>(null);
-  const wideContext = synth && (panel === "board" || panel === "overview" && detail?.mode === "team");
+  const wideContext = synth && panel === "board";
   const wideBoard = wideContext && tool === null;
+  const teamOverview = synth && panel === "overview" && detail?.mode === "team" && tool === null;
+  const [patchHost] = useState(() => document.createElement("div"));
+  const mountPatch = useCallback((node: HTMLElement | null) => { if (node && patchHost.parentNode !== node) node.append(patchHost); }, [patchHost]);
+  useLayoutEffect(() => {
+    setPanel(initialPanel); setTool(null);
+    if (initialPanel) setOpenedPanels(previous => new Set([...previous, initialPanel]));
+  }, [selection, initialPanel]);
   const [openedTools, setOpenedTools] = useState<Record<string, { editor: boolean; terminal: boolean }>>({});
   const [newWorkspace, setNewWorkspace] = useState<string | null>(null);
   const [workspacePending, setWorkspacePending] = useState(false);
@@ -206,7 +218,6 @@ export function ChatView({
     void load();
   }, [load, tick]);
   useEffect(() => {
-    if (id !== null) return;
     let current = true;
     void models()
       .then((found) => {
@@ -232,7 +243,7 @@ export function ChatView({
     return () => {
       current = false;
     };
-  }, [id, tick]);
+  }, [id]);
 
   const active = detail?.active_node_id != null;
   const running = detail?.state === "running" || detail?.state === "stopping";
@@ -240,10 +251,24 @@ export function ChatView({
   const outcome = chatOutcome(detail, events);
   const activeTeam = detail?.turns.find((turn) => turn.team?.control_node_id === detail.active_node_id)?.team;
   const mode = detail?.mode ?? newMode;
+  const selectedModel = detail ? `${detail.provider}/${detail.model}` : modelKey;
+  const modelDisabled = busy || !!submission.current || !!detail?.archived || (id !== null && !detail) || (id === null && created.current !== null);
+  const [modelNotice, setModelNotice] = useState("");
   const chooseModel = (value: string) => {
-    modelPicked.current = true;
-    setModelKey(value);
-    if (catalogue.find(choice => `${choice.provider}/${choice.model}` === value)?.thinking === false) setNewReasoning("none");
+    const choice = catalogue.find(choice => `${choice.provider}/${choice.model}` === value);
+    if (!choice || modelDisabled) return;
+    if (detail) {
+      void command(async () => {
+        const changed = await setChatModel(detail.id, choice.provider, choice.model, detail.rev);
+        if (!alive.current) return;
+        setDetail(previous => previous && previous.rev <= changed.rev ? { ...previous, ...changed } : previous);
+        setModelNotice(`Selected ${changed.model} for new turns. Running and already queued turns keep their model.`);
+      });
+    } else {
+      modelPicked.current = true;
+      setModelKey(value);
+      if (!choice.thinking) setNewReasoning("none");
+    }
   };
   const chooseMode = (value: string) => {
     const next = value === "team" ? "team" : "single";
@@ -265,9 +290,11 @@ export function ChatView({
   const patternScope = useMemo(() => detail?.state === "running" && !detail.stop_requested && activeTurn?.node.status === "running" && activeTurn.node.session_id
     ? { node: activeTurn.node.id, session: activeTurn.node.session_id } : null, [detail?.state, detail?.stop_requested, activeTurn?.node.id, activeTurn?.node.status, activeTurn?.node.session_id]);
   const thinkingValue: Reasoning | "" = active ? activeTurn?.node.reasoning ?? "" : detail?.reasoning ?? newReasoning;
-  // Which model's limits apply. An existing chat's are its own; a new one's come from the
-  // picker, split on the first `/` because a model id may contain more of them.
-  const thinkingModel = detail
+  // During work the read-only effort belongs to that recorded node, not the
+  // future-turn model picker. Model IDs can themselves contain `/`.
+  const thinkingModel = activeTurn
+    ? { provider: activeTurn.node.provider, model: activeTurn.node.model }
+    : detail
     ? { provider: detail.provider, model: detail.model }
     : modelKey
       ? { provider: modelKey.slice(0, modelKey.indexOf("/")), model: modelKey.slice(modelKey.indexOf("/") + 1) }
@@ -425,6 +452,8 @@ export function ChatView({
     <main
       ref={clockHost}
       className="chat-workspace"
+      data-synth-tool={synth ? tool ?? undefined : undefined}
+      data-synth-patch={teamOverview || undefined}
       aria-label={`${project.name} conversation`}
       onDragOver={event => { if (event.dataTransfer.types.includes("Files")) event.preventDefault(); }}
       onDrop={event => { if (event.dataTransfer.types.includes("Files")) { event.preventDefault(); void attach(Array.from(event.dataTransfer.files)); } }}
@@ -471,7 +500,7 @@ export function ChatView({
             {(["editor", "terminal"] as const).map((name) => <button key={name} className="button" data-chat-tool={name} aria-keyshortcuts={synth ? name === "editor" ? "Meta+E Control+E" : "Meta+` Control+`" : undefined} aria-pressed={tool === name} aria-current={synth && tool === name ? "true" : undefined} aria-controls={`chat-tool-${name}-${encodeURIComponent(detail.workspace_path)}`} onClick={() => {
               setTool(tool === name ? null : name);
               setOpenedTools((opened) => ({ ...opened, [detail.workspace_path]: { editor: false, terminal: false, ...opened[detail.workspace_path], [name]: true } }));
-            }}>{name === "editor" ? "Editor" : "Terminal"}</button>)}
+            }}>{synth && <Suspense fallback={null}><HeaderIcon name={name}/></Suspense>}{name === "editor" ? "Editor" : "Terminal"}</button>)}
             <button
               className="button"
               onClick={() => {
@@ -479,7 +508,7 @@ export function ChatView({
                 setEditingTitle(true);
               }}
             >
-              Rename
+              {synth && <Suspense fallback={null}><HeaderIcon name="rename"/></Suspense>}Rename
             </button>
             <button
               className="button"
@@ -494,7 +523,7 @@ export function ChatView({
                 })
               }
             >
-              {detail.archived ? "Restore chat" : "Archive"}
+              {synth && <Suspense fallback={null}><HeaderIcon name="archive"/></Suspense>}{detail.archived ? "Restore chat" : "Archive"}
             </button>
           </div>
         )}
@@ -546,8 +575,9 @@ export function ChatView({
       )}
       <div ref={body} className="chat-body" data-context={panel !== null && tool === null && !wideBoard} data-synth-board={wideBoard || undefined}>
       <div className="chat-conversation" hidden={wideBoard}>
+      <section ref={mountPatch} className="chat-team-overview" aria-label="Team patch bay area" hidden={!teamOverview}/>
       <div className="chat-panel" hidden={tool !== null}>
-          <Suspense fallback={<p>Loading conversation…</p>}><Tracker events={messageEvents} active={patternScope} ready={detail !== null} followRequest={followRequest} synth={synth} visible={tool === null && !wideBoard} pattern={panel === "overview"}
+          <Suspense fallback={<p>Loading conversation…</p>}><Tracker events={messageEvents} active={patternScope} ready={detail !== null} followRequest={followRequest} synth={synth} visible={tool === null && !wideBoard} pattern={panel === "overview" && detail?.mode !== "team"}
             eventKey={eventKey} renderEvent={(event, disclosure) => {
               const turn = detail?.turns.find(turn => turn.node.id === event.node_run_id);
               const followup = event.actor === "human" ? receipts.get(event.node_run_id) : undefined;
@@ -641,25 +671,25 @@ export function ChatView({
         <div className="chat-composer-bottom">
           <div className="chat-composer-options">
           <input ref={imagePicker} type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden aria-label="Choose images" onChange={event => { const files = Array.from(event.target.files ?? []); event.target.value = ""; void attach(files); }}/>
-          <button type="button" className="button" disabled={busy || readingImages || detail?.archived} onClick={() => imagePicker.current?.click()} title="Drop or paste images, or choose files. Up to 4 images, 5 MiB each.">Attach image</button>
-          {synth ? <details className="synth-execution-policy"><summary>Execution policy</summary><p>Tools are guarded to the checkout; this is not an OS sandbox. Publishing is controlled separately. This is not a guard-off control.</p></details> : <span
+          <button type="button" className="button chat-attach-image" aria-label="Attach image" disabled={busy || readingImages || detail?.archived} onClick={() => imagePicker.current?.click()} title="Drop or paste images, or choose files. Up to 4 images, 5 MiB each.">{synth ? <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" aria-hidden="true"><path d="m9 12 6-6a3 3 0 0 1 4 4l-9 9a5 5 0 0 1-7-7L13 2m-7 13 9-9"/></svg> : "Attach image"}</button>
+          {synth ? <details className="synth-execution-policy"><summary aria-label="Execution policy" title="Execution policy">ⓘ</summary><p>Tools are guarded to the checkout; this is not an OS sandbox. Publishing is controlled separately. This is not a guard-off control.</p></details> : <span
             className="faint"
             title="Tools are guarded to the checkout; this is not an OS sandbox. Publishing is controlled separately."
           >
             Checkout guard
           </span>}
-          {id === null && synth ? <Suspense fallback={<span>Model: {modelKey || "not selected"}</span>}><ComposerDeck label="Model" value={modelKey || "Choose a provider in Settings"}
+          {mode === "single" || id === null ? synth ? <Suspense fallback={<span>Model: {selectedModel || "not selected"}</span>}><ComposerDeck label="Model" value={selectedModel || "Choose a provider in Settings"}
             options={catalogue.map(choice => ({ id: `${choice.provider}/${choice.model}`, label: `${choice.model} · ${choice.provider}` }))}
-            disabled={busy || created.current !== null} onChange={chooseModel}/></Suspense> : id === null ? (
+            announceSelection={false} disabled={modelDisabled} onChange={chooseModel}/></Suspense> : (
             <span className="chat-select chat-model-select">
             <select
               aria-label="Model"
-              value={modelKey}
+              value={selectedModel}
               onChange={event => chooseModel(event.target.value)}
-              disabled={busy || created.current !== null}
+              disabled={modelDisabled}
             >
-              {!catalogue.length && (
-                <option value="">Choose a provider in Settings</option>
+              {!catalogue.some(choice => `${choice.provider}/${choice.model}` === selectedModel) && (
+                <option value={selectedModel}>{selectedModel || "Choose a provider in Settings"}</option>
               )}
               {catalogue.map((choice) => (
                 <option
@@ -672,9 +702,8 @@ export function ChatView({
             </select>
             <SelectChevron />
             </span>
-          ) : (
-            <span className="chat-model-name faint" title={detail?.model}>{detail?.model}</span>
-          )}
+          ) : null}
+          {detail && mode === "single" && <small className="chat-model-notice faint" title="Model selection applies to new turns. Running and already queued turns keep their model.">New turns only<span className="chat-model-announcement" role="status">{modelNotice}</span></small>}
           {mode === "single" ? <Suspense fallback={<span className="faint">Thinking…</span>}>
             <ThinkingSelect synth={synth}
               provider={thinkingModel?.provider ?? null}
@@ -690,10 +719,12 @@ export function ChatView({
                 });
               }}
             />
-          </Suspense> : <span className="faint">Team thinking · per-seat settings</span>}
+          </Suspense> : <span className="faint" title="Models and thinking are configured per seat in team settings.">Team settings · per-seat</span>}
           </div>
           <div className="chat-composer-actions">
           {soloActive && running && hasDraft && <button type="button" className="button synth-steer" disabled={busy || !canQueue} onClick={() => void queue("steer")}>Stop and steer</button>}
+          <div className="chat-send-group">
+          {synth && <Suspense fallback={null}><ActivityEqualizer active={detail?.id === id && active && running && !detail?.orphan_running}/></Suspense>}
           <button
             type={showStop ? "button" : "submit"}
             className="chat-send"
@@ -715,10 +746,12 @@ export function ChatView({
               (id === null ? !modelKey : detail === null)
             }
           >
+            {synth && <span>{actionLabel === "Send message" ? "Send" : actionLabel}</span>}
             {busy ? "…" : showStop
               ? <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1" fill="currentColor" /></svg>
               : <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M5 12h14m-6-6 6 6-6 6" /></svg>}
           </button>
+          </div>
           </div>
         </div>
         {(queuedSubmission.current || submission.current) && problem && <small className="faint">
@@ -732,7 +765,7 @@ export function ChatView({
             {activeTeam || mode === "team" ? "Use Work's exact team controls. A message cannot bypass build approval." : "Queue one follow-up after successful completion, or Stop and steer to drain this turn and start a new one. No instruction is injected into a running tool. Stop turn cancels the queued instruction."}
           </small>
         )}
-        {id === null && (!catalogue.length || modelError) && (
+        {mode === "single" && (!catalogue.length || modelError) && (
           <div className="chat-model-notice">
             <span>
               {modelError ??
@@ -752,8 +785,8 @@ export function ChatView({
         if (tool !== null || wideBoard) { pendingSteerFocus.current = true; revealComposer(); }
         else body.current?.querySelector<HTMLButtonElement>(".synth-steer:not(:disabled)")?.focus();
       }}/></Suspense>}
-      {synth && detail && <Suspense fallback={null}><PanelFrame host={body} active={panel !== null && tool === null && !wideBoard} /></Suspense>}
-      {detail && <ChatContext detail={detail} panel={panel} opened={openedPanels} hidden={tool !== null} synth={synth} onSelect={openPanel}
+      {synth && detail && <Suspense fallback={null}><PanelFrame host={body} active={panel !== null && tool === null && !wideBoard} panel={panel} /></Suspense>}
+      {detail && <ChatContext detail={detail} patchHost={patchHost} panel={panel} opened={openedPanels} hidden={tool !== null} synth={synth} onSelect={openPanel}
         status={LABELS[detail.state]} tick={tick} busy={busy} command={command} events={events} elapsed={elapsed} now={clock}
         onChanged={onChanged} onClose={closePanel} onFeedback={text => {
           setMessage(old => old ? `${old}\n\n${text}` : text);

@@ -40,6 +40,21 @@ fn fixture() -> (tempfile::TempDir, Store, i64, PoolEntry) {
     (dir, store, project.id, entry)
 }
 
+fn assert_protected(store: &Store, slot: &PoolEntry) {
+    assert_eq!(
+        store
+            .setup_pool_exclusions(std::slice::from_ref(slot))
+            .unwrap(),
+        vec![slot.path.clone()]
+    );
+}
+
+#[test]
+fn an_unpinned_slot_keeps_awts_normal_reuse_policy() {
+    let (_dir, store, _, slot) = fixture();
+    assert!(store.setup_pool_exclusions(&[slot]).unwrap().is_empty());
+}
+
 #[test]
 fn an_idle_chats_pinned_checkout_is_not_a_disposable_pool_slot() {
     let (_dir, mut store, project, mut slot) = fixture();
@@ -53,12 +68,12 @@ fn an_idle_chats_pinned_checkout_is_not_a_disposable_pool_slot() {
         })
         .unwrap();
     assert_eq!(chat.active_node_id, None);
-    assert!(store.check_setup_pool(&[slot.clone()]).is_err());
+    assert_protected(&store, &slot);
     store.archive_chat(chat.id, true).unwrap();
-    assert!(store.check_setup_pool(&[slot.clone()]).is_err());
-    // An external lease protects the same slot from AWT's normal reuse.
+    assert_protected(&store, &slot);
+    // Keep the exclusion even if this external holder releases its lease.
     slot.lease_holder = Some("retained work".into());
-    assert!(store.check_setup_pool(&[slot]).is_ok());
+    assert_protected(&store, &slot);
 }
 
 #[test]
@@ -77,7 +92,7 @@ fn planning_before_the_first_node_still_protects_a_pool_slot() {
         .set_run_supervisor(run.id, i64::from(std::process::id()))
         .unwrap();
     assert!(store.node_runs(run.id).unwrap().is_empty());
-    assert!(store.check_setup_pool(&[slot]).is_err());
+    assert_protected(&store, &slot);
 }
 
 #[tokio::test]
@@ -215,7 +230,7 @@ fn a_blocked_node_keeps_its_pool_slot_and_project_reservation() {
         .attach_worktree(node.id, &slot.path, None, None)
         .unwrap();
     store.set_node_status(node.id, NodeStatus::Blocked).unwrap();
-    assert!(store.check_setup_pool(&[slot]).is_err());
+    assert_protected(&store, &slot);
     let (refused, started) = store
         .request_workspace_setup(project, &dir.path().join("main"), "must-wait", "")
         .unwrap();

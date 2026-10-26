@@ -22,7 +22,8 @@ export async function checkShell() {
   }
   if (root.dataset.synth === 'true' && body?.dataset.context === 'true' && body.dataset.synthStacked === 'false') {
     const panel = document.querySelector('#chat-context');
-    if (Math.abs(panel.getBoundingClientRect().height - body.getBoundingClientRect().height) > 1) throw new Error('Side-by-side panel lost workspace height');
+    const workspace = document.querySelector('.chat-workspace').getBoundingClientRect(), rack = panel.getBoundingClientRect();
+    if (Math.abs(rack.top - workspace.top) > 1 || Math.abs(rack.bottom - workspace.bottom) > 1) throw new Error('Side-by-side rack must span the workspace beside the session header');
   }
   if (body?.dataset.synthBoard === 'true') {
     if (!document.querySelector('.chat-conversation')?.hidden) throw new Error('Board left the conversation visible');

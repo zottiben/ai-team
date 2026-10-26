@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 import type { RunEvent } from "../../api";
-import { BUCKET_MS, compactionEvidence, completedRates, contextTrace, measurements, observedRates, RECEIPTS, type Measurement } from "./telemetry";
+import { BUCKET_MS, compactionEvidence, completedRates, contextTrace, measurements, observedRates, RECEIPTS, tokenTrace, type Measurement } from "./telemetry";
 
 const BASE = Date.UTC(2026, 0, 1);
 function usage(id: number, elapsed: number, output: number | null, phase: "live" | "message_end" | "step" = "live", extra: Partial<RunEvent> = {}): Measurement {
@@ -11,6 +11,66 @@ function usage(id: number, elapsed: number, output: number | null, phase: "live"
 function compaction(id: number, phase: "started" | "completed" | "aborted"): Measurement {
   return { ...usage(id, id * 1000, null), telemetry: { kind: "compaction", phase, sequence: 1, reason: "threshold", tokens_before: 120, estimated_tokens_after: 50 } };
 }
+
+it("plots live input, output and context without adding observations to accounting totals", () => {
+  const trace = tokenTrace([usage(1, 0, 10), usage(2, 1000, 30), usage(3, 2000, 30, "step")]);
+  expect(trace.input).toEqual([100, 100, 100]);
+  expect(trace.output).toEqual([10, 30, 30]);
+  expect(trace.context).toEqual([120, 120, 120]);
+  expect(trace.at).toBe(new Date(BASE + 2000).toISOString());
+});
+
+it("leaves initial live zeros and invalid counts unknown but preserves completed zero", () => {
+  const zero = usage(1, 0, 0);
+  if (zero.telemetry.kind !== "usage") throw Error("Expected usage fixture");
+  zero.telemetry.tokens.input = 0; zero.telemetry.tokens.context = 0;
+  const invalid = usage(3, 2000, -1);
+  if (invalid.telemetry.kind !== "usage") throw Error("Expected usage fixture");
+  invalid.telemetry.tokens.input = Number.MAX_SAFE_INTEGER + 1; invalid.telemetry.tokens.context = NaN;
+  const end = { ...zero, id: 2, telemetry: { ...zero.telemetry, phase: "message_end" as const } };
+  const trace = tokenTrace([zero, end, invalid]);
+  expect(trace.input).toEqual([null, 0, null]);
+  expect(trace.output).toEqual([null, 0, null]);
+  expect(trace.context).toEqual([null, 0, null]);
+});
+
+it("exposes reported cache reads and writes without estimating missing values or adding totals", () => {
+  const live = usage(1, 0, 10), end = usage(2, 1000, 20, "step"), missing = usage(3, 2000, 30);
+  if (live.telemetry.kind !== "usage" || end.telemetry.kind !== "usage" || missing.telemetry.kind !== "usage") throw Error("Expected usage fixtures");
+  missing.telemetry.tokens.cache_read = null; missing.telemetry.tokens.cache_write = -1;
+  const trace = tokenTrace([live, end, missing], "levels");
+  expect(trace.cache_read).toEqual([20, 20, null]);
+  expect(trace.cache_write).toEqual([null, 0, null]);
+  expect(live.telemetry.tokens.cache_read).toBe(20);
+});
+
+it("breaks live scope lines at response, session and process boundaries", () => {
+  const nextResponse = usage(2, 1000, 20); nextResponse.telemetry.sequence = 2;
+  for (const next of [nextResponse, usage(2, 1000, 20, "live", { session_id: "next" }), usage(2, 1000, 20, "live", { observation: null }),
+    usage(2, 1000, 20, "live", { observation: { clock_id: "next-reader", elapsed_ms: 1000, at: new Date(BASE + 1000).toISOString() } })]) {
+    expect(tokenTrace([usage(1, 0, 10), next]).output).toEqual([10, null, 20]);
+  }
+  expect(tokenTrace([usage(1, 0, 10, "live", { observation: null })]).at).toBeNull();
+});
+
+it("connects reported response levels without summing them, but retains unknown reader and compaction gaps", () => {
+ const next=usage(2,1000,5);next.telemetry.sequence=2;
+ expect(tokenTrace([usage(1,0,40),next], "levels").output).toEqual([40,5]);
+ expect(tokenTrace([usage(1,0,40),{...next,session_id:"other"}], "levels").output).toEqual([40,null,5]);
+ expect(tokenTrace([usage(1,0,40),compaction(3,"completed"),next], "levels").output).toContain(null);
+ expect(tokenTrace([usage(1,0,40),usage(2,1,0)], "levels").output).toEqual([40,null]);
+ next.telemetry.sequence=null;expect(tokenTrace([usage(1,0,40),next], "levels").output).toEqual([40,5]);
+});
+
+it("does not draw compaction estimates as live context and bounds every channel", () => {
+  const trace = tokenTrace([usage(1, 0, 10), compaction(2, "started"), compaction(3, "completed")]);
+  expect(trace.context.at(-1)).toBeNull();
+  expect(trace.context).not.toContain(50);
+  expect(trace.at).toBeNull();
+  const bounded = tokenTrace(Array.from({ length: RECEIPTS + 100 }, (_, i) => usage(i, i, i + 1)));
+  for (const values of [bounded.input, bounded.output, bounded.context, bounded.cache_read, bounded.cache_write]) expect(values).toHaveLength(120);
+  expect(tokenTrace([])).toEqual({ input: [], output: [], context: [], cache_read: [], cache_write: [], at: null });
+});
 
 it("bounds the exact-node view and never replaces the first immutable receipt on replay", () => {
   const first = usage(1, 0, 1);

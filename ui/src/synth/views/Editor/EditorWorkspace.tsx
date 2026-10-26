@@ -138,7 +138,7 @@ export default function EditorWorkspace({
   );
   const dirty = current !== null && current.text !== current.saved;
 
-  return <Plate tone="night" radius={22} className="synth-editor" data-synth="true">
+  return <Plate tone="night" radius={22} className="synth-editor">
     <header className="synth-editor__toolbar">
       <span className="synth-silk">Editor</span>
       <span className="synth-editor__badge">Operator</span>

@@ -51,9 +51,11 @@ it("synth tokens cannot leak into or redefine the legacy palette", () => {
   const definitions = [...css.matchAll(/(--[a-z0-9-]+):/g)].map(m => m[1]);
   expect(css.replace(/\/\*[\s\S]*?\*\//g, "").trim().startsWith('[data-synth="true"] {')).toBe(true);
   const blocks = [...css.replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/([^{}]+)\{[^{}]+\}/g)];
-  expect(blocks).toHaveLength(2);
+  expect(blocks.length).toBeGreaterThanOrEqual(2);
   for (const block of blocks) {
-    for (const selector of block[1]!.split(",")) expect(selector.trim()).toMatch(/\[data-synth="true"\]$/);
+    // A selector list inside :is() is still guarded by the trailing opt-in attribute.
+    const selectors = block[1]!.replace(/:is\([^)]*\)/g, "[data-synth-palette]").split(",");
+    for (const selector of selectors) expect(selector.trim()).toMatch(/\[data-synth="true"\]$/);
   }
   expect(definitions.filter(token => legacy.has(token))).toEqual([]);
   expect(definitions.length).toBeGreaterThan(100);

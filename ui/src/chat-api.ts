@@ -93,6 +93,10 @@ export function createChat(input: {
   return post("/chats", input);
 }
 
+export function setChatModel(id: number, provider: string, model: string, expectRevision: number): Promise<Chat> {
+  return post(`/chats/${id}/model`, { provider, model, expect_revision: expectRevision });
+}
+
 export function setChatThinking(id: number, reasoning: Chat["reasoning"], expectRevision: number): Promise<Chat> {
   return post(`/chats/${id}/thinking`, { reasoning, expect_revision: expectRevision });
 }

@@ -1,7 +1,7 @@
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { bracketMatching, indentOnInput, syntaxHighlighting, defaultHighlightStyle } from "@codemirror/language";
 import { lintGutter } from "@codemirror/lint";
-import { Compartment, EditorState, type Extension } from "@codemirror/state";
+import { Compartment, EditorState, Prec, type Extension } from "@codemirror/state";
 import { EditorView, highlightActiveLine, keymap, lineNumbers } from "@codemirror/view";
 
 /**
@@ -148,8 +148,9 @@ export function extensionsFor(
       if (update.docChanged) onChange(update.state.doc.toString());
     }),
     // Colours come from the token layer, so the editor repaints with the window rather
-    // than staying dark when it goes light.
-    EditorView.theme({
+    // than staying dark when it goes light. The base is lower precedence than the
+    // replaceable skin, including after a retained editor reconfigures its theme.
+    Prec.lowest(EditorView.theme({
       "&": { backgroundColor: "transparent", color: "var(--text-primary-default)", height: "100%" },
       ".cm-gutters": {
         backgroundColor: "transparent",
@@ -173,7 +174,7 @@ export function extensionsFor(
         font: "var(--text-sm) var(--font-mono)",
       },
       "&.cm-focused": { outline: "none" },
-    }),
+    })),
     themeSlot.of(theme),
   ];
 }

@@ -9,8 +9,8 @@ import type { PatchModule } from "./evidence";
 export function Inspector({ module, events }: { module: PatchModule | null; events: RunEvent[] }) {
   const node = module && module.kind !== "draft" ? module.node : null;
   const history = useMemo(() => node ? measurements(events, node.id) : [], [events, node?.id]);
-  if (!module) return <p className="faint">Select a recorded module to inspect its evidence. A missing selection is not replaced by another node.</p>;
-  return <Plate heading={moduleLabel(module)} tone="night" aria-label="Patch inspector">
+  if (!module) return <Plate heading="Inspector" tone="lavender"><p className="synth-muted">Select a recorded module to inspect its evidence. A missing selection is not replaced by another node.</p></Plate>;
+  return <Plate heading={moduleLabel(module)} tone="lavender" aria-label="Patch inspector">
     {module.kind === "draft" ? <dl>
       <dt>Build status</dt><dd>{module.slice.build_status}</dd><dt>Lease</dt><dd>{module.slice.lease_state}</dd>
       <dt>Checkout</dt><dd className="mono">{module.slice.worktree_path ?? "Unrecorded"}</dd>
@@ -31,6 +31,6 @@ export function Inspector({ module, events }: { module: PatchModule | null; even
       {module.seat && <><p>{module.seat.activity?.summary ?? "No recorded activity"}</p><p className="mono">{module.seat.activity?.detail}</p><p>{module.seat.said}</p></>}
       <AgentTelemetry history={history} node={module.node.id}/>
     </>}
-    <p className="faint">Recorded evidence, not a mutable workflow. A candidate or recorded commit does not establish publication or approval of the current checkout.</p>
+    <p className="synth-muted">Recorded evidence, not a mutable workflow. A candidate or recorded commit does not establish publication or approval of the current checkout.</p>
   </Plate>;
 }

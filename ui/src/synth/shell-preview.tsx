@@ -1,9 +1,11 @@
 // Vite-only real-shell fixture. No operator storage, auth, SSE, PTY or API transport.
 import { createRoot } from "react-dom/client";
 import type { ChatDetail } from "../chat-api";
+import type { WorkspaceSetupReceipt } from "../chat-workspace-api";
 import type { Project, RunEvent } from "../api";
 import "../styles.css";
 import { fixtureActivity } from "./tracker-fixture";
+import { fixtureModels, globalFixture } from "./global-fixture";
 
 class FixtureStorage implements Storage {
   constructor(private values = new Map<string, string>()) {}
@@ -15,8 +17,16 @@ class FixtureStorage implements Storage {
   setItem(key: string, value: string) { this.values.set(key, String(value)); }
 }
 const params = new URLSearchParams(location.search);
+const checkoutReceipt: WorkspaceSetupReceipt | null = params.get("checkout") === "inspection" ? {
+  id: 5, project_id: 1, request_id: "fixture-setup", repo_path: "/fixture/demo", branch: "feature/retained-work", workspace_path: null,
+  state: "inspection", attempted: true, rev: 4, detail: "Synthetic interrupted setup. Inspect the receipt before starting more work. No process was launched by this fixture.", steps: [],
+} : null;
 const theme = params.get("theme") === "light" ? "light" : "dark";
 const synth = params.get("synth") !== "false";
+const visualState = params.get("visual-state");
+let visualLoading = visualState === "loading";
+const waitingLoads = new Set<() => void>();
+export function finishVisualLoading() { visualLoading = false; for (const resume of waitingLoads) resume(); waitingLoads.clear(); }
 document.documentElement.dataset.theme = theme;
 document.documentElement.dataset.synth = String(synth);
 Object.defineProperty(window, "localStorage", { configurable: true, value: new FixtureStorage(new Map([
@@ -41,7 +51,7 @@ const teamOverview = params.get("team-overview") === "true" ? (await import("./t
 const overview = teamOverview ?? (params.get("overview") === "true" ? (await import("./overview-fixture")).fixtureOverview() : null);
 if (overview) { chat.turns = overview.turns; events.push(...overview.events); }
 if (teamOverview) Object.assign(chat, teamOverview.detail);
-export const tools = params.get("tools") === "true" ? (await import("./tools-fixture")).toolsFixture(params.get("tool-input") === "true") : null;
+export const tools = params.get("tools") === "true" ? (await import("./tools-fixture")).toolsFixture(params.get("tool-input") === "true", params.get("tools-rich") === "true") : null;
 const reviewFixture = params.get("review") === "true" ? await import("./review-fixture") : null;
 const review = reviewFixture?.fixtureReview() ?? null;
 const teamReviews = review && params.get("team-review") === "true" ? (await import("./team-review-fixture")).fixtureTeamReviews() : null;
@@ -52,7 +62,7 @@ export function replaceTeamReview() {
   review.checkout = { ...review.checkout, workspace_epoch: review.changes.workspace_epoch };
   chat.rev++; tickers.forEach(tick => tick());
 }
-const boardFixture = params.get("board") === "true" ? (await import("./board-fixture")).fixtureBoard(params.get("board-empty-active") === "true") : null;
+const boardFixture = params.get("board") === "true" || params.get("global") === "true" ? (await import("./board-fixture")).fixtureBoard(params.get("board-empty-active") === "true") : null;
 export function advanceBoard() {
   if (!boardFixture) throw Error("Board fixture not selected");
   boardFixture.advance(); chat.rev++; tickers.forEach(tick => tick());
@@ -69,6 +79,15 @@ export function setBoardFlags(flags: { archived?: boolean; frozen?: boolean }) {
 }
 let reviewRevision = 0, previewId = 100;
 export const fixtureCommands: { method: string; path: string }[] = [];
+const globalRead = params.get("global") === "true" ? globalFixture(project, chat) : null;
+export function advanceOverviewTelemetry() {
+  if (!overview || teamOverview) throw new Error("Only the isolated single-agent Overview fixture can change its telemetry.");
+  const at = new Date().toISOString();
+  events.push({ id: (events.at(-1)?.id ?? 0) + 1, node_run_id: 1, actor: "assistant", kind: "note", summary: "Synthetic live token receipt", message: null, thinking: [], at,
+    session_id: "fixture-session", telemetry_only: true, observation: { at, clock_id: "fixture-reader", elapsed_ms: 8000 },
+    telemetry: { kind: "usage", phase: "live", sequence: 3, tokens: { input: 350, output: 75, cache_read: 950, cache_write: 0, context: 1300, context_source: "complete_parts" } } });
+  chat.rev++; tickers.forEach(tick => tick());
+}
 export function advanceTeamTelemetry() {
   if (!teamOverview) throw new Error("Only the isolated two-seat fixture can change its telemetry.");
   const at = new Date().toISOString();
@@ -104,6 +123,12 @@ if (activityMotion) {
   turn.node = { ...turn.node, provider: chat.provider, model: chat.model, status: "running", session_id: "fixture-session", started_at: now };
   chat.turns = [turn]; chat.active_node_id = turn.node.id; chat.state = "running";
 }
+export function setScopeState(state: ChatDetail["state"], retainNode = false) {
+  if (!overview) throw Error("Scope state requires the isolated overview fixture");
+  chat.state = state; chat.stop_requested = state === "stopping";
+  chat.active_node_id = state === "running" || state === "stopping" || retainNode ? chat.turns.at(-1)?.node.id ?? null : null;
+  chat.rev++; tickers.forEach(tick => tick());
+}
 export function setActivityRunning(running: boolean) {
   if (!activityMotion) throw Error("Only the isolated activity-motion fixture can change its synthetic turn");
   const turn = chat.turns[0]!;
@@ -113,6 +138,25 @@ export function setActivityRunning(running: boolean) {
   chat.state = running ? "running" : "idle"; chat.rev++; tickers.forEach(tick => tick());
 }
 events.push(...fixtureActivity(activityCount, events.at(-1)?.id ?? 0, activityMode));
+if (params.get("long") === "true") {
+  project.name = "SyntheticProjectWithAnIntentionallyUnbrokenLongNameForLayoutReview";
+  chat.title = "Synthetic visual audit — retain this long conversation title without hiding its context or overlapping the header actions. ".repeat(2);
+}
+if (visualState === "empty") { events.length = 0; chat.turns = []; chat.team_builds = []; chat.active_node_id = null; chat.state = "empty"; }
+if (visualState === "archived") chat.archived = true;
+if (visualState === "stopping" && activityMotion) { chat.stop_requested = true; chat.state = "stopping"; }
+if (visualState === "failed") {
+  chat.turns = [(await import("./work-fixture")).fixtureRuns()[2]!]; chat.active_node_id = null; chat.state = "failed";
+  chat.recovery_error = "Synthetic failure for visual inspection — no process was started.";
+}
+if (visualState === "blocked" && teamOverview) {
+  const turn = chat.turns[0]!; turn.run.status = "blocked"; turn.node.status = "failed";
+  turn.team!.phase = "blocked"; turn.team!.quiescent = true; turn.team!.reason = "Synthetic blocker — inspect before continuing.";
+  for (const member of turn.members) if (member.node.status === "running") member.node.status = "failed";
+  for (const seat of teamOverview.live.seats) { seat.live = false; seat.supervised = false; if (seat.status === "running") seat.status = "failed"; }
+  for (const slice of chat.team_builds[0]!.slices) if (slice.build_status === "building") { slice.build_status = "blocked"; slice.reason = turn.team!.reason; }
+  chat.active_node_id = null; chat.state = "team_blocked";
+}
 export function appendActivity() {
   events.push(...fixtureActivity(1, events.at(-1)?.id ?? 0, activityMode));
   chat.rev += 1;
@@ -133,6 +177,9 @@ window.fetch = async (input, init) => {
   const request = input instanceof Request ? input : null;
   const url = new URL(request?.url ?? String(input), location.href), method = init?.method ?? request?.method ?? "GET";
   const json = (data: unknown, status = 200) => new Response(JSON.stringify(data), { status, headers: { "Content-Type": "application/json" } });
+  const panelRead = method === "GET" && ["/api/chats/1/overview", "/api/chats/1/overview/map", "/api/chats/1/changes", "/api/chats/1/checkout", "/api/chats/1/plan", "/api/terminals", "/api/tree"].includes(url.pathname);
+  if (panelRead && visualLoading) await new Promise<void>(resolve => waitingLoads.add(resolve));
+  if (panelRead && visualState === "error") return json({ error: "Synthetic unavailable state — no network or process was used." }, 503);
   if (method !== "GET") fixtureCommands.push({ method, path: url.pathname });
   if (review && method !== "GET") reviewRequests.push({ method, path: url.pathname });
   if (boardFixture && method !== "GET") boardRequests.push({ method, path: url.pathname });
@@ -158,7 +205,22 @@ window.fetch = async (input, init) => {
     const result = await tools.request(url, method, body && typeof body === "object" && !Array.isArray(body) ? body as Record<string, unknown> : null);
     if (result) return json(result.data, result.status);
   }
+  if (checkoutReceipt && method === "POST" && url.pathname === "/api/chat-workspace-setups/5") {
+    const body: unknown = JSON.parse(typeof init?.body === "string" ? init.body : request ? await request.text() : "null");
+    if (!body || typeof body !== "object" || !("project" in body) || body.project !== "demo" || !("action" in body) || body.action !== "inspect" || !("revision" in body) || body.revision !== checkoutReceipt.rev) return json({ error: "Invalid synthetic inspection" }, 400);
+    Object.assign(checkoutReceipt, { state: "failed", rev: checkoutReceipt.rev + 2, detail: "Synthetic inspection complete. Nothing was acquired, reset or run." });
+    return json(checkoutReceipt);
+  }
+  if (method === "POST" && url.pathname === "/api/chats/1/model" && globalRead) {
+    const input = JSON.parse(typeof init?.body === "string" ? init.body : "null");
+    const choice = fixtureModels.models.find(choice => choice.provider === input?.provider && choice.model === input?.model);
+    if (!choice || input.expect_revision !== chat.rev) return json({ error: "Synthetic stale model selection" }, 400);
+    Object.assign(chat, { provider: choice.provider, model: choice.model, reasoning: choice.thinking ? chat.reasoning : "none", rev: chat.rev + 1 });
+    return json(chat);
+  }
   if (method !== "GET") return json({ error: "Fixture only: backend mutations and processes are disabled." }, 403);
+  const globalData = globalRead?.(url);
+  if (globalData !== undefined) return json(globalData);
   switch (url.pathname) {
     case "/api/projects": return json([project]);
     case "/api/chats": return json([chat]);
@@ -170,9 +232,15 @@ window.fetch = async (input, init) => {
     case "/api/chats/1/checkout": return review ? json(review.checkout) : json({ error: "Review fixture not selected" }, 404);
     case "/api/chats/1/workspace": return json({ requests: [] });
     case "/api/chats/1/plan": return json(boardFixture?.read() ?? { chat_id: 1, project_id: 1, revision: 0, bundle: null });
-    case "/api/chat-workspace-setups": return json([]);
+    case "/api/chat-workspace-setups": return json(checkoutReceipt ? [checkoutReceipt] : []);
+    case "/api/chat-workspaces": return json([
+      { path: "/fixture/demo", name: "Main checkout", branch: "main", unavailable: null },
+      { path: "/fixture/worktrees/a-very-long-but-existing-checkout-with-retained-work", name: "Retained work", branch: "feature/retained-work", unavailable: null, processes: [{ pid: 1, name: "synthetic-shell" }] },
+      { path: "/fixture/worktrees/protected", name: "Protected checkout", branch: "feature/protected", unavailable: "Synthetic retained lease; inspect without resetting" },
+    ]);
     case "/api/doctor": return json({ needs_setup: false });
     case "/api/notifications": return json({ items: [], unread: 0 });
+    case "/api/models": return json(fixtureModels);
     case "/api/models/thinking": return json({ provider: "openai", model: "fixture-model", levels: ["none", "low", "medium", "high"], fallback_reason: null });
     case "/api/update": return json({ current: "0.0.0-fixture", latest: "0.0.1-fixture", method: "release", can_update: false, update_available: true, blocked: "Installation is disabled in this fixture.", targets: [], approval: null, state: "idle", checked_at: null, release_url: "about:blank" });
     default: return json({ error: `This fixture has no data for ${url.pathname}. No network request was made.` }, 404);

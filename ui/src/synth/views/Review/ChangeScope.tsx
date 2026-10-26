@@ -38,6 +38,6 @@ export function ChangeScope({ files, viewed, onSelect }: {
         onClick={() => onSelect(file.path)}>{index + 1}</button>)}</div>
     </Lcd>}
     <footer>{files.length} files · {hunks} displayed hunks · {read}/{files.length} viewed</footer>
-    <p className="faint synth-review-explainer">Four line-count bins per displayed hunk; heights cap at 24px. No bars means no displayed additions or deletions—not an unchanged file. Viewed is personal review progress, never approval.</p>
+    <p className="synth-sr-only">Four line-count bins per displayed hunk; heights cap at 24px. No bars means no displayed additions or deletions—not an unchanged file. Viewed is personal review progress, never approval.</p>
   </Plate>;
 }

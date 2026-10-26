@@ -1,8 +1,8 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 
-import { terminalTheme } from "./terminal-theme";
+import { onThemeChange, terminalTheme } from "./terminal-theme";
 
 const here = import.meta.dirname;
 const css = readFileSync(join(here, "tokens.css"), "utf8");
@@ -39,6 +39,16 @@ it("resolves the theme it is given rather than a palette of its own", () => {
   // Nothing is invented for a token that has not been applied.
   expect(theme.red).toBeUndefined();
   root.remove();
+});
+
+it("repaints retained terminal canvases when only the palette changes", async () => {
+  const changed = vi.fn();
+  const stop = onThemeChange(changed);
+  document.documentElement.dataset.synthPalette = "gruvbox";
+  await Promise.resolve();
+  expect(changed).toHaveBeenCalledTimes(1);
+  stop();
+  delete document.documentElement.dataset.synthPalette;
 });
 
 it("keeps every terminal colour out of the components", () => {

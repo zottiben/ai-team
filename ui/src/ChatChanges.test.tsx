@@ -29,6 +29,19 @@ async function openReview() {
   fireEvent.click(await screen.findByRole("button", { name: "Review S1" }));
   await screen.findByText("verified code");
 }
+it.each([false, true])("does not claim to still read changes after inspection failed (Synth %s)", async synth => {
+  act(() => setSynth(synth));
+  service.chatChanges.mockRejectedValue(new Error("Synthetic inspection failure"));
+  render(<ChatChanges {...props}/>);
+  await screen.findByRole("alert");
+  expect(screen.queryByText("Reading actual Git changes…")).toBeNull();
+  expect(screen.getByText("Changes unavailable. Refresh to retry.")).toBeTruthy();
+  service.chatChanges.mockResolvedValue(changes());
+  fireEvent.click(screen.getByRole("button", { name: "Refresh changes" }));
+  await screen.findByText(/Working checkout · main/);
+  expect(screen.queryByText("Changes unavailable. Refresh to retry.")).toBeNull();
+  expect(screen.queryByRole("alert")).toBeNull();
+});
 it("shows real working changes separately from a chat's returned-worktree draft", async () => {
   render(<ChatChanges {...props} />);
   await screen.findByText("solo.txt");

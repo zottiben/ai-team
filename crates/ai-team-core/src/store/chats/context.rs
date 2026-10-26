@@ -6,22 +6,24 @@ use crate::{Error, Result, Store};
 
 const CONTEXT_BYTES: usize = 16_000;
 
-/// Keep solo and team sessions separate. Any applied checkout handoff is a session
-/// boundary, even if the operator returns to the old path without a turn in between.
+/// Keep solo and team sessions separate, and never resume across providers. Any
+/// applied checkout handoff is a session boundary, even if the operator returns
+/// to the old path without a turn in between.
 pub(super) fn previous_session(
     conn: &Connection,
     chat: i64,
     team: bool,
     workspace: &str,
+    provider: crate::Provider,
 ) -> Result<(Option<String>, i64)> {
     Ok(conn.query_row(
-        "SELECT CASE WHEN n.session_retired_at IS NULL AND n.worktree_path = ?3
+        "SELECT CASE WHEN n.session_retired_at IS NULL AND n.worktree_path = ?3 AND n.provider = ?4
             AND NOT EXISTS(SELECT 1 FROM chat_workspace_request w
                 WHERE w.chat_id = t.chat_id AND w.state = 'applied' AND w.after_node_id >= n.id)
             THEN n.session_id END, n.stream_cursor
          FROM chat_turn t JOIN node_run n ON n.id = t.node_id
          WHERE t.chat_id = ?1 AND EXISTS(SELECT 1 FROM chat_team_run tr WHERE tr.run_id = t.run_id) = ?2
-         ORDER BY t.run_id DESC LIMIT 1", params![chat, team, workspace],
+         ORDER BY t.run_id DESC LIMIT 1", params![chat, team, workspace, provider],
         |row| Ok((row.get(0)?, row.get(1)?)),
     ).optional()?.unwrap_or((None, 0)))
 }

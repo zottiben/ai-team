@@ -35,6 +35,63 @@ fn setup() -> (tempfile::TempDir, Store, TeamControl, Arc<Ownership>) {
 }
 
 #[test]
+fn a_drained_plan_awaiting_approval_can_update_without_losing_its_ownership() {
+    let (_dir, mut store, mut control, owner) = setup();
+    assert!(store.check_update_idle().is_err());
+    store
+        .settle_chat_team_member(&control, control.node_id, NodeStatus::Done, None)
+        .unwrap();
+    store
+        .park_chat_team_planning(
+            &mut control,
+            ChatTeamPhase::AwaitingApproval,
+            "Review the saved plan",
+        )
+        .unwrap();
+    drop(owner);
+    let before = store.chat(control.chat_id).unwrap();
+    store
+        .check_update_idle()
+        .expect("human approval is pending, not a live execution");
+    assert_eq!(
+        store.chat(control.chat_id).unwrap().active_node_id,
+        before.active_node_id
+    );
+    assert_eq!(store.chat(control.chat_id).unwrap().rev, before.rev);
+    for (change, restore) in [
+        (
+            "UPDATE chat_team_run SET quiescent=0",
+            "UPDATE chat_team_run SET quiescent=1",
+        ),
+        (
+            "UPDATE chat_team_run SET child_journal=0",
+            "UPDATE chat_team_run SET child_journal=1",
+        ),
+        (
+            "UPDATE chat_team_run SET supervisor_pid=123",
+            "UPDATE chat_team_run SET supervisor_pid=NULL",
+        ),
+        (
+            "UPDATE chat_team_run SET phase='blocked'",
+            "UPDATE chat_team_run SET phase='awaiting_approval'",
+        ),
+        (
+            "UPDATE node_run SET pi_pid=123",
+            "UPDATE node_run SET pi_pid=NULL",
+        ),
+        (
+            "UPDATE node_run SET status='running'",
+            "UPDATE node_run SET status='done'",
+        ),
+    ] {
+        store.db().conn().execute_batch(change).unwrap();
+        assert!(store.check_update_idle().is_err(), "{change}");
+        store.db().conn().execute_batch(restore).unwrap();
+        store.check_update_idle().unwrap();
+    }
+}
+
+#[test]
 fn a_stale_callback_in_the_same_process_cannot_park_or_release_the_new_phase() {
     let (_dir, mut store, mut control, _owner) = setup();
     let mut stale = control;

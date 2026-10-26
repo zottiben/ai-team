@@ -34,6 +34,16 @@ it("separates existing checkout selection from setup and preserves its unsent br
  expect(screen.queryByRole("region",{name:"Chat checkout"})).toBeNull();
 });
 
+it("opens checkout as a modal dialog and returns focus through its icon close button",async()=>{
+ const input=props();render(<ChatWorkspace {...input}/>);
+ const trigger=screen.getByRole("button",{name:"Choose checkout"});trigger.focus();fireEvent.click(trigger);
+ const dialog=await screen.findByRole("dialog",{name:"Chat checkout"});
+ expect(dialog.getAttribute("aria-modal")).toBe("true");
+ const close=await screen.findByRole("button",{name:"Close checkout"});expect(close.textContent).toBe("×");
+ fireEvent.click(close);expect(screen.queryByRole("dialog",{name:"Chat checkout"})).toBeNull();expect(document.activeElement).toBe(trigger);
+ expect(api.startWorkspaceSetup).not.toHaveBeenCalled();expect(api.approveWorkspace).not.toHaveBeenCalled();
+});
+
 it("selects a new chat checkout without dispatching or creating a request",async()=>{
  const input=props();render(<ChatWorkspace {...input}/>);
  fireEvent.click(screen.getByRole("button",{name:"Choose checkout"}));
@@ -110,6 +120,39 @@ it("reconciles a lost refusal response without replaying acquisition or discardi
  expect(screen.getByRole("textbox",{name:"Unsent message"})).toHaveProperty("value","Clone the plan and pick up the next deferred task");
  expect(api.startWorkspaceSetup).toHaveBeenCalledTimes(1);
  expect(api.commandWorkspaceSetup).not.toHaveBeenCalled();
+});
+
+it("exposes project setup inspection from existing chats without offering another acquisition",async()=>{
+ const blocked={id:5,project_id:2,request_id:"blocked",repo_path:"/repo",branch:"",workspace_path:null,state:"inspection",attempted:true,detail:"Protected pool slot; acquisition was refused",rev:4,steps:[]};
+ api.workspaceSetups.mockResolvedValue([blocked]);
+ api.commandWorkspaceSetup.mockImplementation(async()=>{const result={...blocked,state:"failed",rev:6,detail:"Inspection completed; no acquisition replayed"};api.workspaceSetups.mockResolvedValue([result]);return result;});
+ const input={...props(),detail};render(<DraftComposer input={input}/>);
+ await screen.findByText("Worktree setup needs inspection");
+ await waitFor(()=>expect(screen.getByRole("button",{name:"Send fixture"})).toHaveProperty("disabled",true));
+ fireEvent.click(screen.getByRole("button",{name:"Choose checkout"}));
+ const inspect=await screen.findByRole("button",{name:"Inspect stopped setup 5"});
+ expect(screen.queryByRole("button",{name:"Acquire and set up worktree"})).toBeNull();
+ fireEvent.click(inspect);
+ await screen.findByText("Inspection completed; no acquisition replayed");
+ await waitFor(()=>expect(screen.getByRole("button",{name:"Send fixture"})).toHaveProperty("disabled",false));
+ expect(api.commandWorkspaceSetup).toHaveBeenCalledWith("demo",blocked,"inspect");
+ expect(api.startWorkspaceSetup).not.toHaveBeenCalled();
+ expect(screen.getByRole("textbox",{name:"Unsent message"})).toHaveProperty("value","Clone the plan and pick up the next deferred task");
+});
+
+it("keeps checkout approval separate from inspection while both requests are pending",async()=>{
+ const request={id:8,chat_id:1,after_node_id:null,from_path:"/repo",to_path:"/work",state:"pending"};
+ const blocked={id:5,project_id:2,request_id:"blocked",repo_path:"/repo",branch:"",workspace_path:null,state:"inspection",attempted:true,detail:"Inspect setup first",rev:4,steps:[]};
+ api.workspaceRequests.mockResolvedValue({requests:[request]});api.workspaceSetups.mockResolvedValue([blocked]);
+ api.commandWorkspaceSetup.mockImplementation(async()=>{const result={...blocked,state:"failed",rev:6};api.workspaceSetups.mockResolvedValue([result]);return result;});
+ render(<DraftComposer input={{...props(),detail}}/>);
+ await screen.findByText("Worktree setup needs inspection");
+ const inspect=await screen.findByRole("button",{name:"Inspect stopped setup 5"});
+ expect(screen.getByRole("button",{name:"Approve checkout switch"})).toHaveProperty("disabled",true);
+ fireEvent.click(inspect);
+ await waitFor(()=>expect(screen.getByRole("button",{name:"Approve checkout switch"})).toHaveProperty("disabled",false));
+ expect(screen.getByRole("button",{name:"Send fixture"})).toHaveProperty("disabled",true);
+ expect(api.approveWorkspace).not.toHaveBeenCalled();expect(api.startWorkspaceSetup).not.toHaveBeenCalled();
 });
 
 it("proposes an existing chat switch without treating it as approval",async()=>{

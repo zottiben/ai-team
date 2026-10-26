@@ -13,8 +13,8 @@ export function diffRows(file: FileDiff): DiffRow[] {
 const keyOf = (row: DiffRow) => row.key;
 
 /** The caller owns the comment draft. Measurement owns only placement, never an anchor. */
-export function DiffView({ rows, path, source, synth, pinned, renderLine }: {
-  rows: readonly DiffRow[]; path: string; source: string; synth: boolean; pinned: string | null;
+export function DiffView({ rows, path, source, synth, pinned, onShowComment, renderLine }: {
+  rows: readonly DiffRow[]; path: string; source: string; synth: boolean; pinned: string | null; onShowComment?: () => void;
   renderLine: (row: Extract<DiffRow, { kind: "line" }>, syntax?: Span[]) => ReactNode;
 }) {
   const scroll = useRef<HTMLDivElement>(null), elements = useRef(new Map<string, HTMLDivElement>());
@@ -52,7 +52,7 @@ export function DiffView({ rows, path, source, synth, pinned, renderLine }: {
       <label>Side<select aria-label={`Line side for ${path}`} value={side} onChange={event => setSide(event.target.value === "old" ? "old" : "new")}><option value="new">New</option><option value="old">Old</option></select></label>
       <label>Line<input aria-label={`Go to line in ${path}`} type="number" min={1} step={1} value={line} onChange={event => setLine(event.target.value)}/></label>
       <button type="submit" className="button">Go</button>
-      {pinned && <button type="button" className="button" onClick={() => setPending(pinned)}>Show comment</button>}
+      {pinned && <button type="button" className="button" onClick={() => { onShowComment?.(); setPending(pinned); }}>Show comment</button>}
       {problem && <p role="status">{problem}</p>}
     </form>}
     <div ref={scroll} className="synth-diff-scroll" data-windowed={windowed} role="region" aria-label={`Diff for ${path}`} tabIndex={windowed ? 0 : undefined}

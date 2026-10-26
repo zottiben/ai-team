@@ -82,12 +82,16 @@ vi.mock("./Chat", () => ({
     id,
     project,
     onCreated,
+    initialPanel,
+    selection,
   }: {
     id: number | null;
     project: { name: string };
     onCreated: (id: number) => void;
+    initialPanel: string | null;
+    selection: number;
   }) => (
-    <section>
+    <section data-chat-panel={initialPanel} data-chat-selection={selection}>
       <h1>
         {project.name} / {id ?? "New chat"}
       </h1>
@@ -192,6 +196,43 @@ beforeEach(() => {
   document.documentElement.removeAttribute("data-synth");
 });
 
+it("opens Overview on selection and sends a fresh navigation intent when the same chat is selected again", async () => {
+  render(<App/>);
+  const second = await screen.findByRole("button", { name: "Second conversation" });
+  fireEvent.click(second);
+  const heading = await screen.findByRole("heading", { name: "Demo project / 2" });
+  const owner = heading.closest("section")!;
+  expect(owner.dataset.chatPanel).toBe("overview");
+  const selection = Number(owner.dataset.chatSelection);
+  fireEvent.click(second);
+  expect(heading.closest("section")).toBe(owner);
+  expect(Number(owner.dataset.chatSelection)).toBe(selection + 1);
+});
+
+it("shows the exact filtered session in the Synth transport and reuses chat navigation", async () => {
+  const { setSynth } = await import("./ui-preferences");
+  setSynth(true);
+  localStorage.setItem("ai-team.last-chat", JSON.stringify({ project: "demo", chat: 1 }));
+  render(<App />);
+  const header = await screen.findByRole("banner", { name: "AI Team workspace" });
+  expect(within(header).getByText("Powered by Pi")).toBeDefined();
+  await screen.findByRole("heading", { name: "Demo project / 1" });
+  const selector = within(header).getByRole("button", { name: "Session" });
+  expect(selector.textContent).toBe("Demo project ▸ First conversation");
+  expect(within(header).getByText("1 / 2")).toBeDefined();
+  expect(within(header).getByRole("button", { name: "Open notification" })).toBeDefined();
+  expect(screen.getAllByRole("button", { name: "Open notification" })).toHaveLength(1);
+  fireEvent.click(within(header).getByRole("button", { name: "Next Session" }));
+  await screen.findByRole("heading", { name: "Demo project / 2" });
+  expect(within(header).getByText("2 / 2")).toBeDefined();
+  fireEvent.change(screen.getByRole("textbox", { name: "Find chats" }), { target: { value: "First" } });
+  expect(selector.textContent).toBe("Demo project ▸ Second conversation");
+  expect(within(header).getByText("Outside filter · 1 shown")).toBeDefined();
+  fireEvent.click(within(header).getByRole("button", { name: "Next Session" }));
+  await screen.findByRole("heading", { name: "Demo project / 1" });
+  expect(within(header).getByText("1 / 1")).toBeDefined();
+});
+
 it("maps the Synth global Board to existing plans and retains Schedule across skin changes", async () => {
   const { setSynth } = await import("./ui-preferences");
   setSynth(true);
@@ -205,7 +246,7 @@ it("maps the Synth global Board to existing plans and retains Schedule across sk
   expect(within(rail).getByRole("button", { name: "Chats" }).getAttribute("aria-current")).toBe("page");
   fireEvent.click(screen.getByRole("button", { name: "More tools" }));
   const menu = screen.getByRole("navigation", { name: "More tools" });
-  for (const name of ["Schedule", "Today", "Analytics", "Default team", "Project tools"]) expect(within(menu).getByRole("button", { name })).toBeDefined();
+  for (const name of ["Schedule", "Today", "Analytics", "Default team"]) expect(within(menu).getByRole("button", { name })).toBeDefined();
   fireEvent.click(within(menu).getByRole("button", { name: "Schedule" }));
   const schedule = await screen.findByRole("heading", { name: "Schedule content" });
   expect(screen.getByRole("button", { name: "More tools" }).getAttribute("aria-current")).toBe("page");
@@ -282,7 +323,7 @@ it("collapses to an icon rail without losing the chat or draft, and remembers it
   expect(screen.getByRole("button", { name: "New chat" })).not.toBeNull();
   expect(screen.getByRole("button", { name: "Open notification" })).not.toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "More tools" }));
-  expect(screen.getByRole("button", { name: "Project tools" })).not.toBeNull();
+  expect(screen.queryByRole("button", { name: "Project tools" })).toBeNull();
   view.unmount();
   render(<App />);
   await screen.findByRole("heading", { name: "Demo project / 2" });
@@ -296,22 +337,13 @@ it("shows the AI Team name and the existing logo", async () => {
   expect(screen.getByRole("img", { name: "AI Team logo" }).getAttribute("src")).toBe(logo);
 });
 
-it("keeps Project tools only in More tools, not duplicated in the sidebar footer", async () => {
+it("removes Project tools from every navigation entry", async () => {
   render(<App />);
   await screen.findByRole("heading", { name: "Demo project / New chat" });
   expect(screen.getByText("Powered by Pi")).toBeTruthy();
   expect(screen.queryByRole("button", { name: "Project tools" })).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "More tools" }));
-  expect(screen.getAllByRole("button", { name: "Project tools" })).toHaveLength(1);
-});
-
-it("offers only source and team tools at project level", async () => {
-  render(<App />);
-  fireEvent.click(await screen.findByRole("button", { name: "More tools" }));
-  fireEvent.click(within(screen.getByRole("navigation", { name: "More tools" })).getByRole("button", { name: "Project tools" }));
-  await screen.findByRole("heading", { name: "/demo / source" });
-  const navigation = screen.getByRole("navigation", { name: "Project tools" });
-  expect(within(navigation).getAllByRole("button").map(button => button.textContent)).toEqual(["Source", "Team"]);
+  expect(screen.queryByRole("button", { name: "Project tools" })).toBeNull();
 });
 
 it("does not steal a chosen chat when slow initial readiness finishes", async () => {
@@ -384,21 +416,15 @@ it.each([false, true])("preserves onboarding, project registration, and Settings
   await screen.findByRole("heading", { name: "Register projects" });
 });
 
-it.each([false, true])("keeps only Source and Team in project tools, with explicit checkout ownership (Synth %s)", async synth => {
+it.each([false, true])("has no project-wide checkout tools outside chats (Synth %s)", async synth => {
   (await import("./ui-preferences")).setSynth(synth);
   render(<App />);
   fireEvent.click(await screen.findByRole("button", { name: "More tools" }));
-  fireEvent.click(within(screen.getByRole("navigation", { name: "More tools" })).getByRole("button", { name: "Project tools" }));
-  await screen.findByRole("heading", { name: "/demo / source" });
-  const tools = screen.getByRole("navigation", { name: "Project tools" });
-  expect(within(tools).getAllByRole("button").map(button => button.textContent)).toEqual(["Source", "Team"]);
-  expect(screen.queryByRole("button", { name: "Editor" })).toBeNull();
-  expect(screen.queryByRole("button", { name: "Terminal" })).toBeNull();
-  fireEvent.change(screen.getByRole("combobox", { name: "Project checkout" }), {
-    target: { value: "/demo-task" },
-  });
-  fireEvent.click(screen.getByRole("button", { name: "Team" }));
-  await screen.findByRole("heading", { name: "/demo-task / team" });
+  expect(screen.queryByRole("button", { name: "Project tools" })).toBeNull();
+  expect(screen.queryByRole("combobox", { name: "Project checkout" })).toBeNull();
+  expect(screen.queryByRole("navigation", { name: "Project tools" })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Default team" }));
+  await screen.findByRole("heading", { name: "Default team" });
 });
 
 it("opens a global plan in its exact chat rather than the project's latest", async () => {
@@ -424,11 +450,13 @@ it.each([false, true])("opens Today work and review in their exact owning chats 
   fireEvent.click(screen.getByRole("button", { name: "More tools" }));
   fireEvent.click(screen.getByRole("button", { name: "Today" }));
   fireEvent.click(screen.getByRole("button", { name: "Open chat work" }));
-  await screen.findByRole("heading", { name: "Demo project / 1" });
+  const work = await screen.findByRole("heading", { name: "Demo project / 1" });
+  expect(work.closest("section")?.dataset.chatPanel).toBe("work");
   fireEvent.click(screen.getByRole("button", { name: "More tools" }));
   fireEvent.click(screen.getByRole("button", { name: "Today" }));
   fireEvent.click(screen.getByRole("button", { name: "Open chat review" }));
-  await screen.findByRole("heading", { name: "Demo project / 2" });
+  const review = await screen.findByRole("heading", { name: "Demo project / 2" });
+  expect(review.closest("section")?.dataset.chatPanel).toBe("review");
   expect(screen.queryByRole("navigation", { name: "Project tools" })).toBeNull();
   expect(screen.queryByRole("button", { name: "Back to Today" })).toBeNull();
 });
@@ -468,16 +496,6 @@ it.each([false, true])("still opens legacy notifications in their recorded check
   await screen.findByRole("button", { name: "First conversation" });
   fireEvent.click(screen.getByRole("button", { name: "Open notification" }));
   await screen.findByRole("heading", { name: "/demo-task / work" });
-});
-
-it("keeps nested PR checkout labels current on database ticks", async () => {
-  render(<App />);
-  fireEvent.click(await screen.findByRole("button", { name: "More tools" }));
-  fireEvent.click(within(screen.getByRole("navigation", { name: "More tools" })).getByRole("button", { name: "Project tools" }));
-  await screen.findByRole("option", { name: "— PR2" });
-  state.slice = "PR3";
-  await act(async () => state.subscribe?.());
-  await screen.findByRole("option", { name: "— PR3" });
 });
 
 it("refreshes persisted chat titles on a database tick", async () => {

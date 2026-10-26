@@ -71,9 +71,9 @@ function CheckoutController({chatId,mode,tick,disabled,working=false,otherBusy=f
           setRevealed(current=>new Set([...current,JSON.stringify(["unstaged",path])]));setReveal({path,sequence:++sequence.current});
         }}/>
       </>}</div>
-      <p className="faint">These are the checkout's actual files, not attributed to this conversation and not a verified team draft. Each action previews exact state and refuses stale approval. Editor and terminal remain explicit operator tools, not an OS sandbox.</p>
+      <p className={synth?"synth-sr-only":"faint"}>These are the checkout's actual files, not attributed to this conversation and not a verified team draft. Each action previews exact state and refuses stale approval. Editor and terminal remain explicit operator tools, not an OS sandbox.</p>
       {lockReason&&<p className="notice" hidden={synth}>{lockReason}</p>}
-      <p className="faint">{mode==="single"?"Submitting an inline comment sends it to the solo agent to address in this checkout. No commit or publication is approved.":"Working-checkout repair comments require solo mode. In team mode, review the exact verified draft to send a repair to its maker. No mode change or publication is automatic."}</p>
+      <p className={synth&&mode==="single"?"synth-sr-only":"faint"}>{mode==="single"?"Submitting an inline comment sends it to the solo agent to address in this checkout. No commit or publication is approved.":"Working-checkout repair comments require solo mode. In team mode, review the exact verified draft to send a repair to its maker. No mode change or publication is automatic."}</p>
       {submitted&&<p role="status">Review submitted to the agent. Follow its recorded turn in this chat.</p>}
       {(["staged","unstaged"] as const).map(area=><section key={area} className="synth-review-files" aria-label={`${area} checkout files`}><h4>{area==="staged"?"Staged — the next commit's contents":"Unstaged"}{synth?` · ${data[area].length}`:null}</h4>
         {!data[area].length&&<p className="faint synth-review-empty">{synth?"None in the current snapshot.":"None."}</p>}
@@ -83,7 +83,7 @@ function CheckoutController({chatId,mode,tick,disabled,working=false,otherBusy=f
         {synth&&<button type="button" className="button" aria-expanded={showUntracked} disabled={showUntracked&&untrackedDraft}
           onClick={()=>setUntrackedOpen(!showUntracked)}>{showUntracked?"Hide":"Show"} untracked files</button>}
         {synth&&untrackedDraft&&<p className="faint">An open comment keeps this group visible.</p>}
-        <div hidden={!showUntracked}><p className="faint">New text files can be reviewed and commented on without staging. Reading or marking viewed changes no file or index.</p>
+        <div hidden={!showUntracked}><p className={synth?"synth-sr-only":"faint"}>New text files can be reviewed and commented on without staging. Reading or marking viewed changes no file or index.</p>
           {!data.untracked.length&&<p className="faint synth-review-empty">None.</p>}
           {(untrackedMounted||showUntracked)&&files.rows.filter(row=>row.entry.area==="untracked").map(({entry,present},index)=>reviewFile(entry,present,index))}
         </div>

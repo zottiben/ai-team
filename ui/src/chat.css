@@ -19,10 +19,11 @@
   grid-row: 1;
   grid-column: 2;
 }
-.chat-shell button,
-.chat-shell input,
-.chat-shell select,
-.chat-shell textarea {
+/* Legacy keeps its existing specificity. Synth controls own their explicit type. */
+:where(:root:not([data-synth="true"])) .chat-shell :is(button, input, select, textarea) {
+  font: inherit;
+}
+:where(:root[data-synth="true"] .chat-shell) :is(button, input, select, textarea) {
   font: inherit;
 }
 .chat-shell button {
@@ -340,6 +341,7 @@
   border-left: 1px solid var(--border-subtle-default);
   background: var(--surface-panel-default);
 }
+.chat-panel-loading__wells { display: none; }
 .chat-context-heading {
   display: flex;
   justify-content: space-between;
@@ -648,6 +650,8 @@
   align-items: center;
   gap: 0.6rem;
 }
+.chat-model-notice { position: relative; }
+.chat-model-announcement { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .chat-model-select {
   flex: 0 1 20rem;
   max-width: 60%;

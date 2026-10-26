@@ -5,6 +5,6 @@ export function Jack({ label, signal = "diff", armed = false, ...props }: Omit<B
   label: string; signal?: Signal; armed?: boolean;
 }) {
   return <button {...props} type="button" className="synth-jack" aria-label={props["aria-label"] ?? label} aria-pressed={armed} style={signalStyle(signal)}>
-    <span aria-hidden="true" /><span className="synth-silk">{label}</span>
+    <span className="synth-jack__socket" aria-hidden="true" /><span className="synth-silk">{label}</span>
   </button>;
 }

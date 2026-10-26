@@ -87,7 +87,7 @@ export function PlanKanban({
   return (
     <SynthProvider><div>
       <div className="plan-heading">
-        <p className="faint">
+        <p className={synth ? "synth-sr-only" : "faint"}>
           Status only · not verification or execution approval.
         </p>
         <button

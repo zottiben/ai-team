@@ -28,6 +28,33 @@ it("retains a windowed comment DOM through hidden zero-height and legacy present
   expect(sender).not.toHaveBeenCalled();
   Reflect.deleteProperty(HTMLElement.prototype,"scrollIntoView");Reflect.deleteProperty(HTMLElement.prototype,"scrollTo");
 });
+it("closes and resumes the same captured comment without discarding or submitting it", () => {
+ setSynth(true);const sender=vi.fn();render(<FileView file={file()} onComment={sender}/>);
+ const add=screen.getByRole("button",{name:"comment on new line 1"});fireEvent.click(add);
+ const input=screen.getByRole("textbox",{name:"comment on new.rs new line 1"});fireEvent.change(input,{target:{value:"Keep this exact comment"}});
+ fireEvent.click(screen.getByRole("button",{name:"Close comment"}));
+ expect(screen.queryByRole("textbox",{name:"comment on new.rs new line 1"})).toBeNull();expect(document.activeElement).toBe(add);
+ fireEvent.click(screen.getByRole("button",{name:"Resume comment"}));
+ expect(screen.getByRole("textbox",{name:"comment on new.rs new line 1"})).toBe(input);expect(input).toHaveProperty("value","Keep this exact comment");
+ fireEvent.keyDown(input,{key:"Escape"});expect(screen.queryByRole("textbox",{name:"comment on new.rs new line 1"})).toBeNull();expect(sender).not.toHaveBeenCalled();
+});
+it("returns focus after closing when the original line action is unavailable", () => {
+  setSynth(true);
+  const sender = vi.fn(), view = render(<FileView file={file()} onComment={sender}/>);
+  fireEvent.click(screen.getByRole("button", { name: "comment on new line 1" }));
+  const input = screen.getByRole("textbox");
+  fireEvent.change(input, { target: { value: "Keep the unavailable-action draft" } });
+  view.rerender(<FileView file={file()}/>);
+  const toggle = screen.getByRole("button", { name: "Collapse new.rs" });
+  expect(toggle).toHaveProperty("disabled", true);
+  fireEvent.click(screen.getByRole("button", { name: "Close comment" }));
+  expect(toggle).toHaveProperty("disabled", false);
+  expect(document.activeElement).toBe(toggle);
+  fireEvent.click(screen.getByRole("button", { name: "Resume comment" }));
+  expect(screen.getByRole("textbox")).toBe(input);
+  expect(input).toHaveProperty("value", "Keep the unavailable-action draft");
+  expect(sender).not.toHaveBeenCalled();
+});
 it("expands ordinary files and collapses them without losing an unsent comment", () => {
   const onComment = vi.fn();
   render(<FileView file={file()} reviewKey="chat:1:working" onComment={onComment} />);

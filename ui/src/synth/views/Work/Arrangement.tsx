@@ -50,6 +50,7 @@ export function Arrangement({ records, events, now, selected, onSelect }: {
         {LEGEND.map(entry => <span key={entry.kind} className="synth-silk" data-kind={entry.kind}>{entry.label}</span>)}
       </span>
     </div>
+    <div className="synth-arrangement__scroll" role="region" aria-label="Run duration timeline" tabIndex={0}><div style={{ minWidth: Math.max(0, records.length * 10 - 2) }}>
     {scale.proportional
       ? <div className="synth-arrangement__ruler" aria-hidden="true">
         {scale.ticks.map(tick => <span key={tick.ms} className="synth-mono" style={{ left: `${(tick.fraction * 100).toFixed(2)}%` }}>{tick.label}</span>)}
@@ -75,5 +76,6 @@ export function Arrangement({ records, events, now, selected, onSelect }: {
       })}
       {!records.length && <p className="synth-muted">No runs yet.</p>}
     </div>
+    </div></div>
   </Lcd>;
 }

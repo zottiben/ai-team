@@ -1,0 +1,10 @@
+[data-synth="true"] .synth-activity-eq { display: inline-flex; flex: none; align-items: center; width: 48px; height: 32px; }
+[data-synth="true"] .synth-activity-eq svg { display: block; width: 100%; height: 100%; }
+[data-synth="true"] .synth-activity-eq rect { fill: var(--synth-seg-off); }
+[data-synth="true"] .synth-activity-eq [data-lit="true"][data-band="low"] { fill: var(--st-done); }
+[data-synth="true"] .synth-activity-eq [data-lit="true"][data-band="mid"] { fill: var(--st-working); }
+[data-synth="true"] .synth-activity-eq [data-lit="true"][data-band="high"],
+[data-synth="true"] .synth-activity-eq [data-peak="true"] { fill: var(--st-attention); }
+@container composer (max-width: 350px) {
+  [data-synth="true"] .synth-activity-eq { width: 32px; }
+}

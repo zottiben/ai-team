@@ -46,7 +46,7 @@
 @keyframes synth-led-pulse { 0%,100% { opacity: 1; } 50% { opacity: .3; } }
 @keyframes synth-led-attention { 0%,8% { opacity: 1; } 4%,12% { opacity: .15; } 16%,100% { opacity: 1; } }
 @keyframes synth-led-flash { from { background: var(--vc-pearl); box-shadow: 0 0 22px 6px var(--synth-signal); } to { background: var(--synth-signal); box-shadow: 0 0 8px var(--synth-signal); } }
-.synth-key {
+.synth-key, .chat-shell .synth-key {
   display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 32px;
   padding: 4px 14px; border-radius: var(--r-key); border: 1px solid var(--synth-floor);
   color: var(--synth-text); background: var(--synth-key); box-shadow: var(--shadow-key);
@@ -119,15 +119,19 @@
 .synth-cable[data-connected="false"] :is(.synth-cable__shadow, .synth-cable__shine) { display: none; }
 .synth-cable[data-connected="false"] .synth-cable__plug { fill: var(--synth-void); stroke: var(--synth-cable-closed); stroke-width: 2; }
 .synth-preset { display: inline-flex; align-items: center; gap: 4px; padding: 4px; border-radius: var(--r-key); background: var(--synth-screen); box-shadow: var(--shadow-screen); }
-.synth-preset__value { font: 12px var(--synth-font-mono); color: var(--synth-lcd-text); min-height: 32px; }
+.synth-preset__value, .chat-shell .synth-preset__value { font: 12px var(--synth-font-mono); color: var(--synth-lcd-text); min-height: 32px; }
 .synth-preset .synth-key { width: 32px; padding: 0; }
 .synth-preset-popover { background: var(--synth-screen); color: var(--synth-text); color-scheme: var(--synth-color-scheme); font-family: var(--synth-font-sans); border-color: var(--synth-lcd-edge); box-shadow: var(--shadow-screen); }
 .synth-preset-popover [role="listbox"] { display: grid; gap: 6px; }
-.synth-sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
+/* Anchor hidden announcements, not their offscreen static flow position. */
+.synth-sr-only { position: absolute; top: 0; left: 0; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
 .synth-graph { min-width: 0; }
 .synth-graph__heading { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; font: 12px var(--synth-font-mono); }
 .synth-graph > svg { display: block; width: 100%; height: 80px; overflow: visible; }
+.synth-graph[data-flow] > svg { overflow: hidden; }
+.synth-graph[data-flow] .synth-graph__fill { display: none; }
 .synth-graph__line { fill: none; stroke: var(--synth-signal); stroke-width: 1.6; stroke-linecap: round; filter: drop-shadow(0 0 3px var(--synth-signal)); }
+.synth-graph__hold { fill: none; stroke: var(--synth-signal); stroke-width: 1.6; stroke-dasharray: 4 3; opacity: .6; }
 .synth-graph__fill { fill: var(--synth-signal); opacity: .13; }
 .synth-graph__point { fill: var(--synth-signal); }
 .synth-graph__baseline { fill: none; stroke: var(--synth-track); stroke-width: 1; stroke-dasharray: 3 3; }

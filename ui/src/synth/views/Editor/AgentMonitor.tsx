@@ -51,7 +51,8 @@ export default function AgentMonitor({ presence, elapsed, open, onOpenChat, onSt
   const lanes = pattern(presence.touched);
 
   return <aside className="synth-editor__monitor" aria-label="Agent monitor">
-    <header className="synth-silk">Agent</header>
+    <div className="synth-editor__monitor-state">
+    <header className="synth-silk">Agent monitor</header>
 
     <Lcd className="synth-editor__elapsed" variant={presence.working ? "working" : undefined}>
       <span className="synth-lcd__label">{presence.role ?? "No seat"}</span>
@@ -61,6 +62,7 @@ export default function AgentMonitor({ presence, elapsed, open, onOpenChat, onSt
     </Lcd>
 
     <div className="synth-editor__pattern" aria-hidden="true">
+      <span className="synth-silk">Pattern · last 24 touches</span>
       {LANES.map(lane => <div className="synth-editor__lane" key={lane} data-lane={lane}>
         {(lanes[lane] ?? []).map((on, index) => <span key={index} className="synth-editor__cell" data-on={on || undefined} />)}
       </div>)}
@@ -76,6 +78,7 @@ export default function AgentMonitor({ presence, elapsed, open, onOpenChat, onSt
           </>}
     </section>
 
+    </div>
     <section className="synth-editor__overlap">
       <h3 className="synth-silk">Overlap with you</h3>
       {overlap.length === 0

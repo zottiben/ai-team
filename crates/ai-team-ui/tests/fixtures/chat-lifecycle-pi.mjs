@@ -9,7 +9,7 @@ if (process.env.ANTHROPIC_API_KEY || process.env.OPENAI_API_KEY || process.env.P
 const config = JSON.parse(fs.readFileSync(value('--mcp-config')));
 if (args.includes('--list-models')) {
   if (Object.keys(config.mcpServers).length) throw Error('catalogue inherited MCP servers');
-  console.log('provider model context max-out thinking images\nllama.cpp fixture 200k 32k yes yes');
+  console.log('provider model context max-out thinking images\nllama.cpp fixture 200k 32k yes yes\nllama.cpp alternate 32k 8k yes yes');
   process.exit(0);
 }
 if (value('--mode') === 'rpc') {
@@ -31,7 +31,7 @@ const images = args.filter(arg => arg.startsWith('@')).map(arg => {
   if ((fs.statSync(file).mode & 0o777) !== 0o600 || (fs.statSync(path.dirname(file)).mode & 0o777) !== 0o700) throw Error('image is not private');
   return { file, data: fs.readFileSync(file).toString('base64') };
 });
-fs.appendFileSync(path.join(root, 'pi-calls'), JSON.stringify({ chat, node, role, key, session, cwd:process.cwd(), prompt, images, thinking:value('--thinking'), requested_thinking:process.env.AI_TEAM_THINKING }) + '\n');
+fs.appendFileSync(path.join(root, 'pi-calls'), JSON.stringify({ chat, node, role, key, session, cwd:process.cwd(), prompt, images, provider:value('--provider'), model:value('--model'), thinking:value('--thinking'), requested_thinking:process.env.AI_TEAM_THINKING }) + '\n');
 const emit = event => console.log(JSON.stringify(event));
 emit({type:'session',id:session,cwd:process.cwd()});
 if (mode !== 'no-echo') emit({type:'message_end',message:{role:'user',content:[{type:'text',text:images.map(image => `<file name="${image.file}"></file>\n`).join('') + prompt}, ...images.map(image => ({type:'image',mimeType:'image/png',data:image.data}))]}});

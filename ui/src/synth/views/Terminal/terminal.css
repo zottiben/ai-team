@@ -3,7 +3,7 @@
 .synth-terminal {
   display: grid;
   gap: 12px;
-  padding: 14px;
+  padding: 0;
   background: var(--synth-floor);
   color: var(--synth-text);
   border-radius: var(--r-deck);
@@ -16,14 +16,15 @@
   flex-wrap: wrap;
 }
 
+.synth-terminal__toolbar > .synth-muted { margin-right: auto; }
 .synth-terminal__badge {
   font: 600 11px/1 var(--synth-font-sans);
   letter-spacing: .08em;
   text-transform: uppercase;
   padding: 5px 9px;
   border-radius: var(--r-key);
-  background: var(--plate-flamingo);
-  color: var(--vc-midnight);
+  background: var(--vc-violet);
+  color: var(--synth-signal-ink);
 }
 
 .synth-terminal__problem,
@@ -43,7 +44,12 @@
   align-items: start;
 }
 
-@media (max-width: 1100px) {
+@media (min-width: 1181px) {
+  .chat-workspace[data-synth-tool="terminal"] > :is(.chat-header, .chat-toolbar, .chat-notice, .chat-body) { width: calc(100% - 332px); }
+  .chat-workspace[data-synth-tool="terminal"] .synth-terminal__deck { grid-template-columns: minmax(0, 1fr); }
+  .chat-workspace[data-synth-tool="terminal"] .synth-rack { position: absolute; top: 0; right: 0; bottom: 0; width: 320px; padding: 16px 12px; overflow: auto; align-content: start; border-left: 1px solid var(--synth-hairline); }
+}
+@media (max-width: 1180px) {
   .synth-terminal__deck { grid-template-columns: minmax(0, 1fr); }
 }
 
@@ -91,6 +97,13 @@
   background: var(--synth-term-bg);
   box-shadow: var(--shadow-screen);
 }
+
+/* FitAddon measures its immediate parent. That parent must be unpadded and must
+   not derive its height from the canvas it sizes, or every fit grows it again. */
+.synth-screen__well.terminal__host { height: clamp(320px, 50vh, 560px); min-height: 320px; }
+.synth-screen__mount { width: 100%; height: 100%; min-width: 0; min-height: 0; }
+.synth-screen__mount > .xterm { display: block; gap: 0; }
+.synth-screen__mount .xterm-viewport { background: transparent; }
 
 /* Pure CSS, and behind an explicit preference: there is no reliable way to detect a
    machine that would rather not paint them. */
@@ -239,11 +252,12 @@ textarea.synth-mirror__output {
 
 .synth-rack__command { padding: 8px 10px; overflow-wrap: anywhere; }
 
-.synth-rack__minis { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 8px 0 0; }
+.synth-rack__minis { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 10px 0 12px; }
 
-.synth-rack__mini dt { margin: 0; }
+.synth-rack__mini { min-width: 0; padding: 10px; border-radius: var(--r-screen); background: var(--synth-screen); box-shadow: var(--shadow-screen); color: var(--synth-lcd-text); overflow-wrap: anywhere; }
+.synth-rack__mini dt { margin: 0; font-size: 8px; }
 
-.synth-rack__mini dd { margin: 2px 0 0; font: 400 15px/1.2 var(--synth-font-mono); color: var(--synth-text); }
+.synth-rack__mini dd { margin: 6px 0 0; font: 300 28px/1.2 var(--synth-font-sans); }
 
 .synth-rack__history { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; max-height: 260px; overflow: auto; }
 

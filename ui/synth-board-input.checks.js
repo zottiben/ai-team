@@ -21,7 +21,9 @@ async function start(board, id = 'S1') {
   const handle = must(board.querySelector(`[data-slice-drag="${id}"]`), 'Move handle missing');
   handle.scrollIntoView({ block: 'center', inline: 'center' });
   await until(() => !handle.disabled && board.dataset.statusDrag === 'ready', 'Move handle did not become available');
-  handle.focus(); key(' ', 'Space');
+  handle.focus({ preventScroll: true });
+  must(document.activeElement === handle, `Move handle focus failed: connected=${handle.isConnected}, disabled=${handle.disabled}, current=${board.querySelector(`[data-slice-drag="${id}"]`) === handle}`);
+  key(' ', 'Space');
   await until(() => board.dataset.dragging === 'true', `Production keyboard pickup ${attempt} failed`);
   return handle;
 }
@@ -60,9 +62,26 @@ export async function exercisePlanStatus() {
   must(apiRequests === 0, 'Plan preset reached a real API');
   return { width: document.documentElement.clientWidth, exactPlanStatus: true, unchangedSlices: true, portalOwnership: true, syntheticRequests: 1, apiRequests };
 }
+export async function exerciseHeldBoard() {
+  const { board, fixture } = await setup();
+  await start(board); await delay(300);
+  const original = window.requestAnimationFrame; let frames = 0;
+  window.requestAnimationFrame = callback => { frames++; return original.call(window, callback); };
+  try {
+    await delay(500);
+    must(frames === 0, `A stationary owned gesture kept scheduling ${frames} frames`);
+  } finally { window.requestAnimationFrame = original; key('Escape'); }
+  await until(() => !board.dataset.dragging, 'Held gesture did not cancel');
+  must(fixture.boardState().requests.length === 0, 'Held gesture sent a request');
+  return { sampledIdleFrames: frames, syntheticRequests: 0, note: 'Scoped 500ms stationary gesture, not whole-app CPU certification.' };
+}
+
 export async function exerciseProductionBoard() {
   const { board, fixture, panel } = await setup();
-  await start(board); await lane(board, 'ArrowRight', 'active'); await drop(board);
+  await start(board);
+  const globalDragRules = [...document.styleSheets].flatMap(sheet => [...sheet.cssRules]).filter(rule => rule.selectorText === '*' && (rule.style?.cursor === 'grabbing' || rule.style?.userSelect === 'none'));
+  must(globalDragRules.length === 0, 'Drag changed document-wide cursor or selection rules');
+  await lane(board, 'ArrowRight', 'active'); await drop(board);
   await until(() => fixture.boardState().snapshot.bundle.slices[0].status === 'active', 'Status-only service did not record the move');
   const moved = await until(() => board.querySelector('[data-status="active"] [data-slice-drag="S1"]'), 'Authoritative card did not move');
   await until(() => document.activeElement === moved, 'Accepted keyboard move lost logical card focus');
@@ -195,10 +214,10 @@ export async function exerciseMotionOwnership() {
   await start(board); await lane(board, 'ArrowRight', 'active'); await drop(board);
   await until(() => document.querySelector('.synth-plan-settle-layer'), 'Accepted settlement did not start');
   const tab = label => [...panel.querySelectorAll('[role="tab"]')].find(node => node.textContent.trim() === label);
-  tab('Plan').focus(); tab('Plan').click();
+  tab('Plan').focus({ preventScroll: true }); tab('Plan').click();
   await until(() => !document.querySelector('.synth-plan-settle-layer') && !board.querySelector('[data-settling]'), 'Hidden owner kept its settlement portal');
   must(fixture.boardState().snapshot.bundle.slices[0].status === 'active', 'Hiding feedback changed recorded status');
-  tab('Board').focus(); tab('Board').click(); await until(() => board.getClientRects().length, 'Board did not become displayed'); board.scrollIntoView({ block: 'start' });
+  tab('Board').focus({ preventScroll: true }); tab('Board').click(); await until(() => board.getClientRects().length, 'Board did not become displayed'); board.scrollIntoView({ block: 'start' });
   await start(board); await lane(board, 'ArrowRight', 'in_review'); await drop(board);
   document.dispatchEvent(new WheelEvent('wheel', { deltaY: 20, bubbles: true }));
   const target = await until(() => board.querySelector('[data-status="in_review"] [data-slice-drag="S1"]:not(:disabled)'), 'Second status did not settle'); await delay(100);

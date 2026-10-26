@@ -1,7 +1,7 @@
 {
   "name": "ai-team-ui",
   "private": true,
-  "version": "0.7.9",
+  "version": "0.8.0",
   "type": "module",
   "description": "The ai-team window. Built to static assets and embedded in the ait binary.",
   "scripts": {
@@ -9,7 +9,8 @@
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:native": "npm run build && node scripts/verify-synth-native.mjs"
+    "test:native": "npm run build && node scripts/verify-synth-native.mjs",
+    "test:performance": "node scripts/verify-synth-performance.mjs"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.3",

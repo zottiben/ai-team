@@ -1,4 +1,5 @@
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { measurementsByNode, type Measurement } from "./synth/data/telemetry";
 import { useReadoutSnapshot } from "./synth/motion/useReadoutSnapshot";
 
@@ -55,8 +56,10 @@ export function ChatOverview({
   now,
   synth = false,
   onSelect,
+  patchHost,
 }: {
   synth?: boolean;
+  patchHost?: HTMLElement;
   onSelect?: (panel: "work" | "review") => void;
   detail: ChatDetail;
   status: string;
@@ -82,7 +85,8 @@ export function ChatOverview({
   const mapProblem = mapFailure?.scope === scope ? mapFailure.value : null;
   const [mapDetailsOpen, setMapDetailsOpen] = useState(false);
   const [agentDetailsOpen, setAgentDetailsOpen] = useState(false);
-  const [rackDetailsOpen, setRackDetailsOpen] = useState(false);
+  const [inspectorHost] = useState(() => document.createElement("div"));
+  const mountInspector = useCallback((node: HTMLDivElement | null) => { if (node && inspectorHost.parentNode !== node) node.append(inspectorHost); }, [inspectorHost]);
   const synthOpened = useRef(false);
   if (synth) synthOpened.current = true;
   const node = detail.active_node_id ?? detail.turns.at(-1)?.node.id ?? null;
@@ -135,13 +139,14 @@ export function ChatOverview({
   const slices = plan?.bundle?.slices ?? [];
   const owned = view === null ? 0 : view.map.files - view.map.unowned;
 
+  const patch = synthOpened.current && detail.mode === "team" && <Suspense fallback={<p className="faint">Loading team evidence…</p>}><PatchBay detail={detail} live={live} events={events} inspectorHost={inspectorHost} compact={!!patchHost} onWork={onSelect ? () => onSelect("work") : undefined} onReview={onSelect ? () => onSelect("review") : undefined}/></Suspense>;
   return (
     <div ref={host} className="chat-overview-content">
-      <div hidden={!synth || detail.mode !== "team"}>{synthOpened.current && detail.mode === "team" && <Suspense fallback={<p className="faint">Loading team evidence…</p>}><PatchBay detail={detail} live={live} events={events} onWork={onSelect ? () => onSelect("work") : undefined} onReview={onSelect ? () => onSelect("review") : undefined}/></Suspense>}</div>
-      <div hidden={!synth}><details open={detail.mode !== "team" || rackDetailsOpen} onToggle={event => { if (detail.mode === "team") setRackDetailsOpen(event.currentTarget.open); }}>
-        <summary hidden={detail.mode !== "team"}>Repository and session telemetry</summary>
+      {patchHost ? createPortal(<div hidden={!synth || detail.mode !== "team"}>{patch}</div>, patchHost) : <div hidden={!synth || detail.mode !== "team"}>{patch}</div>}
+      <div hidden={!synth}>
         {synthOpened.current && <Suspense fallback={<p className="faint">Loading Synth rack…</p>}><OverviewRack detail={detail} status={status} events={events} history={node === null ? NO_MEASUREMENTS : history.get(node) ?? NO_MEASUREMENTS} live={live} view={view} elapsed={elapsed} now={now} /></Suspense>}
-      </details></div>
+      </div>
+      <div ref={mountInspector} hidden={!synth || detail.mode !== "team"}/>
       <section className="chat-overview-card" hidden={synth}>
         <h3>Execution</h3>
         <strong>{status}</strong>
@@ -201,7 +206,7 @@ export function ChatOverview({
 
       <section className="chat-overview-card" aria-label="Repository map">
         <h3>Repository</h3>
-        <p className="faint">
+        <p className="faint" hidden={synth && !busy}>
           {busy
             ? `${lit} ${lit === 1 ? "path" : "paths"} lit · ${activity?.working.size} working`
             : "zone coverage and displayed paths for this chat"}
@@ -236,14 +241,14 @@ export function ChatOverview({
               )}
             </ul>
             <div hidden={!synth}>{synthOpened.current && <Suspense fallback={<p>Loading repository displays…</p>}><RepositoryView map={view.map} seats={live?.seats ?? null} /></Suspense>}</div>
-            <details open={!synth || mapDetailsOpen} onToggle={event => { if (synth) setMapDetailsOpen(event.currentTarget.open); }}><summary hidden={!synth}>Repository map details</summary>{activity !== null && <RepoGraph map={view.map} activity={activity} />}</details>
+            <details open={!synth || mapDetailsOpen} onToggle={event => { if (synth) setMapDetailsOpen(event.currentTarget.open); }}><summary hidden={!synth}>Repository map details</summary>{activity !== null && <RepoGraph map={view.map} activity={activity} />}
             <p className="faint">
               {view.map.unowned === 0
                 ? "Every path is inside a seat's zone, so nothing here would be reported unroutable."
                 : `${view.map.unowned} ${view.map.unowned === 1 ? "path belongs" : "paths belong"} to no seat of this chat. Work touching one is reported undone rather than given to somebody.`}
               {` ${view.map.nodes.length} displayed nodes, bounded to 700; ${view.map.files} files walked, bounded to 50,000.`}
               {view.map.truncated && " The walk stopped early, so this is a sample of the checkout."}
-            </p>
+            </p></details>
           </>
         )}
       </section>
