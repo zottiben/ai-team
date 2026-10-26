@@ -11,18 +11,21 @@
 mod api;
 mod assets;
 mod auth;
+mod chat_activity;
 mod chat_changes;
 mod chat_overview;
 mod chat_plans;
 mod chat_teams;
 mod chat_workspaces;
 mod chats;
+mod editor;
 mod error;
 mod health;
 mod mcp;
 mod plan_library;
 pub mod plan_mcp;
 mod state;
+mod terminal_commands;
 mod toolbox;
 mod updates;
 
@@ -66,8 +69,8 @@ pub struct ServeOptions {
     /// Where to look for a database that does not exist yet.
     ///
     /// Named rather than resolved on demand so the server knows which database it serves.
-    /// `None` means the machine's own, which is what `ait ui` passes; a test passes its
-    /// own, because a test that reaches for the real one writes to the developer's home.
+    /// `None` means no database discovery. Production entry points pass the machine's
+    /// path explicitly; library callers and tests must never inherit operator state.
     pub db_path: Option<std::path::PathBuf>,
     /// Which credential store HTTP settings and readiness requests may inspect.
     ///
@@ -110,12 +113,7 @@ impl Server {
         };
         let mut state = AppState::for_server(token.as_str(), options.updates)
             .hosted_by(options.host)
-            .watching(
-                options
-                    .db_path
-                    .clone()
-                    .or_else(|| ai_team_core::default_db_path().ok()),
-            )
+            .watching(options.db_path)
             .with_credentials(options.credentials);
         if let Some(store) = options.store {
             state = state.with_store(store);

@@ -1,0 +1,1 @@
+var e=e=>Number.isFinite(e)?Math.max(0,Math.min(1,e)):0;function t(t,n,r){n=e(n),r=Math.max(0,r);let i=n>t.level?n:Math.max(n,t.level-.8*r);if(i>=t.peak)return{level:i,peak:i,held:1};let a=Math.max(0,r-t.held);return{level:i,peak:Math.max(i,t.peak-.6*a),held:Math.max(0,t.held-r)}}export{e as n,t};

@@ -1,12 +1,60 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { webcrypto } from "node:crypto";
 import { FileView } from "./ReviewFile";
+import { setSynth } from "./ui-preferences";
 import type { FileDiff } from "./api";
 
 const file = (text = "new code"): FileDiff => ({ path: "new.rs", old_path: null, status: "added", binary: false, additions: 1, deletions: 0, hunks: [{ header: "@@ -0,0 +1 @@", old_start: 0, new_start: 1, lines: [{ kind: "added", old: null, new: 1, text }] }] });
 beforeEach(() => { localStorage.clear(); vi.stubGlobal("crypto", webcrypto); });
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => { vi.unstubAllGlobals(); setSynth(false); });
+it("retains a windowed comment DOM through hidden zero-height and legacy presentation", async () => {
+  setSynth(true);
+  Object.defineProperty(HTMLElement.prototype,"scrollIntoView",{value:vi.fn(),configurable:true});
+  Object.defineProperty(HTMLElement.prototype,"scrollTo",{value:vi.fn(),configurable:true});
+  const large=file(); large.additions=405; large.hunks[0]!.lines=Array.from({length:405},(_,index)=>({kind:"added",old:null,new:index+1,text:`value ${index+1}`}));
+  const sender=vi.fn();const view=render(<div><FileView file={large} onComment={sender}/></div>);
+  expect(document.querySelectorAll(".diff__line").length).toBeLessThan(30);
+  fireEvent.change(screen.getByLabelText("Go to line in new.rs"),{target:{value:"400"}});
+  fireEvent.click(screen.getByRole("button",{name:"Go"}));
+  fireEvent.click(await screen.findByRole("button",{name:"comment on new line 400"}));
+  const textarea=screen.getByLabelText("comment on new.rs new line 400");fireEvent.change(textarea,{target:{value:"Keep the measured-row draft"}});
+  view.rerender(<div hidden><FileView file={large} onComment={sender}/></div>);
+  act(()=>setSynth(false));act(()=>setSynth(true));
+  view.rerender(<div><FileView file={large} onComment={sender}/></div>);
+  expect(screen.getByLabelText("comment on new.rs new line 400")).toBe(textarea);
+  expect((textarea as HTMLTextAreaElement).value).toBe("Keep the measured-row draft");
+  expect(document.querySelectorAll(".diff__line").length).toBeLessThan(30);
+  expect(sender).not.toHaveBeenCalled();
+  Reflect.deleteProperty(HTMLElement.prototype,"scrollIntoView");Reflect.deleteProperty(HTMLElement.prototype,"scrollTo");
+});
+it("closes and resumes the same captured comment without discarding or submitting it", () => {
+ setSynth(true);const sender=vi.fn();render(<FileView file={file()} onComment={sender}/>);
+ const add=screen.getByRole("button",{name:"comment on new line 1"});fireEvent.click(add);
+ const input=screen.getByRole("textbox",{name:"comment on new.rs new line 1"});fireEvent.change(input,{target:{value:"Keep this exact comment"}});
+ fireEvent.click(screen.getByRole("button",{name:"Close comment"}));
+ expect(screen.queryByRole("textbox",{name:"comment on new.rs new line 1"})).toBeNull();expect(document.activeElement).toBe(add);
+ fireEvent.click(screen.getByRole("button",{name:"Resume comment"}));
+ expect(screen.getByRole("textbox",{name:"comment on new.rs new line 1"})).toBe(input);expect(input).toHaveProperty("value","Keep this exact comment");
+ fireEvent.keyDown(input,{key:"Escape"});expect(screen.queryByRole("textbox",{name:"comment on new.rs new line 1"})).toBeNull();expect(sender).not.toHaveBeenCalled();
+});
+it("returns focus after closing when the original line action is unavailable", () => {
+  setSynth(true);
+  const sender = vi.fn(), view = render(<FileView file={file()} onComment={sender}/>);
+  fireEvent.click(screen.getByRole("button", { name: "comment on new line 1" }));
+  const input = screen.getByRole("textbox");
+  fireEvent.change(input, { target: { value: "Keep the unavailable-action draft" } });
+  view.rerender(<FileView file={file()}/>);
+  const toggle = screen.getByRole("button", { name: "Collapse new.rs" });
+  expect(toggle).toHaveProperty("disabled", true);
+  fireEvent.click(screen.getByRole("button", { name: "Close comment" }));
+  expect(toggle).toHaveProperty("disabled", false);
+  expect(document.activeElement).toBe(toggle);
+  fireEvent.click(screen.getByRole("button", { name: "Resume comment" }));
+  expect(screen.getByRole("textbox")).toBe(input);
+  expect(input).toHaveProperty("value", "Keep the unavailable-action draft");
+  expect(sender).not.toHaveBeenCalled();
+});
 it("expands ordinary files and collapses them without losing an unsent comment", () => {
   const onComment = vi.fn();
   render(<FileView file={file()} reviewKey="chat:1:working" onComment={onComment} />);
@@ -20,6 +68,52 @@ it("expands ordinary files and collapses them without losing an unsent comment",
   expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("Keep this draft");
   expect(onComment).not.toHaveBeenCalled();
 });
+it("does not silently retarget an unsent comment when the diff changes", () => {
+  const before = vi.fn().mockResolvedValue(true), after = vi.fn().mockResolvedValue(true);
+  const view = render(<FileView file={file("original line")} reviewKey="chat:1:working" onComment={before} />);
+  fireEvent.click(screen.getByRole("button", { name: "comment on new line 1" }));
+  fireEvent.change(screen.getByRole("textbox"), { target: { value: "Fix the original value" } });
+  view.rerender(<FileView file={file("a completely different line")} reviewKey="chat:1:working" onComment={after} />);
+  fireEvent.click(screen.getByRole("button", { name: "Comment" }));
+  expect(before).not.toHaveBeenCalled(); expect(after).not.toHaveBeenCalled();
+  expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("Fix the original value");
+  expect(screen.getByText(/anchor changed/i)).toBeTruthy();
+});
+
+it("retains a removed-line draft and requires explicit reanchoring before a first submission", async () => {
+  const before=vi.fn().mockResolvedValue(true), after=vi.fn().mockResolvedValue(true);
+  const view=render(<FileView file={file("original")} reviewKey="chat:1" commentScope="epoch:1" onComment={before}/>);
+  fireEvent.click(screen.getByRole("button",{name:"comment on new line 1"}));
+  fireEvent.change(screen.getByRole("textbox"),{target:{value:"Keep this exact draft"}});
+  view.rerender(<FileView file={{...file(),hunks:[]}} reviewKey="chat:1" commentScope="epoch:2" onComment={after}/>);
+  expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("Keep this exact draft");
+  fireEvent.click(screen.getByRole("button",{name:"Comment"})); expect(after).not.toHaveBeenCalled();
+  view.rerender(<FileView file={file("replacement")} reviewKey="chat:1" commentScope="epoch:2" onComment={after}/>);
+  fireEvent.click(screen.getByRole("button",{name:"comment on new line 1"}));
+  fireEvent.click(screen.getByRole("button",{name:"Comment"}));
+  await waitFor(()=>expect(after).toHaveBeenCalledWith("Keep this exact draft",expect.objectContaining({side:"new",line_start:1})));
+  expect(before).not.toHaveBeenCalled();
+});
+it("keeps an active composer mounted while submission is temporarily unavailable", () => {
+  const view=render(<FileView file={file()} onComment={vi.fn()}/>);
+  fireEvent.click(screen.getByRole("button",{name:"comment on new line 1"}));
+  const input=screen.getByRole("textbox"); fireEvent.change(input,{target:{value:"Wait for the current action"}});
+  view.rerender(<FileView file={file()}/>);
+  expect(screen.getByRole("textbox")).toBe(input);
+  expect((screen.getByRole("button",{name:"Comment"}) as HTMLButtonElement).disabled).toBe(true);
+});
+
+it("does not promise idempotent replay for a legacy comment sender",async()=>{
+ const before=vi.fn().mockRejectedValue(Error("response unknown")), after=vi.fn();
+ const view=render(<FileView file={file()} onComment={before}/>);
+ fireEvent.click(screen.getByRole("button",{name:"comment on new line 1"}));
+ fireEvent.change(screen.getByRole("textbox"),{target:{value:"Original comment"}});
+ fireEvent.click(screen.getByRole("button",{name:"Comment"})); await screen.findByRole("alert");
+ view.rerender(<FileView file={file("changed")} onComment={after}/>);
+ expect((screen.getByRole("button",{name:"Comment"}) as HTMLButtonElement).disabled).toBe(true);
+ expect(screen.queryByText(/Retry uses the original request/)).toBeNull();
+});
+
 it("persists viewed progress, scopes it, and clears it when the file changes", async () => {
   const view = render(<FileView file={file()} reviewKey="chat:1:unstaged" />);
   fireEvent.click(screen.getByRole("checkbox", { name: "Viewed new.rs" }));

@@ -1,4 +1,7 @@
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { measurementsByNode, type Measurement } from "./synth/data/telemetry";
+import { useReadoutSnapshot } from "./synth/motion/useReadoutSnapshot";
 
 import { RepoGraph, zoneColour } from "./Map";
 import type { RunEvent } from "./api";
@@ -15,7 +18,14 @@ import { chatPlan, type ChatPlan, type PlanStatus } from "./plan-api";
 import "./chat-overview.css";
 
 /** The columns a plan tally reads as, in the order work moves through them. */
-const STAGES: PlanStatus[] = ["draft", "ready", "active", "in_review", "blocked", "done"];
+const STAGES: PlanStatus[] = ["draft", "ready", "active", "in_review", "blocked", "done", "deferred"];
+const OverviewRack = lazy(() => import("./synth/views/panels/OverviewRack"));
+const PatchBay = lazy(() => import("./synth/views/PatchBay/PatchBay"));
+const RepositoryView = lazy(() => import("./synth/views/panels/RepositoryView"));
+const AgentTelemetry = lazy(() => import("./synth/views/panels/AgentTelemetry"));
+const TouchCounts = lazy(() => import("./synth/views/panels/AgentTelemetry").then(module => ({ default: module.TouchCounts })));
+const NO_MEASUREMENTS: Measurement[] = [];
+type Scoped<T> = { scope: string; value: T };
 
 /** How many touched paths one seat lists before the rest go behind a disclosure. */
 const SHOWN = 6;
@@ -41,10 +51,16 @@ export function ChatOverview({
   detail,
   status,
   tick,
-  events,
+  events: currentEvents,
   elapsed,
   now,
+  synth = false,
+  onSelect,
+  patchHost,
 }: {
+  synth?: boolean;
+  patchHost?: HTMLElement;
+  onSelect?: (panel: "work" | "review") => void;
   detail: ChatDetail;
   status: string;
   tick: number;
@@ -52,11 +68,31 @@ export function ChatOverview({
   elapsed: number;
   now: number;
 }) {
-  const [live, setLive] = useState<Live | null>(null);
-  const [view, setView] = useState<ChatMapView | null>(null);
-  const [plan, setPlan] = useState<ChatPlan | null>(null);
-  const [problem, setProblem] = useState<string | null>(null);
-  const [mapProblem, setMapProblem] = useState<string | null>(null);
+  const scope = JSON.stringify([detail.id, detail.workspace_path, detail.workspace_epoch, detail.mode]);
+  const [snapshot, setSnapshot] = useState<Scoped<{ live: Live; plan: ChatPlan }> | null>(null);
+  const [mapSnapshot, setView] = useState<Scoped<ChatMapView> | null>(null);
+  const [failure, setProblem] = useState<Scoped<string> | null>(null);
+  const [mapFailure, setMapProblem] = useState<Scoped<string> | null>(null);
+  const host = useRef<HTMLDivElement>(null);
+  const latest = useMemo(() => ({
+    live: snapshot?.scope === scope ? snapshot.value.live : null,
+    plan: snapshot?.scope === scope ? snapshot.value.plan : null,
+    view: mapSnapshot?.scope === scope ? mapSnapshot.value : null,
+    events: currentEvents,
+  }), [snapshot, mapSnapshot, scope, currentEvents]);
+  const { live, plan, view, events } = useReadoutSnapshot(host, latest, `${scope}:${latest.live !== null}:${latest.view !== null}`, synth);
+  const problem = failure?.scope === scope ? failure.value : null;
+  const mapProblem = mapFailure?.scope === scope ? mapFailure.value : null;
+  const [mapDetailsOpen, setMapDetailsOpen] = useState(false);
+  const [agentDetailsOpen, setAgentDetailsOpen] = useState(false);
+  const [inspectorHost] = useState(() => document.createElement("div"));
+  const mountInspector = useCallback((node: HTMLDivElement | null) => { if (node && inspectorHost.parentNode !== node) node.append(inspectorHost); }, [inspectorHost]);
+  const synthOpened = useRef(false);
+  if (synth) synthOpened.current = true;
+  const node = detail.active_node_id ?? detail.turns.at(-1)?.node.id ?? null;
+  const history = useMemo(() => measurementsByNode(events, new Set([
+    ...(node === null ? [] : [node]), ...(live?.seats.map(seat => seat.node_id) ?? []),
+  ])), [events, live?.seats, node]);
 
   useEffect(() => {
     let current = true;
@@ -64,36 +100,37 @@ export function ChatOverview({
     setView(null);
     chatOverviewMap(detail.id)
       .then((found) => {
-        if (current) setView(found);
+        if (found.workspace !== detail.workspace_path) throw new Error("Repository snapshot no longer matches this checkout.");
+        if (current) setView({ scope, value: found });
       })
       .catch((error: unknown) => {
-        if (current) setMapProblem(message(error));
+        if (current) setMapProblem({ scope, value: message(error) });
       });
     return () => {
       current = false;
     };
-  }, [detail.id, detail.workspace_path, detail.mode]);
+  }, [scope]);
 
   useEffect(() => {
     let current = true;
     Promise.all([chatOverview(detail.id), chatPlan(detail.id)])
       .then(([found, planned]) => {
         if (!current) return;
-        setLive(found);
-        setPlan(planned);
+        if (found.chat_id !== detail.id || planned.chat_id !== detail.id || found.workspace !== detail.workspace_path || found.mode !== detail.mode) throw new Error("Overview snapshot no longer matches this chat and checkout.");
+        setSnapshot({ scope, value: { live: found, plan: planned } });
         setProblem(null);
       })
       .catch((error: unknown) => {
-        if (current) setProblem(message(error));
+        if (current) setProblem({ scope, value: message(error) });
       });
     return () => {
       current = false;
     };
-  }, [detail.id, tick]);
+  }, [scope, tick]);
 
   const running = detail.state === "running" || detail.state === "stopping";
   const active = events.filter(
-    (event) => event.node_run_id === (detail.active_node_id ?? detail.turns.at(-1)?.node.id),
+    (event) => !event.telemetry_only && event.node_run_id === (detail.active_node_id ?? detail.turns.at(-1)?.node.id),
   );
   const seats = live?.seats ?? [];
   const activity = view === null ? null : chatActivity(view.map, seats);
@@ -102,9 +139,15 @@ export function ChatOverview({
   const slices = plan?.bundle?.slices ?? [];
   const owned = view === null ? 0 : view.map.files - view.map.unowned;
 
+  const patch = synthOpened.current && detail.mode === "team" && <Suspense fallback={<p className="faint">Loading team evidence…</p>}><PatchBay detail={detail} live={live} events={events} inspectorHost={inspectorHost} compact={!!patchHost} onWork={onSelect ? () => onSelect("work") : undefined} onReview={onSelect ? () => onSelect("review") : undefined}/></Suspense>;
   return (
-    <>
-      <section className="chat-overview-card">
+    <div ref={host} className="chat-overview-content">
+      {patchHost ? createPortal(<div hidden={!synth || detail.mode !== "team"}>{patch}</div>, patchHost) : <div hidden={!synth || detail.mode !== "team"}>{patch}</div>}
+      <div hidden={!synth}>
+        {synthOpened.current && <Suspense fallback={<p className="faint">Loading Synth rack…</p>}><OverviewRack detail={detail} status={status} events={events} history={node === null ? NO_MEASUREMENTS : history.get(node) ?? NO_MEASUREMENTS} live={live} view={view} elapsed={elapsed} now={now} /></Suspense>}
+      </div>
+      <div ref={mountInspector} hidden={!synth || detail.mode !== "team"}/>
+      <section className="chat-overview-card" hidden={synth}>
         <h3>Execution</h3>
         <strong>{status}</strong>
         <p>
@@ -130,7 +173,7 @@ export function ChatOverview({
         </p>
       )}
 
-      <div className="figures chat-figures">
+      <div className="figures chat-figures" hidden={synth}>
         <div className="figure">
           <span className="figure__label faint">files</span>
           <span className="figure__value mono">{view === null ? "…" : compact(view.map.files)}</span>
@@ -163,10 +206,10 @@ export function ChatOverview({
 
       <section className="chat-overview-card" aria-label="Repository map">
         <h3>Repository</h3>
-        <p className="faint">
+        <p className="faint" hidden={synth && !busy}>
           {busy
             ? `${lit} ${lit === 1 ? "path" : "paths"} lit · ${activity?.working.size} working`
-            : "every path, and the seat whose zone claims it in this chat"}
+            : "zone coverage and displayed paths for this chat"}
         </p>
         {view === null ? (
           <p className="faint">Walking this chat's checkout…</p>
@@ -197,17 +240,21 @@ export function ChatOverview({
                 </li>
               )}
             </ul>
-            {activity !== null && <RepoGraph map={view.map} activity={activity} />}
+            <div hidden={!synth}>{synthOpened.current && <Suspense fallback={<p>Loading repository displays…</p>}><RepositoryView map={view.map} seats={live?.seats ?? null} /></Suspense>}</div>
+            <details open={!synth || mapDetailsOpen} onToggle={event => { if (synth) setMapDetailsOpen(event.currentTarget.open); }}><summary hidden={!synth}>Repository map details</summary>{activity !== null && <RepoGraph map={view.map} activity={activity} />}
             <p className="faint">
               {view.map.unowned === 0
                 ? "Every path is inside a seat's zone, so nothing here would be reported unroutable."
                 : `${view.map.unowned} ${view.map.unowned === 1 ? "path belongs" : "paths belong"} to no seat of this chat. Work touching one is reported undone rather than given to somebody.`}
+              {` ${view.map.nodes.length} displayed nodes, bounded to 700; ${view.map.files} files walked, bounded to 50,000.`}
               {view.map.truncated && " The walk stopped early, so this is a sample of the checkout."}
-            </p>
+            </p></details>
           </>
         )}
       </section>
 
+      <details open={!synth || detail.mode !== "team" || agentDetailsOpen} onToggle={event => { if (synth && detail.mode === "team") setAgentDetailsOpen(event.currentTarget.open); }}>
+      <summary hidden={!synth || detail.mode !== "team"}>Agent files and activity details</summary>
       <section className="chat-overview-card" aria-label="Agents and files">
         <h3>Agents</h3>
         {live === null ? (
@@ -226,7 +273,7 @@ export function ChatOverview({
                   {index > 0 && <span className="team-graph__connector" aria-hidden="true" data-live={group.seats.some(isWorking)} />}
                   <section className="team-graph__stage" aria-label={group.stage}>
                     <span className="team-graph__stage-label">{group.stage}</span>
-                    {group.seats.map(seat => <Seat key={seat.role} seat={seat} now={now} workspace={live.workspace} />)}
+                    {group.seats.map(seat => <Seat key={seat.role} seat={seat} now={now} workspace={live.workspace} synth={synth} history={history.get(seat.node_id) ?? NO_MEASUREMENTS} />)}
                   </section>
                 </div>)}
               </div>
@@ -242,6 +289,7 @@ export function ChatOverview({
         )}
       </section>
 
+      </details>
       {detail.turns.length > 0 && <section className="chat-overview-card" aria-label="Recent turns">
         <h3>Recent turns</h3>
         <ol className="chat-turn-list">{detail.turns.slice(-5).reverse().map(turn => <li key={turn.run.id}>
@@ -340,7 +388,7 @@ export function ChatOverview({
             : "Changes stay in this checkout. Completion is not an automatic commit or verification verdict."}
         </p>
       </section>
-    </>
+    </div>
   );
 }
 
@@ -357,8 +405,10 @@ function roles(view: ChatMapView): string[] {
  * running, and what it last said. There is no percentage here, because nothing in the
  * evidence knows how far through a task an agent is.
  */
-function Seat({ seat, now, workspace }: { seat: ChatSeat; now: number; workspace: string }) {
+function Seat({ seat, now, workspace, synth, history }: { seat: ChatSeat; now: number; workspace: string; synth: boolean; history: Measurement[] }) {
   const [all, setAll] = useState(false);
+  const synthOpened = useRef(false);
+  if (synth) synthOpened.current = true;
   const doing = operational(seat, now);
   const interrupted = seat.live && seat.supervised === false;
   const shown = all ? seat.touches : seat.touches.slice(0, SHOWN);
@@ -418,10 +468,20 @@ function Seat({ seat, now, workspace }: { seat: ChatSeat; now: number; workspace
           </span>
         )}
       </div>
+      <details className="chat-seat-evidence" hidden={!synth}><summary>Run, supervision &amp; usage evidence</summary><dl>
+        <dt>Identity</dt><dd>Run #{seat.run_id} · node #{seat.node_id} · attempt {seat.attempt}</dd>
+        <dt>Stored state</dt><dd>{seat.status} · live flag {seat.live ? "yes" : "no"}</dd>
+        <dt>Supervision</dt><dd>{seat.supervised === null ? "Unrecorded" : seat.supervised ? "Process observed" : "No live process"}</dd>
+        <dt>Checkout</dt><dd className="mono">{seat.worktree ?? "Unrecorded"}</dd>
+        <dt>Started / ended</dt><dd>{seat.started_at ?? "Unrecorded"} / {seat.ended_at ?? "Unrecorded"}</dd>
+        <dt>Uncached input / output</dt><dd>{seat.usage.tokens_in} / {seat.usage.tokens_out}</dd>
+        <dt>Cache read / write</dt><dd>{seat.usage.cache_read} / {seat.usage.cache_write}</dd>
+      </dl></details>
       {seat.worktree !== null && seat.worktree !== workspace && (
         <p className="mono faint">{seat.worktree}</p>
       )}
 
+      <div hidden={!synth}>{synthOpened.current && <Suspense fallback={<p className="faint">Loading context evidence…</p>}><AgentTelemetry history={history} node={seat.node_id} /></Suspense>}</div>
       {seat.touches.length === 0 ? (
         <p className="faint">No file touched in the turns read.</p>
       ) : (
@@ -429,11 +489,12 @@ function Seat({ seat, now, workspace }: { seat: ChatSeat; now: number; workspace
           {shown.map((touch) => (
             <li key={touch.path} data-wrote={touch.writes > 0}>
               <span className="mono">{touch.path}</span>
-              <span className="faint">
+              <span className="faint" hidden={synth}>
                 {touch.writes > 0
                   ? `${touch.writes} ${touch.writes === 1 ? "edit" : "edits"}`
                   : `${touch.reads} ${touch.reads === 1 ? "read" : "reads"}`}
               </span>
+              <div hidden={!synth}>{synthOpened.current && <Suspense fallback={null}><TouchCounts reads={touch.reads} writes={touch.writes} /></Suspense>}</div>
             </li>
           ))}
         </ul>

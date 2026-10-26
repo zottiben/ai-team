@@ -1,0 +1,7 @@
+import type { ComponentPropsWithRef } from "react";
+
+export function Lcd({ grid = false, variant, className = "", ...props }: ComponentPropsWithRef<"div"> & {
+  grid?: boolean; variant?: "alert" | "working" | "comment";
+}) {
+  return <div {...props} className={`synth-lcd ${className}`} data-grid={grid || undefined} data-variant={variant} />;
+}

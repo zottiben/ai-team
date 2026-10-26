@@ -19,6 +19,13 @@ if (typeof window !== "undefined" && window.matchMedia === undefined) {
   })) as unknown as typeof window.matchMedia;
 }
 
+// jsdom has no top layer. Unit tests exercise ownership; native focus trapping,
+// inert background and Escape dismissal are verified in the real-browser fixture.
+if (typeof HTMLDialogElement !== "undefined" && HTMLDialogElement.prototype.showModal === undefined) {
+  HTMLDialogElement.prototype.showModal = function () { this.open = true; };
+  HTMLDialogElement.prototype.close = function () { this.open = false; };
+}
+
 // CodeMirror measures the document to decide what to draw, and measuring means asking a
 // Range for its rectangles. jsdom implements Range but not its geometry, so the first
 // paint of any editor throws - and an unhandled error fails the whole run even when every

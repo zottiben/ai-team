@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 
-import { Popover } from "./Popover";
+import { Modal } from "./Modal";
 import { useWorkspaceSetup } from "./WorkspaceSetup";
 import type { ChatDetail } from "./chat-api";
 import { approveWorkspace, cancelWorkspace, chatWorkspaces, requestWorkspace, workspaceRequests, type WorkspaceChoice, type WorkspaceRequest } from "./chat-workspace-api";
@@ -28,7 +28,8 @@ export function ChatWorkspace({ project, detail, selected, tick, disabled, onSel
   const working = useRef(false);
   const notified = useRef<number | null>(null);
   const id = detail?.id;
-  const setup = useWorkspaceSetup(project, id === undefined, tick);
+  const setup = useWorkspaceSetup(project, true, tick);
+  const needsInspection = setup.items.some(item => item.state === "inspection");
   useEffect(() => { onPending(pending !== null || setup.pending); }, [pending, setup.pending, onPending]);
   const workspace = detail?.workspace_path ?? selected;
   useEffect(() => {
@@ -61,10 +62,10 @@ export function ChatWorkspace({ project, detail, selected, tick, disabled, onSel
     finally { working.current = false; setBusy(false); }
   };
   return <>
-    <button type="button" ref={button} className="button chat-checkout-picker" aria-label="Choose checkout" aria-expanded={open} title={workspace ?? "Choose a project checkout"} disabled={disabled && !pending} onClick={() => setOpen(!open)}>
-      {setup.pending ? "Worktree setup in progress" : pending ? "Worktree change waiting" : workspace ? workspace.split("/").at(-1) : "Local"}
+    <button type="button" ref={button} className="button chat-checkout-picker" aria-label="Choose checkout" aria-expanded={open} title={workspace ?? "Choose a project checkout"} disabled={disabled && !pending && !setup.pending} onClick={() => setOpen(!open)}>
+      {needsInspection ? "Worktree setup needs inspection" : setup.pending ? "Worktree setup in progress" : pending ? "Worktree change waiting" : workspace ? workspace.split("/").at(-1) : "Local"}
     </button>
-    {open && <Popover anchor={button} label="Chat checkout" width={640} onClose={() => setOpen(false)} className="chat-checkout-popover">
+    {open && <Modal anchor={button} label="Chat checkout" onClose={() => setOpen(false)} className="anchored-popover chat-checkout-popover chat-checkout-modal">
       <Suspense fallback={<p className="faint">Loading checkout choices…</p>}><Details
         workspace={workspace} detail={detail} choices={choices} target={target}
         problem={problem} busy={busy} disabled={disabled} pending={pending} setup={setup}
@@ -77,6 +78,6 @@ export function ChatWorkspace({ project, detail, selected, tick, disabled, onSel
         onApprove={() => detail && pending && void act(async () => { await approveWorkspace(detail.id, pending.id, detail.rev); setOpen(false); })}
         onCancel={() => detail && pending && void act(() => cancelWorkspace(detail.id, pending.id))}
       /></Suspense>
-    </Popover>}
+    </Modal>}
   </>;
 }

@@ -26,6 +26,7 @@ mod db;
 mod delivery;
 mod dialog;
 mod diff;
+pub mod editor;
 mod error;
 mod gates;
 mod guardrails;
@@ -54,6 +55,7 @@ mod stack;
 mod store;
 mod supervise;
 mod tasks;
+pub mod telemetry;
 mod terminal;
 mod today;
 mod update;
@@ -83,6 +85,12 @@ pub use db::{latest_schema, Db};
 pub use delivery::{approve_delivery, delivery_status};
 pub use dialog::alert;
 pub use diff::{parse as parse_diff, patch_for, FileDiff, FileStatus, Hunk, Line, LineKind};
+pub use editor::{
+    discard_preserved as discard_preserved_file, head_text as file_at_head, open as open_file,
+    preserved as preserved_files, preview as preview_save, read_preserved as read_preserved_file,
+    save as save_file, BoundedText as EditorText, Eol, FileRevision, OpenedFile, PreservedEntry,
+    PreservedOriginal, Refusal, RefusalReason, SaveOutcome, SavePreview, Saved,
+};
 pub use error::{Error, Result};
 pub use gates::{all_passed, discover_gates, evidence, run_gates, Gate, GateKind, GateResult};
 pub use guardrails::Fallout;
@@ -117,12 +125,12 @@ pub use mcp::{
 };
 pub use model::{
     Agent, ChatMode, ChatTeamPhase, CommentStatus, DeliveryAction, DeliveryPolicy,
-    DeliverySettings, DiffSide, Event, EventKind, Guardrails, NewAgent, NewComment, NewEvent,
-    NewNotification, NewProject, NewReminder, NewRepo, NodeRun, NodeStatus, Notification,
-    OnFailure, Project, ProjectKind, ProjectRepo, ProjectSource, ProjectStatus, Provider,
-    Reasoning, Recur, Reminder, ReminderKind, ReminderStatus, RemoteDeliveryStatus, Review,
-    ReviewComment, ReviewStatus, Run, RunOrigin, RunStatus, RunTrigger, ScheduleOutcome, Team,
-    ToolEffect, ToolPolicy, Usage,
+    DeliverySettings, DiffSide, Event, EventKind, EventObservation, Guardrails, NewAgent,
+    NewComment, NewEvent, NewNotification, NewProject, NewReminder, NewRepo, NodeRun, NodeStatus,
+    Notification, OnFailure, Project, ProjectKind, ProjectRepo, ProjectSource, ProjectStatus,
+    Provider, Reasoning, Recur, Reminder, ReminderKind, ReminderStatus, RemoteDeliveryStatus,
+    Review, ReviewComment, ReviewStatus, Run, RunOrigin, RunStatus, RunTrigger, ScheduleOutcome,
+    ShellOutput, Team, ToolEffect, ToolPolicy, Usage,
 };
 pub use neighbours::{
     apply_patch_cached, branches, checkout, commit_staged, current_branch, file_sql_available,
@@ -169,9 +177,15 @@ pub use speak::{
     target_in as speak_target_in, Reached, Target, Would,
 };
 pub use stack::parent as stacked_on;
-pub use store::{Abandoned, Store, INTERRUPTED_REASON};
+pub use store::{
+    Abandoned, ClaimedPress, Dispatch, DispatchClaim, PressRequest, Store, TerminalCommandRow,
+    TerminalPad, INTERRUPTED_REASON,
+};
 pub use supervise::{outcome_status, Dispatched, Orchestration, Orchestrator, Rig, TurnOutcome};
-pub use terminal::{Chunk, Listed, TerminalUpdate, Terminals};
+pub use terminal::{
+    Chunk, CommandReceipt, Listed, ManagedCommand, SessionKind, SettledCommand, TerminalUpdate,
+    Terminals,
+};
 pub use today::{
     checkouts as today_checkouts, from_plans as today_from_plans, from_question, from_slice,
     from_store as today_from_store, rank as rank_today, Item, Urgency,

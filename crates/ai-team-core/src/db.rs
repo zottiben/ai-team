@@ -5,6 +5,10 @@
 //! the same reason the frontend is: a binary installed with `cargo install` has no repo
 //! next to it, and a schema it cannot find is a schema it cannot apply.
 
+mod terminal_receipts;
+#[cfg(test)]
+mod terminal_upgrade_tests;
+
 use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior};
@@ -192,6 +196,46 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
         "full thinking range",
         include_str!("migrations/043_thinking_levels.sql"),
     ),
+    (
+        44,
+        "supervisor event observations",
+        include_str!("migrations/044_event_observations.sql"),
+    ),
+    (
+        45,
+        "bounded host activity snapshots",
+        include_str!("migrations/045_event_activity.sql"),
+    ),
+    (
+        46,
+        "editor save notices",
+        include_str!("migrations/046_editor_saves.sql"),
+    ),
+    (
+        47,
+        "project command pads and receipts",
+        include_str!("migrations/047_terminal_pads.sql"),
+    ),
+    (
+        48,
+        "bounded provider telemetry receipts",
+        include_str!("migrations/048_telemetry.sql"),
+    ),
+    (
+        49,
+        "immutable bounded approval preview evidence",
+        include_str!("migrations/049_preview_evidence.sql"),
+    ),
+    (
+        50,
+        "upgrade development terminal receipts without replay",
+        include_str!("migrations/050_terminal_receipt_upgrade.sql"),
+    ),
+    (
+        51,
+        "snapshot queued solo models",
+        include_str!("migrations/051_followup_models.sql"),
+    ),
 ];
 
 /// Migrations that rebuild a table other tables point at.
@@ -202,7 +246,7 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
 /// `PRAGMA` refuses to change inside a transaction, so the switch has to happen out here
 /// rather than in the script. `foreign_key_check` then has to pass before the commit, or
 /// the migration is rolled back with enforcement still intact.
-const REBUILDS: &[i64] = &[43];
+const REBUILDS: &[i64] = &[43, 50];
 
 /// The number of `v_` views the schema ships. Asserted in tests, because a view silently
 /// dropped from a migration is a demo that quietly stops working.
@@ -362,7 +406,11 @@ impl Db {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        tx.execute_batch(sql)?;
+        if version == 50 {
+            terminal_receipts::migrate(&tx, sql)?;
+        } else {
+            tx.execute_batch(sql)?;
+        }
         tx.execute(
             "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?1, ?2, ?3)",
             rusqlite::params![version, name, now()],
@@ -513,6 +561,145 @@ mod tests {
         .unwrap();
     }
 
+    fn upgrade_thinking_only(path: &Path) -> Db {
+        let conn = Connection::open(path).unwrap();
+        configure(&conn).unwrap();
+        let mut db = Db {
+            conn,
+            path: path.to_path_buf(),
+        };
+        let (version, name, sql) = MIGRATIONS
+            .iter()
+            .find(|(version, _, _)| *version == 43)
+            .unwrap();
+        db.rebuild(*version, name, sql).unwrap();
+        db
+    }
+
+    #[test]
+    fn telemetry_upgrade_leaves_v47_rows_and_guards_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("v47.db");
+        seed_v42(&path);
+        let db = upgrade_thinking_only(&path);
+        for (version, name, sql) in MIGRATIONS.iter().filter(|(v, _, _)| *v > 43 && *v <= 47) {
+            db.conn().execute_batch(sql).unwrap();
+            db.conn()
+                .execute(
+                    "INSERT INTO schema_migrations VALUES(?1,?2,'fixture')",
+                    rusqlite::params![version, name],
+                )
+                .unwrap();
+        }
+        let query = "SELECT json_group_array(json_array(id,run_id,node_run_id,at,kind,summary,payload_json,observation_json,activity_json)) FROM event";
+        let before = snapshot(db.conn(), query);
+        let trigger_query = "SELECT json_group_array(sql) FROM sqlite_master WHERE type='trigger' AND tbl_name='event'";
+        let triggers = snapshot(db.conn(), trigger_query);
+        drop(db);
+        let db = Db::open(&path).unwrap();
+        assert_eq!(snapshot(db.conn(), query), before);
+        assert_eq!(snapshot(db.conn(), trigger_query), triggers);
+        assert_eq!(
+            snapshot(
+                db.conn(),
+                "SELECT json_group_array(telemetry_json) FROM event"
+            ),
+            "[null]"
+        );
+        assert!(db
+            .conn()
+            .execute("UPDATE event SET telemetry_json='{}' WHERE id=50", [])
+            .is_err());
+        assert!(db.conn().execute("INSERT INTO event(run_id,at,kind,telemetry_json) VALUES(1,'now','note','not json')", []).is_err());
+        drop(db);
+        assert_eq!(snapshot(Db::open(&path).unwrap().conn(), query), before);
+    }
+
+    #[test]
+    fn observations_upgrade_v43_without_rewriting_or_backfilling_events() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("v43.db");
+        seed_v42(&path);
+        let db = upgrade_thinking_only(&path);
+        let query = "SELECT json_group_array(json_array(id,run_id,node_run_id,at,kind,actor,summary,payload_json,eve_event_id)) FROM event";
+        let before = snapshot(db.conn(), query);
+        let trigger_query = "SELECT json_group_array(sql) FROM sqlite_master WHERE type='trigger' AND tbl_name='event'";
+        let triggers = snapshot(db.conn(), trigger_query);
+        drop(db);
+        let db = Db::open(&path).unwrap();
+        assert_eq!(db.schema_version().unwrap(), latest_schema());
+        assert_eq!(snapshot(db.conn(), query), before);
+        assert_eq!(
+            snapshot(
+                db.conn(),
+                "SELECT json_group_array(observation_json) FROM event"
+            ),
+            "[null]"
+        );
+        assert!(db
+            .conn()
+            .execute("UPDATE event SET observation_json='{}' WHERE id=50", [])
+            .is_err());
+        assert_eq!(
+            snapshot(db.conn(), trigger_query),
+            triggers,
+            "preserve the update guard and existing deletion/cascade behavior"
+        );
+        assert!(db.conn().execute("INSERT INTO event(run_id,at,kind,observation_json) VALUES(1,'now','step','not json')", []).is_err());
+        drop(db);
+        assert_eq!(snapshot(Db::open(&path).unwrap().conn(), query), before);
+    }
+
+    #[test]
+    fn activity_upgrade_preserves_v44_evidence_and_seeds_replay_watermarks() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("v44.db");
+        seed_v42(&path);
+        let db = upgrade_thinking_only(&path);
+        db.conn()
+            .execute_batch(include_str!("migrations/044_event_observations.sql"))
+            .unwrap();
+        db.conn().execute_batch("INSERT INTO schema_migrations VALUES(44,'observations','fixture');
+            UPDATE node_run SET session_id='legacy',stream_cursor=12 WHERE id=9;
+            INSERT INTO event(id,run_id,node_run_id,at,kind,summary,eve_event_id,observation_json)
+            VALUES(51,1,9,'original','tool_call','receipt','legacy:3','{\"clock_id\":\"original\",\"elapsed_ms\":7,\"at\":\"original\"}');").unwrap();
+        let query = "SELECT json_group_array(json_array(id,run_id,node_run_id,at,kind,summary,payload_json,eve_event_id,observation_json)) FROM event";
+        let before = snapshot(db.conn(), query);
+        drop(db);
+        let db = Db::open(&path).unwrap();
+        assert_eq!(snapshot(db.conn(), query), before);
+        assert_eq!(
+            snapshot(
+                db.conn(),
+                "SELECT json_group_array(activity_json) FROM event"
+            ),
+            "[null,null]"
+        );
+        assert_eq!(
+            db.conn()
+                .query_row(
+                    "SELECT next_index FROM pi_ingest_cursor WHERE session_id='legacy'",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+            12
+        );
+        assert!(db
+            .conn()
+            .execute("UPDATE event SET activity_json='{}' WHERE id=51", [])
+            .is_err());
+        assert!(db
+            .conn()
+            .execute(
+                "INSERT INTO event(run_id,at,kind,activity_json) VALUES(1,'now','note','not json')",
+                []
+            )
+            .is_err());
+        drop(db);
+        assert_eq!(snapshot(Db::open(&path).unwrap().conn(), query), before);
+    }
+
     fn snapshot(conn: &Connection, sql: &str) -> String {
         conn.query_row(sql, [], |r| r.get::<_, String>(0)).unwrap()
     }
@@ -570,8 +757,9 @@ mod tests {
             (taken, objects(&conn))
         };
 
-        let db = Db::open(&path).unwrap();
-        assert_eq!(db.schema_version().unwrap(), latest_schema());
+        // This exact-schema assertion certifies migration 43, not later additive migrations.
+        let db = upgrade_thinking_only(&path);
+        assert_eq!(db.schema_version().unwrap(), 43);
         let conn = db.conn();
 
         let after = [agents, nodes, chats, sequences].map(|q| snapshot(conn, q));

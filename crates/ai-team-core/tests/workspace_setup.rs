@@ -128,6 +128,10 @@ fn tools(bin: &Path) {
         r#"#!/bin/sh
 set -eu
 r="$WORKSPACE_FIXTURE"
+if [ "$*" = 'get --help' ]; then
+ if [ -f "$r/supports-exclusions" ]; then printf '      --exclude stringArray   Existing checkout to preserve\n'; else printf '      --lease   Lease checkout\n'; fi
+ exit 0
+fi
 if [ "$*" = 'status --json' ]; then
  printf '{"worktrees":['; separator=''
  for file in "$r"/holder-*; do
@@ -138,13 +142,21 @@ if [ "$*" = 'status --json' ]; then
  printf ']}'; exit 0
 fi
 [ "$1 $2 $3" = 'get --lease --lease-holder' ] || exit 99
+holder="$4"; shift 4
+: > "$r/excluded"
+while [ "$#" -gt 0 ]; do
+ [ "$1" = '--exclude' ] && [ "$#" -ge 2 ] || exit 98
+ printf '%s\n' "$2" >> "$r/excluded"; shift 2
+done
+if [ -f "$r/require-exclusion" ]; then grep -Fx "$(cat "$r/require-exclusion")" "$r/excluded" >/dev/null || exit 88; fi
 n=0; [ ! -f "$r/count" ] || n=$(cat "$r/count"); n=$((n+1)); printf '%s' "$n" > "$r/count"
 git worktree add --detach "$r/lease$n" >/dev/null
-printf '%s' "$4" > "$r/holder-$n"
+printf '%s' "$holder" > "$r/holder-$n"
 mkdir -p "$r/lease$n/vendor" "$r/lease$n/node_modules"
 printf 'stale' > "$r/lease$n/vendor/autoload.php"
 printf 'AWT hook ran' > "$r/lease$n/hook-result"
 [ ! -f "$r/missing-lock" ] || rm "$r/lease$n/bun.lock"
+[ ! -f "$r/lose-get-response" ] || exit 19
 printf '%s/lease%s\n' "$r" "$n"
 "#,
     );
@@ -407,6 +419,7 @@ async fn active_work_still_fences_an_unleased_pool_slot(f: &mut Fixture) {
         .unwrap();
     // This slot has live app authority even in the gap before Pi is spawned, and
     // through another registration. AWT's process scan cannot see that reservation.
+    let holder = std::fs::read(f.root.join("holder-3")).unwrap();
     std::fs::write(f.root.join("holder-3"), "").unwrap();
     let (request, _) = f
         .store
@@ -416,8 +429,8 @@ async fn active_work_still_fences_an_unleased_pool_slot(f: &mut Fixture) {
         .await
         .unwrap();
     assert_eq!(
-        result.state, "inspection",
-        "unleased reserved work must stop acquisition: {}",
+        result.state, "failed",
+        "a drained pre-acquisition refusal must not fence the whole project: {}",
         result.detail
     );
     assert!(result.detail.contains("active or retained"));
@@ -429,6 +442,97 @@ async fn active_work_still_fences_an_unleased_pool_slot(f: &mut Fixture) {
     f.store
         .finish_chat_turn(chat.id, turn.node_id, NodeStatus::Cancelled, None)
         .unwrap();
+    std::fs::write(f.root.join("holder-3"), holder).unwrap();
+    let turn = f
+        .store
+        .begin_chat_turn(
+            f.chat,
+            "existing checkout still works",
+            "after-refusal",
+            &ModelRegistry::local_only(),
+        )
+        .unwrap();
+    f.store
+        .finish_chat_turn(f.chat, turn.node_id, NodeStatus::Cancelled, None)
+        .unwrap();
+    let replay = workspace_setup::run(f.store.path(), f.project, request.id)
+        .await
+        .unwrap();
+    assert_eq!(replay.rev, result.rev);
+    assert_eq!(std::fs::read_to_string(f.root.join("count")).unwrap(), "3");
+    assert!(
+        workspace_setup::retry_dependencies(f.store.path(), f.project, request.id, result.rev)
+            .await
+            .is_err()
+    );
+}
+
+async fn supported_acquisition_excludes_retained_slots(f: &mut Fixture) {
+    std::fs::write(f.root.join("supports-exclusions"), "").unwrap();
+    let pinned = f.root.join("lease3");
+    std::fs::write(f.root.join("require-exclusion"), pinned.to_str().unwrap()).unwrap();
+    let before = std::fs::read(pinned.join("README.md")).unwrap();
+    let (request, _) = f
+        .store
+        .request_workspace_setup(f.project, &f.repo, "exclude-retained", "")
+        .unwrap();
+    let result = workspace_setup::run(f.store.path(), f.project, request.id)
+        .await
+        .unwrap();
+    assert_eq!(result.state, "ready", "{}", result.detail);
+    assert_eq!(
+        result.workspace_path.as_deref(),
+        Some(f.root.join("lease4").to_str().unwrap())
+    );
+    assert_eq!(std::fs::read(pinned.join("README.md")).unwrap(), before);
+    assert_eq!(
+        std::fs::read_to_string(f.root.join("excluded"))
+            .unwrap()
+            .trim(),
+        pinned.to_str().unwrap()
+    );
+    workspace_setup::run(f.store.path(), f.project, request.id)
+        .await
+        .unwrap();
+    assert_eq!(std::fs::read_to_string(f.root.join("count")).unwrap(), "4");
+}
+
+async fn an_unlocated_acquisition_still_requires_inspection(f: &mut Fixture) {
+    std::fs::write(f.root.join("lose-get-response"), "").unwrap();
+    let (request, _) = f
+        .store
+        .request_workspace_setup(f.project, &f.repo, "lost-acquisition", "")
+        .unwrap();
+    let result = workspace_setup::run(f.store.path(), f.project, request.id)
+        .await
+        .unwrap();
+    assert_eq!(result.state, "inspection");
+    assert!(result.workspace_path.is_none());
+    assert!(f
+        .store
+        .begin_chat_turn(
+            f.chat,
+            "must remain blocked",
+            "before-inspection",
+            &ModelRegistry::local_only()
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("AWT setup"));
+    let inspected = workspace_setup::inspect(f.store.path(), f.project, request.id, result.rev)
+        .await
+        .unwrap();
+    assert_eq!(inspected.state, "failed");
+    assert_eq!(
+        inspected.workspace_path.as_deref(),
+        Some(f.root.join("lease5").to_str().unwrap())
+    );
+    assert_eq!(
+        std::fs::read_to_string(f.root.join("count")).unwrap(),
+        "5",
+        "inspection must never reacquire"
+    );
+    assert!(f.root.join("holder-5").is_file());
 }
 
 // One test owns the process environment. Phases share only this scratch repository.
@@ -442,6 +546,8 @@ async fn awt_setup_is_idempotent_bootstraps_warm_dependencies_and_keeps_failed_l
     retry(&mut f).await;
     inspect_and_missing_lock(&mut f).await;
     active_work_still_fences_an_unleased_pool_slot(&mut f).await;
+    supported_acquisition_excludes_retained_slots(&mut f).await;
+    an_unlocated_acquisition_still_requires_inspection(&mut f).await;
     assert_eq!(
         std::fs::read_to_string(f.repo.join("README.md")).unwrap(),
         "preserve"
@@ -450,7 +556,7 @@ async fn awt_setup_is_idempotent_bootstraps_warm_dependencies_and_keeps_failed_l
     assert!(!f.repo.join("node_modules").exists());
     assert_eq!(
         f.store.chat_turns(f.chat).unwrap().len(),
-        1,
-        "setup never manufactures an agent turn"
+        2,
+        "only the two explicitly requested turns are recorded"
     );
 }

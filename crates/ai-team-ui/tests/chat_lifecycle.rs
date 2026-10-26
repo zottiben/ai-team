@@ -508,6 +508,18 @@ fn queued_instructions(f: &Fixture, chat: i64, other: i64) {
             queued["id"]
         );
         if kind == "follow_up" {
+            let before = f.detail(chat);
+            let calls_before = f.calls().len();
+            let changed = f.post(
+                &format!("/chats/{chat}/model"),
+                json!({"provider":"local","model":"alternate","expect_revision":before["rev"]}),
+            );
+            assert_eq!(changed["model"], "alternate");
+            assert_eq!(
+                f.calls().len(),
+                calls_before,
+                "model selection must not dispatch"
+            );
             assert_eq!(f.detail(chat)["active_node_id"], first["node_id"]);
             assert!(!f.calls().iter().any(|call| call["prompt"]
                 .as_str()
@@ -525,7 +537,18 @@ fn queued_instructions(f: &Fixture, chat: i64, other: i64) {
         });
         let receipt = done["followups"].as_array().unwrap().last().unwrap();
         assert_ne!(receipt["node_id"], first["node_id"]);
-        let calls = f.calls().len();
+        let node = receipt["node_id"].as_i64().unwrap().to_string();
+        let calls = f.calls();
+        let delivered = calls.iter().find(|call| call["node"] == node).unwrap();
+        assert_eq!(
+            delivered["model"],
+            if kind == "follow_up" {
+                "fixture"
+            } else {
+                "alternate"
+            }
+        );
+        let calls = calls.len();
         let replay = f.post(
             &format!("/chats/{chat}/followups/send"),
             json!({"followup_id":queued["id"]}),
@@ -542,6 +565,10 @@ fn queued_instructions(f: &Fixture, chat: i64, other: i64) {
             400
         );
     }
+    f.post(
+        &format!("/chats/{chat}/model"),
+        json!({"provider":"local","model":"fixture","expect_revision":f.detail(chat)["rev"]}),
+    );
     unconfirmed_and_cancelled_instructions(f, chat);
     interrupted_steering(f, chat);
 }

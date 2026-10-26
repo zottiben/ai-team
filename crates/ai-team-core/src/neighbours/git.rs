@@ -730,6 +730,21 @@ pub async fn untracked(worktree: &Path) -> Result<Vec<String>> {
     )
 }
 
+/// One file as HEAD has it, or `None` when HEAD does not have it.
+///
+/// `cat-file -e` first, because a path that is simply new - or a repository with no
+/// commit yet - is an ordinary state the editor draws as "every line added", and reading
+/// that off a failed `git show` would also swallow a real git failure.
+pub(crate) async fn head_blob(worktree: &Path, path: &str) -> Result<Option<String>> {
+    let object = format!("HEAD:{path}");
+    if git(worktree, &["cat-file", "-e", &object]).await.is_err() {
+        return Ok(None);
+    }
+    git(worktree, &["show", "--textconv", &object])
+        .await
+        .map(Some)
+}
+
 pub async fn stage(worktree: &Path, path: &str) -> Result<()> {
     git(worktree, &["add", "--", path]).await.map(|_| ())
 }

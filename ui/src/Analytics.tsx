@@ -81,7 +81,7 @@ export function Analytics({ tick }: { tick: number }) {
       {rows.length === 0 ? (
         <p className="empty">No finished runs yet - there is nothing to compare.</p>
       ) : (
-        <table className="table">
+        <div className="analytics-table" role="region" aria-label="Analytics results" tabIndex={0}><table className="table">
           <thead>
             <tr>
               <th scope="col">{by}</th>
@@ -133,7 +133,7 @@ export function Analytics({ tick }: { tick: number }) {
               </tr>
             ))}
           </tbody>
-        </table>
+        </table></div>
       )}
     </div>
   );

@@ -1,6 +1,10 @@
 .chat-planning {
   margin-block: 20px;
 }
+/* Retained controls stay mounted; display:grid/flex must not reveal them. */
+.chat-planning [hidden] {
+  display: none !important;
+}
 .plan-controls {
   border: 0;
   margin: 0;

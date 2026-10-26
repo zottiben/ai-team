@@ -1,17 +1,18 @@
 import { useState } from "react";
 import type { useWorkspaceSetup } from "./WorkspaceSetup";
 
-export default function WorkspaceSetupForm({ state, disabled, onSelect }: {
+export default function WorkspaceSetupForm({ state, disabled, allowCreate = true, onSelect }: {
   state: ReturnType<typeof useWorkspaceSetup>;
   disabled: boolean;
+  allowCreate?: boolean;
   onSelect: (path: string) => void;
 }) {
   const [branch, setBranch] = useState("");
   const [approved, setApproved] = useState(false);
   return (
     <section className="workspace-setup">
-      <div><h4>Prepare a worktree</h4><p className="faint">Set it up first, then choose the ready checkout. No agent starts.</p></div>
-      <ul className="workspace-setup__summary">
+      <div><h4>{allowCreate ? "Prepare a worktree" : "Project setup recovery"}</h4><p className="faint">{allowCreate ? "Set it up first, then choose the ready checkout. No agent starts." : "Inspect stopped setup without acquiring another worktree or resetting files. This does not switch the chat's checkout."}</p></div>
+      {allowCreate && <><ul className="workspace-setup__summary">
         <li>AWT may reset and reuse a clean, idle pool slot, or create one.</li>
         <li>Runs configured hooks and locked dependency installs, including network access and repository scripts.</li>
         <li>If setup fails, its checkout and lease are kept for inspection.</li>
@@ -20,9 +21,9 @@ export default function WorkspaceSetupForm({ state, disabled, onSelect }: {
         <summary>What setup runs and preserves</summary>
         <p>AWT's post-create hooks run first. AI Team refreshes locked dependencies even in warm directories: Composer before Bun/npm/pnpm/Yarn, plus recognised Rust/Python/Go setup.</p>
         <p>Your AWT hooks own environment files and project-specific setup. AI Team adds no secret copying or guessed configuration.</p>
-      </details>
+      </details></>}
       {state.problem && <p className="error" role="alert">{state.problem}</p>}
-      <label className="chat-checkout__field">New branch (optional)
+      {allowCreate && <><label className="chat-checkout__field">New branch (optional)
         <input type="text" value={state.uncertain ? state.requestBranch : branch}
           disabled={state.busy || state.uncertain}
           onChange={(event) => { setBranch(event.target.value); setApproved(false); }}
@@ -33,20 +34,21 @@ export default function WorkspaceSetupForm({ state, disabled, onSelect }: {
           disabled={state.busy || state.uncertain}
           onChange={(event) => setApproved(event.target.checked)} />{" "}
         I approve AWT pool reuse, its hooks, network access and dependency installation.
-      </label>
+      </label></>}
       <div className="workspace-setup-actions">
-        <button type="button" className="button button--primary"
+        {allowCreate && <button type="button" className="button button--primary"
           disabled={disabled || !state.loaded || (!approved && !state.uncertain) || state.busy || (state.pending && !state.uncertain)}
           onClick={() => void state.start(branch)}>
           {state.uncertain ? "Retry the same setup request" : "Acquire and set up worktree"}
-        </button>
+        </button>}
         <button type="button" className="button" disabled={state.busy} onClick={state.refresh}>Refresh setup status</button>
       </div>
       {state.uncertain && <p className="notice">
         The response is uncertain. Retrying keeps the original request and branch; it cannot acquire a second checkout.
       </p>}
       {!state.loaded && <p className="faint">Loading setup receipts…</p>}
-      {state.items.map((receipt) => <article className="workspace-setup-receipt" key={receipt.id}>
+      {state.loaded && state.items.length === 0 && !allowCreate && <p className="faint">No setup receipts for this project.</p>}
+      {state.items.map((receipt) => <article className="workspace-setup-receipt" data-state={receipt.state} key={receipt.id}>
         <strong>Setup {receipt.id} · {receipt.state === "failed" && receipt.attempted === false ? "not started" : receipt.state}</strong>
         <p className="mono">{receipt.branch || `ai-team/workspace-${receipt.id}`}
           {receipt.workspace_path && <> · {receipt.workspace_path}</>}</p>
@@ -59,7 +61,7 @@ export default function WorkspaceSetupForm({ state, disabled, onSelect }: {
             <pre>{step.output}</pre>
           </div>)}
         </details>}
-        {receipt.state === "ready" && receipt.workspace_path && <button type="button" className="button"
+        {allowCreate && receipt.state === "ready" && receipt.workspace_path && <button type="button" className="button"
           disabled={disabled || state.pending} onClick={() => receipt.workspace_path && onSelect(receipt.workspace_path)}>
           Use ready checkout {receipt.id}
         </button>}

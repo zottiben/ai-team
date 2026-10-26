@@ -20,7 +20,19 @@ pub(crate) fn check_writer(conn: &Connection) -> Result<()> {
 
 fn idle(conn: &Connection) -> Result<()> {
     let mut query = conn.prepare(
-        "SELECT 'chat ' || id || ': active turn' FROM chat WHERE active_node_id IS NOT NULL
+        "SELECT 'chat ' || c.id || ': active turn' FROM chat c WHERE c.active_node_id IS NOT NULL
+         AND NOT EXISTS (
+           SELECT 1 FROM chat_team_run t JOIN run r ON r.id=t.run_id
+           JOIN node_run n ON n.id=t.control_node_id AND n.run_id=t.run_id
+           WHERE t.chat_id=c.id AND t.control_node_id=c.active_node_id AND c.mode='team'
+             AND t.phase='awaiting_approval' AND t.controller_protocol=1 AND t.child_journal=1 AND t.quiescent=1
+             AND t.supervisor_pid IS NULL AND t.supervisor_identity IS NULL
+             AND r.status='blocked' AND r.supervisor_pid IS NULL AND n.status='done'
+             AND c.stop_requested=0 AND c.supervisor_identity IS NULL AND c.pi_identity IS NULL
+             AND NOT EXISTS(SELECT 1 FROM node_run m WHERE m.run_id=t.run_id
+               AND (m.status NOT IN ('done','failed','cancelled') OR m.pi_pid IS NOT NULL OR m.supervisor_pid IS NOT NULL))
+             AND NOT EXISTS(SELECT 1 FROM chat_build_slice s WHERE s.run_id=t.run_id)
+         )
          UNION ALL SELECT 'run ' || id || ': ' || status FROM run WHERE status IN ('queued','planning','running')
          UNION ALL SELECT 'agent turn ' || id || ': ' || status FROM node_run WHERE status IN ('queued','running','parked')
          UNION ALL SELECT 'undrained chat children' WHERE EXISTS(SELECT 1 FROM chat_child WHERE state != 'drained')
@@ -53,7 +65,13 @@ impl Store {
             [],
             |r| r.get(0),
         )?;
-        if version != crate::latest_schema() {
+        let supported = crate::latest_schema();
+        if version > supported {
+            return Err(Error::invalid(format!(
+                "database schema v{version} is newer than this build supports (v{supported}); install a compatible build before continuing. Keep the existing database; initialization cannot repair this mismatch. No data was changed by the updater"
+            )));
+        }
+        if version < supported {
             return Err(Error::invalid("open the current AI Team app to initialize its data before updating; no data was migrated by the updater"));
         }
         Ok(())
@@ -147,6 +165,25 @@ fn snapshot(source: &Path, target: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_newer_schema_needs_a_compatible_build_not_initialization() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("team.db");
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch("CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY)")
+            .unwrap();
+        let future = crate::latest_schema() + 1;
+        conn.execute("INSERT INTO schema_migrations VALUES(?1)", [future])
+            .unwrap();
+        drop(conn);
+        let before = std::fs::read(&path).unwrap();
+        let error = Store::check_update_schema(&path).unwrap_err().to_string();
+        assert!(error.contains(&format!("schema v{future}")), "{error}");
+        assert!(error.contains("compatible build"), "{error}");
+        assert!(!error.contains("initialize"), "{error}");
+        assert_eq!(std::fs::read(path).unwrap(), before);
+    }
 
     #[test]
     fn installation_fences_future_writes_without_mutating_existing_evidence() {

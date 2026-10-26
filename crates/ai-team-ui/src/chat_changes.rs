@@ -18,6 +18,10 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/chats/{id}/review-fix", post(review_fix))
         .route("/chats/{id}/checkout", get(checkout))
         .route("/chats/{id}/checkout/preview", post(checkout_preview))
+        .route(
+            "/chats/{id}/checkout/preview/{operation}",
+            get(checkout_evidence),
+        )
         .route("/chats/{id}/checkout/finding", post(checkout_finding))
         .route("/chats/{id}/checkout/command", post(checkout_command))
         .route("/chats/{id}/draft/review", post(review))
@@ -28,6 +32,10 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/chats/{id}/retained/file", post(retained_file))
         .route("/chats/{id}/retained/keep", post(keep))
         .route("/chats/{id}/delivery/preview", post(preview))
+        .route(
+            "/chats/{id}/delivery/preview/{operation}",
+            get(delivery_evidence),
+        )
         .route("/chats/{id}/delivery/approve", post(approve))
         .route("/chats/{id}/delivery/inspect", post(inspect))
         .route("/chats/{id}/delivery/acknowledge", post(acknowledge))
@@ -64,6 +72,20 @@ async fn checkout(
 ) -> Result<Json<chat_changes::checkout::State>> {
     let mut store = Store::open(&state.database_path()?)?;
     Ok(Json(chat_changes::checkout::state(&mut store, id).await?))
+}
+async fn delivery_evidence(
+    State(state): State<AppState>,
+    Path((chat, operation)): Path<(i64, i64)>,
+) -> Result<Json<Option<chat_changes::PreviewEvidence>>> {
+    let store = Store::open(&state.database_path()?)?;
+    Ok(Json(store.delivery_preview_evidence(chat, operation)?))
+}
+async fn checkout_evidence(
+    State(state): State<AppState>,
+    Path((chat, operation)): Path<(i64, i64)>,
+) -> Result<Json<Option<chat_changes::PreviewEvidence>>> {
+    let store = Store::open(&state.database_path()?)?;
+    Ok(Json(store.checkout_preview_evidence(chat, operation)?))
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]

@@ -1,9 +1,10 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import type { ChatPlan } from "./plan-api";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, it, vi } from "vitest";
 
 import { PlanLibrary } from "./PlanLibrary";
+import { setSynth } from "./ui-preferences";
 import type {
   PlanImportPreview,
   PlanLibrary as Board,
@@ -299,6 +300,7 @@ function stub(routes: {
             );
             if (slice) slice.status = action.status;
           }
+          if (action.action === "set_plan_status" && plan.bundle) plan.bundle.plan.status = action.status;
           plan.revision += 1;
         }
         snapshots.set(id, plan);
@@ -441,6 +443,31 @@ it("keeps section drafts across Board/Plan and project switches without writing 
   ).toBe("Widget scope — retained draft");
   expect(open).not.toHaveBeenCalled();
   expect(calls.every((call) => call.method === "GET")).toBe(true);
+});
+it("keeps Synth global planning drafts, provenance and exact owner commands separate", async () => {
+  const rects = vi.spyOn(HTMLElement.prototype, "getClientRects").mockReturnValue([new DOMRect(0, 0, 200, 40)] as unknown as DOMRectList);
+  try {
+    setSynth(true); const calls = stub({}), open = vi.fn(), user = userEvent.setup();
+    render(<PlanLibrary tick={0} onOpenChat={open}/>);
+    await user.click(await screen.findByRole("tab", { name: "Plan" }));
+    await user.click(screen.getByRole("button", { name: "Edit Grounding" }));
+    const draft = screen.getByRole("textbox", { name: "Content" }); await user.type(draft, " — kept");
+    expect(screen.getByText(/\/elsewhere\/planner.db/)).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Open plan Retire the gadget" }));
+    const preset = await screen.findByRole("button", { name: "Plan status" }); preset.scrollIntoView = vi.fn();
+    await user.click(screen.getByRole("button", { name: "Next Plan status" }));
+    await waitFor(() => expect(preset.textContent).toBe("in review"));
+    expect(calls.filter(call => call.method !== "GET")).toEqual([{ url: "/chats/9/plan", method: "POST", body: { action: "set_plan_status", status: "in_review", expect_revision: 10 } }]);
+    expect(open).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Open Gadget cleanup" })); expect(open).toHaveBeenCalledExactlyOnceWith("gadget", 9);
+    await user.click(screen.getByRole("button", { name: "Open plan Ship the widget" }));
+    expect(screen.getByRole("textbox", { name: "Content" })).toBe(draft);
+    act(() => setSynth(false)); act(() => setSynth(true));
+    expect(screen.getByRole("textbox", { name: "Content" })).toBe(draft);
+    expect((draft as HTMLTextAreaElement).value).toBe("Widget scope — kept");
+    await user.click(screen.getByRole("button", { name: "Import plan…" }));
+    expect(calls.some(call => call.url.includes("/plan-library/source") || call.url.includes("/plan-library/import"))).toBe(false);
+  } finally { setSynth(false); rects.mockRestore(); }
 });
 it("hides archived-chat plans by default and offers a read-only opt-in even when every chat is archived", async () => {
   const data = board();

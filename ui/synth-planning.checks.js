@@ -1,0 +1,94 @@
+const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+const must = (value, message) => { if (!value) throw Error(message); return value; };
+const visible = node => !!node && node.getClientRects().length > 0;
+async function until(check, message) { for (let n = 0; n < 100; n++) { const value = check(); if (value) return value; await delay(50); } throw Error(message); }
+const button = (root, text) => [...root.querySelectorAll("button")].find(node => visible(node) && node.textContent.trim() === text);
+const field = (root, selector) => [...root.querySelectorAll(selector)].find(visible);
+function fill(input, text) {
+  const prototype = input instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+  Object.getOwnPropertyDescriptor(prototype, "value").set.call(input, text);
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+}
+export async function exercisePlanningRetention() {
+  must(!document.hidden, "Native viewport is hidden; retained planning verification blocked");
+  const tab = await until(() => [...document.querySelectorAll('[role="tab"]')].find(node => node.textContent.includes("Board")), "Chat Board tab missing");
+  tab.click();
+  const panel = await until(() => document.querySelector('.chat-planning .plan-kanban')?.closest('.chat-planning'), "Planning fixture did not settle");
+  const board = panel.querySelector('.plan-kanban');
+  must(getComputedStyle(board).display === "flex", "Chat Board did not load its own shared layout stylesheet");
+  (await until(() => button(panel.querySelector('.plan-workspace-tabs'), "Plan"), "Plan subtab missing")).click();
+  await delay(100);
+  button(panel, "Edit Scope").click(); await delay(50);
+  const scope = must(field(panel, 'textarea[name="body"]'), "Section editor missing"); fill(scope, "Retained original scope");
+  button(panel, "Edit Design").click(); await delay(50);
+  const design = must(field(panel, 'textarea[name="body"]'), "Second section editor missing"); fill(design, "Retained separate design");
+  button(panel, "Edit Scope").click(); await delay(50);
+  must(field(panel, 'textarea[name="body"]') === scope && scope.value === "Retained original scope", "Switching sections replaced the first editor");
+  const title = field(panel, 'input[name="title"]');
+  const questionsTab = panel.querySelector('[role="tab"][aria-controls$="-questions"]');
+  must(questionsTab, "Questions subtab missing").click(); await delay(50);
+  const questions = panel.querySelector('.plan-questions');
+  const answer = must(field(questions, '.plan-item textarea'), "Answer editor missing"); fill(answer, "Unsent original answer");
+  button(questions, "Ask a question").click(); await delay(50);
+  const ask = must(field(questions, ':scope > form textarea'), "Question composer missing"); fill(ask, "Retain this separate question");
+  button(questions, "Cancel question").click(); await delay(50);
+  must(ask.isConnected && !visible(ask), "Cancel question left the retained form visible or replaced it");
+  button(questions, "Ask a question").click(); await delay(50);
+  must(field(questions, ':scope > form textarea') === ask && ask.value === "Retain this separate question", "Question composer was reset");
+  const tabs = panel.querySelector('.plan-workspace-tabs');
+  button(tabs, "Board").click(); await delay(50); button(tabs, "Plan").click(); await delay(50); questionsTab.click(); await delay(50);
+  const entry = must([...document.scripts].find(script => new URL(script.src || location.href).pathname.endsWith('/src/synth/shell-preview.tsx')), "Shell fixture entry missing");
+  const fixture = await import(entry.src); fixture.advanceBoard();
+  await until(() => questions.textContent.includes("A synthetic peer answer"), "Synthetic plan refresh did not arrive");
+  must(scope.isConnected && scope.value === "Retained original scope" && design.isConnected && design.value === "Retained separate design", "Refresh discarded a section editor");
+  must(title.value === "Scope", "Retained fields borrowed a refreshed section title");
+  must(answer.isConnected && answer.value === "Unsent original answer", "A peer answer discarded the unsent local answer");
+  must(button(answer.closest("form"), "Answer question").disabled && button(ask.closest("form"), "Save question").disabled, "Stale drafts borrowed the new plan revision");
+  const preferences = await import('/src/ui-preferences.ts');
+  preferences.setSynth(false); await delay(100); preferences.setSynth(true); await delay(100);
+  must(scope.isConnected && design.isConnected && answer.isConnected && ask.isConnected, "Changing skins replaced planning input owners");
+  must(document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1, "Planning overflow escaped the viewport");
+  must(fixture.boardRequests.length === 0, "Retention probe attempted a mutation");
+  const apiRequests = performance.getEntriesByType("resource").filter(entry => new URL(entry.name).pathname.startsWith('/api/')).length;
+  must(apiRequests === 0, "Planning fixture reached a real API");
+  return { width: document.documentElement.clientWidth, theme: document.documentElement.dataset.theme, retainedInputs: 4, staleAnswersDisabled: true, mutationAttempts: 0, apiRequests };
+}
+
+export async function exercisePlanHeader() {
+  must(!document.hidden, "Native viewport is hidden; Board presentation verification blocked");
+  const tab = await until(() => [...document.querySelectorAll('[role="tab"]')].find(node => node.textContent.includes("Board")), "Chat Board tab missing"); tab.click();
+  const pattern = await until(() => document.querySelector('.synth-slice-pattern'), "Slice pattern did not settle");
+  const panel = pattern.closest('.chat-planning'), board = panel.querySelector('.plan-kanban');
+  must(panel.querySelector('h2')?.textContent === "Synthetic retained planning", "Plan title lost its heading level");
+  const pads = [...pattern.querySelectorAll('button')];
+  must(pads.length === 100 && pads.every((pad, index) => pad.textContent === `S${index + 1}`), "Pattern changed authoritative plan order");
+  must(panel.querySelector('[aria-label="Reported slice count"]').textContent === "14/100", "Reported plan counts are incorrect");
+  const draft = board.querySelector('[data-status="draft"]'), ready = board.querySelector('[data-status="ready"]');
+  must(Math.abs(draft.getBoundingClientRect().width - 52) < 2 && Math.abs(ready.getBoundingClientRect().width - 244) < 2, "Synth lane geometry did not apply");
+  must(ready.querySelectorAll('[data-lit="true"]').length === 8 && ready.querySelector('.synth-meter').textContent.includes('15'), "Capped meter hid the exact count");
+  must(Math.abs(ready.querySelector('.synth-segments i').getBoundingClientRect().height - 4) < 1, "Column segments did not use the 4px Board geometry");
+  must(['transparent', 'rgba(0, 0, 0, 0)'].includes(getComputedStyle(panel).backgroundColor), "Legacy card surface leaked behind the Synth Board");
+  const tabs = panel.querySelector('.plan-workspace-tabs'), planTab = button(tabs, "Plan"), boardTab = button(tabs, "Board");
+  pads[97].focus(); pads[97].click(); planTab.focus(); planTab.click(); await delay(300);
+  must(document.activeElement === planTab, "Deferred reveal stole newer tab focus");
+  boardTab.focus(); boardTab.click(); await delay(50);
+  must(document.activeElement === boardTab, "Returning replayed a hidden reveal request");
+  draft.querySelector('header button').click(); await delay(250);
+  must(draft.classList.contains('is-collapsed'), "Draft could not collapse after a cancelled reveal");
+  pads[97].focus(); pads[97].click();
+  const target = await until(() => board.querySelector('[data-slice-open="S98"]'), "Pattern did not expand the Draft lane");
+  await until(() => document.activeElement === target, "Pattern did not transfer focus to its card");
+  await delay(50);
+  const box = target.getBoundingClientRect(), frame = board.getBoundingClientRect();
+  must(box.left >= Math.max(frame.left, 0) - 2 && box.right <= Math.min(frame.right, innerWidth) + 2 && box.top >= 0 && box.bottom <= innerHeight + 2, "Pattern focused an offscreen card");
+  const scroll = pattern.querySelector('.synth-slice-pattern__scroll'); scroll.scrollLeft = scroll.scrollWidth;
+  const position = scroll.scrollLeft, preferences = await import('/src/ui-preferences.ts');
+  preferences.setSynth(false); await delay(100); preferences.setSynth(true); await delay(100);
+  must(panel.querySelector('.synth-slice-pattern') === pattern && Math.abs(scroll.scrollLeft - position) < 2, `Skin switch reset the slice pattern owner or scroll: ${JSON.stringify({ same: panel.querySelector('.synth-slice-pattern') === pattern, before: position, after: scroll.scrollLeft, maximum: scroll.scrollWidth - scroll.clientWidth })}`);
+  must(document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1, "Board overflow escaped the viewport");
+  const attention = panel.querySelectorAll('.synth-led[data-state="attention"][data-motion="true"]').length;
+  must(attention <= 1, "More than one blocker attention pulse is active");
+  const apiRequests = performance.getEntriesByType('resource').filter(entry => new URL(entry.name).pathname.startsWith('/api/')).length;
+  must(apiRequests === 0, "Board fixture reached a real API");
+  return { width: document.documentElement.clientWidth, slices: pads.length, focusedCard: "S98", preservedPattern: true, cancelledFocus: true, attentionPulses: attention, apiRequests };
+}

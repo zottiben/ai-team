@@ -5,7 +5,7 @@ import type { ChatDetail } from "./chat-api";
 import type { BuildReview, TeamBuild } from "./team-api";
 
 const service = vi.hoisted(() => ({ reviewTeam: vi.fn(), approveTeam: vi.fn(), teamCommand: vi.fn(), continueTeam: vi.fn(), closeTeam: vi.fn(), chatPlan: vi.fn(), inspectRetained: vi.fn(), keepRetained: vi.fn(), retainedFile: vi.fn() }));
-vi.mock("./team-api", () => service);
+vi.mock("./team-api", async original => ({ ...(await original<typeof import("./team-api")>()), ...service }));
 vi.mock("./plan-api", () => ({ chatPlan: service.chatPlan }));
 vi.mock("./changes-api", () => ({ inspectRetained: service.inspectRetained, keepRetained: service.keepRetained, retainedFile: service.retainedFile }));
 const build = (): TeamBuild => ({

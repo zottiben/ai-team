@@ -77,7 +77,7 @@ impl Store {
             if !allowed { return Err(Error::invalid("that solo turn is no longer accepting instructions; inspect its receipts, or clear this draft before composing for another turn")); }
             let pending: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM chat_followup WHERE chat_id=?1 AND state='queued')", [chat], |r| r.get(0))?;
             if pending { return Err(Error::invalid("this chat already has a queued instruction; cancel it before replacing it")); }
-            tx.execute("INSERT INTO chat_followup(chat_id,after_node_id,request_id,body,kind,created_at,images_json,images_meta) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)", params![chat,after,request,body,kind,crate::now(),images,super::super::chat_images::describe(&images)?])?;
+            tx.execute("INSERT INTO chat_followup(chat_id,after_node_id,request_id,body,kind,created_at,images_json,images_meta,model_settings_json) SELECT ?1,?2,?3,?4,?5,?6,?7,?8,json_object('provider',provider,'model',model,'reasoning',reasoning) FROM chat WHERE id=?1", params![chat,after,request,body,kind,crate::now(),images,super::super::chat_images::describe(&images)?])?;
             let id = tx.last_insert_rowid();
             tx.execute("UPDATE chat SET stop_requested=CASE WHEN ?2='steer' THEN 1 ELSE stop_requested END, rev=rev+1, updated_at=?3 WHERE id=?1", params![chat,kind,crate::now()])?;
             note(tx, after, if kind == "steer" { "Steering queued; stopping and draining this exact turn before starting a follow-up. Not delivered yet." } else { "Follow-up queued for this turn's completion. Not delivered yet." })?;
@@ -125,9 +125,23 @@ impl Store {
                     id,
                 )?),
                 followup: Some(id),
+                settings: self.queued_model(id)?,
                 ..super::TurnOptions::default()
             },
         )
+    }
+
+    fn queued_model(&self, id: i64) -> Result<Option<(crate::Provider, String, crate::Reasoning)>> {
+        let json: Option<String> = self.db().conn().query_row(
+            "SELECT model_settings_json FROM chat_followup WHERE id=?1",
+            [id],
+            |r| r.get(0),
+        )?;
+        json.map(|json| {
+            let model: super::model::QueuedModel = serde_json::from_str(&json)?;
+            Ok((model.provider, model.model, model.reasoning))
+        })
+        .transpose()
     }
 
     /// Called only by the worker that just drained this predecessor. Startup/read paths

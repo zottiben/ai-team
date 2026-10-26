@@ -8,15 +8,17 @@ import logo from "../../crates/ai-team-desktop/icons/mark.svg";
 import { Notifications } from "./Notifications";
 import { Popover } from "./Popover";
 import { Projects } from "./Projects";
-import { Roster } from "./Roster";
+const Roster = lazy(() => import("./Roster").then(m => ({ default: m.Roster })));
 const Schedule = lazy(() => import("./Schedule").then(m => ({ default: m.Schedule })));
 const Settings = lazy(() => import("./Settings").then(m => ({ default: m.Settings })));
 import { Setup } from "./Setup";
+const SynthToggle = lazy(() => import("./SynthToggle").then(m => ({ default: m.SynthToggle })));
+const SynthTitleBar = lazy(() => import("./synth/views/Shell/TitleBar"));
+import { useSynth } from "./ui-preferences";
 import { Today } from "./Today";
 import { UpdateBanner, useUpdates } from "./Update";
 import {
   Workspace,
-  WORKSPACE_VIEWS,
   workspaceViewName,
   type WorkspaceView,
 } from "./Workspace";
@@ -30,7 +32,6 @@ import {
 } from "./api";
 import { chats as fetchChats, type Chat } from "./chat-api";
 import { apply, followSystem, stored, type Theme } from "./theme";
-import { nested, workspaceName } from "./tree";
 import "./chat.css";
 
 type Page =
@@ -42,7 +43,6 @@ type Page =
   | "today"
   | "analytics"
   | "team"
-  | "tools"
   | "legacy";
 const LAST_CHAT = "ai-team.last-chat";
 const SIDEBAR_COLLAPSED = "ai-team.sidebar-collapsed";
@@ -73,6 +73,7 @@ function restored(): { project: string | null; chat: number | null } {
 
 export default function App() {
   const updates = useUpdates();
+  const synth = useSynth();
   const [initial] = useState(restored);
   const [projects, setProjects] = useState<Project[]>([]);
   const [conversations, setConversations] = useState<Record<string, Chat[]>>(
@@ -109,8 +110,8 @@ export default function App() {
   }, [includeArchived]);
   const [trees, setTrees] = useState<Worktree[]>([]);
   const [workspace, setWorkspace] = useState<string | null>(null);
-  const [tool, setTool] = useState<WorkspaceView>("source");
-  const [chatStartPanel, setChatStartPanel] = useState<ChatPanel | null>(null);
+  const [chatStartPanel, setChatStartPanel] = useState<ChatPanel | null>("overview");
+  const [chatSelection, setChatSelection] = useState(0);
   const [legacyView, setLegacyView] = useState<WorkspaceView>("work");
   const [openRun, setOpenRun] = useState<number | null>(null);
   const [openReview, setOpenReview] = useState<number | null>(null);
@@ -184,7 +185,7 @@ export default function App() {
       setChatId(null);
   }, [conversations, projectSlug, chatId]);
   useEffect(() => {
-    if ((page !== "tools" && page !== "legacy") || !projectSlug) return;
+    if (page !== "legacy" || !projectSlug) return;
     let current = true;
     void worktrees(projectSlug)
       .then((found) => {
@@ -207,8 +208,12 @@ export default function App() {
 
   const project = projects.find((entry) => entry.slug === projectSlug);
   const selectedTree = trees.find((tree) => tree.path === workspace);
-  const navigate = (slug: string, id: number | null, panel: ChatPanel | null = null) => {
+  const sessionChats = (projectSlug ? conversations[projectSlug] ?? [] : []).filter(chat =>
+    (includeArchived || !chat.archived) && chat.title.toLowerCase().includes(filter.toLowerCase()));
+  const selectedChat = projectSlug ? conversations[projectSlug]?.find(chat => chat.id === chatId) : undefined;
+  const navigate = (slug: string, id: number | null, panel: ChatPanel | null = "overview") => {
     setChatStartPanel(panel);
+    setChatSelection(previous => previous + 1);
     setProjectSlug(slug);
     setChatId(id);
     setPage("chat");
@@ -237,7 +242,12 @@ export default function App() {
   }} />;
 
   return (
-    <div className="chat-shell" data-sidebar-collapsed={collapsed} onClickCapture={() => { interacted.current = true; }} onKeyDownCapture={() => { interacted.current = true; }}>
+    <div className="chat-shell" data-sidebar-collapsed={collapsed} onClickCapture={() => { interacted.current = true; }} onKeyDownCapture={event => {
+      interacted.current = true;
+      if (synth && !event.repeat && !event.nativeEvent.isComposing && (event.metaKey || event.ctrlKey) && event.shiftKey && !event.altKey && event.key.toLowerCase() === "n" && !(event.target instanceof Element && event.target.closest('[role="dialog"], [role="alertdialog"], [role="listbox"], [role="menu"]'))) {
+        event.preventDefault(); event.stopPropagation(); newChat();
+      }
+    }}>
       <nav className="app-rail" aria-label="Application">
         <button type="button" aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"} title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
           aria-expanded={!collapsed} aria-controls="chat-sidebar" onClick={() => setCollapsed(value => !value)}>
@@ -249,9 +259,9 @@ export default function App() {
             ["chat", "Chats", "chat"],
             ["projects", "Projects", "folder"],
             ["schedule", "Schedule", "clock"],
-            ["plans", "Plans", "board"],
+            ["plans", synth ? "Board · all projects and chats" : "Plans", "board"],
           ] as const
-        ).map(([target, label, icon]) => (
+        ).filter(([target]) => !synth || target !== "schedule").map(([target, label, icon]) => (
           <button
             key={target}
             type="button"
@@ -266,12 +276,13 @@ export default function App() {
             <Icon name={icon} />
           </button>
         ))}
-        {collapsed && notificationButton}
+        {collapsed && !synth && notificationButton}
         <button
           ref={moreButton}
           type="button"
           aria-label="More tools"
           title="More tools"
+          aria-current={synth && !setup && ["schedule", "today", "analytics", "team", "legacy"].includes(page) ? "page" : undefined}
           aria-expanded={more}
           onClick={() => setMore(!more)}
         >
@@ -304,11 +315,11 @@ export default function App() {
         <div className="chat-brand">
           <img src={logo} width="28" height="28" alt="AI Team logo" />
           <strong>AI Team</strong>
-          {!collapsed && notificationButton}
+          {!collapsed && !synth && notificationButton}
         </div>
         <button type="button" className="chat-new" onClick={newChat}>
           <Icon name="edit" />
-          New chat
+          <span>New chat</span>{synth && <kbd title="Command or Control + Shift + N">⇧⌘N</kbd>}
         </button>
         <input
           className="chat-search"
@@ -341,10 +352,13 @@ export default function App() {
             </button>
           </div>
           {projects.map((entry) => (
-            <div className="chat-project" key={entry.id}>
+            <div className="chat-project" key={entry.id} data-selected={entry.slug === projectSlug}>
               <button
                 type="button"
                 className="chat-project-name"
+                aria-label={entry.name}
+                aria-description={synth ? `${conversations[entry.slug]?.length ?? 0} chats` : undefined}
+                data-project-tone={entry.id % 3}
                 aria-current={
                   page === "chat" &&
                   entry.slug === projectSlug &&
@@ -356,6 +370,7 @@ export default function App() {
               >
                 <Icon name="folder" />
                 <span>{entry.name}</span>
+                {synth && <small className="chat-project-count" aria-label={`${conversations[entry.slug]?.length ?? 0} chats`}>{conversations[entry.slug]?.length ?? 0}</small>}
               </button>
               <div
                 className="chat-thread-list"
@@ -396,20 +411,21 @@ export default function App() {
             <p className="faint">Add a project to start a conversation.</p>
           )}
         </div>
-        {more && <Popover anchor={moreButton} label="Additional tools" width={220} onClose={() => setMore(false)}>
+        {more && <Popover anchor={moreButton} label="Additional tools" width={220} onClose={() => setMore(false)} className={synth ? "synth-more-popover" : ""}>
           <nav className="chat-secondary" aria-label="More tools">
             {(
               [
+                ["schedule", "Schedule"],
                 ["today", "Today"],
                 ["analytics", "Analytics"],
                 ["team", "Default team"],
-                ["tools", "Project tools"],
               ] as const
-            ).map(([target, label]) => (
+            ).filter(([target]) => synth || target !== "schedule").map(([target, label]) => (
               <button
                 type="button"
                 key={target}
                 className="nav-item"
+                aria-current={synth && !setup && page === target ? "page" : undefined}
                 onClick={() => {
                   setPage(target);
                   setSetup(false);
@@ -419,6 +435,7 @@ export default function App() {
                 {label}
               </button>
             ))}
+            <Suspense fallback={null}><SynthToggle /></Suspense>
           </nav>
         </Popover>}
         <div className="chat-sidebar-footer">
@@ -446,6 +463,7 @@ export default function App() {
           project ? (
             <ChatView
               initialPanel={chatStartPanel}
+              selection={chatSelection}
               key={`${project.slug}:${chatId ?? "new"}`}
               id={chatId}
               project={project}
@@ -473,48 +491,25 @@ export default function App() {
               </button>
             </main>
           )
-        ) : page === "tools" || page === "legacy" ? (
+        ) : page === "legacy" ? (
           project ? (
             <>
-              {page === "legacy" ? <nav className="project-tool-tabs" aria-label="Legacy execution">
+              <nav className="project-tool-tabs" aria-label="Legacy execution">
                 <button className="button" onClick={() => setPage("today")}>Back to Today</button>
                 <span className="faint">Legacy execution · {project.name} · {workspaceViewName(legacyView)}</span>
-              </nav> : <nav className="project-tool-tabs" aria-label="Project tools">
-                <select
-                  aria-label="Project checkout"
-                  value={workspace ?? ""}
-                  onChange={(event) => setWorkspace(event.target.value)}
-                >
-                  {nested(trees).map(({ tree, depth }) => (
-                    <option key={tree.path} value={tree.path}>
-                      {"— ".repeat(depth)}
-                      {workspaceName(tree)}
-                    </option>
-                  ))}
-                </select>
-                {WORKSPACE_VIEWS.map((view) => (
-                  <button
-                    className="button"
-                    key={view}
-                    aria-pressed={view === tool}
-                    onClick={() => setTool(view)}
-                  >
-                    {workspaceViewName(view)}
-                  </button>
-                ))}
-              </nav>}
+              </nav>
               {selectedTree ? (
                 <Workspace
                   project={project}
                   workspace={selectedTree}
-                  view={page === "legacy" ? legacyView : tool}
+                  view={legacyView}
                   tick={tick}
                   openRun={openRun}
                   onOpenedRun={() => setOpenRun(null)}
                   openReview={openReview}
                   onOpenedReview={() => setOpenReview(null)}
                   onChanged={changed}
-                  onGo={page === "legacy" ? setLegacyView : setTool}
+                  onGo={setLegacyView}
                   onTeamStarted={changed}
                 />
               ) : (
@@ -539,7 +534,7 @@ export default function App() {
               /></Suspense>
             )}
             {page === "plans" && <Suspense fallback={<p>Loading plans…</p>}><PlanLibrary tick={tick} onOpenChat={(slug, id) => navigate(slug, id, "board")} onChanged={changed} /></Suspense>}
-            {page === "team" && <Roster onChanged={changed} />}
+            {page === "team" && <Suspense fallback={<p>Loading team…</p>}><Roster onChanged={changed} /></Suspense>}
             {page === "analytics" && <Analytics tick={tick} />}
             {page === "today" && (
               <Today
@@ -550,6 +545,11 @@ export default function App() {
           </main>
         )}
       </div>
+      {synth && <Suspense fallback={null}><SynthTitleBar chat={!setup && page === "chat" ? chatId : null} project={project?.id ?? null}
+        context={setup ? "Setup" : page === "chat" ? `${project?.name ?? "Chats"}${selectedChat ? ` ▸ ${selectedChat.title}` : " · New chat"}` : page === "plans" ? "Board · all projects"  : page === "team" ? "Default team" : page.charAt(0).toUpperCase() + page.slice(1)}
+        sessions={sessionChats.map(chat => ({ id: String(chat.id), label: `${project?.name ?? "Chats"} ▸ ${chat.title}` }))}
+        onSession={id => { if (projectSlug && sessionChats.some(chat => String(chat.id) === id)) navigate(projectSlug, Number(id)); }}
+        notifications={notificationButton} version={updates.available?.current} /></Suspense>}
     </div>
   );
 }

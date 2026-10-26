@@ -1,8 +1,9 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, it, vi } from "vitest";
 
 import { Settings } from "./Settings";
+import { setSynth } from "./ui-preferences";
 import type { ContextSetting, Settings as SettingsData } from "./api";
 
 afterEach(() => {
@@ -226,6 +227,55 @@ it("says where the file is, because it is meant to stay hand-editable", async ()
   stub();
   render(<Settings theme="dark" onTheme={() => {}} onChanged={() => {}} />);
   expect(await screen.findByText("/home/me/.config/ai-team/machine.toml")).toBeDefined();
+});
+
+it("enables only a local isolated Synth preview without changing the theme or machine profile", async () => {
+  // This checks preference isolation, not concurrent Vitest module-transform latency.
+  await import("./synth/SynthPreview");
+  const calls = stub(), onTheme = vi.fn(), changed = vi.fn();
+  setSynth(false);
+  const view = render(<Settings theme="light" onTheme={onTheme} onChanged={changed} />);
+  await userEvent.click(await screen.findByRole("switch", { name: "Synth UI preview" }));
+  expect(await screen.findByText("Synth foundation")).toBeDefined();
+  expect(localStorage.getItem("ui.synth")).toBe("true");
+  expect(calls.every(call => call.method === "GET")).toBe(true);
+  expect(onTheme).not.toHaveBeenCalled(); expect(changed).not.toHaveBeenCalled();
+  await userEvent.click(screen.getByRole("switch", { name: "Synth UI preview" }));
+  expect(screen.queryByText("Synth foundation")).toBeNull();
+  view.unmount(); setSynth(false);
+});
+
+it("selects named palette swatches locally and preserves unsaved settings fields", async () => {
+  const calls = stub({ context: [source({ allowed: true })] });
+  const changed = vi.fn(), onTheme = vi.fn();
+  setSynth(true);
+  const view = render(<Settings theme="dark" onTheme={onTheme} onChanged={changed} />);
+  const group = await screen.findByRole("group", { name: "Colour palette" });
+  expect(within(group).getAllByRole("radio")).toHaveLength(6);
+  expect(group.textContent).not.toMatch(/#[a-f0-9]{3,8}\b|\brgba?\(/i);
+  await userEvent.click(screen.getByText("Manual token fallback"));
+  const field = screen.getByLabelText("clickup token") as HTMLInputElement;
+  await userEvent.type(field, "fixture-unsaved");
+  await userEvent.click(within(group).getByRole("radio", { name: /Gruvbox/ }));
+  expect(localStorage.getItem("ui.synth.palette")).toBe("gruvbox");
+  expect(document.documentElement.dataset.synthPalette).toBe("gruvbox");
+  expect((within(group).getByRole("radio", { name: /Gruvbox/ }) as HTMLInputElement).checked).toBe(true);
+  expect(screen.getByLabelText("clickup token")).toBe(field);
+  expect(field.value).toBe("fixture-unsaved");
+  expect(calls.every(call => call.method === "GET")).toBe(true);
+  expect(changed).not.toHaveBeenCalled(); expect(onTheme).not.toHaveBeenCalled();
+  view.unmount(); setSynth(false); localStorage.removeItem("ui.synth.palette"); delete document.documentElement.dataset.synthPalette;
+});
+
+it("discloses a palette that could only be saved in memory", async () => {
+  stub(); setSynth(true);
+  const view = render(<Settings theme="dark" onTheme={() => {}} onChanged={() => {}} />);
+  const radio = await screen.findByRole("radio", { name: /Everforest/ });
+  const storage = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw Error("full"); });
+  await userEvent.click(radio);
+  expect(await screen.findByText(/Palette changed only in this window/)).toBeDefined();
+  expect(document.documentElement.dataset.synthPalette).toBe("everforest");
+  storage.mockRestore(); view.unmount(); setSynth(false); delete document.documentElement.dataset.synthPalette;
 });
 
 it("switching theme is immediate and does not touch the server", async () => {

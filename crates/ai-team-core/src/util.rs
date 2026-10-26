@@ -3,8 +3,8 @@
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 
-/// ISO-8601 UTC, second precision. Every timestamp in the database uses this, so rows
-/// sort lexically and read cleanly in TablePlus.
+/// ISO-8601 UTC, second precision for lifecycle/scheduling stamps. Stream observation
+/// receipts carry their own millisecond timestamp; never infer precise timing from this.
 pub fn now() -> String {
     OffsetDateTime::now_utc()
         .replace_nanosecond(0)
@@ -20,6 +20,15 @@ pub fn rfc3339_in(seconds: i64) -> String {
         .replace_nanosecond(0)
         .unwrap_or_else(|_| OffsetDateTime::now_utc())
         .format(&Rfc3339)
+        .unwrap_or_default()
+}
+
+/// The same format, for a filesystem timestamp that is already milliseconds since the
+/// epoch. Second precision, like every other stamp this writes.
+pub(crate) fn rfc3339_from_ms(millis: i64) -> String {
+    OffsetDateTime::from_unix_timestamp(millis.div_euclid(1_000))
+        .ok()
+        .and_then(|at| at.format(&Rfc3339).ok())
         .unwrap_or_default()
 }
 

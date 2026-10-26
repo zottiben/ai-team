@@ -23,6 +23,13 @@ pub struct PiEvent {
     pub kind: String,
     #[serde(flatten)]
     pub data: serde_json::Value,
+    /// Added by the supervisor, never deserialized from the child's JSON.
+    #[serde(skip)]
+    pub observation: Option<crate::EventObservation>,
+    #[serde(skip)]
+    pub shell_output: Option<crate::ShellOutput>,
+    #[serde(skip)]
+    pub telemetry: Option<crate::telemetry::Telemetry>,
 }
 
 /// What we do with one stream event.
@@ -138,11 +145,15 @@ impl PiEvent {
         }
     }
 
-    /// What this step spent, with the cached prompt kept apart from the uncached.
+    /// What this completed step spent, with the cached prompt kept apart from the uncached.
+    /// Message deltas and message_end repeat cumulative usage; they are not new spend.
     ///
     /// Storing the cache inside the input column would charge a cached prefix twice and
     /// make every cost comparison wrong in the same direction.
     pub fn usage(&self) -> Option<Usage> {
+        if self.kind != "turn_end" {
+            return None;
+        }
         let usage = self.usage_figures()?;
         let read = |key: &str| {
             usage
@@ -193,15 +204,18 @@ impl PiEvent {
     /// evidence inside the result; adapter failures can carry isError=false and a
     /// structured details.error. Never infer an error from quoted text content.
     fn tool_failed(&self) -> bool {
-        let result = self.data.get("result");
+        Self::tool_result_failed(&self.data)
+    }
+
+    /// Shared with the bounded activity projection. A returned tool is not a verified
+    /// task, and text that mentions an error is not structured failure evidence.
+    pub fn tool_result_failed(data: &serde_json::Value) -> bool {
+        let result = data.get("result");
         let flagged = result
             .and_then(|r| r.get("isError"))
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(false);
-        self.data
-            .get("isError")
-            .and_then(serde_json::Value::as_bool)
-            == Some(true)
+        data.get("isError").and_then(serde_json::Value::as_bool) == Some(true)
             || flagged
             || result
                 .and_then(|r| r.pointer("/details/error"))
@@ -258,6 +272,19 @@ impl PiEvent {
 
     /// One line of what happened, or nothing worth a row.
     pub fn classify(&self) -> Disposition {
+        let base = self.base_classify();
+        if self.telemetry.is_some() && base == Disposition::Ignore {
+            Disposition::Record(EventKind::Note, "host telemetry observation".into())
+        } else {
+            base
+        }
+    }
+
+    pub(crate) fn telemetry_only(&self) -> bool {
+        self.telemetry.is_some() && self.base_classify() == Disposition::Ignore
+    }
+
+    fn base_classify(&self) -> Disposition {
         match self.kind.as_str() {
             "turn_start" => Disposition::Record(
                 EventKind::Step,
@@ -279,6 +306,10 @@ impl PiEvent {
                 },
             ),
 
+            "tool_execution_update" if self.shell_output.is_some() => Disposition::Record(
+                EventKind::Note,
+                format!("{} output · sampled tail", self.tool_name()),
+            ),
             "tool_execution_start" => {
                 Disposition::Record(EventKind::ToolCall, self.tool_name().to_string())
             }

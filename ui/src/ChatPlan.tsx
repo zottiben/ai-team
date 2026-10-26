@@ -1,47 +1,50 @@
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useId, useRef, useState } from "react";
 import { BoardMarkdown } from "./BoardMarkdown";
 import { PlanKanban } from "./PlanKanban";
+import { PlanEditors, usePlanEditors } from "./PlanEditors";
+import { PlanQuestions } from "./PlanQuestions";
 import { chatPlan, changeChatPlan, PLAN_STATUSES } from "./plan-api";
 import type {
   ChatPlan as Snapshot,
-  PlanQuestion,
   PlanStatus,
 } from "./plan-api";
 import {
   CreatePlan,
-  SectionForm,
-  SliceForm,
   SliceStatus,
   statusLabel,
 } from "./PlanForms";
 import type { SavePlan } from "./PlanForms";
 import "./chat-planning.css";
+import "./synth/views/Board/board.css";
+import { useSynth } from "./ui-preferences";
 
-export function ChatPlanning({
-  chatId,
-  tick,
-  archived,
-  frozen = false,
-  workspace = false,
-  onChanged,
-}: {
+const SynthPlanHeader = lazy(() => import("./synth/views/Board/PlanHeader"));
+const SynthPlanStatus = lazy(() => import("./synth/views/Board/PlanStatusControl").then(module => ({ default: module.PlanStatusControl })));
+const SynthPlanTabs = lazy(() => import("./synth/views/Board/PlanHeader").then(module => ({ default: module.PlanTabs })));
+
+type Props = {
   chatId: number;
   tick: number;
   archived: boolean;
   frozen?: boolean;
   workspace?: boolean;
   onChanged: () => void;
-}) {
-  const [view, setView] = useState<"board" | "plan">("board");
+};
+export function ChatPlanning(props: Props) { return <PlanningController key={props.chatId} {...props}/>; }
+function PlanningController({ chatId, tick, archived, frozen = false, workspace: libraryWorkspace = false, onChanged }: Props) {
+  const synth = useSynth(), workspace = libraryWorkspace || synth, tabPrefix = useId();
+  const boardOpened = useRef(workspace), synthOpened = useRef(synth);
+  if (workspace) boardOpened.current = true;
+  if (synth) synthOpened.current = true;
+  const [view, setView] = useState<"board" | "plan" | "questions">("board");
+  const [reveal, setReveal] = useState<{ key: string; nonce: number } | null>(null);
+  const planVisible = view === "plan" || (!synth && view === "questions");
+  const questionsVisible = !workspace || (synth ? view === "questions" : planVisible);
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const [loadProblem, setLoadProblem] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [reload, setReload] = useState(0);
-  const [editor, setEditor] = useState<{
-    kind: "section" | "slice";
-    key?: string;
-  } | null>(null);
   const alive = useRef(true);
   const saving = useRef(false);
   useEffect(() => {
@@ -55,6 +58,7 @@ export function ChatPlanning({
     void chatPlan(chatId)
       .then((next) => {
         if (!cancelled) {
+          if (next.chat_id !== chatId) throw Error("Plan snapshot no longer matches this chat.");
           setSnapshot((previous) =>
             previous && previous.revision > next.revision ? previous : next,
           );
@@ -73,13 +77,15 @@ export function ChatPlanning({
   }, [chatId, tick, reload]);
 
   const save: SavePlan = async (action, revision = snapshot?.revision ?? 0) => {
-    if (saving.current) return false;
+    if (saving.current || archived || snapshot?.archived) return false;
+    if ((frozen || snapshot?.frozen) && action.action !== "answer_question" && action.action !== "open_question") return false;
     saving.current = true;
     setBusy(true);
     setProblem(null);
     try {
       const next = await changeChatPlan(chatId, action, revision);
       if (!alive.current) return false;
+      if (next.chat_id !== chatId) throw Error("Plan response no longer matches this chat.");
       setSnapshot((previous) =>
         previous && previous.revision > next.revision ? previous : next,
       );
@@ -100,6 +106,7 @@ export function ChatPlanning({
   const readOnly = archived || snapshot?.archived === true;
   const locked = frozen || snapshot?.frozen === true;
   const bundle = snapshot?.bundle;
+  const editors = usePlanEditors(bundle, snapshot?.revision ?? 0);
   const done =
     bundle?.slices.filter((slice) => slice.status === "done").length ?? 0;
   return (
@@ -113,7 +120,7 @@ export function ChatPlanning({
           <span className="faint">Only this chat · built in</span>
         </div>
       )}
-      <details hidden={workspace && view !== "plan"}>
+      <details hidden={workspace && !planVisible}>
         <summary>Planning isolation</summary>
         <p className="faint">
           This chat uses AI Team’s scoped planning tools and permitted project
@@ -143,7 +150,7 @@ export function ChatPlanning({
         </p>
       ) : (
         <fieldset
-          disabled={busy || (readOnly && !workspace)}
+          disabled={busy}
           className="plan-controls"
         >
           {!bundle ? (
@@ -156,9 +163,10 @@ export function ChatPlanning({
             </>
           ) : (
             <>
+              <div className="plan-head">
               <div className="plan-heading">
-                <h4>{bundle.plan.title}</h4>
-                <label>
+                {synth ? <h2>{bundle.plan.title}</h2> : <h4>{bundle.plan.title}</h4>}
+                <label hidden={synth}>
                   Plan status
                   <select
                     disabled={locked || readOnly}
@@ -178,12 +186,16 @@ export function ChatPlanning({
                   </select>
                 </label>
               </div>
+              <div hidden={!synth}>{synthOpened.current && <Suspense fallback={<p className="faint">Loading slice pattern…</p>}><SynthPlanHeader slices={bundle.slices} onReveal={key => {
+                setView("board"); setReveal(previous => ({ key, nonce: (previous?.nonce ?? 0) + 1 }));
+              }} statusControl={<SynthPlanStatus key={bundle.plan.id} status={bundle.plan.status} revision={snapshot.revision} disabled={busy || locked || readOnly || !synth} save={save}/>}/></Suspense>}</div>
+              </div>
               {bundle.plan.summary && (
-                <div hidden={workspace && view === "board"}>
+                <div hidden={workspace && !planVisible}>
                   <BoardMarkdown source={bundle.plan.summary} />
                 </div>
               )}
-              <div className="plan-progress">
+              <div className="plan-progress" hidden={synth}>
                 <span>
                   {done} of {bundle.slices.length} slices done
                 </span>
@@ -200,9 +212,10 @@ export function ChatPlanning({
                   </small>
                 )}
               </div>
-              {workspace && (
+              {boardOpened.current && (
                 <>
-                  <nav className="plan-workspace-tabs" aria-label="Plan views">
+                  <nav className="plan-workspace-tabs" aria-label={synth ? undefined : "Plan views"} hidden={!workspace}>
+                    {synth ? <Suspense fallback={<span className="faint">Loading plan views…</span>}><SynthPlanTabs prefix={tabPrefix} view={view} questions={bundle.questions.filter(question => question.status === "open").length} onChange={setView}/></Suspense> : <>
                     <button
                       type="button"
                       aria-current={view === "board" ? "page" : undefined}
@@ -212,7 +225,7 @@ export function ChatPlanning({
                     </button>
                     <button
                       type="button"
-                      aria-current={view === "plan" ? "page" : undefined}
+                      aria-current={planVisible ? "page" : undefined}
                       onClick={() => setView("plan")}
                     >
                       Plan
@@ -228,23 +241,24 @@ export function ChatPlanning({
                         }{" "}
                         open questions
                       </button>
-                    )}
+                    )}</>}
                   </nav>
-                  {locked && view === "board" && (
+                  {workspace && locked && view === "board" && (
                     <p className="notice">
                       Approved work is frozen until this build releases the
-                      chat. Open Plan to read or answer questions.
+                      chat. Questions remain available; answers do not approve more work.
                     </p>
                   )}
-                  {readOnly && (
+                  {workspace && readOnly && (
                     <p className="notice">
                       This chat is archived. Its plan and board remain readable;
                       restore the chat to edit.
                     </p>
                   )}
-                  <div hidden={view !== "board"}>
+                  <div id={`${tabPrefix}-panel-board`} role={synth ? "tabpanel" : undefined} aria-labelledby={synth ? `${tabPrefix}-board` : undefined} hidden={!workspace || view !== "board"}>
                     <PlanKanban
                       slices={bundle.slices}
+                      reveal={reveal}
                       revision={snapshot.revision}
                       save={save}
                       disabled={busy || locked || readOnly}
@@ -252,10 +266,10 @@ export function ChatPlanning({
                   </div>
                 </>
               )}
-              <div hidden={workspace && view !== "plan"}>
-                <fieldset disabled={readOnly} className="plan-controls">
-                  <PlanQuestions questions={bundle.questions} save={save} />
-                </fieldset>
+              <div id={`${tabPrefix}-panel-questions`} role={synth ? "tabpanel" : undefined} aria-labelledby={synth ? `${tabPrefix}-questions` : undefined} hidden={!questionsVisible}>
+                <PlanQuestions questions={bundle.questions} revision={snapshot.revision} save={save} readOnly={readOnly} />
+              </div>
+              <div id={`${tabPrefix}-panel-plan`} role={synth ? "tabpanel" : undefined} aria-labelledby={synth ? `${tabPrefix}-plan` : undefined} hidden={workspace && !planVisible}>
                 {locked && (
                   <p className="notice">
                     Approved work is frozen until this build releases the chat.
@@ -271,7 +285,7 @@ export function ChatPlanning({
                     <h4>Scope & notes</h4>
                     <button
                       className="button"
-                      onClick={() => setEditor({ kind: "section" })}
+                      onClick={() => editors.open("section")}
                     >
                       Add section
                     </button>
@@ -285,7 +299,7 @@ export function ChatPlanning({
                           <button
                             className="button"
                             onClick={() =>
-                              setEditor({ kind: "section", key: section.key })
+                              editors.open("section", section.key)
                             }
                           >
                             Edit {section.title}
@@ -294,22 +308,12 @@ export function ChatPlanning({
                         <BoardMarkdown source={section.body} />
                       </article>
                     ))}
-                  {editor?.kind === "section" && (
-                    <SectionForm
-                      key={`section-${editor.key ?? "new"}`}
-                      section={bundle.sections.find(
-                        (section) => section.key === editor.key,
-                      )}
-                      revision={snapshot.revision}
-                      save={save}
-                      close={() => setEditor(null)}
-                    />
-                  )}
+                  <PlanEditors kind="section" editors={editors} revision={snapshot.revision} save={save}/>
                   <div className="plan-heading">
                     <h4>Work slices</h4>
                     <button
                       className="button"
-                      onClick={() => setEditor({ kind: "slice" })}
+                      onClick={() => editors.open("slice")}
                     >
                       Add slice
                     </button>
@@ -328,7 +332,7 @@ export function ChatPlanning({
                         <button
                           className="button"
                           onClick={() =>
-                            setEditor({ kind: "slice", key: slice.key })
+                            editors.open("slice", slice.key)
                           }
                         >
                           Edit {slice.key}
@@ -346,20 +350,10 @@ export function ChatPlanning({
                           Blocked: {slice.blocked_reason}
                         </p>
                       )}
-                      <SliceStatus slice={slice} save={save} />
+                      <SliceStatus slice={slice} revision={snapshot.revision} save={save} />
                     </article>
                   ))}
-                  {editor?.kind === "slice" && (
-                    <SliceForm
-                      key={`slice-${editor.key ?? "new"}`}
-                      slice={bundle.slices.find(
-                        (slice) => slice.key === editor.key,
-                      )}
-                      revision={snapshot.revision}
-                      save={save}
-                      close={() => setEditor(null)}
-                    />
-                  )}
+                  <PlanEditors kind="slice" editors={editors} revision={snapshot.revision} save={save}/>
                 </fieldset>
                 {bundle.decisions.length > 0 && (
                   <details>
@@ -410,116 +404,5 @@ export function ChatPlanning({
         </fieldset>
       )}
     </section>
-  );
-}
-
-function PlanQuestions({
-  questions,
-  save,
-}: {
-  questions: PlanQuestion[];
-  save: SavePlan;
-}) {
-  const [asking, setAsking] = useState(false);
-  const [body, setBody] = useState("");
-  const open = questions.filter((question) => question.status === "open");
-  const resolved = questions.filter((question) => question.status !== "open");
-  return (
-    <section className="plan-questions" aria-label="Plan questions">
-      <div className="plan-heading">
-        <h4>Questions {open.length > 0 && `(${open.length} open)`}</h4>
-        <button className="button" onClick={() => setAsking(!asking)}>
-          {asking ? "Cancel question" : "Ask a question"}
-        </button>
-      </div>
-      <p className="faint">
-        Human decisions for this plan. An answer does not approve a tool, start
-        a run, or resume a stopped turn.
-      </p>
-      {asking && (
-        <form
-          className="plan-form"
-          onSubmit={(event) => {
-            event.preventDefault();
-            void save({ action: "open_question", body }).then((ok) => {
-              if (ok) {
-                setBody("");
-                setAsking(false);
-              }
-            });
-          }}
-        >
-          <label>
-            Question
-            <textarea
-              value={body}
-              onChange={(event) => setBody(event.target.value)}
-              required
-              maxLength={16000}
-            />
-          </label>
-          <div>
-            <button className="button">Save question</button>
-          </div>
-        </form>
-      )}
-      {open.map((question) => (
-        <Question key={question.id} question={question} save={save} />
-      ))}
-      {resolved.length > 0 && (
-        <details>
-          <summary>Answered questions ({resolved.length})</summary>
-          {resolved.map((question) => (
-            <article className="plan-item" key={question.id}>
-              <BoardMarkdown source={question.body} />
-              {question.answer && <BoardMarkdown source={question.answer} />}
-            </article>
-          ))}
-        </details>
-      )}
-    </section>
-  );
-}
-
-function Question({
-  question,
-  save,
-}: {
-  question: PlanQuestion;
-  save: SavePlan;
-}) {
-  const [answer, setAnswer] = useState("");
-  return (
-    <article className="plan-item">
-      {question.slice_key && (
-        <span className="faint">{question.slice_key}</span>
-      )}
-      <BoardMarkdown source={question.body} />
-      <form
-        className="plan-form"
-        onSubmit={(event) => {
-          event.preventDefault();
-          void save({
-            action: "answer_question",
-            question_id: question.id,
-            answer,
-          });
-        }}
-      >
-        <label>
-          Your answer
-          <textarea
-            value={answer}
-            onChange={(event) => setAnswer(event.target.value)}
-            required
-            maxLength={16000}
-            rows={2}
-          />
-        </label>
-        <div>
-          <button className="button">Answer question</button>
-        </div>
-      </form>
-    </article>
   );
 }

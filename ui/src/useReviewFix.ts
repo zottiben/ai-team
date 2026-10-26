@@ -5,8 +5,8 @@ import { submitReviewFix, type ReviewFix, type ReviewRequest } from "./review-ap
 // Editing the comment is a new request; a retry never silently follows a new checkout.
 export function useReviewFix(chat: number) {
   const pending = useRef(new Map<string, { body: string; input: ReviewRequest }>());
-  return async (review: ReviewFix, workspace_epoch: number) => {
-    const key = JSON.stringify([chat, review.kind, review.kind === "checkout"
+  return async (review: ReviewFix, workspace_epoch: number, view?: string) => {
+    const key = JSON.stringify([chat, review.kind, view ?? null, review.kind === "checkout"
       ? [review.finding.area, review.finding.path, review.finding.side, review.finding.line]
       : [review.target.run_id, review.target.slice_key, review.anchor]]);
     const body = review.kind === "checkout" ? review.finding.body : review.body;

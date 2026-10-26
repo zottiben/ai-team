@@ -2,8 +2,20 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, expect, it, vi } from "vitest";
 
 import { TerminalPane } from "./Terminal";
+import { setSynth } from "./ui-preferences";
+
+// Exercise the real shared controller; canvas painting alone is stubbed.
+vi.mock("@xterm/xterm", () => ({ Terminal: class {
+  rows = 24; cols = 80; options = {}; buffer = { active: { viewportY: 0 } };
+  open() {} loadAddon() {} write() {} dispose() {} onData() {}
+  onSelectionChange() { return { dispose() {} }; }
+  getSelection() { return ""; } getSelectionPosition() { return undefined; }
+} }));
+vi.mock("@xterm/addon-fit", () => ({ FitAddon: class { fit() {} } }));
+vi.mock("@xterm/addon-webgl", () => ({ WebglAddon: class { onContextLoss() {} dispose() {} } }));
 
 afterEach(() => {
+  setSynth(false);
   vi.useRealTimers();
   vi.unstubAllGlobals();
 });
@@ -26,8 +38,11 @@ function stub(sessions: unknown[], chunks: unknown[], closeError?: string) {
         return Promise.resolve({ ok: true, json: async () => sessions });
       }
       if (url === "/terminals") {
+        sessions = [...sessions, { id: 42, worktree: "/w", done: false, status: null }];
         return Promise.resolve({ ok: true, json: async () => ({ id: 42 }) });
       }
+      if (url.startsWith("/terminals/pads")) return Promise.resolve({ ok: true, json: async () => [] });
+      if (url.startsWith("/terminals/commands")) return Promise.resolve({ ok: true, json: async () => ({ worktree: "/w", running: [], history: [] }) });
       if (/^\/terminals\/\d+\?/.test(url)) {
         const chunk = chunks[Math.min(next++, chunks.length - 1)];
         return Promise.resolve({ ok: true, json: async () => chunk });
@@ -128,4 +143,25 @@ it("says what is wrong rather than showing a dead pane", async () => {
   );
   render(<TerminalPane project="widget" node={null} />);
   expect(await screen.findByText(/no checkout/)).toBeDefined();
+});
+
+it("hands the checkout to whichever skin is on, and neither starts a second session", async () => {
+  // The sessions live in the server, so switching skins changes what is painting and
+  // nothing about what is running: a four-minute build keeps going, and the pane that
+  // takes over rejoins it rather than opening another shell beside it.
+  const calls = stub([{ id: 7, worktree: "/w", done: false, status: null, kind: "shell", label: "Shell", duration_ms: 1 }], [
+    { text: "", cursor: 0, done: false, status: null, dropped: 0 },
+  ]);
+  const view = render(<TerminalPane project="widget" node={null} />);
+  await screen.findByText("session 7");
+
+  act(() => { setSynth(true); });
+  view.rerender(<TerminalPane project="widget" node={null} />);
+  await screen.findByRole("tab", { name: /agent/i });
+  expect(screen.queryByText("session 7")).toBeNull();
+
+  act(() => { setSynth(false); });
+  view.rerender(<TerminalPane project="widget" node={null} />);
+  await screen.findByText("session 7");
+  expect(calls.some((call) => call.url === "/terminals" && call.method === "POST")).toBe(false);
 });

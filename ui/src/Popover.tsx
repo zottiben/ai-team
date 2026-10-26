@@ -14,13 +14,17 @@ export function popoverPosition(anchor: Pick<DOMRect, "top" | "right">, width: n
   };
 }
 
-export function Popover({ anchor, label, children, onClose, width = 448, className = "" }: {
+export function Popover({ anchor, label, children, onClose, width = 448, className = "", initialFocus, role, closeOnBlur = false }: {
   anchor: RefObject<HTMLButtonElement | null>;
   label: string;
   children: ReactNode;
   onClose: () => void;
   width?: number;
   className?: string;
+  role?: "dialog";
+  closeOnBlur?: boolean;
+  /** Optional child selector, focused only after the initially hidden portal is placed. */
+  initialFocus?: string;
 }) {
   const panel = useRef<HTMLElement | null>(null);
   const [position, setPosition] = useState<ReturnType<typeof popoverPosition> | null>(null);
@@ -33,7 +37,7 @@ export function Popover({ anchor, label, children, onClose, width = 448, classNa
       const next = popoverPosition(rect, width, panel.current?.offsetHeight ?? 0, window.innerWidth, window.innerHeight);
       setPosition(old => old && old.top === next.top && old.left === next.left && old.width === next.width && old.maxHeight === next.maxHeight ? old : next);
     };
-    const outside = (event: PointerEvent) => {
+    const outside = (event: Event) => {
       if (event.target instanceof Node && !panel.current?.contains(event.target) && !anchor.current?.contains(event.target)) close.current();
     };
     const key = (event: KeyboardEvent) => {
@@ -44,23 +48,36 @@ export function Popover({ anchor, label, children, onClose, width = 448, classNa
       }
     };
     place();
-    panel.current?.focus({ preventScroll: true });
     const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(place);
     if (panel.current) observer?.observe(panel.current);
     if (anchor.current) observer?.observe(anchor.current);
     window.addEventListener("resize", place);
     window.addEventListener("scroll", place, true);
     document.addEventListener("pointerdown", outside);
+    if (closeOnBlur) document.addEventListener("focusin", outside);
     document.addEventListener("keydown", key);
     return () => {
       observer?.disconnect();
       window.removeEventListener("resize", place);
       window.removeEventListener("scroll", place, true);
       document.removeEventListener("pointerdown", outside);
+      if (closeOnBlur) document.removeEventListener("focusin", outside);
       document.removeEventListener("keydown", key);
     };
-  }, [anchor, width]);
-  return createPortal(<section ref={panel} tabIndex={-1} aria-label={label} className={`anchored-popover ${className}`}
+  }, [anchor, width, closeOnBlur]);
+  const placed = position !== null;
+  useLayoutEffect(() => {
+    if (!placed) return;
+    const target = initialFocus ? panel.current?.querySelector<HTMLElement>(initialFocus) : null;
+    (target ?? panel.current)?.focus({ preventScroll: true });
+  }, [placed, initialFocus]);
+  return createPortal(<section ref={panel} role={role} tabIndex={-1} aria-label={label} className={`anchored-popover ${className}`}
+    onKeyDown={event => {
+      // Portals still bubble through their React owner before document listeners.
+      if (event.key === "Escape" && !event.defaultPrevented) {
+        event.preventDefault(); event.stopPropagation(); close.current(); anchor.current?.focus();
+      }
+    }}
     style={position ?? { visibility: "hidden" }}>
     {children}
   </section>, document.body);

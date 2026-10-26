@@ -1,5 +1,6 @@
 import { readFileSync, readdirSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join, normalize } from "node:path";
+import ts from "typescript";
 import { expect, it } from "vitest";
 
 /**
@@ -20,19 +21,43 @@ function sizeOf(name: string): number {
   return statSync(join(DIST, name)).size;
 }
 
+/** Shared static imports cost startup time too; dynamic imports do not. */
+function eagerChunks(): Map<string, string> {
+  const found = new Map<string, string>();
+  const visit = (name: string) => {
+    if (found.has(name)) return;
+    const source = readFileSync(join(DIST, name), "utf8");
+    found.set(name, source);
+    const module = ts.createSourceFile(name, source, ts.ScriptTarget.Latest, false, ts.ScriptKind.JS);
+    for (const statement of module.statements) {
+      if (!ts.isImportDeclaration(statement) && !ts.isExportDeclaration(statement)) continue;
+      const specifier = statement.moduleSpecifier;
+      if (!specifier || !ts.isStringLiteral(specifier)) continue;
+      expect(specifier.text.startsWith("."), "Unexpected external startup import").toBe(true);
+      const next = normalize(join(dirname(name), specifier.text));
+      expect(next.startsWith(".."), "Startup import escapes the bundle").toBe(false);
+      visit(next);
+    }
+  };
+  visit("app.js");
+  return found;
+}
+const eager = eagerChunks();
+
 it("the window loads without the editor or the terminal", () => {
-  // Every other view works without either, so neither may be in the eager chunk.
-  const eager = readFileSync(join(DIST, "app.js"), "utf8");
-  expect(eager).not.toContain("@codemirror/state");
-  expect(eager).not.toContain("xterm");
+  // Every other view works without either, so neither may be in any eager chunk.
+  for (const source of eager.values()) {
+    expect(source).not.toContain("@codemirror/state");
+    expect(source).not.toContain("xterm");
+  }
 });
 
 it("the eager bundle stays under its budget", () => {
-  // 400k of headroom over roughly 250k today. Crossing this means something large became
-  // eager, and the fix is a lazy import rather than a bigger number.
+  // 400KiB for the complete static startup graph. Splitting code into shared imports
+  // does not make it lazy; fix a regression with deferred loading, not a bigger number.
   const budget = 400 * 1024;
-  const actual = sizeOf("app.js");
-  expect(actual, `app.js is ${Math.round(actual / 1024)}KB`).toBeLessThan(budget);
+  const actual = [...eager.keys()].reduce((total, name) => total + sizeOf(name), 0);
+  expect(actual, `Startup chunks (${[...eager.keys()].join(", ")}) total ${actual} bytes`).toBeLessThan(budget);
 });
 
 it("the heavy views are split out rather than merged in", () => {
@@ -40,6 +65,21 @@ it("the heavy views are split out rather than merged in", () => {
   const chunks = readdirSync(DIST).filter((name) => name.endsWith(".js"));
   expect(chunks).toContain("Editor.js");
   expect(chunks).toContain("Terminal.js");
+});
+
+it("worker grammar chunks never reimport the worker entry as a shared library", () => {
+  // WebKit can instantiate a worker entry again when a lazy grammar imports it.
+  // CodeMirror extension identities then differ and every built grammar is rejected.
+  const chunks = readdirSync(DIST).filter(name => name.startsWith("diff-syntax-") && name.endsWith(".js"));
+  expect(chunks.length).toBeGreaterThan(1);
+  for (const name of chunks) {
+    const module = ts.createSourceFile(name, readFileSync(join(DIST, name), "utf8"), ts.ScriptTarget.Latest, false, ts.ScriptKind.JS);
+    for (const statement of module.statements) {
+      if (!ts.isImportDeclaration(statement) && !ts.isExportDeclaration(statement)) continue;
+      const specifier = statement.moduleSpecifier;
+      if (specifier && ts.isStringLiteral(specifier)) expect(specifier.text, `${name} imports the worker entry`).not.toBe("./diff-syntax-worker.js");
+    }
+  }
 });
 
 it("no single chunk is large enough to stall a slow machine", () => {

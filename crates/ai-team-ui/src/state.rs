@@ -258,14 +258,8 @@ impl AppState {
             // Opened, never created: creating a database is a repair somebody asked for
             // (D17), and a GET that silently brings one into being is a side effect
             // nobody can see.
-            if let Some(store) = self
-                .inner
-                .db_path
-                .as_ref()
-                .filter(|path| path.exists())
-                .and_then(|path| Store::open(path).ok())
-            {
-                *slot = Some(store);
+            if let Some(path) = self.inner.db_path.as_ref().filter(|path| path.exists()) {
+                *slot = Some(Store::open(path)?);
             }
         }
         if slot.is_none() {

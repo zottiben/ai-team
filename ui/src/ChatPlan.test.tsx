@@ -4,10 +4,14 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ChatPlanning } from "./ChatPlan";
 import type { ChatPlan } from "./plan-api";
+import { useLayoutEffect } from "react";
+import { SliceStatus } from "./PlanForms";
+import { setSynth } from "./ui-preferences";
 
 const service = vi.hoisted(() => ({
   chatPlan: vi.fn(),
@@ -64,11 +68,36 @@ const plan = (): ChatPlan => ({
 const props = { chatId: 7, tick: 0, archived: false, onChanged: vi.fn() };
 
 beforeEach(() => {
+  setSynth(false);
   vi.clearAllMocks();
   service.chatPlan.mockResolvedValue(empty());
 });
 
 describe("chat-owned planning", () => {
+  it("uses an exact-revision Synth status preset without replacing newer reported state", async () => {
+    const rects = vi.spyOn(HTMLElement.prototype, "getClientRects").mockReturnValue([new DOMRect(0, 0, 200, 40)] as unknown as DOMRectList);
+    try {
+      setSynth(true); service.chatPlan.mockResolvedValue(plan());
+      let resolve!: (value: ChatPlan) => void;
+      service.changeChatPlan.mockReturnValue(new Promise<ChatPlan>(done => { resolve = done; }));
+      const view = render(<ChatPlanning {...props}/>);
+      const preset = await screen.findByRole("button", { name: "Plan status" }); preset.scrollIntoView = vi.fn();
+      await waitFor(() => expect((preset as HTMLButtonElement).disabled).toBe(false));
+      fireEvent.click(screen.getByRole("button", { name: "Next Plan status" }));
+      expect(service.changeChatPlan).toHaveBeenCalledExactlyOnceWith(7, { action: "set_plan_status", status: "active" }, 4);
+      expect(preset.textContent).toBe("ready");
+      const notices = () => [...document.querySelectorAll('[aria-live="polite"]')].map(node => node.textContent).filter(Boolean);
+      expect(notices()).toEqual([]);
+      const newer = plan(); newer.revision = 6; newer.bundle!.plan.status = "done";
+      service.chatPlan.mockResolvedValue(newer);
+      view.rerender(<ChatPlanning {...props} tick={1}/>);
+      await waitFor(() => expect(preset.textContent).toBe("done"));
+      const accepted = plan(); accepted.revision = 5; accepted.bundle!.plan.status = "active";
+      await act(async () => resolve(accepted));
+      expect(preset.textContent).toBe("done");
+      expect(notices()).toEqual(["Plan status request recorded. Status only; not verification or execution approval."]);
+    } finally { rects.mockRestore(); }
+  });
   it("does not create a plan simply by opening Overview", async () => {
     render(<ChatPlanning {...props} />);
     expect(await screen.findByText(/No plan yet/)).toBeTruthy();
@@ -97,6 +126,18 @@ describe("chat-owned planning", () => {
     expect(screen.getByRole("button", { name: "Add slice" }).closest("fieldset")?.disabled).toBe(true);
     expect((screen.getByRole("textbox", { name: "Your answer" }) as HTMLTextAreaElement).disabled).toBe(false);
     expect((screen.getByRole("button", { name: "Ask a question" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("keeps answered history readable when the chat is archived", async () => {
+    const archived = plan(); archived.bundle!.questions[0]!.status = "answered";
+    archived.bundle!.questions[0]!.answer = "Recorded choice";
+    service.chatPlan.mockResolvedValue(archived);
+    render(<ChatPlanning {...props} archived/>);
+    const history = await screen.findByRole("button", { name: "Answered questions (1)" });
+    expect(history.matches(":disabled")).toBe(false);
+    fireEvent.click(history);
+    expect(await screen.findByText("Recorded choice")).toBeTruthy();
+    expect(service.changeChatPlan).not.toHaveBeenCalled();
   });
 
   it("does not fill Overview with the engine's empty outline placeholders", async () => {
@@ -178,6 +219,96 @@ describe("chat-owned planning", () => {
     await screen.findByRole("alert");
   });
 
+  it("retains separate section editors and their original field values", async () => {
+    const initial = plan();
+    initial.bundle!.sections.push({ key: "design", title: "Design", body: "Original design", rev: 1 });
+    service.chatPlan.mockResolvedValue(initial);
+    const view = render(<ChatPlanning {...props}/>);
+    fireEvent.click(await screen.findByRole("button", { name: "Edit Scope" }));
+    const scope = screen.getByRole("textbox", { name: "Content" });
+    fireEvent.change(scope, { target: { value: "My retained scope" } });
+    fireEvent.click(screen.getByRole("button", { name: "Edit Design" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Content" }), { target: { value: "My retained design" } });
+    fireEvent.click(screen.getByRole("button", { name: "Edit Scope" }));
+    expect(screen.getByRole("textbox", { name: "Content" })).toBe(scope);
+    expect((scope as HTMLTextAreaElement).value).toBe("My retained scope");
+    const newer = structuredClone(initial); newer.revision = 8;
+    newer.bundle!.sections[0]!.title = "Another writer's title";
+    service.chatPlan.mockResolvedValue(newer);
+    view.rerender(<ChatPlanning {...props} tick={1}/>);
+    await screen.findByRole("button", { name: "Edit Another writer's title" });
+    expect((screen.getByRole("textbox", { name: "Section title" }) as HTMLInputElement).value).toBe("Scope");
+    fireEvent.click(screen.getByRole("button", { name: "Edit Design" }));
+    expect((screen.getByRole("textbox", { name: "Content" }) as HTMLTextAreaElement).value).toBe("My retained design");
+  });
+
+  it("keeps one question editor through Synth subtabs and the legacy document", async () => {
+    setSynth(true); service.chatPlan.mockResolvedValue(plan());
+    render(<ChatPlanning {...props}/>);
+    expect(await screen.findByRole("heading", { level: 2, name: "Improve search" })).toBeTruthy();
+    const questions = await screen.findByRole("tab", { name: /^Open questions/ });
+    fireEvent.click(questions);
+    const answer = screen.getByRole("textbox", { name: "Your answer" });
+    fireEvent.change(answer, { target: { value: "Retain across all views" } });
+    expect(document.getElementById(questions.getAttribute("aria-controls")!)?.contains(answer)).toBe(true);
+    fireEvent.click(screen.getByRole("tab", { name: "Plan" }));
+    expect(answer.isConnected).toBe(true);
+    act(() => setSynth(false));
+    expect(screen.getByRole("textbox", { name: "Your answer" })).toBe(answer);
+    act(() => setSynth(true));
+    fireEvent.click(await screen.findByRole("tab", { name: /^Open questions/ }));
+    expect(screen.getByRole("textbox", { name: "Your answer" })).toBe(answer);
+    expect((answer as HTMLTextAreaElement).value).toBe("Retain across all views");
+    expect(service.changeChatPlan).not.toHaveBeenCalled();
+  });
+
+  it("retains a Board drawer editor when switching back to the legacy document", async () => {
+    setSynth(true);
+    service.chatPlan.mockResolvedValue(plan());
+    render(<ChatPlanning {...props}/>);
+    fireEvent.click(await screen.findByRole("button", { name: "S1 Search field" }));
+    const drawer = screen.getByRole("complementary", { name: "Slice S1" });
+    fireEvent.click(within(drawer).getByRole("button", { name: "Edit S1" }));
+    const scope = within(drawer).getByLabelText("Scope");
+    fireEvent.change(scope, { target: { value: "Retained drawer work" } });
+    act(() => setSynth(false));
+    expect(scope.isConnected).toBe(true);
+    expect(drawer.closest("[hidden]")).not.toBeNull();
+    act(() => setSynth(true));
+    expect(within(screen.getByRole("complementary", { name: "Slice S1" })).getByLabelText("Scope")).toBe(scope);
+    expect((scope as HTMLTextAreaElement).value).toBe("Retained drawer work");
+    expect(service.changeChatPlan).not.toHaveBeenCalled();
+  });
+
+  it("keeps an answer bound to the revision at which writing began", async () => {
+    service.chatPlan.mockResolvedValue(plan());
+    const view = render(<ChatPlanning {...props}/>);
+    const answer = await screen.findByLabelText("Your answer");
+    fireEvent.change(answer, { target: { value: "My original answer" } });
+    service.chatPlan.mockResolvedValue({ ...plan(), revision: 8 });
+    view.rerender(<ChatPlanning {...props} tick={1}/>);
+    await waitFor(() => expect(service.chatPlan).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect((screen.getByRole("button", { name: "Answer question" }) as HTMLButtonElement).disabled).toBe(true));
+    expect((answer as HTMLTextAreaElement).value).toBe("My original answer");
+    expect(service.changeChatPlan).not.toHaveBeenCalled();
+  });
+
+  it("retains an unsent answer when another writer resolves its question", async () => {
+    service.chatPlan.mockResolvedValue(plan());
+    const view = render(<ChatPlanning {...props}/>);
+    const answer = await screen.findByLabelText("Your answer");
+    fireEvent.change(answer, { target: { value: "My unsent answer" } });
+    const newer = plan(); newer.revision = 8;
+    newer.bundle!.questions[0]!.status = "answered"; newer.bundle!.questions[0]!.answer = "A recorded answer";
+    service.chatPlan.mockResolvedValue(newer);
+    view.rerender(<ChatPlanning {...props} tick={1}/>);
+    await screen.findByText("Answered questions (1)");
+    expect(answer.isConnected).toBe(true);
+    expect((answer as HTMLTextAreaElement).value).toBe("My unsent answer");
+    expect((screen.getByRole("button", { name: "Answer question" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(service.changeChatPlan).not.toHaveBeenCalled();
+  });
+
   it("does not let an older in-flight refresh erase a successful write", async () => {
     service.chatPlan.mockResolvedValueOnce(empty());
     const view = render(<ChatPlanning {...props} />);
@@ -232,6 +363,54 @@ describe("chat-owned planning", () => {
     expect(service.chatPlan).toHaveBeenLastCalledWith(8);
   });
 
+  it("hides a previous chat synchronously and never compares revisions across owners", async () => {
+    service.chatPlan.mockResolvedValue(plan());
+    const view = render(<ChatPlanning {...props}/>);
+    await screen.findByText("Improve search");
+    let finish!: (value: ChatPlan) => void;
+    service.chatPlan.mockImplementation(() => new Promise<ChatPlan>(resolve => { finish = resolve; }));
+    view.rerender(<ChatPlanning {...props} chatId={8}/>);
+    expect(screen.queryByText("Improve search")).toBeNull();
+    const other = { ...empty(), chat_id: 8 };
+    await act(async () => finish(other));
+    await screen.findByText(/No plan yet/);
+    expect(service.changeChatPlan).not.toHaveBeenCalled();
+  });
+  it("rejects responses for another chat on both reads and writes", async () => {
+    service.chatPlan.mockResolvedValue({ ...plan(), chat_id: 8 });
+    const view = render(<ChatPlanning {...props}/>);
+    expect((await screen.findByRole("alert")).textContent).toContain("no longer matches this chat");
+    expect(screen.queryByText("Improve search")).toBeNull();
+    service.chatPlan.mockResolvedValue(empty());
+    view.rerender(<ChatPlanning {...props} tick={1}/>);
+    await screen.findByLabelText("Plan title");
+    service.changeChatPlan.mockResolvedValue({ ...plan(), chat_id: 8 });
+    fireEvent.change(screen.getByLabelText("Plan title"), { target: { value: "My plan" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create plan" }));
+    expect((await screen.findByRole("alert")).textContent).toContain("Plan response no longer matches this chat");
+    expect(screen.queryByText("Improve search")).toBeNull();
+    expect(props.onChanged).not.toHaveBeenCalled();
+  });
+  it("does not overwrite an immediately selected status with its mount effect", () => {
+    function ChooseImmediately() {
+      useLayoutEffect(() => { fireEvent.change(screen.getByLabelText("S1 status"), { target: { value: "blocked" } }); }, []);
+      return <SliceStatus slice={plan().bundle!.slices[0]!} revision={4} save={async () => true}/>;
+    }
+    render(<ChooseImmediately/>);
+    expect(screen.getByLabelText("Blocking reason")).toBeTruthy();
+  });
+  it("keeps the status choice's original revision after a plan refresh", async () => {
+    service.chatPlan.mockResolvedValue(plan());
+    const view = render(<ChatPlanning {...props}/>);
+    fireEvent.change(await screen.findByLabelText("S1 status"), { target: { value: "blocked" } });
+    fireEvent.change(await screen.findByLabelText("Blocking reason"), { target: { value: "Original decision" } });
+    service.chatPlan.mockResolvedValue({ ...plan(), revision: 8 });
+    view.rerender(<ChatPlanning {...props} tick={1}/>);
+    await waitFor(() => expect(service.chatPlan).toHaveBeenCalledTimes(2));
+    service.changeChatPlan.mockRejectedValue(Error("stale"));
+    fireEvent.click(screen.getByRole("button", { name: "Update status" }));
+    await waitFor(() => expect(service.changeChatPlan).toHaveBeenCalledWith(7, expect.objectContaining({ action: "set_slice_status", status: "blocked" }), 4));
+  });
   it("requires a blocking reason and sends only the selected slice", async () => {
     service.chatPlan.mockResolvedValue(plan());
     service.changeChatPlan.mockResolvedValue(plan());

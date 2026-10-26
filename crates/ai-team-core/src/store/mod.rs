@@ -18,6 +18,7 @@ mod chats;
 pub(crate) mod update;
 mod workspace_setup;
 pub(crate) use chats::followups::acknowledge as acknowledge_chat_followup;
+mod editor_notices;
 mod events;
 mod interrupted;
 mod mcp;
@@ -29,6 +30,10 @@ mod reminders;
 mod restacks;
 mod reviews;
 mod runs;
+mod terminal_pads;
+pub use terminal_pads::{
+    ClaimedPress, Dispatch, DispatchClaim, PressRequest, TerminalCommandRow, TerminalPad,
+};
 mod toolbox;
 mod toolbox_operations;
 mod toolbox_registry;

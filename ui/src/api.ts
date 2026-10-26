@@ -5,6 +5,8 @@
 // immediately: a URL that carries a credential gets bookmarked, pasted into a chat, and
 // restored by the browser weeks later.
 
+import type { ActivityObservation, Telemetry, ToolActivity } from "./synth/data/activity-api";
+
 const TOKEN_HEADER = "x-ai-team-token";
 const TOKEN_QUERY = "token";
 const STORAGE_KEY = "ai-team.token";
@@ -194,6 +196,13 @@ export type RunEvent = {
   /** Provider-supplied reasoning summaries. Encrypted reasoning never crosses the API. */
   thinking: string[];
   at: string;
+  /** Immutable ingestion scope, not the node's current (possibly moved) session. */
+  session_id?: string | null;
+  observation?: ActivityObservation | null;
+  tool?: ToolActivity | null;
+  telemetry?: Telemetry | null;
+  /** A receipt for charts, not prose, a tool step, or proof of execution. */
+  telemetry_only?: boolean;
 };
 
 export function projects(): Promise<Project[]> {
@@ -717,8 +726,6 @@ export function repoMap(project: string, workspace?: string | null): Promise<Rep
   return api<RepoMap>(`/map?${workspaceScope(project, workspace)}`);
 }
 
-export type FileBody = { path: string; text: string; editable: boolean };
-
 export type Hit = {
   path: string;
   language: string | null;
@@ -754,14 +761,6 @@ function scope(where: Where, extra: Record<string, string> = {}): string {
 
 export function tree(where: Where, path: string): Promise<TreeEntry[]> {
   return api<TreeEntry[]>(`/tree?${scope(where, { path })}`);
-}
-
-export function readFile(where: Where, path: string): Promise<FileBody> {
-  return api<FileBody>(`/file?${scope(where, { path })}`);
-}
-
-export function saveFile(where: Where, path: string, text: string): Promise<{ saved: string }> {
-  return post("/file", { ...where, path, text });
 }
 
 export function search(where: Where, q: string): Promise<Hit[]> {
@@ -812,9 +811,131 @@ export function lspRename(body: LspBody & { new_name: string }): Promise<RenameE
   return post("/lsp/rename", body);
 }
 
-export type TerminalSession = { id: number; worktree: string; done: boolean; status: number | null };
+/** What a session is for. A tab reads this rather than guessing from the label. */
+export type TerminalSessionKind = "shell" | "command" | "app";
 
-export type TerminalChunk = { text: string; cursor: number; done: boolean; status: number | null };
+export type TerminalSession = {
+  id: number;
+  worktree: string;
+  done: boolean;
+  status: number | null;
+  kind: TerminalSessionKind;
+  label: string;
+  /** Measured process lifetime, final once the session has ended. */
+  duration_ms: number;
+};
+
+export type TerminalChunk = {
+  text: string;
+  cursor: number;
+  done: boolean;
+  status: number | null;
+  /** Bytes the scrollback discarded before this reader reached them. */
+  dropped: number;
+};
+
+/**
+ * A command the operator put on a pad. Never seeded: an empty project has none.
+ *
+ * `revision` counts edits. A press carries the revision it was confirmed against, so a
+ * pad edited in another window is refused even when the new command is the old one again.
+ */
+export type TerminalPad = { id: number; position: number; revision: number; label: string; command: string };
+
+/** How far a press got before anything else happened to it. */
+export type TerminalDispatch = "intent" | "started" | "refused";
+
+/**
+ * A press, and its outcome once there is one.
+ *
+ * `running` means this app session started it and is measuring it. `unknown` means the
+ * app that started it is gone, so no exit status was ever observed. `uncertain` means the
+ * press was recorded and whether a process ever started was never written down - it is
+ * not re-run on a guess. `refused` means the spawn failed with nothing left running.
+ * None of them is ever shown as a pass.
+ */
+export type TerminalCommand = {
+  id: number;
+  request_id: string;
+  token: string;
+  pad_id: number;
+  revision: number;
+  label: string;
+  command: string;
+  worktree: string;
+  dispatch: TerminalDispatch;
+  /** Why nothing ran, on a refused row. */
+  refusal: string | null;
+  /** The pty, once one is confirmed started. */
+  session_id: number | null;
+  claimed_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  exit_code: number | null;
+  duration_ms: number | null;
+  lines: number | null;
+  /** False once output was discarded before being counted, so `lines` is a floor. */
+  lines_exact: boolean;
+  state: "running" | "finished" | "unknown" | "uncertain" | "refused";
+};
+
+/** A press's answer. `replayed` means this request had already been made. */
+export type PressedCommand = TerminalCommand & { replayed: boolean };
+
+/** Everything a press is confirmed against. All of it is part of its identity. */
+export type ConfirmedPress = {
+  pad: number;
+  revision: number;
+  confirmed: string;
+  /** The checkout the confirmation named, as the deck resolved it. */
+  checkout: string;
+};
+
+/** The same, with the id this one press is known by for as long as its row exists. */
+export type TerminalPress = ConfirmedPress & { request_id: string };
+
+export type TerminalDeck = {
+  worktree: string;
+  running: { token: string; session: number; label: string; command: string; duration_ms: number; lines: number; lines_exact: boolean }[];
+  history: TerminalCommand[];
+};
+
+export function terminalPads(project: string): Promise<TerminalPad[]> {
+  return api<TerminalPad[]>(`/terminals/pads?project=${encodeURIComponent(project)}`);
+}
+
+export function addTerminalPad(project: string, label: string, command: string): Promise<TerminalPad> {
+  return post("/terminals/pads", { project, label, command });
+}
+
+export function editTerminalPad(id: number, project: string, label: string, command: string): Promise<TerminalPad> {
+  return post(`/terminals/pads/${id}`, { project, label, command });
+}
+
+export function removeTerminalPad(id: number, project: string): Promise<unknown> {
+  return post(`/terminals/pads/${id}/remove`, { project });
+}
+
+export function terminalDeck(where: Where): Promise<TerminalDeck> {
+  return api<TerminalDeck>(`/terminals/commands?${scope(where)}`);
+}
+
+/**
+ * Run a pad, in a session of its own.
+ *
+ * The press carries what the operator was shown - the command text, the pad's revision
+ * and the checkout - and the server refuses it if any of them has moved since, so a
+ * one-press button cannot run something nobody read. Nothing is ever written into a shell
+ * they are using.
+ *
+ * It also carries a `request_id` minted when the confirmation opened. Sending the same
+ * press again - because the answer was lost, or the window reloaded - is answered with
+ * the receipt the first one left rather than running the command a second time, so this
+ * call is safe to retry with the same press and must never be retried with a new one.
+ */
+export function runTerminalPad(where: Where, press: TerminalPress): Promise<PressedCommand> {
+  return post("/terminals/commands", { ...where, ...press });
+}
 
 export function terminals(where: Where): Promise<TerminalSession[]> {
   return api<TerminalSession[]>(`/terminals?${scope(where)}`);

@@ -46,8 +46,10 @@ pub(crate) fn routes() -> Router<AppState> {
         .merge(crate::plan_library::routes())
         .merge(crate::chat_teams::routes())
         .merge(crate::chat_changes::routes())
+        .merge(crate::editor::routes())
         .merge(crate::toolbox::routes())
         .merge(crate::mcp::routes())
+        .merge(crate::terminal_commands::routes())
         .route("/events", get(stream))
         .route("/runs/{id}/approve-plan", axum::routing::post(approve_plan))
         .route("/runs/{id}/approvals", get(approvals))
@@ -72,7 +74,6 @@ pub(crate) fn routes() -> Router<AppState> {
         .merge(notification_routes())
         .route("/tree", get(tree))
         .route("/map", get(repo_map))
-        .route("/file", get(read_file).post(write_file))
         .route("/search", get(search))
         .route("/projects/{id}/repos", axum::routing::post(attach_repo))
         .route("/crew", get(crew))
@@ -399,82 +400,6 @@ async fn repo_map(
     };
 
     Ok(Json(ai_team_core::repo_map(&worktree, &owners)?))
-}
-
-#[derive(Debug, Serialize)]
-struct FileBody {
-    path: String,
-    text: String,
-    /// False when the bytes are not text. The editor refuses rather than rendering a
-    /// screenful of replacement characters and then offering to save them back.
-    editable: bool,
-}
-
-async fn read_file(
-    State(state): State<AppState>,
-    Query(query): Query<TreeQuery>,
-) -> Result<Json<FileBody>> {
-    let worktree = worktree_for(
-        &state,
-        &query.project,
-        query.node,
-        query.workspace.as_deref(),
-    )
-    .await?;
-    let path = ai_team_core::safe_join(&worktree, &query.path)?;
-    let bytes = std::fs::read(&path).map_err(|error| {
-        crate::error::Error::Core(ai_team_core::Error::invalid(format!(
-            "could not read {}: {error}",
-            query.path
-        )))
-    })?;
-
-    // Decoded strictly, not lossily: a lossy read followed by a save would replace every
-    // undecodable byte with U+FFFD and quietly corrupt the file.
-    match String::from_utf8(bytes) {
-        Ok(text) => Ok(Json(FileBody {
-            path: query.path,
-            text,
-            editable: true,
-        })),
-        Err(_) => Ok(Json(FileBody {
-            path: query.path,
-            text: String::new(),
-            editable: false,
-        })),
-    }
-}
-
-#[derive(Debug, Deserialize)]
-struct SaveRequest {
-    project: String,
-    #[serde(default)]
-    workspace: Option<String>,
-    #[serde(default)]
-    node: Option<i64>,
-    path: String,
-    text: String,
-}
-
-async fn write_file(
-    State(state): State<AppState>,
-    JsonBody(request): JsonBody<SaveRequest>,
-) -> Result<Json<serde_json::Value>> {
-    let worktree = worktree_for(
-        &state,
-        &request.project,
-        request.node,
-        request.workspace.as_deref(),
-    )
-    .await?;
-    let path = ai_team_core::safe_join(&worktree, &request.path)?;
-    std::fs::write(&path, request.text).map_err(|error| {
-        crate::error::Error::Core(ai_team_core::Error::invalid(format!(
-            "could not save {}: {error}",
-            request.path
-        )))
-    })?;
-    Ok(Json(serde_json::json!({ "saved": request.path })))
 }
 
 /// One provider, as the settings page needs it.
@@ -3313,6 +3238,11 @@ pub(crate) struct ActivityEvent {
     message: Option<String>,
     thinking: Vec<String>,
     at: String,
+    session_id: Option<String>,
+    observation: Option<ai_team_core::EventObservation>,
+    tool: Option<crate::chat_activity::ToolActivity>,
+    telemetry: Option<ai_team_core::telemetry::Telemetry>,
+    telemetry_only: bool,
 }
 
 impl From<Event> for ActivityEvent {
@@ -3320,6 +3250,9 @@ impl From<Event> for ActivityEvent {
         let message = event_message(&event);
         let thinking = event_thinking(&event);
         let summary = event_summary(&event);
+        let session_id = crate::chat_activity::session(&event);
+        let tool = crate::chat_activity::tool(&event);
+        let telemetry_only = event.telemetry.is_some() && event.payload.is_none();
         ActivityEvent {
             id: event.id,
             node_run_id: event.node_run_id,
@@ -3329,6 +3262,11 @@ impl From<Event> for ActivityEvent {
             message,
             thinking,
             at: event.at,
+            session_id,
+            observation: event.observation,
+            tool,
+            telemetry: event.telemetry,
+            telemetry_only,
         }
     }
 }
@@ -3339,28 +3277,19 @@ fn event_summary(event: &Event) -> String {
     if event.kind == ai_team_core::EventKind::Done && event.summary == "turn completed" {
         return "turn settled".into();
     }
-    if event.kind != ai_team_core::EventKind::ToolCall {
+    if !matches!(
+        event.kind,
+        ai_team_core::EventKind::ToolCall | ai_team_core::EventKind::ToolResult
+    ) {
         return event.summary.clone();
     }
-    let Some(args) = event.payload.as_ref().and_then(|value| value.get("args")) else {
-        return event.summary.clone();
-    };
-    // The useful, bounded part of common tools: where it is reading/writing, what command
-    // it is running, or what it searched for. Never return the whole payload or results.
-    let detail = ["path", "filePath", "command", "query", "pattern", "url"]
-        .into_iter()
-        .find_map(|key| args.get(key).and_then(serde_json::Value::as_str));
-    let Some(detail) = detail else {
-        return event.summary.clone();
-    };
-    let detail: String = detail
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .chars()
-        .take(240)
-        .collect();
-    format!("{} · {detail}", event.summary)
+    let summary = crate::chat_activity::tool_summary(&event.summary);
+    if event.kind == ai_team_core::EventKind::ToolCall {
+        if let Some(detail) = crate::chat_activity::target_summary(event) {
+            return format!("{summary} · {detail}");
+        }
+    }
+    summary
 }
 
 fn message_content(event: &Event) -> Option<&Vec<serde_json::Value>> {
@@ -3995,6 +3924,10 @@ mod activity_event_tests {
             actor: Some(actor.into()),
             summary: "clipped…".into(),
             payload: Some(payload),
+            stream_id: None,
+            observation: None,
+            shell_output: None,
+            telemetry: None,
         }
     }
 

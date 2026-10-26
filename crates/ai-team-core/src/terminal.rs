@@ -18,10 +18,13 @@ use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use portable_pty::{Child, CommandBuilder, MasterPty, NativePtySystem, PtySize, PtySystem};
 
+mod commands;
 mod update;
+pub use commands::{CommandReceipt, ManagedCommand, SettledCommand};
 use serde::Serialize;
 pub use update::TerminalUpdate;
 
@@ -47,6 +50,29 @@ pub struct Chunk {
     pub done: bool,
     /// Its exit code, once there is one.
     pub status: Option<i32>,
+    /// How many bytes the ring discarded before this reader's cursor reached them.
+    ///
+    /// A clamped cursor used to look like a clean read, so a pane showed a seam it could
+    /// not explain and a line count derived from it was quietly short. Said rather than
+    /// smoothed over: the bytes are gone either way, but the gap is a fact about the
+    /// output and anything counting lines has to know its total is a floor.
+    pub dropped: u64,
+}
+
+/// What a session is for.
+///
+/// A tab strip has to tell the operator's own shell from a command ai-team is running on
+/// their behalf, and neither may be confused with a sign-in the app started. Carried as a
+/// field rather than read back out of the label, because a label is prose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionKind {
+    /// The operator's own login shell, typed into by hand.
+    Shell,
+    /// One command ai-team started, in its own pty, from an explicit press.
+    Command,
+    /// A session the app owns: a provider sign-in, or an exact program.
+    App,
 }
 
 /// One pty and the process in it.
@@ -57,9 +83,15 @@ struct Session {
     child: Arc<Mutex<Box<dyn Child + Send + Sync>>>,
     closing: bool,
     label: String,
+    kind: SessionKind,
     /// Everything the process has written, capped.
     output: Arc<Mutex<Ring>>,
     done: Arc<Mutex<Option<i32>>>,
+    /// When the process started and, once it has, when it ended - both on the monotonic
+    /// clock, because a managed command's duration is a measurement rather than the
+    /// difference of two wall-clock strings written a batch apart.
+    started: Instant,
+    ended: Arc<Mutex<Option<Instant>>>,
     /// Which worktree it is rooted in, so a surface can find its own.
     worktree: String,
 }
@@ -94,15 +126,20 @@ impl Ring {
         self.dropped + self.bytes.len() as u64
     }
 
-    /// Everything from `cursor` on, and the new cursor.
-    fn read_from(&self, cursor: u64) -> (String, u64) {
+    /// Everything from `cursor` on, the new cursor, and how much was missed.
+    fn read_from(&self, cursor: u64) -> (String, u64, u64) {
         // A cursor behind what the ring still holds is clamped forward. The alternative is
-        // an error the surface cannot act on - the bytes are gone either way.
+        // an error the surface cannot act on - the bytes are gone either way. What it is
+        // not is silent: the clamp distance is reported so a pane can say it lost output.
         let start = cursor.max(self.dropped);
         // The difference cannot exceed the ring's own length, which is a `usize` already.
         let offset = usize::try_from(start - self.dropped).unwrap_or(usize::MAX);
         let slice = self.bytes.get(offset..).unwrap_or_default();
-        (String::from_utf8_lossy(slice).into_owned(), self.total())
+        (
+            String::from_utf8_lossy(slice).into_owned(),
+            self.total(),
+            start - cursor,
+        )
     }
 }
 
@@ -110,6 +147,8 @@ impl Ring {
 #[derive(Debug)]
 pub struct Terminals {
     sessions: Mutex<HashMap<u64, Session>>,
+    /// The commands this process started, until each one's outcome has been taken.
+    commands: Mutex<HashMap<String, commands::Managed>>,
     next_id: AtomicU64,
     scope: String,
 }
@@ -118,6 +157,7 @@ impl Default for Terminals {
     fn default() -> Self {
         Self {
             sessions: Mutex::default(),
+            commands: Mutex::default(),
             next_id: AtomicU64::default(),
             scope: crate::mint_token(),
         }
@@ -139,6 +179,61 @@ pub struct Listed {
     pub worktree: String,
     pub done: bool,
     pub status: Option<i32>,
+    /// What this session is for, and what it was started as. A tab names a session with
+    /// these rather than guessing from its output.
+    pub kind: SessionKind,
+    pub label: String,
+    /// How long the process has been running, or ran for. Measured, not derived from
+    /// timestamps.
+    pub duration_ms: u64,
+}
+
+impl Session {
+    /// What a reader sees of this session right now.
+    fn chunk(&self, cursor: u64) -> Chunk {
+        let (text, cursor, dropped) = self
+            .output
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .read_from(cursor);
+        let status = *self
+            .done
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Chunk {
+            text,
+            cursor,
+            done: status.is_some(),
+            status,
+            dropped,
+        }
+    }
+
+    fn listed(&self, id: u64) -> Listed {
+        let status = *self
+            .done
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Listed {
+            id,
+            worktree: self.worktree.clone(),
+            done: status.is_some(),
+            status,
+            kind: self.kind,
+            label: self.label.clone(),
+            duration_ms: self.ran_for().as_millis().try_into().unwrap_or(u64::MAX),
+        }
+    }
+
+    /// How long the process has run. Final once it has ended, so a receipt read twice
+    /// does not keep growing after the thing it measures has stopped.
+    fn ran_for(&self) -> std::time::Duration {
+        self.ended
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or_else(Instant::now)
+            .saturating_duration_since(self.started)
+    }
 }
 
 impl Terminals {
@@ -200,7 +295,28 @@ impl Terminals {
             } else {
                 "Shell"
             },
+            if command.is_some() {
+                SessionKind::App
+            } else {
+                SessionKind::Shell
+            },
         )
+    }
+
+    /// Run one command in a pty of its own, labelled with what the operator pressed.
+    ///
+    /// Not a keystroke into a shell somebody is using: a pad that typed into the
+    /// operator's session would race whatever they had half-typed, and the pty's exit
+    /// status would belong to the shell rather than to the command. Here the process *is*
+    /// the command, so its status and its measured lifetime are the command's own.
+    ///
+    /// The shell is a login shell for the same reason `open_running` uses one - the
+    /// command has to resolve the way it would in the operator's own terminal.
+    pub fn open_command(&self, worktree: &Path, label: &str, command: &str) -> Result<u64> {
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
+        let mut spawn = CommandBuilder::new(shell);
+        spawn.args(["-l", "-c", command]);
+        self.open_builder(worktree, spawn, label, SessionKind::Command)
     }
 
     /// Open one program with exact arguments, without putting them through a shell.
@@ -209,9 +325,25 @@ impl Terminals {
     /// data directory, which can contain spaces or shell metacharacters; passing an argv
     /// means none of those become syntax and the route never grows into a loopback shell.
     pub fn open_program(&self, worktree: &Path, program: &str, args: &[String]) -> Result<u64> {
+        self.open_program_as(worktree, program, args, SessionKind::App)
+    }
+
+    /// The same, as a session of a given kind.
+    ///
+    /// Only a fixture needs this: a test must not start the operator's login shell
+    /// (AGENTS.md), but a managed command opened as anything else would not be the thing
+    /// under test - the kind is what tells a tab, and this module's housekeeping, that a
+    /// session is one ai-team ran rather than one somebody is typing into.
+    pub(crate) fn open_program_as(
+        &self,
+        worktree: &Path,
+        program: &str,
+        args: &[String],
+        kind: SessionKind,
+    ) -> Result<u64> {
         let mut spawn = CommandBuilder::new(program);
         spawn.args(args);
-        self.open_builder(worktree, spawn, program)
+        self.open_builder(worktree, spawn, program, kind)
     }
 
     /// An explicit context-source login, not a coding turn or an ordinary user shell.
@@ -231,10 +363,16 @@ impl Terminals {
         for key in crate::pi::METERED_MODEL_ENV {
             spawn.env_remove(key);
         }
-        self.open_builder(home, spawn, "Pi context authentication")
+        self.open_builder(home, spawn, "Pi context authentication", SessionKind::App)
     }
 
-    fn open_builder(&self, worktree: &Path, mut spawn: CommandBuilder, label: &str) -> Result<u64> {
+    fn open_builder(
+        &self,
+        worktree: &Path,
+        mut spawn: CommandBuilder,
+        label: &str,
+        kind: SessionKind,
+    ) -> Result<u64> {
         let system = NativePtySystem::default();
         let pair = system
             .openpty(PtySize {
@@ -249,13 +387,12 @@ impl Terminals {
         // Told what it is, or programs guess "dumb" and stop colouring anything.
         spawn.env("TERM", "xterm-256color");
 
-        let child = pair.slave.spawn_command(spawn).map_err(|error| {
-            Error::invalid(format!("could not start {label} in a terminal: {error}"))
-        })?;
-        // Dropped immediately: while this end is open the terminal never reports EOF, so
-        // a pane whose shell has exited would sit there looking alive.
-        drop(pair.slave);
-
+        // Both ends of the master are taken *before* anything is started. They depend on
+        // the pty, not on the child, and taking them afterwards left the one hole this
+        // whole module is arranged against: a process running with nothing holding it,
+        // because the call that was to read it failed and dropped the handle. Nothing
+        // below this line can fail, so an error from here provably ran nothing - which is
+        // what lets a caller say so instead of guessing.
         let reader = pair
             .master
             .try_clone_reader()
@@ -265,11 +402,20 @@ impl Terminals {
             .take_writer()
             .map_err(|error| Error::invalid(format!("could not write to the terminal: {error}")))?;
 
+        let child = pair.slave.spawn_command(spawn).map_err(|error| {
+            Error::invalid(format!("could not start {label} in a terminal: {error}"))
+        })?;
+        // Dropped immediately: while this end is open the terminal never reports EOF, so
+        // a pane whose shell has exited would sit there looking alive.
+        drop(pair.slave);
+
         #[cfg(unix)]
         let group = child.process_id();
         let child = Arc::new(Mutex::new(child));
         let output = Arc::new(Mutex::new(Ring::default()));
         let done = Arc::new(Mutex::new(None));
+        let started = Instant::now();
+        let ended: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));
 
         // A blocking thread rather than a task: portable-pty's reader is synchronous, and
         // a blocking read on an async runtime stalls every other request on that worker.
@@ -279,6 +425,7 @@ impl Terminals {
         }
         {
             let done = Arc::clone(&done);
+            let ended = Arc::clone(&ended);
             let output = Arc::clone(&output);
             let child = Arc::clone(&child);
             std::thread::spawn(move || {
@@ -301,6 +448,12 @@ impl Terminals {
                         }
                     }
                 };
+                // The end time is recorded before the status, so a reader that sees a
+                // finished session never sees it without the measurement that goes with
+                // it - a receipt with an exit code and no duration reads like a bug.
+                *ended
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Instant::now());
                 *done
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner) =
@@ -335,8 +488,11 @@ impl Terminals {
                     child,
                     closing: false,
                     label: label.into(),
+                    kind,
                     output,
                     done,
+                    started,
+                    ended,
                     worktree: worktree.to_string_lossy().into_owned(),
                 },
             );
@@ -369,21 +525,7 @@ impl Terminals {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let session = sessions.get(&id).ok_or_else(no_such)?;
-        let (text, cursor) = session
-            .output
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .read_from(cursor);
-        let status = *session
-            .done
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        Ok(Chunk {
-            text,
-            cursor,
-            done: status.is_some(),
-            status,
-        })
+        Ok(session.chunk(cursor))
     }
 
     /// Tell the process how big the window is.
@@ -418,18 +560,7 @@ impl Terminals {
             .filter(|(_, session)| {
                 worktree.is_none_or(|path| session.worktree == path.to_string_lossy())
             })
-            .map(|(id, session)| {
-                let status = *session
-                    .done
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                Listed {
-                    id: *id,
-                    worktree: session.worktree.clone(),
-                    done: status.is_some(),
-                    status,
-                }
-            })
+            .map(|(id, session)| session.listed(*id))
             .collect();
         listed.sort_by_key(|entry| entry.id);
         listed
@@ -556,12 +687,12 @@ mod tests {
         // number it already has.
         let mut ring = Ring::default();
         ring.push(b"hello ");
-        let (text, cursor) = ring.read_from(0);
+        let (text, cursor, _) = ring.read_from(0);
         assert_eq!(text, "hello ");
         assert_eq!(cursor, 6);
 
         ring.push(b"world");
-        let (text, cursor) = ring.read_from(cursor);
+        let (text, cursor, _) = ring.read_from(cursor);
         assert_eq!(text, "world");
         assert_eq!(cursor, 11);
 
@@ -590,7 +721,8 @@ mod tests {
         assert_eq!(ring.bytes.len(), SCROLLBACK);
         assert_eq!(ring.total(), SCROLLBACK as u64 + 4);
 
-        let (text, cursor) = ring.read_from(0);
+        let (text, cursor, dropped) = ring.read_from(0);
+        assert_eq!(dropped, 4, "a clamped cursor says how much it missed");
         assert!(text.ends_with("tail"));
         assert_eq!(cursor, ring.total());
     }

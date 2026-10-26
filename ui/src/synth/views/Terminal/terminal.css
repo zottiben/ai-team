@@ -1,0 +1,272 @@
+/* §12. Every colour here is a token; the palette lives in tokens.css alone. */
+
+.synth-terminal {
+  display: grid;
+  gap: 12px;
+  padding: 0;
+  background: var(--synth-floor);
+  color: var(--synth-text);
+  border-radius: var(--r-deck);
+}
+
+.synth-terminal__toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.synth-terminal__toolbar > .synth-muted { margin-right: auto; }
+.synth-terminal__badge {
+  font: 600 11px/1 var(--synth-font-sans);
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  padding: 5px 9px;
+  border-radius: var(--r-key);
+  background: var(--vc-violet);
+  color: var(--synth-signal-ink);
+}
+
+.synth-terminal__problem,
+.synth-pads__problem {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: var(--r-card);
+  background: var(--synth-panel-hi);
+  border-left: 3px solid var(--st-attention);
+  color: var(--synth-text);
+}
+
+.synth-terminal__deck {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 360px);
+  gap: 12px;
+  align-items: start;
+}
+
+@media (min-width: 1181px) {
+  .chat-workspace[data-synth-tool="terminal"] > :is(.chat-header, .chat-toolbar, .chat-notice, .chat-body) { width: calc(100% - 332px); }
+  .chat-workspace[data-synth-tool="terminal"] .synth-terminal__deck { grid-template-columns: minmax(0, 1fr); }
+  .chat-workspace[data-synth-tool="terminal"] .synth-rack { position: absolute; top: 0; right: 0; bottom: 0; width: 320px; padding: 16px 12px; overflow: auto; align-content: start; border-left: 1px solid var(--synth-hairline); }
+}
+@media (max-width: 1180px) {
+  .synth-terminal__deck { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* The controller and PTY mounts are shared; the default-off skin keeps its old shell. */
+.terminal-workspace__deck { min-width: 0; }
+.terminal-workspace .synth-screen { padding: 0; border-radius: 0; box-shadow: none; }
+.terminal-workspace .synth-screen__well {
+  padding: 0; border-radius: 0; box-shadow: none;
+  background: var(--surface-canvas-default);
+}
+
+/* Shell tabs */
+.synth-shell-tabs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.synth-shell-tabs__tab { display: inline-flex; align-items: center; gap: 2px; }
+
+.synth-shell-tabs .synth-key { font-family: var(--synth-font-mono); font-size: 12px; }
+
+.synth-shell-tabs__close { padding-inline: 8px; }
+
+.synth-shell-tabs [aria-selected="true"] {
+  box-shadow: var(--shadow-key), 0 0 0 2px var(--synth-latched-ring);
+}
+
+/* Screen: deck plate bezel around an LCD well (§12.1) */
+.synth-screen {
+  position: relative;
+  padding: 10px;
+  border-radius: var(--r-deck);
+  background: var(--plate-deck);
+  box-shadow: var(--shadow-plate);
+}
+
+.synth-screen__well {
+  position: relative;
+  overflow: hidden;
+  min-height: 320px;
+  padding: 18px 22px;
+  border-radius: 16px;
+  background: var(--synth-term-bg);
+  box-shadow: var(--shadow-screen);
+}
+
+/* FitAddon measures its immediate parent. That parent must be unpadded and must
+   not derive its height from the canvas it sizes, or every fit grows it again. */
+.synth-screen__well.terminal__host { height: clamp(320px, 50vh, 560px); min-height: 320px; }
+.synth-screen__mount { width: 100%; height: 100%; min-width: 0; min-height: 0; }
+.synth-screen__mount > .xterm { display: block; gap: 0; }
+.synth-screen__mount .xterm-viewport { background: transparent; }
+
+/* Pure CSS, and behind an explicit preference: there is no reliable way to detect a
+   machine that would rather not paint them. */
+.synth-screen[data-effects] .synth-screen__well::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: repeating-linear-gradient(180deg, transparent 0 2px, var(--synth-term-scanline) 2px 3px);
+  box-shadow: inset 0 0 80px var(--synth-term-vignette);
+}
+
+.synth-screen__alert {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+  padding: 8px 10px;
+  border-radius: var(--r-card);
+  background: var(--synth-panel-hi);
+  border-left: 3px solid var(--st-attention);
+}
+
+.synth-screen__alert p { margin: 0; }
+
+textarea.synth-mirror__output {
+  display: block; width: 100%; resize: vertical;
+  color: var(--synth-term-fg); background: var(--synth-term-bg);
+  border: 1px solid var(--synth-hairline); font-family: var(--synth-font-mono);
+}
+
+/* Selection toolbar (§12.2) */
+.synth-selection {
+  position: absolute;
+  z-index: 2;
+  transform: translateY(-115%);
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: var(--r-key);
+  background: var(--plate-midnight);
+  box-shadow: var(--shadow-card), 0 0 0 1px var(--synth-comment-ring);
+}
+
+.synth-selection__count { font: 600 11px/1 var(--synth-font-sans); color: var(--synth-label); }
+
+/* Read-only mirror */
+.synth-mirror { overflow: auto; max-height: 420px; color: var(--synth-term-fg); }
+
+.synth-mirror__note {
+  margin: 0 0 10px;
+  font: 400 12px/1.5 var(--synth-font-sans);
+  color: var(--synth-text-muted);
+}
+
+.synth-mirror__list { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; }
+
+.synth-mirror__heading { display: flex; align-items: center; gap: 8px; }
+
+.synth-mirror__heading code,
+.synth-rack__command code { font: 400 13px/1.5 var(--synth-font-mono); color: var(--synth-lcd-text); }
+
+.synth-mirror__state { margin: 2px 0 0; font: 400 11px/1.4 var(--synth-font-sans); color: var(--synth-text-muted); }
+
+.synth-mirror__output {
+  margin: 6px 0 0;
+  padding: 8px;
+  border-radius: var(--r-card);
+  background: var(--synth-term-bg);
+  color: var(--synth-term-fg);
+  font: 400 12px/1.6 var(--synth-font-mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 200px;
+  overflow: auto;
+}
+
+.synth-mirror__footer { display: block; margin-top: 8px; }
+
+/* Pads (§4.11) */
+.synth-pads { display: grid; gap: 10px; }
+
+.synth-pads__header { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+
+.synth-pads__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 10px;
+}
+
+.synth-pads__cell { display: grid; gap: 4px; }
+
+.synth-pads__edit { font-size: 11px; justify-self: start; }
+
+.synth-pads__add {
+  min-height: 76px;
+  border-radius: var(--r-cmdpad);
+  border: 1px dashed var(--synth-hairline);
+  background: transparent;
+  color: var(--synth-text-muted);
+  font: 600 12px/1 var(--synth-font-sans);
+  cursor: pointer;
+}
+
+.synth-pads__add:hover { background: var(--synth-panel-hi); color: var(--synth-text); }
+
+.synth-pads__confirm,
+.synth-pads__form {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border-radius: var(--r-plate);
+  background: var(--plate-night);
+  box-shadow: var(--shadow-plate);
+}
+
+.synth-pads__confirm p,
+.synth-pads__form label { margin: 0; }
+
+.synth-pads__confirm code {
+  padding: 8px;
+  border-radius: var(--r-card);
+  background: var(--synth-screen);
+  color: var(--synth-lcd-text);
+  font: 400 13px/1.5 var(--synth-font-mono);
+  overflow-wrap: anywhere;
+}
+
+.synth-pads__confirm-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+.synth-pads__form label { display: grid; gap: 4px; font: 600 11px/1 var(--synth-font-sans); color: var(--synth-label); }
+
+.synth-pads__form input {
+  padding: 8px;
+  border-radius: var(--r-card);
+  border: 1px solid var(--synth-hairline);
+  background: var(--synth-screen);
+  color: var(--synth-text);
+  color-scheme: var(--synth-color-scheme);
+}
+
+/* Process rack */
+.synth-rack { display: grid; gap: 10px; align-content: start; }
+
+.synth-rack__command { padding: 8px 10px; overflow-wrap: anywhere; }
+
+.synth-rack__minis { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 10px 0 12px; }
+
+.synth-rack__mini { min-width: 0; padding: 10px; border-radius: var(--r-screen); background: var(--synth-screen); box-shadow: var(--shadow-screen); color: var(--synth-lcd-text); overflow-wrap: anywhere; }
+.synth-rack__mini dt { margin: 0; font-size: 8px; }
+
+.synth-rack__mini dd { margin: 6px 0 0; font: 300 28px/1.2 var(--synth-font-sans); }
+
+.synth-rack__history { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; max-height: 260px; overflow: auto; }
+
+.synth-rack__history li { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 8px; }
+
+.synth-rack__history code {
+  font: 400 12px/1.4 var(--synth-font-mono);
+  color: var(--synth-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

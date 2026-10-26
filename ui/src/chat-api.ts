@@ -38,7 +38,8 @@ export type ChatTurn = {
   team: TeamRun | null;
   members: TeamMember[];
   run: Run;
-  node: NodeRun & { usage: Usage; started_at: string | null };
+  /** `ended_at` is sent with every turn; optional here so older readers stay valid. */
+  node: NodeRun & { usage: Usage; started_at: string | null; ended_at?: string | null };
 };
 export type ChatFollowup = {
   image_count?: number;
@@ -90,6 +91,10 @@ export function createChat(input: {
   mode?: Chat["mode"];
 }): Promise<Chat> {
   return post("/chats", input);
+}
+
+export function setChatModel(id: number, provider: string, model: string, expectRevision: number): Promise<Chat> {
+  return post(`/chats/${id}/model`, { provider, model, expect_revision: expectRevision });
 }
 
 export function setChatThinking(id: number, reasoning: Chat["reasoning"], expectRevision: number): Promise<Chat> {

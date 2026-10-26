@@ -7,7 +7,7 @@ import { Overview } from "./Overview";
 import { PageLayout } from "./PageLayout";
 import { Prompt, Seats } from "./Console";
 const Review = lazy(() => import("./Review").then(m => ({ default: m.Review })));
-import { Roster } from "./Roster";
+const Roster = lazy(() => import("./Roster").then(m => ({ default: m.Roster })));
 import { Source } from "./Source";
 import { Talk } from "./Talk";
 import { workspaceTitle } from "./tree";
@@ -328,7 +328,7 @@ export function Workspace({
         {view === "source" && (
           <Source project={project.slug} workspace={workspace.path} node={null} />
         )}
-        {view === "team" && <Roster project={project.slug} onChanged={onChanged} />}
+        {view === "team" && <Suspense fallback={<p className="empty">Loading the team…</p>}><Roster project={project.slug} onChanged={onChanged} /></Suspense>}
 
         {view === "editor" && (
           <Suspense fallback={<p className="empty">Loading the editor…</p>}>
@@ -387,7 +387,7 @@ export function Workspace({
               Expand
             </button>
           </div>
-          <Events events={events.slice(-25)} />
+          <Events events={events.filter(event => !event.telemetry_only).slice(-25)} />
         </aside>
       )}
 
@@ -413,7 +413,7 @@ function Events({ events }: { events: RunEvent[] }) {
   }
   return (
     <div className="events">
-      {events.map((event) => (
+      {events.filter(event => !event.telemetry_only).map((event) => (
         <div key={event.id} className="event">
           <span className="event__kind">{event.kind}</span>
           <span>{event.message ?? event.summary}</span>

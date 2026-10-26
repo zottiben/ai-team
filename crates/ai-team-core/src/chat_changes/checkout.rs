@@ -1,4 +1,5 @@
 //! Explicit operator review/Git commands over the persistent checkout. Not verified drafts.
+mod diffs;
 mod untracked;
 use super::{
     delivery::{origin, remote_head, string},
@@ -11,6 +12,7 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
+    collections::BTreeMap,
     path::{Component, Path},
     sync::Arc,
 };
@@ -41,6 +43,9 @@ pub enum Action {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Snapshot {
     pub workspace: String,
+    /// Older receipts remain readable, but an unrecorded generation cannot be approved.
+    #[serde(default)]
+    pub workspace_epoch: Option<i64>,
     pub head: Option<String>,
     pub branch: Option<String>,
     pub fingerprint: String,
@@ -60,6 +65,8 @@ pub struct Operation {
     pub id: i64,
     pub chat_id: i64,
     pub snapshot: Snapshot,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub evidence: Option<super::PreviewEvidence>,
     pub state: String,
     pub result: Option<String>,
     pub rev: i64,
@@ -73,6 +80,8 @@ pub struct State {
     pub fingerprint: String,
     pub staged: Vec<FileDiff>,
     pub unstaged: Vec<FileDiff>,
+    pub staged_revisions: BTreeMap<String, String>,
+    pub unstaged_revisions: BTreeMap<String, String>,
     pub untracked: Vec<String>,
     pub untracked_files: Vec<UntrackedPreview>,
     pub findings: Vec<Finding>,
@@ -144,8 +153,10 @@ pub async fn state(store: &mut Store, chat: i64) -> Result<State> {
         .map(str::to_owned)
         .collect();
     let mut hash = Sha256::new();
+    let epoch = current.workspace_epoch.to_string();
     for value in [
         workspace.as_str(),
+        epoch.as_str(),
         head.as_deref().unwrap_or(""),
         branch.as_deref().unwrap_or(""),
         &staged,
@@ -157,14 +168,18 @@ pub async fn state(store: &mut Store, chat: i64) -> Result<State> {
         hash.update([0]);
     }
     let untracked_files = untracked::inspect(repo, &untracked, &mut hash)?;
+    let (staged, staged_revisions) = diffs::read(&staged);
+    let (unstaged, unstaged_revisions) = diffs::read(&unstaged);
     Ok(State {
         workspace,
         workspace_epoch: current.workspace_epoch,
         head,
         branch,
         fingerprint: format!("{:x}", hash.finalize()),
-        staged: crate::parse_diff(&staged),
-        unstaged: crate::parse_diff(&unstaged),
+        staged,
+        unstaged,
+        staged_revisions,
+        unstaged_revisions,
         untracked,
         untracked_files,
         findings: store.checkout_findings(chat)?,
@@ -265,6 +280,7 @@ pub async fn preview(
         }
     }
     let remote = publication(Path::new(&s.workspace), chat, s.head.as_deref(), &action).await?;
+    let evidence = super::evidence::checkout(&s, &action, remote.as_ref()).await?;
     store.record_checkout_preview(
         chat,
         &Snapshot {
@@ -274,7 +290,9 @@ pub async fn preview(
             fingerprint: s.fingerprint,
             action,
             remote,
+            workspace_epoch: Some(s.workspace_epoch),
         },
+        Some(&evidence),
     )
 }
 /// Build the operation one explicit human push instruction authorised (`chat_push`).
@@ -315,6 +333,7 @@ pub(crate) async fn authorized_push(
             "origin changed since you asked for this push; ask again",
         ));
     }
+    let evidence = super::evidence::checkout(&s, &action, remote.as_ref()).await?;
     store.record_checkout_preview(
         chat,
         &Snapshot {
@@ -324,7 +343,9 @@ pub(crate) async fn authorized_push(
             fingerprint: s.fingerprint,
             action,
             remote,
+            workspace_epoch: Some(s.workspace_epoch),
         },
+        Some(&evidence),
     )
 }
 
@@ -489,7 +510,7 @@ pub async fn approve(store: &mut Store, chat: i64, id: i64, rev: i64) -> Result<
         let validation=async {
             policy(store,chat,&op.snapshot.action)?;
             let current=state(store,chat).await?;
-            if current.fingerprint!=op.snapshot.fingerprint {return Err(Error::invalid("checkout changed after preview; no action approved for these new bytes"));}
+            if Some(current.workspace_epoch)!=op.snapshot.workspace_epoch || current.fingerprint!=op.snapshot.fingerprint {return Err(Error::invalid("checkout changed after preview; no action approved for these new bytes"));}
             if publication(Path::new(&current.workspace),chat,current.head.as_deref(),&op.snapshot.action).await? != op.snapshot.remote {return Err(Error::invalid("publication destination or PR base changed; preview again"));} Ok(())
         }.await;
         if let Err(e)=validation {return store.settle_checkout_operation(chat,id,if owner.quiescent(){"refused"}else{"inspection"},&e.to_string());}

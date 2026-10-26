@@ -38,14 +38,37 @@ impl Store {
         &mut self,
         chat: i64,
         snapshot: &Snapshot,
+        evidence: Option<&crate::chat_changes::PreviewEvidence>,
     ) -> Result<Operation> {
         let json = serde_json::to_string(snapshot)?;
+        let preview = evidence
+            .map(crate::chat_changes::evidence::encode)
+            .transpose()?;
         let id=self.db_mut().write(|tx| {
             available(tx,chat,None)?;
-            tx.execute("INSERT INTO chat_checkout_operation(chat_id,workspace_path,snapshot_json,created_at,updated_at) VALUES(?1,?2,?3,?4,?4)",params![chat,snapshot.workspace,json,crate::now()])?;
+            tx.execute("INSERT INTO chat_checkout_operation(chat_id,workspace_path,snapshot_json,created_at,updated_at,preview_json) VALUES(?1,?2,?3,?4,?4,?5)",params![chat,snapshot.workspace,json,crate::now(),preview])?;
             Ok(tx.last_insert_rowid())
         })?;
-        self.checkout_operation(chat, id)
+        let mut operation = self.checkout_operation(chat, id)?;
+        operation.evidence = evidence.cloned();
+        Ok(operation)
+    }
+    pub fn checkout_preview_evidence(
+        &self,
+        chat: i64,
+        id: i64,
+    ) -> Result<Option<crate::chat_changes::PreviewEvidence>> {
+        let json: Option<String> = self
+            .db()
+            .conn()
+            .query_row(
+                "SELECT preview_json FROM chat_checkout_operation WHERE chat_id=?1 AND id=?2",
+                params![chat, id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .ok_or_else(|| Error::invalid("no checkout approval in this chat"))?;
+        Ok(json.map(|value| serde_json::from_str(&value)).transpose()?)
     }
     pub(crate) fn claim_checkout_operation(
         &mut self,
@@ -160,6 +183,7 @@ fn from_row(r: &Row<'_>) -> rusqlite::Result<Operation> {
         id: r.get(0)?,
         chat_id: r.get(1)?,
         snapshot,
+        evidence: None,
         state: r.get(3)?,
         result: r.get(4)?,
         rev: r.get(5)?,

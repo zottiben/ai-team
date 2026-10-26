@@ -1,0 +1,1 @@
+import{t as e}from"./jsx-runtime.js";var t=e();function n({className:e=``,...n}){return(0,t.jsx)(`span`,{...n,className:`synth-silk ${e}`})}export{n as t};

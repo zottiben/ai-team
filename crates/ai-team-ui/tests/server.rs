@@ -10,6 +10,8 @@ use std::net::{SocketAddr, TcpStream};
 
 use ai_team_ui::{ServeOptions, Server, TOKEN_HEADER, TOKEN_QUERY};
 
+#[path = "server/chat_activity.rs"]
+mod chat_activity;
 #[path = "server/chat_images.rs"]
 mod chat_images;
 #[path = "server/chat_overview.rs"]
@@ -22,6 +24,10 @@ mod chat_teams;
 mod chat_thinking;
 #[path = "server/chat_today.rs"]
 mod chat_today;
+#[path = "server/checkout_evidence.rs"]
+mod checkout_evidence;
+#[path = "server/editor.rs"]
+mod editor;
 #[path = "server/mcp.rs"]
 mod mcp;
 #[path = "server/plan_library.rs"]
@@ -403,11 +409,8 @@ impl Harness {
 
     /// A server with no database, and no way to find one.
     ///
-    /// Pointed at an empty temporary directory rather than left to default, because the
-    /// default is *the machine's own* database. These tests were quietly exercising
-    /// `~/.ai-team/team.db` - so they passed on CI, where a runner has none, and failed
-    /// on the Mac this is used on, which is the wrong way round for the platform that
-    /// matters (D12).
+    /// Explicitly watches an empty temporary directory. Unscoped servers also remain
+    /// detached; neither path may discover or migrate the operator's database.
     fn start() -> Harness {
         let dir = tempfile::tempdir().unwrap();
         let options = ServeOptions {
@@ -1319,11 +1322,8 @@ fn a_server_with_no_database_says_so_instead_of_failing() {
     // itself, not look broken - and health must still answer, since that is what
     // `ait doctor` asks.
     //
-    // `watching` rather than `start`, and for the reason the comment further down already
-    // gives: `ServeOptions::default()` resolves the *machine's* database, so on a laptop
-    // that has ever run `ait init` this asserted "no database" against a real one and
-    // failed. It passed in CI and on a fresh checkout, which is the worst way for a test
-    // to be wrong.
+    // Production entry points explicitly watch their database path. Exercise that
+    // missing-path case without relying on any machine-default discovery.
     let dir = tempfile::tempdir().unwrap();
     let app = Harness::watching(&dir.path().join("team.db"));
 
